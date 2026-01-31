@@ -165,6 +165,38 @@ Error response:
 }
 ```
 
+## Testing
+
+```bash
+# Run all tests (mocked)
+npm test
+
+# Run with coverage
+npm run test:coverage
+
+# Run against live API (requires NANSEN_API_KEY)
+npm run test:live
+
+# Watch mode
+npm run test:watch
+```
+
+### Test Coverage
+
+| Category | Implemented | Total | Coverage |
+|----------|-------------|-------|----------|
+| Smart Money | 5 | 6 | 83% |
+| Profiler | 5 | 12 | 42% |
+| Token God Mode | 6 | 13 | 46% |
+| Portfolio | 1 | 1 | 100% |
+| **Total** | **17** | **32** | **53%** |
+
+### Test Structure
+
+- `api.test.js` - API client unit tests with mocks
+- `cli.test.js` - CLI command parsing and execution tests
+- `coverage.test.js` - Endpoint coverage verification
+
 ## License
 
 MIT
