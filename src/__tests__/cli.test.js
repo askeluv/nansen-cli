@@ -94,95 +94,157 @@ describe('CLI', () => {
   // =================== Argument Parsing ===================
 
   describe('Argument Parsing', () => {
-    it('should parse --chain flag', () => {
-      // This will fail at API call, but tests parsing
+    it('should parse --chain flag and attempt API call', () => {
+      // This will fail at API call with fetch failed, but tests parsing
       const { stdout, stderr } = runCLI('smart-money netflow --chain ethereum');
-      // Command should at least attempt to run
-      expect(stdout + stderr).toBeDefined();
+      const combined = stdout + (stderr || '');
+      
+      // Should output JSON (either success or error)
+      expect(combined).toMatch(/\{.*\}/s);
+      
+      // If error, should be JSON format with error field
+      if (combined.includes('error')) {
+        const parsed = JSON.parse(combined);
+        expect(parsed).toHaveProperty('success', false);
+        expect(parsed).toHaveProperty('error');
+      }
     });
 
     it('should parse --limit flag', () => {
       const { stdout, stderr } = runCLI('smart-money netflow --limit 5');
-      expect(stdout + stderr).toBeDefined();
+      const combined = stdout + (stderr || '');
+      
+      // Should output valid JSON
+      expect(() => JSON.parse(combined)).not.toThrow();
     });
 
-    it('should parse --pretty flag', () => {
-      const { stdout, stderr } = runCLI('smart-money netflow --pretty');
-      expect(stdout + stderr).toBeDefined();
+    it('should parse --pretty flag and format output', () => {
+      const { stdout } = runCLI('smart-money help --pretty');
+      
+      // Pretty output should have indentation (newlines with spaces)
+      expect(stdout).toContain('\n');
+      expect(stdout).toMatch(/"commands"/);
     });
 
-    it('should parse multiple chains as JSON', () => {
+    it('should parse multiple chains as JSON array', () => {
       const { stdout, stderr } = runCLI('smart-money netflow --chains \'["ethereum","solana"]\'');
-      expect(stdout + stderr).toBeDefined();
+      const combined = stdout + (stderr || '');
+      
+      // Should output valid JSON
+      expect(() => JSON.parse(combined)).not.toThrow();
     });
 
-    it('should parse filters as JSON', () => {
+    it('should parse filters as JSON object', () => {
       const { stdout, stderr } = runCLI('smart-money netflow --filters \'{"min_usd":1000}\'');
-      expect(stdout + stderr).toBeDefined();
+      const combined = stdout + (stderr || '');
+      
+      // Should output valid JSON
+      expect(() => JSON.parse(combined)).not.toThrow();
     });
   });
 
   // =================== Output Format ===================
 
   describe('Output Format', () => {
-    it('should output valid JSON by default', () => {
+    it('should output help as readable text', () => {
       const { stdout, exitCode } = runCLI('help');
       
-      // Help outputs text, not JSON - but actual commands should output JSON
-      expect(stdout).toBeDefined();
+      expect(exitCode).toBe(0);
+      expect(stdout).toContain('USAGE:');
+      expect(stdout).toContain('COMMANDS:');
+      expect(stdout).toContain('EXAMPLES:');
     });
 
-    it('should handle missing API key gracefully', () => {
-      const { stderr, exitCode, stdout } = runCLI('smart-money netflow', { 
+    it('should output JSON for API commands', () => {
+      const { stdout, stderr } = runCLI('smart-money help');
+      const combined = stdout + (stderr || '');
+      
+      // Should be valid JSON
+      const parsed = JSON.parse(combined);
+      expect(parsed).toHaveProperty('success', true);
+      expect(parsed.data).toHaveProperty('commands');
+      expect(parsed.data.commands).toContain('netflow');
+    });
+
+    it('should output error as JSON with success:false', () => {
+      const { stdout, stderr, exitCode } = runCLI('smart-money netflow', { 
         env: { NANSEN_API_KEY: '' } 
       });
       
-      // CLI may fallback to config.json, so just verify it runs
-      expect(stdout + stderr).toBeDefined();
+      const combined = stdout + (stderr || '');
+      const parsed = JSON.parse(combined);
+      
+      // Either success with data, or failure with error
+      if (parsed.success === false) {
+        expect(parsed).toHaveProperty('error');
+        expect(typeof parsed.error).toBe('string');
+      }
     });
   });
 
   // =================== Command Validation ===================
 
   describe('Command Validation', () => {
-    it('should reject unknown commands', () => {
-      const { stderr, exitCode } = runCLI('unknown-command');
+    it('should reject unknown commands with error JSON', () => {
+      const { stdout, stderr, exitCode } = runCLI('unknown-command');
+      const combined = stdout + (stderr || '');
       
       expect(exitCode).not.toBe(0);
+      
+      const parsed = JSON.parse(combined);
+      expect(parsed.error).toContain('Unknown command');
+      expect(parsed.available).toBeInstanceOf(Array);
     });
 
-    it('should handle unknown subcommands', () => {
-      const { stderr, exitCode, stdout } = runCLI('smart-money unknown');
+    it('should return help for unknown subcommands', () => {
+      const { stdout, stderr } = runCLI('smart-money unknown');
+      const combined = stdout + (stderr || '');
       
-      // CLI shows help for unknown subcommands rather than error
-      expect(stdout + stderr).toBeDefined();
+      const parsed = JSON.parse(combined);
+      // Should return error with available subcommands
+      if (parsed.success === false || parsed.data?.error) {
+        const data = parsed.data || parsed;
+        expect(data.available || data.error).toBeDefined();
+      }
     });
 
-    it('should require address for profiler commands', () => {
-      const { stderr, exitCode } = runCLI('profiler balance');
+    it('should fail with error when profiler balance missing address', () => {
+      const { stdout, stderr, exitCode } = runCLI('profiler balance');
+      const combined = stdout + (stderr || '');
       
-      // Should fail without --address
       expect(exitCode).not.toBe(0);
+      
+      const parsed = JSON.parse(combined);
+      expect(parsed.success).toBe(false);
+      expect(parsed.error).toBeDefined();
     });
 
-    it('should require token for token commands', () => {
-      const { stderr, exitCode } = runCLI('token holders');
+    it('should fail with error when token holders missing token', () => {
+      const { stdout, stderr, exitCode } = runCLI('token holders');
+      const combined = stdout + (stderr || '');
       
-      // Should fail without --token
       expect(exitCode).not.toBe(0);
+      
+      const parsed = JSON.parse(combined);
+      expect(parsed.success).toBe(false);
+      expect(parsed.error).toBeDefined();
     });
   });
 
   // =================== Environment Variables ===================
 
   describe('Environment Variables', () => {
-    it('should use NANSEN_API_KEY from env', () => {
+    it('should use NANSEN_API_KEY from env and output JSON', () => {
       const { stdout, stderr } = runCLI('smart-money netflow', {
         env: { NANSEN_API_KEY: 'env-test-key' }
       });
+      const combined = stdout + (stderr || '');
       
-      // Should attempt to run with the key
-      expect(stdout + stderr).toBeDefined();
+      // Should output valid JSON (success or error)
+      expect(() => JSON.parse(combined)).not.toThrow();
+      
+      const parsed = JSON.parse(combined);
+      expect(typeof parsed.success).toBe('boolean');
     });
 
     it('should use NANSEN_BASE_URL if provided', () => {
@@ -192,52 +254,69 @@ describe('CLI', () => {
           NANSEN_BASE_URL: 'https://custom.api.com'
         }
       });
+      const combined = stdout + (stderr || '');
       
-      expect(stdout + stderr).toBeDefined();
+      // Should output valid JSON
+      expect(() => JSON.parse(combined)).not.toThrow();
     });
   });
 
   // =================== Smart Money Commands ===================
 
   describe('Smart Money Commands', () => {
-    it('should support smart-money netflow', () => {
+    // Helper to verify CLI JSON output
+    function expectValidJsonOutput(stdout, stderr) {
+      const combined = stdout + (stderr || '');
+      expect(() => JSON.parse(combined)).not.toThrow();
+      return JSON.parse(combined);
+    }
+
+    it('should support smart-money netflow and output JSON', () => {
       const { stdout, stderr } = runCLI('smart-money netflow --chain solana');
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
 
-    it('should support smart-money dex-trades', () => {
+    it('should support smart-money dex-trades and output JSON', () => {
       const { stdout, stderr } = runCLI('smart-money dex-trades --chain solana');
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
 
-    it('should support smart-money holdings', () => {
+    it('should support smart-money holdings and output JSON', () => {
       const { stdout, stderr } = runCLI('smart-money holdings --chain solana');
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
 
-    it('should support smart-money perp-trades', () => {
+    it('should support smart-money perp-trades and output JSON', () => {
       const { stdout, stderr } = runCLI('smart-money perp-trades');
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
 
-    it('should support smart-money dcas', () => {
+    it('should support smart-money dcas and output JSON', () => {
       const { stdout, stderr } = runCLI('smart-money dcas');
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
 
-    it('should support --labels filter', () => {
+    it('should support --labels filter and output JSON', () => {
       const { stdout, stderr } = runCLI('smart-money dex-trades --chain solana --labels Fund');
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
 
-    it('should support smart-money historical-holdings', () => {
+    it('should support smart-money historical-holdings and output JSON', () => {
       const { stdout, stderr } = runCLI('smart-money historical-holdings --chain solana');
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
 
-    it('should support --days option', () => {
+    it('should support --days option and output JSON', () => {
       const { stdout, stderr } = runCLI('smart-money historical-holdings --chain solana --days 7');
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
   });
 
@@ -246,64 +325,83 @@ describe('CLI', () => {
   describe('Profiler Commands', () => {
     const TEST_ADDRESS = '0x28c6c06298d514db089934071355e5743bf21d60';
 
-    it('should support profiler balance', () => {
+    // Helper to verify CLI JSON output
+    function expectValidJsonOutput(stdout, stderr) {
+      const combined = stdout + (stderr || '');
+      expect(() => JSON.parse(combined)).not.toThrow();
+      return JSON.parse(combined);
+    }
+
+    it('should support profiler balance and output JSON', () => {
       const { stdout, stderr } = runCLI(`profiler balance --address ${TEST_ADDRESS} --chain ethereum`);
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
 
-    it('should support profiler labels', () => {
+    it('should support profiler labels and output JSON', () => {
       const { stdout, stderr } = runCLI(`profiler labels --address ${TEST_ADDRESS} --chain ethereum`);
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
 
-    it('should support profiler transactions', () => {
+    it('should support profiler transactions and output JSON', () => {
       const { stdout, stderr } = runCLI(`profiler transactions --address ${TEST_ADDRESS} --chain ethereum`);
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
 
-    it('should support profiler pnl', () => {
+    it('should support profiler pnl and output JSON', () => {
       const { stdout, stderr } = runCLI(`profiler pnl --address ${TEST_ADDRESS} --chain ethereum`);
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
 
-    it('should support profiler search', () => {
+    it('should support profiler search and output JSON', () => {
       const { stdout, stderr } = runCLI('profiler search --query "Vitalik"');
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
 
-    it('should support profiler historical-balances', () => {
+    it('should support profiler historical-balances and output JSON', () => {
       const { stdout, stderr } = runCLI(`profiler historical-balances --address ${TEST_ADDRESS} --chain ethereum`);
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
 
-    it('should support profiler related-wallets', () => {
+    it('should support profiler related-wallets and output JSON', () => {
       const { stdout, stderr } = runCLI(`profiler related-wallets --address ${TEST_ADDRESS} --chain ethereum`);
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
 
-    it('should support profiler counterparties', () => {
+    it('should support profiler counterparties and output JSON', () => {
       const { stdout, stderr } = runCLI(`profiler counterparties --address ${TEST_ADDRESS} --chain ethereum`);
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
 
-    it('should support profiler pnl-summary', () => {
+    it('should support profiler pnl-summary and output JSON', () => {
       const { stdout, stderr } = runCLI(`profiler pnl-summary --address ${TEST_ADDRESS} --chain ethereum`);
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
 
-    it('should support profiler perp-positions', () => {
+    it('should support profiler perp-positions and output JSON', () => {
       const { stdout, stderr } = runCLI(`profiler perp-positions --address ${TEST_ADDRESS}`);
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
 
-    it('should support profiler perp-trades', () => {
+    it('should support profiler perp-trades and output JSON', () => {
       const { stdout, stderr } = runCLI(`profiler perp-trades --address ${TEST_ADDRESS}`);
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
 
-    it('should support --days option for profiler', () => {
+    it('should support --days option for profiler and output JSON', () => {
       const { stdout, stderr } = runCLI(`profiler historical-balances --address ${TEST_ADDRESS} --chain ethereum --days 14`);
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
   });
 
@@ -312,83 +410,120 @@ describe('CLI', () => {
   describe('Token Commands', () => {
     const TEST_TOKEN = 'So11111111111111111111111111111111111111112';
 
-    it('should support token screener', () => {
+    // Helper to verify CLI JSON output
+    function expectValidJsonOutput(stdout, stderr) {
+      const combined = stdout + (stderr || '');
+      expect(() => JSON.parse(combined)).not.toThrow();
+      return JSON.parse(combined);
+    }
+
+    it('should support token screener and output JSON', () => {
       const { stdout, stderr } = runCLI('token screener --chain solana --timeframe 24h');
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
 
-    it('should support token holders', () => {
+    it('should support token holders and output JSON', () => {
       const { stdout, stderr } = runCLI(`token holders --token ${TEST_TOKEN} --chain solana`);
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
 
-    it('should support token flows', () => {
+    it('should support token flows and output JSON', () => {
       const { stdout, stderr } = runCLI(`token flows --token ${TEST_TOKEN} --chain solana`);
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
 
-    it('should support token dex-trades', () => {
+    it('should support token dex-trades and output JSON', () => {
       const { stdout, stderr } = runCLI(`token dex-trades --token ${TEST_TOKEN} --chain solana`);
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
 
-    it('should support token pnl', () => {
+    it('should support token pnl and output JSON', () => {
       const { stdout, stderr } = runCLI(`token pnl --token ${TEST_TOKEN} --chain solana`);
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
 
-    it('should support token who-bought-sold', () => {
+    it('should support token who-bought-sold and output JSON', () => {
       const { stdout, stderr } = runCLI(`token who-bought-sold --token ${TEST_TOKEN} --chain solana`);
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
 
-    it('should support --smart-money flag', () => {
+    it('should support --smart-money flag and output JSON', () => {
       const { stdout, stderr } = runCLI(`token dex-trades --token ${TEST_TOKEN} --chain solana --smart-money`);
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
 
-    it('should support token flow-intelligence', () => {
+    it('should support token flow-intelligence and output JSON', () => {
       const { stdout, stderr } = runCLI(`token flow-intelligence --token ${TEST_TOKEN} --chain solana`);
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
 
-    it('should support token transfers', () => {
+    it('should support token transfers and output JSON', () => {
       const { stdout, stderr } = runCLI(`token transfers --token ${TEST_TOKEN} --chain solana`);
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
 
-    it('should support token jup-dca', () => {
+    it('should support token jup-dca and output JSON', () => {
       const { stdout, stderr } = runCLI(`token jup-dca --token ${TEST_TOKEN}`);
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
 
-    it('should support token perp-trades with --symbol', () => {
+    it('should support token perp-trades with --symbol and output JSON', () => {
       const { stdout, stderr } = runCLI('token perp-trades --symbol BTC');
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
 
-    it('should support token perp-positions with --symbol', () => {
+    it('should support token perp-positions with --symbol and output JSON', () => {
       const { stdout, stderr } = runCLI('token perp-positions --symbol ETH');
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
 
-    it('should support token perp-pnl-leaderboard with --symbol', () => {
+    it('should support token perp-pnl-leaderboard with --symbol and output JSON', () => {
       const { stdout, stderr } = runCLI('token perp-pnl-leaderboard --symbol BTC');
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
 
-    it('should support --days option for token commands', () => {
+    it('should support --days option for token commands and output JSON', () => {
       const { stdout, stderr } = runCLI(`token transfers --token ${TEST_TOKEN} --chain solana --days 3`);
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
     });
   });
 
   // =================== Portfolio Commands ===================
 
   describe('Portfolio Commands', () => {
-    it('should support portfolio defi', () => {
+    // Helper to verify CLI JSON output
+    function expectValidJsonOutput(stdout, stderr) {
+      const combined = stdout + (stderr || '');
+      expect(() => JSON.parse(combined)).not.toThrow();
+      return JSON.parse(combined);
+    }
+
+    it('should support portfolio defi and output JSON', () => {
       const { stdout, stderr } = runCLI('portfolio defi --wallet 0x28c6c06298d514db089934071355e5743bf21d60');
-      expect(stdout + stderr).toBeDefined();
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      expect(typeof parsed.success).toBe('boolean');
+    });
+
+    it('should return help for portfolio help', () => {
+      const { stdout, stderr } = runCLI('portfolio help');
+      const parsed = expectValidJsonOutput(stdout, stderr);
+      
+      expect(parsed.success).toBe(true);
+      expect(parsed.data.commands).toContain('defi');
     });
   });
 });

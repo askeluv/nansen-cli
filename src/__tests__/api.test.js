@@ -178,6 +178,7 @@ const MOCK_RESPONSES = {
 describe('NansenAPI', () => {
   let api;
   let mockFetch;
+  const originalFetch = global.fetch;
 
   beforeAll(() => {
     if (LIVE_TEST) {
@@ -186,8 +187,20 @@ describe('NansenAPI', () => {
       // Mock fetch for unit tests
       mockFetch = vi.fn();
       global.fetch = mockFetch;
-      api = new NansenAPI('test-api-key');
+      api = new NansenAPI('test-api-key', 'https://api.nansen.ai');
     }
+  });
+
+  afterEach(() => {
+    // Clear mock call history between tests
+    if (mockFetch) {
+      mockFetch.mockClear();
+    }
+  });
+
+  afterAll(() => {
+    // Restore original fetch
+    global.fetch = originalFetch;
   });
 
   function setupMock(response) {
@@ -197,6 +210,34 @@ describe('NansenAPI', () => {
         json: async () => response
       });
     }
+  }
+
+  /**
+   * Helper to verify fetch was called with correct URL and body
+   * @param {string} expectedEndpoint - Expected API endpoint path
+   * @param {object} expectedBodyContains - Object with keys/values that must be in the body
+   */
+  function expectFetchCalledWith(expectedEndpoint, expectedBodyContains = {}) {
+    if (LIVE_TEST) return;
+    
+    expect(mockFetch).toHaveBeenCalled();
+    const [url, options] = mockFetch.mock.calls[mockFetch.mock.calls.length - 1];
+    
+    // Verify URL
+    expect(url).toBe(`https://api.nansen.ai${expectedEndpoint}`);
+    
+    // Verify method and headers
+    expect(options.method).toBe('POST');
+    expect(options.headers['Content-Type']).toBe('application/json');
+    expect(options.headers['apikey']).toBe('test-api-key');
+    
+    // Verify body contains expected fields
+    const body = JSON.parse(options.body);
+    for (const [key, value] of Object.entries(expectedBodyContains)) {
+      expect(body[key]).toEqual(value);
+    }
+    
+    return body;
   }
 
   // =================== Constructor Tests ===================
@@ -219,118 +260,162 @@ describe('NansenAPI', () => {
 
   describe('Smart Money', () => {
     describe('smartMoneyNetflow', () => {
-      it('should fetch netflow data', async () => {
+      it('should fetch netflow data with correct endpoint and body', async () => {
         setupMock(MOCK_RESPONSES.smartMoneyNetflow);
         
         const result = await api.smartMoneyNetflow({ chains: ['solana'] });
         
-        expect(result).toBeDefined();
-        if (!LIVE_TEST) {
-          expect(result.netflows).toHaveLength(1);
-        }
+        // Verify correct API call
+        expectFetchCalledWith('/api/v1/smart-money/netflow', {
+          chains: ['solana']
+        });
+        
+        // Verify response structure
+        expect(result.netflows).toBeInstanceOf(Array);
+        expect(result.netflows[0]).toHaveProperty('token_symbol', 'TEST');
+        expect(result.netflows[0]).toHaveProperty('inflow_usd', 1000);
+        expect(result.netflows[0]).toHaveProperty('outflow_usd', 500);
       });
 
-      it('should support filters', async () => {
+      it('should pass filters to API', async () => {
         setupMock(MOCK_RESPONSES.smartMoneyNetflow);
         
-        const result = await api.smartMoneyNetflow({
+        await api.smartMoneyNetflow({
           chains: ['ethereum'],
           filters: { min_inflow_usd: 10000 }
         });
         
-        expect(result).toBeDefined();
+        const body = expectFetchCalledWith('/api/v1/smart-money/netflow');
+        expect(body.chains).toEqual(['ethereum']);
+        expect(body.filters).toEqual({ min_inflow_usd: 10000 });
       });
 
-      it('should support pagination', async () => {
+      it('should pass pagination to API', async () => {
         setupMock(MOCK_RESPONSES.smartMoneyNetflow);
         
-        const result = await api.smartMoneyNetflow({
+        await api.smartMoneyNetflow({
           chains: ['solana'],
-          pagination: { page: 1, recordsPerPage: 10 }
+          pagination: { page: 2, recordsPerPage: 25 }
         });
         
-        expect(result).toBeDefined();
+        const body = expectFetchCalledWith('/api/v1/smart-money/netflow');
+        expect(body.pagination).toEqual({ page: 2, recordsPerPage: 25 });
+      });
+
+      it('should pass orderBy to API', async () => {
+        setupMock(MOCK_RESPONSES.smartMoneyNetflow);
+        
+        await api.smartMoneyNetflow({
+          chains: ['solana'],
+          orderBy: [{ field: 'inflow_usd', direction: 'DESC' }]
+        });
+        
+        const body = expectFetchCalledWith('/api/v1/smart-money/netflow');
+        expect(body.order_by).toEqual([{ field: 'inflow_usd', direction: 'DESC' }]);
       });
     });
 
     describe('smartMoneyDexTrades', () => {
-      it('should fetch DEX trades', async () => {
+      it('should fetch DEX trades with correct endpoint', async () => {
         setupMock(MOCK_RESPONSES.smartMoneyDexTrades);
         
         const result = await api.smartMoneyDexTrades({ chains: ['solana'] });
         
-        expect(result).toBeDefined();
-        if (!LIVE_TEST) {
-          expect(result.trades).toHaveLength(1);
-        }
+        expectFetchCalledWith('/api/v1/smart-money/dex-trades', {
+          chains: ['solana']
+        });
+        
+        expect(result.trades).toBeInstanceOf(Array);
+        expect(result.trades[0]).toHaveProperty('tx_hash', '0x123');
+        expect(result.trades[0]).toHaveProperty('side', 'buy');
       });
 
-      it('should filter by chain', async () => {
+      it('should support multiple chains', async () => {
         setupMock(MOCK_RESPONSES.smartMoneyDexTrades);
         
-        const result = await api.smartMoneyDexTrades({ chains: ['ethereum', 'base'] });
+        await api.smartMoneyDexTrades({ chains: ['ethereum', 'base'] });
         
-        expect(result).toBeDefined();
+        const body = expectFetchCalledWith('/api/v1/smart-money/dex-trades');
+        expect(body.chains).toEqual(['ethereum', 'base']);
       });
     });
 
     describe('smartMoneyPerpTrades', () => {
-      it('should fetch perp trades', async () => {
+      it('should fetch perp trades with correct endpoint', async () => {
         setupMock(MOCK_RESPONSES.smartMoneyPerpTrades);
         
         const result = await api.smartMoneyPerpTrades({});
         
-        expect(result).toBeDefined();
-        if (!LIVE_TEST) {
-          expect(result.trades).toHaveLength(1);
-        }
+        expectFetchCalledWith('/api/v1/smart-money/perp-trades');
+        
+        expect(result.trades).toBeInstanceOf(Array);
+        expect(result.trades[0]).toHaveProperty('token', 'BTC');
+        expect(result.trades[0]).toHaveProperty('side', 'long');
+        expect(result.trades[0]).toHaveProperty('size_usd', 10000);
       });
     });
 
     describe('smartMoneyHoldings', () => {
-      it('should fetch holdings', async () => {
+      it('should fetch holdings with correct endpoint', async () => {
         setupMock(MOCK_RESPONSES.smartMoneyHoldings);
         
         const result = await api.smartMoneyHoldings({ chains: ['solana'] });
         
-        expect(result).toBeDefined();
-        if (!LIVE_TEST) {
-          expect(result.holdings).toHaveLength(1);
-        }
+        expectFetchCalledWith('/api/v1/smart-money/holdings', {
+          chains: ['solana']
+        });
+        
+        expect(result.holdings).toBeInstanceOf(Array);
+        expect(result.holdings[0]).toHaveProperty('token_symbol', 'TEST');
+        expect(result.holdings[0]).toHaveProperty('balance_usd', 50000);
       });
     });
 
     describe('smartMoneyDcas', () => {
-      it('should fetch DCA orders', async () => {
+      it('should fetch DCA orders with correct endpoint', async () => {
         setupMock(MOCK_RESPONSES.smartMoneyDcas);
         
         const result = await api.smartMoneyDcas({});
         
-        expect(result).toBeDefined();
-        if (!LIVE_TEST) {
-          expect(result.dcas).toHaveLength(1);
-        }
+        expectFetchCalledWith('/api/v1/smart-money/dcas');
+        
+        expect(result.dcas).toBeInstanceOf(Array);
+        expect(result.dcas[0]).toHaveProperty('token_symbol', 'SOL');
+        expect(result.dcas[0]).toHaveProperty('total_amount', 1000);
       });
     });
 
     describe('smartMoneyHistoricalHoldings', () => {
-      it('should fetch historical holdings', async () => {
+      it('should fetch historical holdings with date_range', async () => {
         setupMock(MOCK_RESPONSES.smartMoneyHistoricalHoldings);
         
         const result = await api.smartMoneyHistoricalHoldings({ chains: ['solana'] });
         
-        expect(result).toBeDefined();
-        if (!LIVE_TEST) {
-          expect(result.holdings).toHaveLength(1);
-        }
+        const body = expectFetchCalledWith('/api/v1/smart-money/historical-holdings', {
+          chains: ['solana']
+        });
+        
+        // Verify date_range is generated (default 30 days)
+        expect(body.date_range).toBeDefined();
+        expect(body.date_range.from).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+        expect(body.date_range.to).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+        
+        expect(result.holdings).toBeInstanceOf(Array);
+        expect(result.holdings[0]).toHaveProperty('date', '2024-01-01');
       });
 
-      it('should support custom date range via days', async () => {
+      it('should calculate correct date range for custom days', async () => {
         setupMock(MOCK_RESPONSES.smartMoneyHistoricalHoldings);
         
-        const result = await api.smartMoneyHistoricalHoldings({ chains: ['solana'], days: 7 });
+        await api.smartMoneyHistoricalHoldings({ chains: ['solana'], days: 7 });
         
-        expect(result).toBeDefined();
+        const body = expectFetchCalledWith('/api/v1/smart-money/historical-holdings');
+        
+        // Verify 7-day range
+        const from = new Date(body.date_range.from);
+        const to = new Date(body.date_range.to);
+        const diffDays = Math.round((to - from) / (1000 * 60 * 60 * 24));
+        expect(diffDays).toBe(7);
       });
     });
   });
@@ -339,7 +424,7 @@ describe('NansenAPI', () => {
 
   describe('Profiler', () => {
     describe('addressBalance', () => {
-      it('should fetch current balance', async () => {
+      it('should fetch current balance with correct endpoint and body', async () => {
         setupMock(MOCK_RESPONSES.addressBalance);
         
         const result = await api.addressBalance({
@@ -347,38 +432,44 @@ describe('NansenAPI', () => {
           chain: 'ethereum'
         });
         
-        expect(result).toBeDefined();
-        if (!LIVE_TEST) {
-          expect(result.balances).toHaveLength(1);
-        }
+        const body = expectFetchCalledWith('/api/v1/profiler/address/current-balance');
+        expect(body.address).toBe(TEST_DATA.ethereum.address);
+        expect(body.chain).toBe('ethereum');
+        expect(body.hide_spam_token).toBe(true); // default
+        
+        expect(result.balances).toBeInstanceOf(Array);
+        expect(result.balances[0]).toHaveProperty('token_symbol', 'ETH');
+        expect(result.balances[0]).toHaveProperty('balance_usd', 300000);
       });
 
       it('should support entity name lookup', async () => {
         setupMock(MOCK_RESPONSES.addressBalance);
         
-        const result = await api.addressBalance({
+        await api.addressBalance({
           entityName: 'Binance',
           chain: 'ethereum'
         });
         
-        expect(result).toBeDefined();
+        const body = expectFetchCalledWith('/api/v1/profiler/address/current-balance');
+        expect(body.entity_name).toBe('Binance');
       });
 
-      it('should filter spam tokens', async () => {
+      it('should pass hideSpamToken option', async () => {
         setupMock(MOCK_RESPONSES.addressBalance);
         
-        const result = await api.addressBalance({
+        await api.addressBalance({
           address: TEST_DATA.ethereum.address,
           chain: 'ethereum',
-          hideSpamToken: true
+          hideSpamToken: false
         });
         
-        expect(result).toBeDefined();
+        const body = expectFetchCalledWith('/api/v1/profiler/address/current-balance');
+        expect(body.hide_spam_token).toBe(false);
       });
     });
 
     describe('addressLabels', () => {
-      it('should fetch address labels', async () => {
+      it('should fetch address labels with correct endpoint', async () => {
         setupMock(MOCK_RESPONSES.addressLabels);
         
         const result = await api.addressLabels({
@@ -386,15 +477,17 @@ describe('NansenAPI', () => {
           chain: 'ethereum'
         });
         
-        expect(result).toBeDefined();
-        if (!LIVE_TEST) {
-          expect(result.labels).toContain('Smart Trader');
-        }
+        const body = expectFetchCalledWith('/api/beta/profiler/address/labels');
+        expect(body.parameters.address).toBe(TEST_DATA.ethereum.address);
+        expect(body.parameters.chain).toBe('ethereum');
+        
+        expect(result.labels).toContain('Smart Trader');
+        expect(result.labels).toContain('Fund');
       });
     });
 
     describe('addressTransactions', () => {
-      it('should fetch transactions', async () => {
+      it('should fetch transactions with correct endpoint', async () => {
         setupMock(MOCK_RESPONSES.addressTransactions);
         
         const result = await api.addressTransactions({
@@ -402,27 +495,31 @@ describe('NansenAPI', () => {
           chain: 'ethereum'
         });
         
-        expect(result).toBeDefined();
-        if (!LIVE_TEST) {
-          expect(result.transactions).toHaveLength(1);
-        }
+        const body = expectFetchCalledWith('/api/v1/profiler/address/transactions');
+        expect(body.address).toBe(TEST_DATA.ethereum.address);
+        expect(body.chain).toBe('ethereum');
+        
+        expect(result.transactions).toBeInstanceOf(Array);
+        expect(result.transactions[0]).toHaveProperty('tx_hash', '0x123');
+        expect(result.transactions[0]).toHaveProperty('value_usd', 1000);
       });
 
-      it('should support order by', async () => {
+      it('should pass orderBy to API', async () => {
         setupMock(MOCK_RESPONSES.addressTransactions);
         
-        const result = await api.addressTransactions({
+        await api.addressTransactions({
           address: TEST_DATA.ethereum.address,
           chain: 'ethereum',
           orderBy: [{ column: 'timestamp', order: 'desc' }]
         });
         
-        expect(result).toBeDefined();
+        const body = expectFetchCalledWith('/api/v1/profiler/address/transactions');
+        expect(body.order_by).toEqual([{ column: 'timestamp', order: 'desc' }]);
       });
     });
 
     describe('addressPnl', () => {
-      it('should fetch PnL data', async () => {
+      it('should fetch PnL data with correct endpoint', async () => {
         setupMock(MOCK_RESPONSES.addressPnl);
         
         const result = await api.addressPnl({
@@ -430,28 +527,33 @@ describe('NansenAPI', () => {
           chain: 'ethereum'
         });
         
-        expect(result).toBeDefined();
-        if (!LIVE_TEST) {
-          expect(result.total_pnl).toBe(50000);
-        }
+        const body = expectFetchCalledWith('/api/v1/profiler/address/pnl-and-trade-performance');
+        expect(body.address).toBe(TEST_DATA.ethereum.address);
+        expect(body.chain).toBe('ethereum');
+        
+        expect(result.total_pnl).toBe(50000);
+        expect(result.realized_pnl).toBe(30000);
+        expect(result.unrealized_pnl).toBe(20000);
       });
     });
 
     describe('entitySearch', () => {
-      it('should search for entities', async () => {
+      it('should search for entities with correct endpoint', async () => {
         setupMock(MOCK_RESPONSES.entitySearch);
         
         const result = await api.entitySearch({ query: 'Vitalik' });
         
-        expect(result).toBeDefined();
-        if (!LIVE_TEST) {
-          expect(result.results).toHaveLength(1);
-        }
+        const body = expectFetchCalledWith('/api/beta/profiler/entity-name-search');
+        expect(body.parameters.query).toBe('Vitalik');
+        
+        expect(result.results).toBeInstanceOf(Array);
+        expect(result.results[0]).toHaveProperty('name', 'Vitalik Buterin');
+        expect(result.results[0].addresses).toContain('0xd8da6bf26964af9d7eed9e03e53415d37aa96045');
       });
     });
 
     describe('addressHistoricalBalances', () => {
-      it('should fetch historical balances', async () => {
+      it('should fetch historical balances with date range', async () => {
         setupMock(MOCK_RESPONSES.addressHistoricalBalances);
         
         const result = await api.addressHistoricalBalances({
@@ -459,27 +561,34 @@ describe('NansenAPI', () => {
           chain: 'ethereum'
         });
         
-        expect(result).toBeDefined();
-        if (!LIVE_TEST) {
-          expect(result.balances).toHaveLength(1);
-        }
+        const body = expectFetchCalledWith('/api/v1/profiler/address/historical-balances');
+        expect(body.address).toBe(TEST_DATA.ethereum.address);
+        expect(body.date).toBeDefined();
+        expect(body.date.from).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+        expect(body.date.to).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+        
+        expect(result.balances).toBeInstanceOf(Array);
       });
 
-      it('should support custom date range', async () => {
+      it('should calculate correct date range for custom days', async () => {
         setupMock(MOCK_RESPONSES.addressHistoricalBalances);
         
-        const result = await api.addressHistoricalBalances({
+        await api.addressHistoricalBalances({
           address: TEST_DATA.ethereum.address,
           chain: 'ethereum',
-          days: 7
+          days: 14
         });
         
-        expect(result).toBeDefined();
+        const body = expectFetchCalledWith('/api/v1/profiler/address/historical-balances');
+        const from = new Date(body.date.from);
+        const to = new Date(body.date.to);
+        const diffDays = Math.round((to - from) / (1000 * 60 * 60 * 24));
+        expect(diffDays).toBe(14);
       });
     });
 
     describe('addressRelatedWallets', () => {
-      it('should fetch related wallets', async () => {
+      it('should fetch related wallets with correct endpoint', async () => {
         setupMock(MOCK_RESPONSES.addressRelatedWallets);
         
         const result = await api.addressRelatedWallets({
@@ -487,15 +596,17 @@ describe('NansenAPI', () => {
           chain: 'ethereum'
         });
         
-        expect(result).toBeDefined();
-        if (!LIVE_TEST) {
-          expect(result.wallets).toHaveLength(1);
-        }
+        const body = expectFetchCalledWith('/api/v1/profiler/address/related-wallets');
+        expect(body.address).toBe(TEST_DATA.ethereum.address);
+        expect(body.chain).toBe('ethereum');
+        
+        expect(result.wallets).toBeInstanceOf(Array);
+        expect(result.wallets[0]).toHaveProperty('relationship', 'funding_source');
       });
     });
 
     describe('addressCounterparties', () => {
-      it('should fetch counterparties', async () => {
+      it('should fetch counterparties with date range', async () => {
         setupMock(MOCK_RESPONSES.addressCounterparties);
         
         const result = await api.addressCounterparties({
@@ -503,27 +614,33 @@ describe('NansenAPI', () => {
           chain: 'ethereum'
         });
         
-        expect(result).toBeDefined();
-        if (!LIVE_TEST) {
-          expect(result.counterparties).toHaveLength(1);
-        }
+        const body = expectFetchCalledWith('/api/v1/profiler/address/counterparties');
+        expect(body.address).toBe(TEST_DATA.ethereum.address);
+        expect(body.date).toBeDefined();
+        
+        expect(result.counterparties).toBeInstanceOf(Array);
+        expect(result.counterparties[0]).toHaveProperty('volume_usd', 100000);
       });
 
-      it('should support custom date range', async () => {
+      it('should calculate correct date range for custom days', async () => {
         setupMock(MOCK_RESPONSES.addressCounterparties);
         
-        const result = await api.addressCounterparties({
+        await api.addressCounterparties({
           address: TEST_DATA.ethereum.address,
           chain: 'ethereum',
           days: 14
         });
         
-        expect(result).toBeDefined();
+        const body = expectFetchCalledWith('/api/v1/profiler/address/counterparties');
+        const from = new Date(body.date.from);
+        const to = new Date(body.date.to);
+        const diffDays = Math.round((to - from) / (1000 * 60 * 60 * 24));
+        expect(diffDays).toBe(14);
       });
     });
 
     describe('addressPnlSummary', () => {
-      it('should fetch PnL summary', async () => {
+      it('should fetch PnL summary with correct endpoint', async () => {
         setupMock(MOCK_RESPONSES.addressPnlSummary);
         
         const result = await api.addressPnlSummary({
@@ -531,51 +648,63 @@ describe('NansenAPI', () => {
           chain: 'ethereum'
         });
         
-        expect(result).toBeDefined();
-        if (!LIVE_TEST) {
-          expect(result.total_pnl).toBe(25000);
-        }
+        const body = expectFetchCalledWith('/api/v1/profiler/address/pnl-summary');
+        expect(body.address).toBe(TEST_DATA.ethereum.address);
+        expect(body.date).toBeDefined();
+        
+        expect(result.total_pnl).toBe(25000);
+        expect(result.win_rate).toBe(0.65);
       });
     });
 
     describe('addressPerpPositions', () => {
-      it('should fetch perp positions', async () => {
+      it('should fetch perp positions with correct endpoint', async () => {
         setupMock(MOCK_RESPONSES.addressPerpPositions);
         
         const result = await api.addressPerpPositions({
           address: TEST_DATA.ethereum.address
         });
         
-        expect(result).toBeDefined();
-        if (!LIVE_TEST) {
-          expect(result.positions).toHaveLength(1);
-        }
+        const body = expectFetchCalledWith('/api/v1/profiler/perp-positions');
+        expect(body.address).toBe(TEST_DATA.ethereum.address);
+        
+        expect(result.positions).toBeInstanceOf(Array);
+        expect(result.positions[0]).toHaveProperty('token', 'BTC');
+        expect(result.positions[0]).toHaveProperty('side', 'long');
+        expect(result.positions[0]).toHaveProperty('size_usd', 50000);
       });
     });
 
     describe('addressPerpTrades', () => {
-      it('should fetch perp trades', async () => {
+      it('should fetch perp trades with date range', async () => {
         setupMock(MOCK_RESPONSES.addressPerpTrades);
         
         const result = await api.addressPerpTrades({
           address: TEST_DATA.ethereum.address
         });
         
-        expect(result).toBeDefined();
-        if (!LIVE_TEST) {
-          expect(result.trades).toHaveLength(1);
-        }
+        const body = expectFetchCalledWith('/api/v1/profiler/perp-trades');
+        expect(body.address).toBe(TEST_DATA.ethereum.address);
+        expect(body.date).toBeDefined();
+        
+        expect(result.trades).toBeInstanceOf(Array);
+        expect(result.trades[0]).toHaveProperty('token', 'ETH');
+        expect(result.trades[0]).toHaveProperty('pnl_usd', 5000);
       });
 
-      it('should support custom date range', async () => {
+      it('should calculate correct date range for custom days', async () => {
         setupMock(MOCK_RESPONSES.addressPerpTrades);
         
-        const result = await api.addressPerpTrades({
+        await api.addressPerpTrades({
           address: TEST_DATA.ethereum.address,
           days: 7
         });
         
-        expect(result).toBeDefined();
+        const body = expectFetchCalledWith('/api/v1/profiler/perp-trades');
+        const from = new Date(body.date.from);
+        const to = new Date(body.date.to);
+        const diffDays = Math.round((to - from) / (1000 * 60 * 60 * 24));
+        expect(diffDays).toBe(7);
       });
     });
   });
@@ -584,7 +713,7 @@ describe('NansenAPI', () => {
 
   describe('Token God Mode', () => {
     describe('tokenScreener', () => {
-      it('should screen tokens', async () => {
+      it('should screen tokens with correct endpoint and body', async () => {
         setupMock(MOCK_RESPONSES.tokenScreener);
         
         const result = await api.tokenScreener({
@@ -592,28 +721,29 @@ describe('NansenAPI', () => {
           timeframe: '24h'
         });
         
-        expect(result).toBeDefined();
-        if (!LIVE_TEST) {
-          expect(result.tokens).toHaveLength(1);
-        }
+        const body = expectFetchCalledWith('/api/v1/token-screener');
+        expect(body.chains).toEqual(['solana']);
+        expect(body.timeframe).toBe('24h');
+        
+        expect(result.tokens).toBeInstanceOf(Array);
+        expect(result.tokens[0]).toHaveProperty('symbol', 'TEST');
+        expect(result.tokens[0]).toHaveProperty('price_usd', 1.5);
       });
 
-      it('should support multiple timeframes', async () => {
+      it('should pass different timeframes correctly', async () => {
         for (const timeframe of ['5m', '1h', '6h', '24h', '7d', '30d']) {
           setupMock(MOCK_RESPONSES.tokenScreener);
           
-          const result = await api.tokenScreener({
-            chains: ['solana'],
-            timeframe
-          });
+          await api.tokenScreener({ chains: ['solana'], timeframe });
           
-          expect(result).toBeDefined();
+          const body = expectFetchCalledWith('/api/v1/token-screener');
+          expect(body.timeframe).toBe(timeframe);
         }
       });
     });
 
     describe('tokenHolders', () => {
-      it('should fetch token holders', async () => {
+      it('should fetch token holders with correct endpoint', async () => {
         setupMock(MOCK_RESPONSES.tokenHolders);
         
         const result = await api.tokenHolders({
@@ -621,27 +751,32 @@ describe('NansenAPI', () => {
           chain: 'solana'
         });
         
-        expect(result).toBeDefined();
-        if (!LIVE_TEST) {
-          expect(result.holders).toHaveLength(1);
-        }
+        const body = expectFetchCalledWith('/api/v1/tgm/holders');
+        expect(body.token_address).toBe(TEST_DATA.solana.token);
+        expect(body.chain).toBe('solana');
+        expect(body.label_type).toBe('all_holders'); // default
+        
+        expect(result.holders).toBeInstanceOf(Array);
+        expect(result.holders[0]).toHaveProperty('balance', 1000000);
+        expect(result.holders[0]).toHaveProperty('percentage', 5.5);
       });
 
-      it('should support label type filter', async () => {
+      it('should pass label type filter', async () => {
         setupMock(MOCK_RESPONSES.tokenHolders);
         
-        const result = await api.tokenHolders({
+        await api.tokenHolders({
           tokenAddress: TEST_DATA.solana.token,
           chain: 'solana',
           labelType: 'smart_money'
         });
         
-        expect(result).toBeDefined();
+        const body = expectFetchCalledWith('/api/v1/tgm/holders');
+        expect(body.label_type).toBe('smart_money');
       });
     });
 
     describe('tokenFlows', () => {
-      it('should fetch token flows', async () => {
+      it('should fetch token flows with correct endpoint', async () => {
         setupMock(MOCK_RESPONSES.tokenFlows);
         
         const result = await api.tokenFlows({
@@ -649,15 +784,17 @@ describe('NansenAPI', () => {
           chain: 'solana'
         });
         
-        expect(result).toBeDefined();
-        if (!LIVE_TEST) {
-          expect(result.inflows).toBe(1000000);
-        }
+        const body = expectFetchCalledWith('/api/v1/tgm/flows');
+        expect(body.token_address).toBe(TEST_DATA.solana.token);
+        expect(body.chain).toBe('solana');
+        
+        expect(result.inflows).toBe(1000000);
+        expect(result.outflows).toBe(500000);
       });
     });
 
     describe('tokenDexTrades', () => {
-      it('should fetch DEX trades for token', async () => {
+      it('should fetch DEX trades with date range', async () => {
         setupMock(MOCK_RESPONSES.tokenDexTrades);
         
         const result = await api.tokenDexTrades({
@@ -665,39 +802,49 @@ describe('NansenAPI', () => {
           chain: 'solana'
         });
         
-        expect(result).toBeDefined();
-        if (!LIVE_TEST) {
-          expect(result.trades).toHaveLength(1);
-        }
+        const body = expectFetchCalledWith('/api/v1/tgm/dex-trades');
+        expect(body.token_address).toBe(TEST_DATA.solana.token);
+        expect(body.chain).toBe('solana');
+        expect(body.date).toBeDefined();
+        
+        expect(result.trades).toBeInstanceOf(Array);
+        expect(result.trades[0]).toHaveProperty('side', 'buy');
+        expect(result.trades[0]).toHaveProperty('amount_usd', 5000);
       });
 
-      it('should filter for smart money only', async () => {
+      it('should add smart money filter when onlySmartMoney=true', async () => {
         setupMock(MOCK_RESPONSES.tokenDexTrades);
         
-        const result = await api.tokenDexTrades({
+        await api.tokenDexTrades({
           tokenAddress: TEST_DATA.solana.token,
           chain: 'solana',
           onlySmartMoney: true
         });
         
-        expect(result).toBeDefined();
+        const body = expectFetchCalledWith('/api/v1/tgm/dex-trades');
+        expect(body.filters.include_smart_money_labels).toContain('Fund');
+        expect(body.filters.include_smart_money_labels).toContain('Smart Trader');
       });
 
-      it('should support custom date range', async () => {
+      it('should calculate correct date range for custom days', async () => {
         setupMock(MOCK_RESPONSES.tokenDexTrades);
         
-        const result = await api.tokenDexTrades({
+        await api.tokenDexTrades({
           tokenAddress: TEST_DATA.solana.token,
           chain: 'solana',
-          days: 30
+          days: 14
         });
         
-        expect(result).toBeDefined();
+        const body = expectFetchCalledWith('/api/v1/tgm/dex-trades');
+        const from = new Date(body.date.from);
+        const to = new Date(body.date.to);
+        const diffDays = Math.round((to - from) / (1000 * 60 * 60 * 24));
+        expect(diffDays).toBe(14);
       });
     });
 
     describe('tokenPnlLeaderboard', () => {
-      it('should fetch PnL leaderboard', async () => {
+      it('should fetch PnL leaderboard with correct endpoint', async () => {
         setupMock(MOCK_RESPONSES.tokenPnlLeaderboard);
         
         const result = await api.tokenPnlLeaderboard({
@@ -705,15 +852,17 @@ describe('NansenAPI', () => {
           chain: 'solana'
         });
         
-        expect(result).toBeDefined();
-        if (!LIVE_TEST) {
-          expect(result.leaders).toHaveLength(1);
-        }
+        const body = expectFetchCalledWith('/api/v1/tgm/pnl-leaderboard');
+        expect(body.token_address).toBe(TEST_DATA.solana.token);
+        expect(body.date).toBeDefined();
+        
+        expect(result.leaders).toBeInstanceOf(Array);
+        expect(result.leaders[0]).toHaveProperty('pnl_usd', 100000);
       });
     });
 
     describe('tokenWhoBoughtSold', () => {
-      it('should fetch buyers and sellers', async () => {
+      it('should fetch buyers and sellers with correct endpoint', async () => {
         setupMock(MOCK_RESPONSES.tokenWhoBoughtSold);
         
         const result = await api.tokenWhoBoughtSold({
@@ -721,16 +870,19 @@ describe('NansenAPI', () => {
           chain: 'solana'
         });
         
-        expect(result).toBeDefined();
-        if (!LIVE_TEST) {
-          expect(result.buyers).toHaveLength(1);
-          expect(result.sellers).toHaveLength(1);
-        }
+        const body = expectFetchCalledWith('/api/v1/tgm/who-bought-sold');
+        expect(body.token_address).toBe(TEST_DATA.solana.token);
+        expect(body.chain).toBe('solana');
+        
+        expect(result.buyers).toBeInstanceOf(Array);
+        expect(result.sellers).toBeInstanceOf(Array);
+        expect(result.buyers[0]).toHaveProperty('amount_usd', 1000);
+        expect(result.sellers[0]).toHaveProperty('amount_usd', 500);
       });
     });
 
     describe('tokenFlowIntelligence', () => {
-      it('should fetch flow intelligence', async () => {
+      it('should fetch flow intelligence with correct endpoint', async () => {
         setupMock(MOCK_RESPONSES.tokenFlowIntelligence);
         
         const result = await api.tokenFlowIntelligence({
@@ -738,15 +890,17 @@ describe('NansenAPI', () => {
           chain: 'solana'
         });
         
-        expect(result).toBeDefined();
-        if (!LIVE_TEST) {
-          expect(result.flows).toHaveLength(1);
-        }
+        const body = expectFetchCalledWith('/api/v1/tgm/flow-intelligence');
+        expect(body.token_address).toBe(TEST_DATA.solana.token);
+        
+        expect(result.flows).toBeInstanceOf(Array);
+        expect(result.flows[0]).toHaveProperty('label', 'Smart Money');
+        expect(result.flows[0]).toHaveProperty('net_flow_usd', 500000);
       });
     });
 
     describe('tokenTransfers', () => {
-      it('should fetch token transfers', async () => {
+      it('should fetch token transfers with date range', async () => {
         setupMock(MOCK_RESPONSES.tokenTransfers);
         
         const result = await api.tokenTransfers({
@@ -754,104 +908,125 @@ describe('NansenAPI', () => {
           chain: 'solana'
         });
         
-        expect(result).toBeDefined();
-        if (!LIVE_TEST) {
-          expect(result.transfers).toHaveLength(1);
-        }
+        const body = expectFetchCalledWith('/api/v1/tgm/transfers');
+        expect(body.token_address).toBe(TEST_DATA.solana.token);
+        expect(body.date).toBeDefined();
+        
+        expect(result.transfers).toBeInstanceOf(Array);
+        expect(result.transfers[0]).toHaveProperty('amount_usd', 10000);
       });
 
-      it('should support custom date range', async () => {
+      it('should calculate correct date range for custom days', async () => {
         setupMock(MOCK_RESPONSES.tokenTransfers);
         
-        const result = await api.tokenTransfers({
+        await api.tokenTransfers({
           tokenAddress: TEST_DATA.solana.token,
           chain: 'solana',
           days: 3
         });
         
-        expect(result).toBeDefined();
+        const body = expectFetchCalledWith('/api/v1/tgm/transfers');
+        const from = new Date(body.date.from);
+        const to = new Date(body.date.to);
+        const diffDays = Math.round((to - from) / (1000 * 60 * 60 * 24));
+        expect(diffDays).toBe(3);
       });
     });
 
     describe('tokenJupDca', () => {
-      it('should fetch Jupiter DCA orders', async () => {
+      it('should fetch Jupiter DCA orders with correct endpoint', async () => {
         setupMock(MOCK_RESPONSES.tokenJupDca);
         
         const result = await api.tokenJupDca({
           tokenAddress: TEST_DATA.solana.token
         });
         
-        expect(result).toBeDefined();
-        if (!LIVE_TEST) {
-          expect(result.dcas).toHaveLength(1);
-        }
+        const body = expectFetchCalledWith('/api/v1/tgm/jup-dca');
+        expect(body.token_address).toBe(TEST_DATA.solana.token);
+        
+        expect(result.dcas).toBeInstanceOf(Array);
+        expect(result.dcas[0]).toHaveProperty('total_amount', 5000);
       });
     });
 
     describe('tokenPerpTrades', () => {
-      it('should fetch perp trades by token symbol', async () => {
+      it('should fetch perp trades with token symbol', async () => {
         setupMock(MOCK_RESPONSES.tokenPerpTrades);
         
         const result = await api.tokenPerpTrades({
           tokenSymbol: 'BTC'
         });
         
-        expect(result).toBeDefined();
-        if (!LIVE_TEST) {
-          expect(result.trades).toHaveLength(1);
-        }
+        const body = expectFetchCalledWith('/api/v1/tgm/perp-trades');
+        expect(body.token_symbol).toBe('BTC');
+        expect(body.date).toBeDefined();
+        
+        expect(result.trades).toBeInstanceOf(Array);
+        expect(result.trades[0]).toHaveProperty('pnl_usd', 10000);
       });
 
-      it('should support custom date range', async () => {
+      it('should calculate correct date range for custom days', async () => {
         setupMock(MOCK_RESPONSES.tokenPerpTrades);
         
-        const result = await api.tokenPerpTrades({
+        await api.tokenPerpTrades({
           tokenSymbol: 'ETH',
           days: 7
         });
         
-        expect(result).toBeDefined();
+        const body = expectFetchCalledWith('/api/v1/tgm/perp-trades');
+        expect(body.token_symbol).toBe('ETH');
+        const from = new Date(body.date.from);
+        const to = new Date(body.date.to);
+        const diffDays = Math.round((to - from) / (1000 * 60 * 60 * 24));
+        expect(diffDays).toBe(7);
       });
     });
 
     describe('tokenPerpPositions', () => {
-      it('should fetch perp positions by token symbol', async () => {
+      it('should fetch perp positions with token symbol', async () => {
         setupMock(MOCK_RESPONSES.tokenPerpPositions);
         
         const result = await api.tokenPerpPositions({
           tokenSymbol: 'BTC'
         });
         
-        expect(result).toBeDefined();
-        if (!LIVE_TEST) {
-          expect(result.positions).toHaveLength(1);
-        }
+        const body = expectFetchCalledWith('/api/v1/tgm/perp-positions');
+        expect(body.token_symbol).toBe('BTC');
+        
+        expect(result.positions).toBeInstanceOf(Array);
+        expect(result.positions[0]).toHaveProperty('size_usd', 100000);
       });
     });
 
     describe('tokenPerpPnlLeaderboard', () => {
-      it('should fetch perp PnL leaderboard', async () => {
+      it('should fetch perp PnL leaderboard with token symbol', async () => {
         setupMock(MOCK_RESPONSES.tokenPerpPnlLeaderboard);
         
         const result = await api.tokenPerpPnlLeaderboard({
           tokenSymbol: 'BTC'
         });
         
-        expect(result).toBeDefined();
-        if (!LIVE_TEST) {
-          expect(result.leaders).toHaveLength(1);
-        }
+        const body = expectFetchCalledWith('/api/v1/tgm/perp-pnl-leaderboard');
+        expect(body.token_symbol).toBe('BTC');
+        expect(body.date).toBeDefined();
+        
+        expect(result.leaders).toBeInstanceOf(Array);
+        expect(result.leaders[0]).toHaveProperty('pnl_usd', 500000);
       });
 
-      it('should support custom date range', async () => {
+      it('should calculate correct date range for custom days', async () => {
         setupMock(MOCK_RESPONSES.tokenPerpPnlLeaderboard);
         
-        const result = await api.tokenPerpPnlLeaderboard({
+        await api.tokenPerpPnlLeaderboard({
           tokenSymbol: 'ETH',
           days: 14
         });
         
-        expect(result).toBeDefined();
+        const body = expectFetchCalledWith('/api/v1/tgm/perp-pnl-leaderboard');
+        const from = new Date(body.date.from);
+        const to = new Date(body.date.to);
+        const diffDays = Math.round((to - from) / (1000 * 60 * 60 * 24));
+        expect(diffDays).toBe(14);
       });
     });
   });
@@ -860,17 +1035,19 @@ describe('NansenAPI', () => {
 
   describe('Portfolio', () => {
     describe('portfolioDefiHoldings', () => {
-      it('should fetch DeFi holdings', async () => {
+      it('should fetch DeFi holdings with correct endpoint', async () => {
         setupMock(MOCK_RESPONSES.portfolioDefiHoldings);
         
         const result = await api.portfolioDefiHoldings({
           walletAddress: TEST_DATA.ethereum.address
         });
         
-        expect(result).toBeDefined();
-        if (!LIVE_TEST) {
-          expect(result.holdings).toHaveLength(1);
-        }
+        const body = expectFetchCalledWith('/api/v1/portfolio/defi-holdings');
+        expect(body.wallet_address).toBe(TEST_DATA.ethereum.address);
+        
+        expect(result.holdings).toBeInstanceOf(Array);
+        expect(result.holdings[0]).toHaveProperty('protocol', 'Aave');
+        expect(result.holdings[0]).toHaveProperty('value_usd', 50000);
       });
     });
   });
@@ -878,40 +1055,254 @@ describe('NansenAPI', () => {
   // =================== Error Handling ===================
 
   describe('Error Handling', () => {
-    it('should handle API errors gracefully', async () => {
-      if (!LIVE_TEST) {
-        mockFetch.mockResolvedValueOnce({
-          ok: false,
-          status: 401,
-          json: async () => ({ error: 'Unauthorized', message: 'Invalid API key' })
-        });
+    it('should throw with message from API error response', async () => {
+      if (LIVE_TEST) return;
+      
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        json: async () => ({ error: 'Unauthorized', message: 'Invalid API key' })
+      });
 
-        await expect(api.smartMoneyNetflow({})).rejects.toThrow('Invalid API key');
-      }
+      await expect(api.smartMoneyNetflow({})).rejects.toThrow('Invalid API key');
     });
 
-    it('should handle network errors', async () => {
-      if (!LIVE_TEST) {
-        mockFetch.mockRejectedValueOnce(new Error('Network error'));
+    it('should throw on network errors', async () => {
+      if (LIVE_TEST) return;
+      
+      mockFetch.mockRejectedValueOnce(new Error('Network error'));
 
-        await expect(api.smartMoneyNetflow({})).rejects.toThrow('Network error');
-      }
+      await expect(api.smartMoneyNetflow({})).rejects.toThrow('Network error');
     });
 
-    it('should include status code in errors', async () => {
-      if (!LIVE_TEST) {
-        mockFetch.mockResolvedValueOnce({
-          ok: false,
-          status: 429,
-          json: async () => ({ error: 'Rate limited' })
-        });
+    it('should include status code in error object', async () => {
+      if (LIVE_TEST) return;
+      
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 429,
+        json: async () => ({ error: 'Rate limited' })
+      });
 
-        try {
-          await api.smartMoneyNetflow({});
-        } catch (error) {
-          expect(error.status).toBe(429);
-        }
+      let thrownError;
+      try {
+        await api.smartMoneyNetflow({});
+        // If we get here, the test should fail
+        expect.fail('Expected an error to be thrown');
+      } catch (error) {
+        thrownError = error;
       }
+      
+      expect(thrownError).toBeDefined();
+      expect(thrownError.status).toBe(429);
+      expect(thrownError.message).toContain('Rate limited');
+    });
+
+    it('should handle 500 server errors', async () => {
+      if (LIVE_TEST) return;
+      
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        json: async () => ({ error: 'Internal server error' })
+      });
+
+      await expect(api.smartMoneyNetflow({})).rejects.toThrow();
+    });
+
+    it('should handle timeout errors', async () => {
+      if (LIVE_TEST) return;
+      
+      mockFetch.mockRejectedValueOnce(new Error('Request timeout'));
+
+      await expect(api.tokenScreener({ chains: ['solana'] })).rejects.toThrow('timeout');
+    });
+
+    it('should include original error data in thrown error', async () => {
+      if (LIVE_TEST) return;
+      
+      const errorData = { error: 'Bad request', details: { field: 'chains', message: 'required' } };
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        json: async () => errorData
+      });
+
+      let thrownError;
+      try {
+        await api.smartMoneyNetflow({});
+        expect.fail('Expected an error to be thrown');
+      } catch (error) {
+        thrownError = error;
+      }
+      
+      expect(thrownError.data).toEqual(errorData);
+    });
+  });
+
+  // =================== Edge Cases ===================
+
+  describe('Edge Cases', () => {
+    it('should handle empty response arrays', async () => {
+      if (LIVE_TEST) return;
+      
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ netflows: [] })
+      });
+
+      const result = await api.smartMoneyNetflow({ chains: ['solana'] });
+      
+      expect(result.netflows).toEqual([]);
+      expect(result.netflows).toHaveLength(0);
+    });
+
+    it('should handle response with null fields', async () => {
+      if (LIVE_TEST) return;
+      
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ 
+          holdings: [{ token_symbol: null, balance_usd: null }]
+        })
+      });
+
+      const result = await api.smartMoneyHoldings({ chains: ['solana'] });
+      
+      expect(result.holdings[0].token_symbol).toBeNull();
+      expect(result.holdings[0].balance_usd).toBeNull();
+    });
+
+    it('should handle pagination boundary (page 0)', async () => {
+      if (LIVE_TEST) return;
+      
+      setupMock(MOCK_RESPONSES.smartMoneyNetflow);
+      
+      await api.smartMoneyNetflow({
+        chains: ['solana'],
+        pagination: { page: 0, recordsPerPage: 10 }
+      });
+      
+      const body = expectFetchCalledWith('/api/v1/smart-money/netflow');
+      expect(body.pagination.page).toBe(0);
+    });
+
+    it('should handle large pagination values', async () => {
+      if (LIVE_TEST) return;
+      
+      setupMock(MOCK_RESPONSES.smartMoneyNetflow);
+      
+      await api.smartMoneyNetflow({
+        chains: ['solana'],
+        pagination: { page: 9999, recordsPerPage: 1000 }
+      });
+      
+      const body = expectFetchCalledWith('/api/v1/smart-money/netflow');
+      expect(body.pagination.page).toBe(9999);
+      expect(body.pagination.recordsPerPage).toBe(1000);
+    });
+
+    it('should handle empty chains array', async () => {
+      if (LIVE_TEST) return;
+      
+      setupMock(MOCK_RESPONSES.smartMoneyNetflow);
+      
+      await api.smartMoneyNetflow({ chains: [] });
+      
+      const body = expectFetchCalledWith('/api/v1/smart-money/netflow');
+      expect(body.chains).toEqual([]);
+    });
+
+    it('should handle special characters in entity search query', async () => {
+      if (LIVE_TEST) return;
+      
+      setupMock(MOCK_RESPONSES.entitySearch);
+      
+      await api.entitySearch({ query: 'Test & Co. <script>' });
+      
+      const body = expectFetchCalledWith('/api/beta/profiler/entity-name-search');
+      expect(body.parameters.query).toBe('Test & Co. <script>');
+    });
+
+    it('should handle days=0', async () => {
+      if (LIVE_TEST) return;
+      
+      setupMock(MOCK_RESPONSES.smartMoneyHistoricalHoldings);
+      
+      await api.smartMoneyHistoricalHoldings({ chains: ['solana'], days: 0 });
+      
+      const body = expectFetchCalledWith('/api/v1/smart-money/historical-holdings');
+      // With days=0, from and to should be the same date
+      expect(body.date_range.from).toBe(body.date_range.to);
+    });
+
+    it('should handle very large days value', async () => {
+      if (LIVE_TEST) return;
+      
+      setupMock(MOCK_RESPONSES.addressHistoricalBalances);
+      
+      await api.addressHistoricalBalances({
+        address: TEST_DATA.ethereum.address,
+        chain: 'ethereum',
+        days: 365
+      });
+      
+      const body = expectFetchCalledWith('/api/v1/profiler/address/historical-balances');
+      const from = new Date(body.date.from);
+      const to = new Date(body.date.to);
+      const diffDays = Math.round((to - from) / (1000 * 60 * 60 * 24));
+      expect(diffDays).toBe(365);
+    });
+
+    it('should handle response with unexpected extra fields', async () => {
+      if (LIVE_TEST) return;
+      
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ 
+          netflows: MOCK_RESPONSES.smartMoneyNetflow.netflows,
+          unexpected_field: 'should be preserved',
+          metadata: { version: '2.0' }
+        })
+      });
+
+      const result = await api.smartMoneyNetflow({ chains: ['solana'] });
+      
+      expect(result.netflows).toBeDefined();
+      expect(result.unexpected_field).toBe('should be preserved');
+      expect(result.metadata.version).toBe('2.0');
+    });
+  });
+
+  // =================== Address Validation in API Methods ===================
+
+  describe('Address Validation in API Methods', () => {
+    it('should reject invalid EVM address in addressBalance', async () => {
+      await expect(api.addressBalance({
+        address: 'invalid-address',
+        chain: 'ethereum'
+      })).rejects.toThrow('Invalid EVM address');
+    });
+
+    it('should reject invalid Solana address in tokenHolders', async () => {
+      await expect(api.tokenHolders({
+        tokenAddress: 'invalid',
+        chain: 'solana'
+      })).rejects.toThrow('Invalid Solana address');
+    });
+
+    it('should accept valid addresses and make API call', async () => {
+      if (LIVE_TEST) return;
+      
+      setupMock(MOCK_RESPONSES.addressBalance);
+      
+      // Should not throw
+      await api.addressBalance({
+        address: TEST_DATA.ethereum.address,
+        chain: 'ethereum'
+      });
+      
+      expect(mockFetch).toHaveBeenCalled();
     });
   });
 
