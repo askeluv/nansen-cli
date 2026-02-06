@@ -18,17 +18,20 @@ npm run test:live  # Run against live API (needs NANSEN_API_KEY)
 
 ```
 src/
-├── index.js              # CLI entry point, command routing, arg parsing
+├── index.js              # Thin CLI entry point (imports cli.js)
+├── cli.js                # CLI logic: parsing, routing, formatting, schema
 ├── api.js                # NansenAPI class, all HTTP calls, validation
 └── __tests__/
     ├── unit.test.js      # Core logic tests (validation, parsing, formatting)
     ├── api.test.js       # API method tests with mocked fetch
-    ├── cli.test.js       # CLI integration tests
+    ├── cli.test.js       # CLI integration tests (subprocess)
+    ├── cli.internal.test.js  # CLI unit tests (direct imports for coverage)
     └── coverage.test.js  # Endpoint coverage verification
 ```
 
-**Two files, clear separation:**
-- `index.js` = CLI layer (parsing, routing, output formatting)
+**Three files, clear separation:**
+- `index.js` = Entry point (thin wrapper)
+- `cli.js` = CLI layer (parsing, routing, output formatting, schema)
 - `api.js` = API layer (HTTP, validation, config)
 
 ## Code Conventions
@@ -112,6 +115,19 @@ const from = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().spl
 // Error
 { "success": false, "error": "message", "code": "ERROR_CODE", "status": 401, "details": { ... } }
 ```
+
+### Schema Discovery
+```bash
+nansen schema                    # Full schema (commands, options, types)
+nansen schema smart-money        # Schema for specific command
+```
+Returns JSON with all commands, subcommands, option types/defaults, return fields, supported chains, and smart money labels. No API key required.
+
+### Field Filtering
+```bash
+nansen smart-money netflow --fields token_symbol,net_flow_usd,chain
+```
+Reduces response size by including only specified fields. Works with nested data structures.
 
 ### Error Codes
 Structured error codes for programmatic handling:

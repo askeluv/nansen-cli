@@ -123,12 +123,27 @@ Deep analytics for any token.
 |------------|-------------|
 | `defi` | DeFi holdings across protocols |
 
+### `schema` - Schema Discovery
+
+Output JSON schema for agent introspection. No API key required.
+
+```bash
+# Get full schema
+nansen schema --pretty
+
+# Get schema for specific command
+nansen schema smart-money --pretty
+```
+
+Returns command definitions, option types/defaults, supported chains, and smart money labels.
+
 ## Options
 
 | Option | Description |
 |--------|-------------|
 | `--pretty` | Format JSON output for readability |
 | `--table` | Format output as human-readable table |
+| `--fields <list>` | Comma-separated fields to include (reduces response size) |
 | `--chain <chain>` | Blockchain to query |
 | `--chains <json>` | Multiple chains as JSON array |
 | `--limit <n>` | Number of results |
@@ -203,6 +218,13 @@ nansen token perp-positions --symbol BTC --pretty
 
 # Get top PnL traders for a token, sorted by realized PnL
 nansen token pnl --token JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN --chain solana --days 30 --sort pnl_usd:desc --table
+
+# Filter response to specific fields (reduces tokens for AI agents)
+nansen smart-money netflow --chain solana --fields token_symbol,net_flow_usd,chain
+
+# Get schema for agent introspection
+nansen schema --pretty
+nansen schema token --pretty
 ```
 
 ## Development
