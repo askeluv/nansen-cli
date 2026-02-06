@@ -1,6 +1,6 @@
 {
   "name": "nansen-cli",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Command-line interface for Nansen API - designed for AI agents",
   "main": "src/index.js",
   "type": "module",
