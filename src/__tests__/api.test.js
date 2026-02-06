@@ -1074,6 +1074,9 @@ describe('NansenAPI', () => {
     it('should throw on network errors after retries', async () => {
       if (LIVE_TEST) return;
       
+      // Use fake timers to avoid waiting for real backoff delays
+      vi.useFakeTimers();
+      
       // Mock multiple failures for retry attempts
       mockFetch
         .mockRejectedValueOnce(new Error('Network error'))
@@ -1081,11 +1084,23 @@ describe('NansenAPI', () => {
         .mockRejectedValueOnce(new Error('Network error'))
         .mockRejectedValueOnce(new Error('Network error'));
 
-      await expect(api.smartMoneyNetflow({})).rejects.toThrow('Network error');
+      // Start the request and handle rejection
+      let thrownError;
+      const promise = api.smartMoneyNetflow({}).catch(e => { thrownError = e; });
+      
+      // Advance through all retry delays
+      await vi.runAllTimersAsync();
+      await promise;
+      
+      expect(thrownError).toBeDefined();
+      expect(thrownError.message).toContain('Network error');
+      vi.useRealTimers();
     });
 
     it('should include status code in error object after retries', async () => {
       if (LIVE_TEST) return;
+      
+      vi.useFakeTimers();
       
       // Mock multiple 429 responses for retry attempts
       const rateLimitResponse = {
@@ -1103,21 +1118,20 @@ describe('NansenAPI', () => {
         .mockResolvedValueOnce(rateLimitResponse);
 
       let thrownError;
-      try {
-        await api.smartMoneyNetflow({});
-        // If we get here, the test should fail
-        expect.fail('Expected an error to be thrown');
-      } catch (error) {
-        thrownError = error;
-      }
+      const promise = api.smartMoneyNetflow({}).catch(e => { thrownError = e; });
+      await vi.runAllTimersAsync();
+      await promise;
       
       expect(thrownError).toBeDefined();
       expect(thrownError.status).toBe(429);
       expect(thrownError.message).toContain('Rate limited');
+      vi.useRealTimers();
     });
 
     it('should handle 500 server errors after retries', async () => {
       if (LIVE_TEST) return;
+      
+      vi.useFakeTimers();
       
       // Mock multiple 500 responses for retry attempts
       const serverErrorResponse = {
@@ -1134,11 +1148,19 @@ describe('NansenAPI', () => {
         .mockResolvedValueOnce(serverErrorResponse)
         .mockResolvedValueOnce(serverErrorResponse);
 
-      await expect(api.smartMoneyNetflow({})).rejects.toThrow();
+      let thrownError;
+      const promise = api.smartMoneyNetflow({}).catch(e => { thrownError = e; });
+      await vi.runAllTimersAsync();
+      await promise;
+
+      expect(thrownError).toBeDefined();
+      vi.useRealTimers();
     });
 
     it('should handle timeout errors after retries', async () => {
       if (LIVE_TEST) return;
+      
+      vi.useFakeTimers();
       
       // Mock multiple timeout errors for retry attempts
       mockFetch
@@ -1147,7 +1169,14 @@ describe('NansenAPI', () => {
         .mockRejectedValueOnce(new Error('Request timeout'))
         .mockRejectedValueOnce(new Error('Request timeout'));
 
-      await expect(api.tokenScreener({ chains: ['solana'] })).rejects.toThrow('timeout');
+      let thrownError;
+      const promise = api.tokenScreener({ chains: ['solana'] }).catch(e => { thrownError = e; });
+      await vi.runAllTimersAsync();
+      await promise;
+
+      expect(thrownError).toBeDefined();
+      expect(thrownError.message).toContain('timeout');
+      vi.useRealTimers();
     });
 
     it('should include original error data in thrown error', async () => {
@@ -1181,6 +1210,8 @@ describe('NansenAPI', () => {
     it('should succeed after retry on transient failure', async () => {
       if (LIVE_TEST) return;
       
+      vi.useFakeTimers();
+      
       // First request fails with 429, second succeeds
       const rateLimitResponse = {
         ok: false,
@@ -1199,10 +1230,14 @@ describe('NansenAPI', () => {
         .mockResolvedValueOnce(rateLimitResponse)
         .mockResolvedValueOnce(successResponse);
 
-      const result = await api.smartMoneyNetflow({ chains: ['solana'] });
+      let result;
+      const promise = api.smartMoneyNetflow({ chains: ['solana'] }).then(r => { result = r; });
+      await vi.runAllTimersAsync();
+      await promise;
       
       expect(result.data).toEqual([{ token: 'TEST' }]);
       expect(result._meta?.retriedAttempts).toBe(1);
+      vi.useRealTimers();
     });
   });
 

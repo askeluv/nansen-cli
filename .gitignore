@@ -11,3 +11,4 @@ config.json
 # IDE
 .vscode/
 .idea/
+coverage/
