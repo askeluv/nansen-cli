@@ -652,11 +652,44 @@ describe('Wallet list/show CLI output for provider', () => {
       }));
 
     const { buildWalletCommands } = await import('../wallet.js');
-    const output = [];
-    const cmds = buildWalletCommands({ log: (m) => output.push(m), exit: () => {} });
+    const ttyLines = [];
+    const cmds = buildWalletCommands({ log: () => {}, ttyOutput: (m) => ttyLines.push(m), exit: () => {} });
     await cmds.wallet(['list'], null, {}, {});
 
-    const joined = output.join('\n');
+    const joined = ttyLines.join('\n');
     expect(joined).toContain('privy');
+  });
+
+  it('list routes human-readable text to ttyOutput (stderr), not log (stdout), and returns wallet data', async () => {
+    const walletsDir = path.join(tempDir, '.nansen', 'wallets');
+    fs.mkdirSync(walletsDir, { recursive: true });
+    fs.writeFileSync(path.join(walletsDir, 'config.json'),
+      JSON.stringify({ defaultWallet: 'w1', passwordHash: null }));
+    fs.writeFileSync(path.join(walletsDir, 'w1.json'),
+      JSON.stringify({
+        name: 'w1', provider: 'local',
+        evm: { address: '0xEVM' },
+        solana: { address: 'SolAddr' },
+        createdAt: '2026-01-01T00:00:00Z',
+      }));
+
+    const { buildWalletCommands } = await import('../wallet.js');
+    const logLines = [];
+    const ttyLines = [];
+    const cmds = buildWalletCommands({
+      log: (m) => logLines.push(m),
+      ttyOutput: (m) => ttyLines.push(m),
+      exit: () => {},
+    });
+    const result = await cmds.wallet(['list'], null, {}, {});
+
+    // Human-readable output must go to ttyOutput (stderr), not log (stdout)
+    expect(ttyLines.some((l) => l.includes('w1'))).toBe(true);
+    expect(logLines.some((l) => l.includes('w1'))).toBe(false);
+
+    // Handler must return wallet data so the framework can emit JSON on stdout
+    expect(result).toBeDefined();
+    expect(result.wallets).toHaveLength(1);
+    expect(result.wallets[0].name).toBe('w1');
   });
 });
