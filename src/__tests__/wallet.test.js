@@ -689,4 +689,29 @@ describe('Wallet list/show CLI output for provider', () => {
     expect(result.wallets).toHaveLength(1);
     expect(result.wallets[0].name).toBe('w1');
   });
+
+  it('list returns empty wallet data and uses ttyOutput when no wallets exist', async () => {
+    const walletsDir = path.join(tempDir, '.nansen', 'wallets');
+    fs.mkdirSync(walletsDir, { recursive: true });
+    fs.writeFileSync(path.join(walletsDir, 'config.json'),
+      JSON.stringify({ defaultWallet: null, passwordHash: null }));
+
+    const { buildWalletCommands } = await import('../wallet.js');
+    const logLines = [];
+    const ttyLines = [];
+    const cmds = buildWalletCommands({
+      log: (m) => logLines.push(m),
+      ttyOutput: (m) => ttyLines.push(m),
+      exit: () => {},
+    });
+    const result = await cmds.wallet(['list'], null, {}, {});
+
+    // Message goes to ttyOutput (stderr), not log (stdout)
+    expect(ttyLines.some((l) => l.includes('No wallets found'))).toBe(true);
+    expect(logLines.some((l) => l.includes('No wallets found'))).toBe(false);
+
+    // Must still return data so stdout channel is consistent
+    expect(result).toBeDefined();
+    expect(result.wallets).toHaveLength(0);
+  });
 });

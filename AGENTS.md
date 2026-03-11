@@ -18,6 +18,7 @@ Entry point is `src/index.js`.
 - **BigInt for token amounts** — never floating point
 - **Research commands** — return data objects, CLI layer formats via `formatOutput()` to stdout
 - **Operational commands** (trade, wallet, login) — print human-readable text via `log()` to stdout, return `undefined`
+- **Hybrid commands** (`wallet list`) — route human-readable summary to `ttyOutput` (stderr) so interactive users still see output, AND return data so `runCLI` emits JSON on stdout. Both the empty and non-empty paths must return data consistently.
 - **No interactive prompts in core** — use env vars (`NANSEN_WALLET_PASSWORD`, `NANSEN_API_KEY`)
 - **Actionable errors** — `"Not logged in. Run: nansen login"` not `"Authentication failed"`
 

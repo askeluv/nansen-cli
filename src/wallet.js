@@ -715,8 +715,8 @@ export function buildWalletCommands(deps = {}) {
         'list': async () => {
           const result = listWallets();
           if (result.wallets.length === 0) {
-            log('No wallets found. Create one with: nansen wallet create');
-            return;
+            ttyOutput('No wallets found. Create one with: nansen wallet create');
+            return result;
           }
           ttyOutput('');
           for (const w of result.wallets) {
