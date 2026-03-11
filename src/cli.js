@@ -1629,7 +1629,8 @@ export async function runCLI(rawArgs, deps = {}) {
     return '';
   };
 
-  const commands = { ...buildCommands(deps), ...buildWalletCommands(deps), ...buildTradingCommands(deps), ...buildAlertsCommands(deps), ...buildAgentCommands(deps), ...commandOverrides };
+  const walletDeps = { ...deps, log: deps.output, ttyOutput: deps.errorOutput };
+  const commands = { ...buildCommands(deps), ...buildWalletCommands(walletDeps), ...buildTradingCommands(deps), ...buildAlertsCommands(deps), ...buildAgentCommands(deps), ...commandOverrides };
 
   if (flags.version || flags.v) {
     output(VERSION);
