@@ -521,7 +521,10 @@ USAGE:
           if (flags.disabled) alerts = alerts.filter(a => a.isEnabled === false);
           if (options['token-address']) {
             const addr = options['token-address'].toLowerCase();
-            alerts = alerts.filter(a => JSON.stringify(a.data ?? {}).toLowerCase().includes(addr));
+            alerts = alerts.filter(a => {
+              const allTokens = [...(a.data?.inclusion?.tokens ?? []), ...(a.data?.exclusion?.tokens ?? [])];
+              return allTokens.some(t => t.address?.toLowerCase() === addr);
+            });
           }
           if (options.chain) {
             const ch = options.chain;

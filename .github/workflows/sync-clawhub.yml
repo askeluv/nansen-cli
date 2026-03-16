@@ -12,9 +12,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Login to ClawHub
-        run: npx --yes clawhub@0.7.0 login --token "$CLAWHUB_TOKEN" --no-browser
+        run: npx --yes clawhub@0.8.0 login --token "$CLAWHUB_TOKEN" --no-browser
         env:
           CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
 
       - name: Sync skills to ClawHub
-        run: npx --yes clawhub@0.7.0 sync --all --workdir . --dir skills
+        run: npx --yes clawhub@0.8.0 sync --all --workdir . --dir skills

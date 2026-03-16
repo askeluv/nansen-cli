@@ -98,6 +98,20 @@ describe('telemetry tracking for all first-level commands', () => {
     expect(trackSucceeded.mock.calls[0][0].command).toBe('account');
   });
 
+  it('web search', async () => {
+    await runCLI(['web', 'search', '--query', 'bitcoin price'], depsWithApi());
+    expect(wasTracked()).toBe(1);
+    expect(trackSucceeded).toHaveBeenCalledOnce();
+    expect(trackSucceeded.mock.calls[0][0].command).toBe('web search');
+  });
+
+  it('web fetch', async () => {
+    await runCLI(['web', 'fetch', '--url', 'https://example.com', '--question', 'What is this?'], depsWithApi());
+    expect(wasTracked()).toBe(1);
+    expect(trackSucceeded).toHaveBeenCalledOnce();
+    expect(trackSucceeded.mock.calls[0][0].command).toBe('web fetch');
+  });
+
   it('login (with --api-key)', async () => {
     await runCLI(['login', '--api-key', 'test-key'], baseDeps({
       saveConfigFn: () => {},
@@ -213,6 +227,7 @@ describe('telemetry tracking for all first-level commands', () => {
       'research',
       // operational
       'account', 'login', 'logout', 'schema', 'cache', 'changelog',
+      'web',
       // wallet & trading
       'wallet', 'trade', 'quote', 'execute',
       // help is a meta command, intentionally not tracked

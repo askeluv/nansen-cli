@@ -835,6 +835,31 @@ export class NansenAPI {
     return this.request('/api/v1/search/general', body);
   }
 
+  async webSearch(params = {}) {
+    const { queries, numResults = 10 } = params;
+    if (!queries || queries.length === 0) {
+      throw new NansenError('At least one query is required', ErrorCode.MISSING_PARAM);
+    }
+    return this.request('/api/v1/search/web-search', {
+      queries,
+      num_results: numResults,
+    }, { cache: false });
+  }
+
+  async webFetch(params = {}) {
+    const { urls, question } = params;
+    if (!urls || urls.length === 0) {
+      throw new NansenError('At least one URL is required', ErrorCode.MISSING_PARAM);
+    }
+    if (!question) {
+      throw new NansenError('A question is required', ErrorCode.MISSING_PARAM);
+    }
+    return this.request('/api/v1/search/web-fetch', {
+      urls,
+      question,
+    }, { cache: false });
+  }
+
   async addressHistoricalBalances(params = {}) {
     const { address, chain = 'ethereum', filters = {}, orderBy, pagination, days = 30 } = params;
     if (address) {

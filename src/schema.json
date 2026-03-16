@@ -569,46 +569,120 @@
       }
     },
     "alerts": {
-      "description": "Smart alert management — create, update, toggle, delete alerts",
+      "description": "Smart alert management \u2014 create, update, toggle, delete alerts",
       "subcommands": {
         "list": {
           "description": "List all alerts",
-          "returns": ["id", "name", "type", "timeWindow", "isEnabled", "channels", "data", "description"]
+          "returns": [
+            "id",
+            "name",
+            "type",
+            "timeWindow",
+            "isEnabled",
+            "channels",
+            "data",
+            "description"
+          ]
         },
         "create": {
           "description": "Create a new alert",
           "options": {
-            "name": { "type": "string", "required": true, "description": "Alert name" },
-            "type": { "type": "string", "required": true, "description": "Alert type (e.g. sm-token-flows, common-token-transfer)" },
-            "chains": { "type": "string", "description": "Comma-separated chains (e.g. ethereum,solana). Merged into data." },
-            "telegram": { "type": "string", "description": "Telegram chat ID for notifications" },
-            "slack": { "type": "string", "description": "Slack webhook URL for notifications" },
-            "discord": { "type": "string", "description": "Discord webhook URL for notifications" },
-            "data": { "type": "string", "description": "Alert config JSON. --chains is merged on top." },
-            "description": { "type": "string", "description": "Optional description" },
-            "disabled": { "type": "boolean", "description": "Create alert in disabled state" }
+            "name": {
+              "type": "string",
+              "required": true,
+              "description": "Alert name"
+            },
+            "type": {
+              "type": "string",
+              "required": true,
+              "description": "Alert type (e.g. sm-token-flows, common-token-transfer)"
+            },
+            "chains": {
+              "type": "string",
+              "description": "Comma-separated chains (e.g. ethereum,solana). Merged into data."
+            },
+            "telegram": {
+              "type": "string",
+              "description": "Telegram chat ID for notifications"
+            },
+            "slack": {
+              "type": "string",
+              "description": "Slack webhook URL for notifications"
+            },
+            "discord": {
+              "type": "string",
+              "description": "Discord webhook URL for notifications"
+            },
+            "data": {
+              "type": "string",
+              "description": "Alert config JSON. --chains is merged on top."
+            },
+            "description": {
+              "type": "string",
+              "description": "Optional description"
+            },
+            "disabled": {
+              "type": "boolean",
+              "description": "Create alert in disabled state"
+            }
           }
         },
         "update": {
           "description": "Update an existing alert. Usage: nansen alerts update <id> [options]",
           "options": {
-            "name": { "type": "string", "description": "Alert name" },
-            "type": { "type": "string", "description": "Alert type" },
-            "chains": { "type": "string", "description": "Comma-separated chains. Merged into data." },
-            "telegram": { "type": "string", "description": "Telegram chat ID" },
-            "slack": { "type": "string", "description": "Slack webhook URL" },
-            "discord": { "type": "string", "description": "Discord webhook URL" },
-            "data": { "type": "string", "description": "Alert config JSON. --chains merged on top." },
-            "description": { "type": "string", "description": "Description" },
-            "enabled": { "type": "boolean", "description": "Enable alert" },
-            "disabled": { "type": "boolean", "description": "Disable alert" }
+            "name": {
+              "type": "string",
+              "description": "Alert name"
+            },
+            "type": {
+              "type": "string",
+              "description": "Alert type"
+            },
+            "chains": {
+              "type": "string",
+              "description": "Comma-separated chains. Merged into data."
+            },
+            "telegram": {
+              "type": "string",
+              "description": "Telegram chat ID"
+            },
+            "slack": {
+              "type": "string",
+              "description": "Slack webhook URL"
+            },
+            "discord": {
+              "type": "string",
+              "description": "Discord webhook URL"
+            },
+            "data": {
+              "type": "string",
+              "description": "Alert config JSON. --chains merged on top."
+            },
+            "description": {
+              "type": "string",
+              "description": "Description"
+            },
+            "enabled": {
+              "type": "boolean",
+              "description": "Enable alert"
+            },
+            "disabled": {
+              "type": "boolean",
+              "description": "Disable alert"
+            }
           }
         },
         "toggle": {
           "description": "Enable or disable an alert. Usage: nansen alerts toggle <id> --enabled|--disabled",
           "options": {
-            "enabled": { "type": "boolean", "description": "Enable alert" },
-            "disabled": { "type": "boolean", "description": "Disable alert" }
+            "enabled": {
+              "type": "boolean",
+              "description": "Enable alert"
+            },
+            "disabled": {
+              "type": "boolean",
+              "description": "Disable alert"
+            }
           }
         },
         "delete": {
@@ -645,7 +719,7 @@
             },
             "wallet": {
               "type": "string",
-              "description": "Wallet name (or \"walletconnect\"/\"wc\" for WalletConnect, EVM only). A configured wallet is required — run `nansen wallet create` if you haven't set one up yet."
+              "description": "Wallet name (or \"walletconnect\"/\"wc\" for WalletConnect, EVM only). A configured wallet is required \u2014 run `nansen wallet create` if you haven't set one up yet."
             }
           },
           "prerequisites": [
@@ -712,6 +786,46 @@
     },
     "account": {
       "description": "Show API key status, plan, and remaining credits. Does not consume credits."
+    },
+    "web": {
+      "description": "Web search and fetch commands",
+      "subcommands": {
+        "search": {
+          "description": "Search the web for one or more queries in parallel",
+          "options": {
+            "query": {
+              "description": "Search query (can be repeated for multiple queries)"
+            },
+            "num-results": {
+              "description": "Number of results per query (1-20, default 10)",
+              "default": 10
+            }
+          },
+          "examples": [
+            "nansen web search \"bitcoin price\"",
+            "nansen web search \"solana news\" --num-results 5",
+            "nansen web search --query \"btc\" --query \"eth\"",
+            "nansen web search \"btc\" --query \"eth\"  # positional + flag merged"
+          ]
+        },
+        "fetch": {
+          "description": "Fetch and analyze content from one or more URLs using AI",
+          "options": {
+            "url": {
+              "description": "URL to fetch (can be repeated for multiple URLs)"
+            },
+            "question": {
+              "description": "Question to answer about the URL content",
+              "required": true
+            }
+          },
+          "examples": [
+            "nansen web fetch https://nansen.ai --question \"What does Nansen do?\"",
+            "nansen web fetch --url https://a.com --url https://b.com --question \"Compare these\"",
+            "nansen web fetch https://a.com --url https://b.com --question \"Diff?\"  # positional + flag merged"
+          ]
+        }
+      }
     }
   },
   "globalOptions": {
