@@ -691,7 +691,27 @@ USAGE:
         return;
       }
 
-      return handlers[sub]();
+      try {
+        return await handlers[sub]();
+      } catch (err) {
+        // Rewrite cryptic channel validation errors from the API into actionable messages.
+        // e.g. "Failed to send a welcome message to the channel index 0" → tells the user
+        // which channel type failed and what to check.
+        const match = typeof err.message === 'string' && err.message.match(/welcome message to the channel index (\d+)/i);
+        if (match) {
+          const channels = buildChannels() ?? [];
+          const ch = channels[Number(match[1])];
+          const hint = ch?.type === 'telegram'
+            ? `Invalid Telegram chat ID (${ch.data.chatId}). Ensure the bot has been added to the chat.`
+            : ch?.type === 'slack'
+              ? `Invalid Slack webhook URL. Check the URL and try again.`
+              : ch?.type === 'discord'
+                ? `Invalid Discord webhook URL. Check the URL and try again.`
+                : err.message;
+          throw new NansenError(hint, err.code ?? ErrorCode.INVALID_PARAMS, err.status);
+        }
+        throw err;
+      }
     },
   };
 }
