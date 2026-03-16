@@ -189,6 +189,8 @@ export function buildCommonTokenTransferData(options) {
 
   const subjects = parseSubjects(options.subject);
   if (subjects) data.subjects = subjects;
+  // Note: do NOT set data.subjects = [] when absent — that would
+  // interfere with validation on updates where existing subjects exist.
 
   const counterparties = parseSubjects(options.counterparty);
   if (counterparties) data.counterparties = counterparties;
@@ -367,6 +369,65 @@ function parseDataOverride(options) {
     }
   }
   return options.data;
+}
+
+// ============= Validation =============
+
+/**
+ * Check whether a range object has at least one non-null bound.
+ */
+function isRangeSet(range) {
+  if (!range || typeof range !== 'object') return false;
+  return range.min != null || range.max != null;
+}
+
+/**
+ * Validate alert data payload against type-specific required fields.
+ * Throws NansenError with INVALID_PARAMS when the payload is missing
+ * mandatory information for the given alert type.
+ *
+ * Gracefully no-ops when type or data is null/undefined.
+ */
+export function validateAlertData(type, data) {
+  if (!type || !data) return;
+
+  if (type === 'sm-token-flows') {
+    const flowKeys = [
+      'inflow_1h', 'inflow_1d', 'inflow_7d',
+      'outflow_1h', 'outflow_1d', 'outflow_7d',
+      'netflow_1h', 'netflow_1d', 'netflow_7d',
+    ];
+    const hasAnyFlow = flowKeys.some(k => isRangeSet(data[k]));
+    if (!hasAnyFlow) {
+      throw new NansenError(
+        'sm-token-flows requires at least one flow threshold (inflow, outflow, or netflow with min or max)',
+        ErrorCode.INVALID_PARAMS,
+      );
+    }
+  }
+
+  if (type === 'common-token-transfer') {
+    const hasSubjects = Array.isArray(data.subjects) && data.subjects.length > 0;
+    const hasTokens = Array.isArray(data.inclusion?.tokens) && data.inclusion.tokens.length > 0;
+    if (!hasSubjects && !hasTokens) {
+      throw new NansenError(
+        'common-token-transfer requires at least one --subject or --token',
+        ErrorCode.INVALID_PARAMS,
+      );
+    }
+  }
+
+  if (type === 'smart-contract-call') {
+    const hasCallers = Array.isArray(data.inclusion?.caller) && data.inclusion.caller.length > 0;
+    const hasContracts = Array.isArray(data.inclusion?.smartContract) && data.inclusion.smartContract.length > 0;
+    const hasSignatureHash = Array.isArray(data.signatureHash) && data.signatureHash.length > 0;
+    if (!hasCallers && !hasContracts && !hasSignatureHash) {
+      throw new NansenError(
+        'smart-contract-call requires at least one --caller, --contract, or --signature-hash',
+        ErrorCode.INVALID_PARAMS,
+      );
+    }
+  }
 }
 
 // ============= Command Builder =============
@@ -556,6 +617,7 @@ USAGE:
           let data = buildAlertData(options);
           const dataOverride = parseDataOverride(options);
           if (dataOverride) data = deepMergePlain(data, dataOverride);
+          validateAlertData(type, data);
           return apiInstance.alertsCreate({
             name,
             type,
@@ -601,6 +663,7 @@ USAGE:
           if (flags.enabled && flags.disabled) throw new NansenError('Cannot specify both --enabled and --disabled', ErrorCode.INVALID_PARAMS);
           if (flags.enabled) params.isEnabled = true;
           if (flags.disabled) params.isEnabled = false;
+          validateAlertData(type, params.data ?? existing.data);
           return apiInstance.alertsUpdate(params);
         },
         'toggle': () => {
