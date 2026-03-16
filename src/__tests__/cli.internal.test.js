@@ -4419,3 +4419,68 @@ describe('alerts create -- type-specific validation', () => {
     expect(mockApi.alertsCreate).toHaveBeenCalled();
   });
 });
+
+describe('alerts update -- type-specific validation', () => {
+  it('should reject update that clears last flow threshold via --data', async () => {
+    const mockApi = {
+      alertsGet: vi.fn().mockResolvedValue({
+        type: 'sm-token-flows',
+        data: {
+          chains: ['ethereum'],
+          inflow_1h: { min: 1000000, max: 50000000 },
+          inclusion: {},
+          exclusion: {},
+        },
+      }),
+      alertsUpdate: vi.fn(),
+    };
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    await expect(cmd(['update', 'abc123'], mockApi, {}, {
+      data: JSON.stringify({
+        inflow_1h: { min: null, max: null },
+        outflow_1h: { min: null, max: null },
+        netflow_1h: { min: null, max: null },
+      }),
+    })).rejects.toThrow('at least one flow threshold');
+    expect(mockApi.alertsUpdate).not.toHaveBeenCalled();
+  });
+
+  it('should reject update that clears last subject via --data', async () => {
+    const mockApi = {
+      alertsGet: vi.fn().mockResolvedValue({
+        type: 'common-token-transfer',
+        data: {
+          chains: ['ethereum'],
+          subjects: [{ type: 'label', value: 'CEX' }],
+          inclusion: {},
+          exclusion: {},
+        },
+      }),
+      alertsUpdate: vi.fn(),
+    };
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    await expect(cmd(['update', 'abc123'], mockApi, {}, {
+      data: JSON.stringify({ subjects: [] }),
+    })).rejects.toThrow('at least one --subject or --token');
+    expect(mockApi.alertsUpdate).not.toHaveBeenCalled();
+  });
+
+  it('should allow update when validation still passes after merge', async () => {
+    const mockApi = {
+      alertsGet: vi.fn().mockResolvedValue({
+        type: 'sm-token-flows',
+        data: {
+          chains: ['ethereum'],
+          inflow_1h: { min: 1000000, max: 50000000 },
+          outflow_1d: { min: 500, max: 10000 },
+          inclusion: {},
+          exclusion: {},
+        },
+      }),
+      alertsUpdate: vi.fn().mockResolvedValue({ id: 'abc123' }),
+    };
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    await cmd(['update', 'abc123'], mockApi, {}, { 'inflow-1h-max': '99000000' });
+    expect(mockApi.alertsUpdate).toHaveBeenCalled();
+  });
+});

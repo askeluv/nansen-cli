@@ -373,6 +373,7 @@ function parseDataOverride(options) {
 
 /**
  * Check whether a range object has at least one non-null bound.
+ * Uses != null (loose equality) to catch both null and undefined.
  */
 function isRangeSet(range) {
   if (!range || typeof range !== 'object') return false;
@@ -398,7 +399,7 @@ export function validateAlertData(type, data) {
     const hasAnyFlow = flowKeys.some(k => isRangeSet(data[k]));
     if (!hasAnyFlow) {
       throw new NansenError(
-        'sm-token-flows requires at least one flow threshold (inflow, outflow, or netflow with min or max)',
+        'sm-token-flows requires at least one flow threshold (--inflow-*, --outflow-*, or --netflow-*)',
         ErrorCode.INVALID_PARAMS,
       );
     }
@@ -661,8 +662,8 @@ USAGE:
           if (flags.enabled && flags.disabled) throw new NansenError('Cannot specify both --enabled and --disabled', ErrorCode.INVALID_PARAMS);
           if (flags.enabled) params.isEnabled = true;
           if (flags.disabled) params.isEnabled = false;
-          const mergedForValidation = deepMergePlain(existing.data || {}, params.data || {});
-          validateAlertData(type, mergedForValidation);
+          // Validate merged data if present, otherwise validate existing data
+          validateAlertData(type, params.data ?? existing.data);
           return apiInstance.alertsUpdate(params);
         },
         'toggle': () => {
