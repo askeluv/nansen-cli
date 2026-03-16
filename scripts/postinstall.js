@@ -5,7 +5,7 @@
  *
  * Runs after `npm install -g nansen-cli` and offers two optional steps:
  *   1. Install the Nansen AI coding skill (`npx skills add nansen-ai/nansen-cli`)
- *   2. Run a test query to verify the setup
+ *   2. Check account status to verify the API key works (0 credits)
  *
  * Non-interactive environments (CI, piped stdin) get a one-liner tip instead.
  * Always exits 0 — onboarding failures must never break installation.
@@ -27,8 +27,8 @@ const CYAN = "\x1b[36m";
 const RESET = "\x1b[0m";
 
 const SKILL_REPO = "nansen-ai/nansen-cli";
-const TEST_QUERY = ["smart-money", "token-stats", "--token-address", "So11111111111111111111111111111111111111112", "--chain", "solana"];
-const TEST_QUERY_DISPLAY = "nansen smart-money token-stats --token-address So111...2 --chain solana";
+const TEST_QUERY = ["account"];
+const TEST_QUERY_DISPLAY = "nansen account";
 
 // Path to the CLI entry point (works even if `nansen` bin isn't linked yet)
 const CLI_ENTRY = join(__dirname, "..", "src", "index.js");
@@ -43,7 +43,7 @@ function hasTTY() {
 
 function hasNpx() {
   try {
-    execFileSync("npx", ["--version"], { stdio: "ignore" });
+    execFileSync("npx", ["--version"], { stdio: "ignore", shell: process.platform === "win32" });
     return true;
   } catch {
     return false;
@@ -74,8 +74,10 @@ function isSkillInstalled() {
 function prompt(question) {
   return new Promise((resolve) => {
     const rl = createInterface({ input: process.stdin, output: process.stderr });
-    rl.on("close", () => resolve(""));
+    let answered = false;
+    rl.on("close", () => { if (!answered) resolve(""); });
     rl.question(question, (answer) => {
+      answered = true;
       rl.close();
       resolve(answer.trim());
     });
@@ -84,7 +86,7 @@ function prompt(question) {
 
 function runCommand(cmd, args) {
   return new Promise((resolve) => {
-    const child = spawn(cmd, args, { stdio: "inherit" });
+    const child = spawn(cmd, args, { stdio: "inherit", shell: process.platform === "win32" });
     child.on("close", (code) => resolve(code === 0));
     child.on("error", () => resolve(false));
   });
@@ -127,10 +129,10 @@ async function testQuery() {
 
   log();
   log(`Your API key is configured. Let's verify it works.`);
-  const answer = await prompt(`  Run a test query? (${DIM}${TEST_QUERY_DISPLAY}${RESET}) [Y/n] `);
+  const answer = await prompt(`  Check account status? (${DIM}${TEST_QUERY_DISPLAY}${RESET}) [Y/n] `);
 
   if (/^n/i.test(answer)) {
-    log(`Skipped. You're all set! Try: ${CYAN}nansen smart-money token-stats --token-address <addr> --chain ethereum${RESET}`);
+    log(`Skipped. You're all set! Try: ${CYAN}nansen research smart-money netflow --chain solana${RESET}`);
     return;
   }
 
