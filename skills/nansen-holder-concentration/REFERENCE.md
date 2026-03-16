@@ -17,7 +17,9 @@ These are heuristics, not hard rules. Context matters: a VC-backed launch may sh
 
 ## CEX same-day funding logic
 
-Group top-100 holders by `(funder_label, date(block_timestamp))`. Flag groups of ≥3.
+Group top-100 holders by `(funder_label, date(block_timestamp))`. Flag groups of ≥2.
+
+Also check ±1 day windows: wallets funded from the same CEX across 2-3 consecutive days may indicate the same coordinated actor splitting entries to avoid detection. Flag any CEX funder appearing across ≤3 consecutive calendar days with ≥3 total wallets.
 
 Known CEX label substrings to match: `Binance`, `Coinbase`, `OKX`, `Kraken`, `Bybit`, `HTX`, `KuCoin`, `Gate.io`, `MEXC`.
 

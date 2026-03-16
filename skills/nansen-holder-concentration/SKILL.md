@@ -43,10 +43,12 @@ nansen research profiler related-wallets --address <holder_addr> --chain $CHAIN
 ```
 
 Post-processing:
-1. CEX same-day: `GROUP BY (funder_label, date(block_timestamp))` where funder_label contains a CEX name (Binance, Coinbase, OKX, Kraken, Bybit, HTX, KuCoin). ≥3 holders → coordinated launch.
-2. Single controller: `GROUP BY funder_address` (non-CEX). Same address funds ≥3 holders → one entity.
+1. CEX same-day: `GROUP BY (funder_label, date(block_timestamp))` where funder_label contains a CEX name (Binance, Coinbase, OKX, Kraken, Bybit, HTX, KuCoin). ≥2 holders → coordinated signal.
+2. Single controller: `GROUP BY funder_address` (non-CEX). Same address funds ≥2 holders → possible single entity.
 
-Red flags: ≥3 of 100 funded from same CEX same day; same non-CEX address funds ≥3 holders; cluster concentrated outside top 20 (positions 30-70).
+Skip Phase 2 on wallets already labeled (CEX, LP, Bot, project). Only run on unlabeled and fresh_wallet addresses — reduces calls significantly on well-labeled tokens.
+
+Red flags: ≥2 of 100 funded from same CEX same day; same non-CEX address funds ≥2 holders; cluster concentrated outside top 20 (positions 30-70).
 
 ---
 
