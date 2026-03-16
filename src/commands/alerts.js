@@ -104,7 +104,7 @@ function deepMergePlain(target, source) {
 function parseChains(chainsOpt) {
   if (!chainsOpt) return undefined;
   if (Array.isArray(chainsOpt)) return chainsOpt;
-  return chainsOpt.split(',');
+  return chainsOpt.split(',').map(s => s.trim()).filter(Boolean);
 }
 
 /**
@@ -587,10 +587,10 @@ USAGE:
             });
           }
           if (options.chain) {
-            const ch = options.chain;
+            const ch = options.chain.toLowerCase();
             alerts = alerts.filter(a => {
               const chains = a.data?.chains;
-              return Array.isArray(chains) && (chains.includes(ch) || chains.includes('all'));
+              return Array.isArray(chains) && chains.some(c => c.toLowerCase() === ch || c === 'all');
             });
           }
 
