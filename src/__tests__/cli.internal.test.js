@@ -840,7 +840,7 @@ describe('alerts update — type inference', () => {
 
   it('should always call alertsGet even for simple field updates like rename', async () => {
     const mockApi = {
-      alertsGet: vi.fn().mockResolvedValue({ type: 'sm-token-flows' }),
+      alertsGet: vi.fn().mockResolvedValue({ type: 'sm-token-flows', data: { chains: ['ethereum'], inflow_1h: { min: 1000 } } }),
       alertsUpdate: vi.fn().mockResolvedValue({ id: 'abc123' }),
     };
     const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
@@ -4324,6 +4324,27 @@ describe('alerts update -- deep-merge range fields', () => {
     await cmd(['update', 'abc123'], mockApi, {}, { 'inflow-1h-min': '2000000' });
     const sentData = mockApi.alertsUpdate.mock.calls[0][0].data;
     expect(sentData.inflow_1h).toEqual({ min: 2000000, max: 50000000 });
+    expect(sentData.outflow_1d).toEqual({ min: 500, max: 10000 });
+  });
+
+  it('should preserve existing min when only max is updated (sm-token-flows)', async () => {
+    const mockApi = {
+      alertsGet: vi.fn().mockResolvedValue({
+        type: 'sm-token-flows',
+        data: {
+          chains: ['ethereum'],
+          inflow_1h: { min: 1000000, max: 50000000 },
+          outflow_1d: { min: 500, max: 10000 },
+          inclusion: {},
+          exclusion: {},
+        },
+      }),
+      alertsUpdate: vi.fn().mockResolvedValue({ id: 'abc123' }),
+    };
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    await cmd(['update', 'abc123'], mockApi, {}, { 'inflow-1h-max': '99000000' });
+    const sentData = mockApi.alertsUpdate.mock.calls[0][0].data;
+    expect(sentData.inflow_1h).toEqual({ min: 1000000, max: 99000000 });
     expect(sentData.outflow_1d).toEqual({ min: 500, max: 10000 });
   });
 

@@ -189,8 +189,6 @@ export function buildCommonTokenTransferData(options) {
 
   const subjects = parseSubjects(options.subject);
   if (subjects) data.subjects = subjects;
-  // Note: do NOT set data.subjects = [] when absent — that would
-  // interfere with validation on updates where existing subjects exist.
 
   const counterparties = parseSubjects(options.counterparty);
   if (counterparties) data.counterparties = counterparties;
@@ -663,7 +661,8 @@ USAGE:
           if (flags.enabled && flags.disabled) throw new NansenError('Cannot specify both --enabled and --disabled', ErrorCode.INVALID_PARAMS);
           if (flags.enabled) params.isEnabled = true;
           if (flags.disabled) params.isEnabled = false;
-          validateAlertData(type, params.data ?? existing.data);
+          const mergedForValidation = deepMergePlain(existing.data || {}, params.data || {});
+          validateAlertData(type, mergedForValidation);
           return apiInstance.alertsUpdate(params);
         },
         'toggle': () => {
