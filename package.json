@@ -12,9 +12,11 @@
     "src/**/*.json",
     "!src/__tests__/**",
     "skills/**",
+    "scripts/postinstall.js",
     "CHANGELOG.md"
   ],
   "scripts": {
+    "postinstall": "node scripts/postinstall.js",
     "start": "node src/index.js",
     "pretest": "node scripts/check-changeset.js",
     "test": "vitest run",
