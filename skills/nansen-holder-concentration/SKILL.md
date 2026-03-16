@@ -66,12 +66,16 @@ nansen research profiler trace --address <holder_addr> --chain $CHAIN --depth 2 
 
 ---
 
-## Phase 3 — CEX Same-Day Funding Detection (≈20 calls, opt-in)
+## Phase 3 — First Funder Analysis (≈100 calls, opt-in, covers all 100 holders)
 
-**Run on top 20 holders. Detects coordinated wallet creation funded from the same exchange.**
+**Run on all 100 holders — not just top 20. Each call is lightweight (no transaction traversal).**
+
+Rationale: coordinated positions are not always in the top 20. A cartel controlling slots 30-60 is invisible if you only check top 20. Full coverage is the point.
+
+⚠️ Cost warning: ~100 API calls. Each `related-wallets` call is lightweight (returns a small relation list, no BFS fan-out). Total data retrieved is far less than 20 trace calls.
 
 ```bash
-# Get first funder for each top 20 holder
+# Run for each of the 100 holders
 nansen research profiler related-wallets --address <holder_addr> --chain $CHAIN
 # → address, address_label, relation (First Funder / Multisig Signer), block_timestamp, chain
 ```
@@ -80,15 +84,19 @@ nansen research profiler related-wallets --address <holder_addr> --chain $CHAIN
 - First Funder address + label (is it a CEX? e.g. Binance Hot Wallet, Coinbase)
 - `block_timestamp` of first funding event
 
-**CEX same-day logic (post-processing):**
-- Group holders by: (funder_label, date(block_timestamp))
-- If ≥3 holders funded from the same CEX label on the same calendar day → coordinated launch signal
-- If the funder is NOT a CEX but the same address funds ≥3 holders → single controller signal
+**Post-processing — two groupings:**
+
+1. CEX same-day groups: `GROUP BY (funder_label, date(block_timestamp))` where funder_label contains a known CEX name
+   - ≥3 holders funded from the same CEX on the same day → coordinated launch signal
+
+2. Single-controller groups: `GROUP BY funder_address` where funder is NOT a CEX
+   - Same non-CEX address is First Funder for ≥3 holders → single entity controlling multiple positions
 
 **Coordination red flags:**
-- ≥3 top-20 holders funded from same CEX on same day → very likely coordinated
-- Same non-CEX address is First Funder for multiple top holders → single entity controlling multiple positions
+- ≥3 of 100 holders funded from same CEX on same day → very likely coordinated
+- Same non-CEX address funds ≥3 top-100 holders → single controller, not organic distribution
 - All fresh wallets + same-day CEX funding + high concentration → textbook rug setup
+- Large coordinated group outside top 20 (e.g. positions 30-70) → hidden cartel
 
 ---
 
@@ -127,14 +135,15 @@ Single-entity funder: [YES | NO]
 
 ## Cost Summary
 
-| Mode | Phases | Approx calls |
-|---|---|---|
-| Fast (snapshot only) | 1 | 2-3 |
-| Standard | 1 + 2 | ~23 |
-| Full due diligence | 1 + 2 + 3 | ~43 |
+| Mode | Phases | Approx calls | What you get |
+|---|---|---|---|
+| Fast | 1 | 2-3 | Concentration % + wallet quality labels |
+| Standard | 1 + 3 | ~103 | Above + full first-funder clustering across all 100 |
+| Deep | 1 + 2 + 3 | ~123 | Above + BFS connection graph on top 20 |
 
 Always tell the user the mode and estimated call count before running phases 2 or 3.
 Default to Fast mode unless the user explicitly asks for deeper analysis.
+Standard mode is the recommended default for memecoin due diligence — it covers all 100 holders cheaply and catches hidden cartels.
 
 ---
 
@@ -145,3 +154,4 @@ Default to Fast mode unless the user explicitly asks for deeper analysis.
 - Depth 2 hard cap is intentional. Depth 3 on 20 wallets = ~2,000+ nodes, prohibitively expensive.
 - CEX label matching: look for labels containing "Binance", "Coinbase", "OKX", "Kraken", "Bybit", "HTX", "KuCoin" in `address_label` or `labels[]`.
 - On Solana, `profiler related-wallets` may return fewer results than on Ethereum. Expand `--days` to 90 if empty.
+- Phase 3 covers all 100 holders intentionally. Cartels positioning in slots 30-70 are invisible at top-20 depth — full coverage is the whole point of this phase.
