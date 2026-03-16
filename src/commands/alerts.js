@@ -78,6 +78,27 @@ function parseSubjects(subjectArg) {
 }
 
 /**
+ * Recursively deep-merge two plain objects.  Arrays and non-object values in
+ * `source` replace the corresponding key in `target`; plain objects are merged
+ * recursively so that partial updates (e.g. only `min` on a range) don't
+ * overwrite sibling keys (e.g. existing `max`).
+ */
+function deepMergePlain(target, source) {
+  const result = { ...target };
+  for (const key of Object.keys(source)) {
+    const oldVal = target[key];
+    const newVal = source[key];
+    if (oldVal && newVal && typeof oldVal === 'object' && typeof newVal === 'object'
+        && !Array.isArray(oldVal) && !Array.isArray(newVal)) {
+      result[key] = deepMergePlain(oldVal, newVal);
+    } else {
+      result[key] = newVal;
+    }
+  }
+  return result;
+}
+
+/**
  * Normalise chains option to array.
  */
 function parseChains(chainsOpt) {
@@ -92,10 +113,10 @@ function parseChains(chainsOpt) {
  */
 function buildRange(minVal, maxVal) {
   if (minVal === undefined && maxVal === undefined) return undefined;
-  return {
-    min: minVal !== undefined ? Number(minVal) : null,
-    max: maxVal !== undefined ? Number(maxVal) : null,
-  };
+  const r = {};
+  if (minVal !== undefined) r.min = Number(minVal);
+  if (maxVal !== undefined) r.max = Number(maxVal);
+  return r;
 }
 
 /**
@@ -167,7 +188,7 @@ export function buildCommonTokenTransferData(options) {
   if (amountRange) data.tokenAmount = amountRange;
 
   const subjects = parseSubjects(options.subject);
-  data.subjects = subjects ?? [];
+  if (subjects) data.subjects = subjects;
 
   const counterparties = parseSubjects(options.counterparty);
   if (counterparties) data.counterparties = counterparties;
@@ -329,22 +350,23 @@ export function buildAlertData(options, { applyDefaults = true } = {}) {
     }
   }
 
-  // Merge --data on top (power-user escape hatch, overrides named flags)
-  if (options.data) {
-    let override;
-    if (typeof options.data === 'string') {
-      try {
-        override = JSON.parse(options.data);
-      } catch {
-        throw new NansenError('--data must be valid JSON', ErrorCode.INVALID_PARAMS);
-      }
-    } else {
-      override = options.data;
-    }
-    data = { ...data, ...override };
-  }
-
   return data;
+}
+
+/**
+ * Parse the --data JSON escape-hatch option.
+ * Returns the parsed object, or undefined if not provided.
+ */
+function parseDataOverride(options) {
+  if (!options.data) return undefined;
+  if (typeof options.data === 'string') {
+    try {
+      return JSON.parse(options.data);
+    } catch {
+      throw new NansenError('--data must be valid JSON', ErrorCode.INVALID_PARAMS);
+    }
+  }
+  return options.data;
 }
 
 // ============= Command Builder =============
@@ -528,7 +550,9 @@ USAGE:
             throw new NansenError(`Required: ${missing.join(', ')}`, ErrorCode.MISSING_PARAM);
           }
           const timeWindow = TIME_WINDOW_BY_TYPE[type] ?? 'realtime';
-          const data = buildAlertData(options);
+          let data = buildAlertData(options);
+          const dataOverride = parseDataOverride(options);
+          if (dataOverride) data = deepMergePlain(data, dataOverride);
           return apiInstance.alertsCreate({
             name,
             type,
@@ -564,28 +588,10 @@ USAGE:
           if (channels) params.channels = channels;
           const effectiveOptions = type ? { ...options, type } : options;
           const builtData = buildAlertData(effectiveOptions, { applyDefaults: false });
-          if (Object.keys(builtData).length > 0) {
-            const merged = existing.data ? { ...existing.data, ...builtData } : builtData;
-            // Deep-merge nested plain objects (range fields like inflow_1h,
-            // inclusion, exclusion) so partial updates don't drop siblings.
-            // For range sub-keys, keep the existing value when the new one is null
-            // (i.e. the user didn't supply that end of the range).
-            if (existing.data) {
-              for (const key of Object.keys(builtData)) {
-                const oldVal = existing.data[key];
-                const newVal = builtData[key];
-                if (oldVal && newVal && typeof oldVal === 'object' && typeof newVal === 'object'
-                    && !Array.isArray(oldVal) && !Array.isArray(newVal)) {
-                  const m = { ...oldVal, ...newVal };
-                  for (const subKey of Object.keys(m)) {
-                    if (m[subKey] === null && oldVal[subKey] != null) {
-                      m[subKey] = oldVal[subKey];
-                    }
-                  }
-                  merged[key] = m;
-                }
-              }
-            }
+          const dataOverride = parseDataOverride(options);
+          if (Object.keys(builtData).length > 0 || dataOverride) {
+            let merged = existing.data ? deepMergePlain(existing.data, builtData) : builtData;
+            if (dataOverride) merged = deepMergePlain(merged, dataOverride);
             params.data = merged;
           }
           if (options.description) params.description = options.description;

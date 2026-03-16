@@ -246,7 +246,7 @@ describe('buildSmTokenFlowsData', () => {
       'inflow-1h-min': '5000000',
     });
     expect(result.chains).toEqual(['ethereum']);
-    expect(result.inflow_1h).toEqual({ min: 5000000, max: null });
+    expect(result.inflow_1h).toEqual({ min: 5000000 });
   });
 
   it('should build data with multiple flow ranges', () => {
@@ -254,8 +254,8 @@ describe('buildSmTokenFlowsData', () => {
       'inflow-1h-min': '1000000',
       'outflow-7d-max': '500000',
     });
-    expect(result.inflow_1h).toEqual({ min: 1000000, max: null });
-    expect(result.outflow_7d).toEqual({ min: null, max: 500000 });
+    expect(result.inflow_1h).toEqual({ min: 1000000 });
+    expect(result.outflow_7d).toEqual({ max: 500000 });
   });
 
   it('should parse --token into inclusion.tokens', () => {
@@ -299,7 +299,7 @@ describe('buildCommonTokenTransferData', () => {
     });
     expect(result.chains).toEqual(['ethereum']);
     expect(result.events).toEqual(['send', 'receive']);
-    expect(result.usdValue).toEqual({ min: 1000000, max: null });
+    expect(result.usdValue).toEqual({ min: 1000000 });
   });
 
   it('should build data with token amount range', () => {
@@ -343,7 +343,7 @@ describe('buildAlertData', () => {
       'inflow-1h-min': '5000000',
     });
     expect(result.chains).toEqual(['ethereum']);
-    expect(result.inflow_1h).toEqual({ min: 5000000, max: null });
+    expect(result.inflow_1h).toEqual({ min: 5000000 });
   });
 
   it('should dispatch to buildCommonTokenTransferData for common-token-transfer type', () => {
@@ -355,7 +355,7 @@ describe('buildAlertData', () => {
     });
     expect(result.chains).toEqual(['ethereum']);
     expect(result.events).toEqual(['send', 'receive']);
-    expect(result.usdValue).toEqual({ min: 1000000, max: null });
+    expect(result.usdValue).toEqual({ min: 1000000 });
   });
 
   it('should fall back to chains-only for unknown type', () => {
@@ -366,28 +366,14 @@ describe('buildAlertData', () => {
     expect(result).toEqual({ chains: ['solana'] });
   });
 
-  it('should merge --data JSON on top of named flags (override)', () => {
+  it('should not process --data (handled by handlers)', () => {
     const result = buildAlertData({
       type: 'sm-token-flows',
       chains: 'ethereum',
-      'inflow-1h-min': '100000',
-      data: '{"inflow_1h":{"min":999999},"chains":["base"]}',
+      data: '{"chains":["base"]}',
     });
-    // --data overrides named flags
-    expect(result.chains).toEqual(['base']);
-    expect(result.inflow_1h).toEqual({ min: 999999 });
-  });
-
-  it('should accept --data as object (not string)', () => {
-    const result = buildAlertData({
-      type: 'sm-token-flows',
-      data: { chains: ['solana'] },
-    });
-    expect(result.chains).toEqual(['solana']);
-  });
-
-  it('should throw on invalid --data JSON', () => {
-    expect(() => buildAlertData({ type: 'sm-token-flows', data: 'not-json' })).toThrow();
+    // buildAlertData ignores --data; handlers apply it post-merge
+    expect(result.chains).toEqual(['ethereum']);
   });
 
   it('should work with no type (no flags)', () => {
@@ -463,7 +449,7 @@ describe('buildAlertData', () => {
     });
     expect(result.chains).toEqual(['ethereum', 'base']);
     expect(result.events).toEqual(['send']);
-    expect(result.usdValue).toEqual({ min: 500, max: null });
+    expect(result.usdValue).toEqual({ min: 500 });
     // Defaults still present for unset fields
     expect(result.counterparties).toEqual([]);
     expect(result.tokenAmount).toEqual({});
@@ -479,28 +465,33 @@ describe('buildAlertData', () => {
     expect(result.tokenAmount).toBeUndefined();
   });
 
-  it('should let --data override defaults', () => {
+  it('should not wipe subjects when updating common-token-transfer without --subject', () => {
+    // Simulates: user created alert with --subject label:CEX, then updates with only --usd-min 5000
+    const result = buildAlertData({ type: 'common-token-transfer', 'usd-min': '5000' }, { applyDefaults: false });
+    expect(result.subjects).toBeUndefined();
+    expect(result.usdValue).toEqual({ min: 5000 });
+  });
+
+  it('should not apply --data (handled by handlers)', () => {
     const result = buildAlertData({
       type: 'sm-token-flows',
-      data: '{"events":["custom"],"chains":["solana"]}',
+      data: '{"events":["custom"]}',
     });
-    expect(result.events).toEqual(['custom']);
-    expect(result.chains).toEqual(['solana']);
-    // Defaults still present for unset fields
-    expect(result.inflow_1h).toEqual({});
+    // --data is ignored by buildAlertData; defaults apply normally
+    expect(result.events).toEqual(['sm-token-flows']);
   });
 });
 
 describe('buildSmTokenFlowsData netflow fields', () => {
   it('should include netflow-1h range', () => {
     const result = buildSmTokenFlowsData({ 'netflow-1h-min': '100000' });
-    expect(result.netflow_1h).toEqual({ min: 100000, max: null });
+    expect(result.netflow_1h).toEqual({ min: 100000 });
   });
 
   it('should include netflow-1d and netflow-7d ranges', () => {
     const result = buildSmTokenFlowsData({ 'netflow-1d-min': '500000', 'netflow-7d-max': '2000000' });
-    expect(result.netflow_1d).toEqual({ min: 500000, max: null });
-    expect(result.netflow_7d).toEqual({ min: null, max: 2000000 });
+    expect(result.netflow_1d).toEqual({ min: 500000 });
+    expect(result.netflow_7d).toEqual({ max: 2000000 });
   });
 });
 
@@ -596,7 +587,7 @@ describe('buildSmTokenFlowsData new inclusion/exclusion flags', () => {
 
   it('should add fdv range to inclusion.fdvUsd', () => {
     const result = buildSmTokenFlowsData({ 'fdv-min': '500000' });
-    expect(result.inclusion.fdvUsd).toEqual({ min: 500000, max: null });
+    expect(result.inclusion.fdvUsd).toEqual({ min: 500000 });
   });
 
   it('should merge token-sector with existing inclusion.tokens', () => {
@@ -629,7 +620,7 @@ describe('buildCommonTokenTransferData new inclusion/exclusion flags', () => {
 
   it('should add market-cap range to inclusion.marketCap', () => {
     const result = buildCommonTokenTransferData({ 'market-cap-min': '1000000' });
-    expect(result.inclusion.marketCap).toEqual({ min: 1000000, max: null });
+    expect(result.inclusion.marketCap).toEqual({ min: 1000000 });
   });
 
   it('should add exclude-from to exclusion.fromTargets', () => {
@@ -926,6 +917,446 @@ describe('alerts update — type inference', () => {
     const sentData = mockApi.alertsUpdate.mock.calls[0][0].data;
     expect(sentData.usdValue).toEqual({ min: 100, max: 5000000 });
     expect(sentData.tokenAmount).toEqual({ min: 10, max: 500 });
+  });
+
+  it('should deep-merge inclusion-nested marketCap range on sm-token-flows', async () => {
+    const mockApi = {
+      alertsGet: vi.fn().mockResolvedValue({
+        type: 'sm-token-flows',
+        data: {
+          chains: ['ethereum'],
+          inflow_1h: { min: 1000, max: 50000 },
+          inclusion: { marketCap: { min: 1000000, max: 10000000 }, tokens: [{ address: '0xabc', chain: 'ethereum' }] },
+          exclusion: {},
+        },
+      }),
+      alertsUpdate: vi.fn().mockResolvedValue({ id: 'abc123' }),
+    };
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    await cmd(['update', 'abc123'], mockApi, {}, { 'market-cap-min': '5000000' });
+    const sentData = mockApi.alertsUpdate.mock.calls[0][0].data;
+    // marketCap.max must survive even though only min was updated
+    expect(sentData.inclusion.marketCap).toEqual({ min: 5000000, max: 10000000 });
+    // sibling inclusion keys preserved
+    expect(sentData.inclusion.tokens).toEqual([{ address: '0xabc', chain: 'ethereum' }]);
+    // top-level range untouched
+    expect(sentData.inflow_1h).toEqual({ min: 1000, max: 50000 });
+  });
+
+  it('should deep-merge inclusion-nested fdvUsd range on sm-token-flows', async () => {
+    const mockApi = {
+      alertsGet: vi.fn().mockResolvedValue({
+        type: 'sm-token-flows',
+        data: {
+          chains: ['base'],
+          inclusion: { fdvUsd: { min: 500000, max: 2000000 } },
+          exclusion: {},
+        },
+      }),
+      alertsUpdate: vi.fn().mockResolvedValue({ id: 'abc123' }),
+    };
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    await cmd(['update', 'abc123'], mockApi, {}, { 'fdv-max': '9000000' });
+    const sentData = mockApi.alertsUpdate.mock.calls[0][0].data;
+    expect(sentData.inclusion.fdvUsd).toEqual({ min: 500000, max: 9000000 });
+  });
+
+  it('should apply --data as post-merge override (named flags preserved)', async () => {
+    const mockApi = {
+      alertsGet: vi.fn().mockResolvedValue({
+        type: 'sm-token-flows',
+        data: {
+          chains: ['ethereum'],
+          inflow_1h: { min: 1000, max: 50000 },
+          inclusion: {},
+          exclusion: {},
+        },
+      }),
+      alertsUpdate: vi.fn().mockResolvedValue({ id: 'abc123' }),
+    };
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    // Named flag sets min, --data sets max on the same range
+    await cmd(['update', 'abc123'], mockApi, {}, {
+      'inflow-1h-min': '2000',
+      data: '{"inflow_1h":{"max":99999}}',
+    });
+    const sentData = mockApi.alertsUpdate.mock.calls[0][0].data;
+    // Both named flag and --data compose correctly
+    expect(sentData.inflow_1h).toEqual({ min: 2000, max: 99999 });
+  });
+
+  it('should apply --data after merge so it can clear a range bound with null', async () => {
+    const mockApi = {
+      alertsGet: vi.fn().mockResolvedValue({
+        type: 'sm-token-flows',
+        data: {
+          chains: ['ethereum'],
+          inflow_1h: { min: 1000, max: 50000 },
+          inclusion: {},
+          exclusion: {},
+        },
+      }),
+      alertsUpdate: vi.fn().mockResolvedValue({ id: 'abc123' }),
+    };
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    await cmd(['update', 'abc123'], mockApi, {}, {
+      data: '{"inflow_1h":{"max":null}}',
+    });
+    const sentData = mockApi.alertsUpdate.mock.calls[0][0].data;
+    expect(sentData.inflow_1h).toEqual({ min: 1000, max: null });
+  });
+
+  it('should let --data add fields to inclusion without losing named-flag tokens', async () => {
+    const mockApi = {
+      alertsGet: vi.fn().mockResolvedValue({
+        type: 'sm-token-flows',
+        data: {
+          chains: ['ethereum'],
+          inclusion: { tokens: [{ address: '0xold', chain: 'ethereum' }] },
+          exclusion: {},
+        },
+      }),
+      alertsUpdate: vi.fn().mockResolvedValue({ id: 'abc123' }),
+    };
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    await cmd(['update', 'abc123'], mockApi, {}, {
+      token: '0xnew:base',
+      data: '{"inclusion":{"marketCap":{"min":5000}}}',
+    });
+    const sentData = mockApi.alertsUpdate.mock.calls[0][0].data;
+    // Named flag replaces tokens, --data adds marketCap, both coexist
+    expect(sentData.inclusion.tokens).toEqual([{ address: '0xnew', chain: 'base' }]);
+    expect(sentData.inclusion.marketCap).toEqual({ min: 5000 });
+  });
+
+  it('should replace arrays entirely on update (not merge elements)', async () => {
+    const mockApi = {
+      alertsGet: vi.fn().mockResolvedValue({
+        type: 'common-token-transfer',
+        data: {
+          chains: ['ethereum', 'base'],
+          subjects: [{ type: 'label', value: 'old' }],
+          usdValue: {},
+          inclusion: {},
+          exclusion: {},
+        },
+      }),
+      alertsUpdate: vi.fn().mockResolvedValue({ id: 'abc123' }),
+    };
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    await cmd(['update', 'abc123'], mockApi, {}, {
+      chains: 'solana',
+      subject: 'address:0xabc',
+    });
+    const sentData = mockApi.alertsUpdate.mock.calls[0][0].data;
+    expect(sentData.chains).toEqual(['solana']);
+    expect(sentData.subjects).toEqual([{ type: 'address', value: '0xabc' }]);
+  });
+
+  it('should preserve fields the user does not mention', async () => {
+    const mockApi = {
+      alertsGet: vi.fn().mockResolvedValue({
+        type: 'sm-token-flows',
+        data: {
+          chains: ['ethereum'],
+          inflow_1h: { min: 1000, max: 50000 },
+          outflow_7d: { min: 100, max: 999 },
+          inclusion: { tokenSectors: ['defi'] },
+          exclusion: { tokens: [{ address: '0xskip', chain: 'base' }] },
+          unknownFutureField: 'preserved',
+        },
+      }),
+      alertsUpdate: vi.fn().mockResolvedValue({ id: 'abc123' }),
+    };
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    await cmd(['update', 'abc123'], mockApi, {}, { 'inflow-1h-min': '2000' });
+    const sentData = mockApi.alertsUpdate.mock.calls[0][0].data;
+    expect(sentData.inflow_1h).toEqual({ min: 2000, max: 50000 });
+    expect(sentData.outflow_7d).toEqual({ min: 100, max: 999 });
+    expect(sentData.inclusion.tokenSectors).toEqual(['defi']);
+    expect(sentData.exclusion.tokens).toEqual([{ address: '0xskip', chain: 'base' }]);
+    expect(sentData.unknownFutureField).toBe('preserved');
+  });
+
+  it('should throw on invalid --data JSON during update', async () => {
+    const mockApi = {
+      alertsGet: vi.fn().mockResolvedValue({
+        type: 'sm-token-flows',
+        data: { chains: [] },
+      }),
+      alertsUpdate: vi.fn(),
+    };
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    await expect(cmd(['update', 'abc123'], mockApi, {}, { data: 'not-json' }))
+      .rejects.toThrow('--data must be valid JSON');
+  });
+
+  it('should apply --data only via update handler when no named flags provided', async () => {
+    const mockApi = {
+      alertsGet: vi.fn().mockResolvedValue({
+        type: 'sm-token-flows',
+        data: {
+          chains: ['ethereum'],
+          inflow_1h: { min: 1000, max: 50000 },
+        },
+      }),
+      alertsUpdate: vi.fn().mockResolvedValue({ id: 'abc123' }),
+    };
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    await cmd(['update', 'abc123'], mockApi, {}, {
+      data: '{"chains":["base","solana"]}',
+    });
+    const sentData = mockApi.alertsUpdate.mock.calls[0][0].data;
+    expect(sentData.chains).toEqual(['base', 'solana']);
+    expect(sentData.inflow_1h).toEqual({ min: 1000, max: 50000 });
+  });
+
+  // ── smart-contract-call update edge cases ──
+
+  it('should deep-merge usdValue range on smart-contract-call', async () => {
+    const mockApi = {
+      alertsGet: vi.fn().mockResolvedValue({
+        type: 'smart-contract-call',
+        data: {
+          chains: ['ethereum'],
+          usdValue: { min: 5000, max: 100000 },
+          signatureHash: ['0xa9059cbb'],
+          inclusion: { caller: [{ type: 'label', value: 'SM' }], smartContract: [] },
+          exclusion: { caller: [], smartContract: [] },
+        },
+      }),
+      alertsUpdate: vi.fn().mockResolvedValue({ id: 'abc123' }),
+    };
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    await cmd(['update', 'abc123'], mockApi, {}, { 'usd-min': '25000' });
+    const sentData = mockApi.alertsUpdate.mock.calls[0][0].data;
+    expect(sentData.usdValue).toEqual({ min: 25000, max: 100000 });
+    expect(sentData.signatureHash).toEqual(['0xa9059cbb']);
+  });
+
+  it('should replace signatureHash array on smart-contract-call without dropping other fields', async () => {
+    const mockApi = {
+      alertsGet: vi.fn().mockResolvedValue({
+        type: 'smart-contract-call',
+        data: {
+          chains: ['ethereum'],
+          usdValue: { min: 5000, max: 100000 },
+          signatureHash: ['0xa9059cbb', '0x23b872dd'],
+          inclusion: { caller: [{ type: 'label', value: 'SM' }], smartContract: [] },
+          exclusion: { caller: [], smartContract: [] },
+        },
+      }),
+      alertsUpdate: vi.fn().mockResolvedValue({ id: 'abc123' }),
+    };
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    await cmd(['update', 'abc123'], mockApi, {}, { 'signature-hash': '0xffffffff' });
+    const sentData = mockApi.alertsUpdate.mock.calls[0][0].data;
+    expect(sentData.signatureHash).toEqual(['0xffffffff']);
+    expect(sentData.usdValue).toEqual({ min: 5000, max: 100000 });
+    expect(sentData.inclusion.caller).toEqual([{ type: 'label', value: 'SM' }]);
+  });
+
+  it('should preserve smartContract when updating caller on smart-contract-call', async () => {
+    const mockApi = {
+      alertsGet: vi.fn().mockResolvedValue({
+        type: 'smart-contract-call',
+        data: {
+          chains: ['ethereum'],
+          usdValue: {},
+          inclusion: { caller: [{ type: 'label', value: 'old' }], smartContract: [{ type: 'address', value: '0xdead' }] },
+          exclusion: { caller: [], smartContract: [] },
+        },
+      }),
+      alertsUpdate: vi.fn().mockResolvedValue({ id: 'abc123' }),
+    };
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    await cmd(['update', 'abc123'], mockApi, {}, { caller: 'entity:Binance' });
+    const sentData = mockApi.alertsUpdate.mock.calls[0][0].data;
+    expect(sentData.inclusion.caller).toEqual([{ type: 'entity', value: 'Binance' }]);
+    expect(sentData.inclusion.smartContract).toEqual([{ type: 'address', value: '0xdead' }]);
+  });
+
+  // ── common-token-transfer update edge cases ──
+
+  it('should deep-merge inclusion-nested marketCap range on common-token-transfer', async () => {
+    const mockApi = {
+      alertsGet: vi.fn().mockResolvedValue({
+        type: 'common-token-transfer',
+        data: {
+          chains: ['ethereum'],
+          usdValue: { min: 100, max: 999999 },
+          subjects: [{ type: 'label', value: 'SM' }],
+          inclusion: { marketCap: { min: 50000, max: 5000000 } },
+          exclusion: {},
+        },
+      }),
+      alertsUpdate: vi.fn().mockResolvedValue({ id: 'abc123' }),
+    };
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    await cmd(['update', 'abc123'], mockApi, {}, { 'market-cap-max': '20000000' });
+    const sentData = mockApi.alertsUpdate.mock.calls[0][0].data;
+    expect(sentData.inclusion.marketCap).toEqual({ min: 50000, max: 20000000 });
+    expect(sentData.usdValue).toEqual({ min: 100, max: 999999 });
+    expect(sentData.subjects).toEqual([{ type: 'label', value: 'SM' }]);
+  });
+
+  // ── cross-type edge cases ──
+
+  it('should handle existing null range bounds correctly', async () => {
+    const mockApi = {
+      alertsGet: vi.fn().mockResolvedValue({
+        type: 'common-token-transfer',
+        data: {
+          chains: ['ethereum'],
+          usdValue: { min: null, max: 999999 },
+          tokenAmount: { min: null, max: null },
+          subjects: [],
+          inclusion: {},
+          exclusion: {},
+        },
+      }),
+      alertsUpdate: vi.fn().mockResolvedValue({ id: 'abc123' }),
+    };
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    await cmd(['update', 'abc123'], mockApi, {}, { 'usd-min': '5000' });
+    const sentData = mockApi.alertsUpdate.mock.calls[0][0].data;
+    expect(sentData.usdValue).toEqual({ min: 5000, max: 999999 });
+    expect(sentData.tokenAmount).toEqual({ min: null, max: null });
+  });
+
+  it('should clear entire sub-object via --data null', async () => {
+    const mockApi = {
+      alertsGet: vi.fn().mockResolvedValue({
+        type: 'sm-token-flows',
+        data: {
+          chains: ['ethereum'],
+          inflow_1h: { min: 1000, max: 50000 },
+          inclusion: { marketCap: { min: 100, max: 999 }, tokenSectors: ['defi'] },
+          exclusion: { tokens: [{ address: '0xskip', chain: 'base' }] },
+        },
+      }),
+      alertsUpdate: vi.fn().mockResolvedValue({ id: 'abc123' }),
+    };
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    await cmd(['update', 'abc123'], mockApi, {}, { data: '{"inclusion":null}' });
+    const sentData = mockApi.alertsUpdate.mock.calls[0][0].data;
+    expect(sentData.inclusion).toBeNull();
+    expect(sentData.inflow_1h).toEqual({ min: 1000, max: 50000 });
+    expect(sentData.exclusion).toEqual({ tokens: [{ address: '0xskip', chain: 'base' }] });
+  });
+
+  it('should deep-merge --data + named flags on common-token-transfer', async () => {
+    const mockApi = {
+      alertsGet: vi.fn().mockResolvedValue({
+        type: 'common-token-transfer',
+        data: {
+          chains: ['ethereum'],
+          usdValue: { min: 100, max: 999999 },
+          tokenAmount: { min: 10, max: 500 },
+          subjects: [],
+          inclusion: {},
+          exclusion: {},
+        },
+      }),
+      alertsUpdate: vi.fn().mockResolvedValue({ id: 'abc123' }),
+    };
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    await cmd(['update', 'abc123'], mockApi, {}, {
+      'token-amount-min': '50',
+      data: '{"tokenAmount":{"max":2000}}',
+    });
+    const sentData = mockApi.alertsUpdate.mock.calls[0][0].data;
+    expect(sentData.tokenAmount).toEqual({ min: 50, max: 2000 });
+    expect(sentData.usdValue).toEqual({ min: 100, max: 999999 });
+  });
+
+  it('should deep-merge --data + named flags on smart-contract-call', async () => {
+    const mockApi = {
+      alertsGet: vi.fn().mockResolvedValue({
+        type: 'smart-contract-call',
+        data: {
+          chains: ['ethereum'],
+          usdValue: { min: 5000, max: 100000 },
+          signatureHash: ['0xa9059cbb'],
+          inclusion: { caller: [], smartContract: [] },
+          exclusion: { caller: [], smartContract: [] },
+        },
+      }),
+      alertsUpdate: vi.fn().mockResolvedValue({ id: 'abc123' }),
+    };
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    await cmd(['update', 'abc123'], mockApi, {}, {
+      'usd-min': '10000',
+      data: '{"usdValue":{"max":null}}',
+    });
+    const sentData = mockApi.alertsUpdate.mock.calls[0][0].data;
+    expect(sentData.usdValue).toEqual({ min: 10000, max: null });
+    expect(sentData.signatureHash).toEqual(['0xa9059cbb']);
+  });
+
+  it('should clear range bound with null on common-token-transfer', async () => {
+    const mockApi = {
+      alertsGet: vi.fn().mockResolvedValue({
+        type: 'common-token-transfer',
+        data: {
+          chains: ['ethereum'],
+          usdValue: { min: 1000, max: 500000 },
+          subjects: [],
+          inclusion: {},
+          exclusion: {},
+        },
+      }),
+      alertsUpdate: vi.fn().mockResolvedValue({ id: 'abc123' }),
+    };
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    await cmd(['update', 'abc123'], mockApi, {}, { data: '{"usdValue":{"min":null}}' });
+    const sentData = mockApi.alertsUpdate.mock.calls[0][0].data;
+    expect(sentData.usdValue).toEqual({ min: null, max: 500000 });
+  });
+});
+
+describe('alerts create — --data as post-merge override', () => {
+  it('should deep-merge --data on top of named flags and defaults', async () => {
+    const mockApi = { alertsCreate: vi.fn().mockResolvedValue({ id: 'new' }) };
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    await cmd(['create'], mockApi, {}, {
+      name: 'Test',
+      type: 'sm-token-flows',
+      chains: 'ethereum',
+      telegram: '123',
+      'inflow-1h-min': '1000',
+      data: '{"inflow_1h":{"max":9999},"events":["custom"]}',
+    });
+    const sentData = mockApi.alertsCreate.mock.calls[0][0].data;
+    expect(sentData.inflow_1h).toEqual({ min: 1000, max: 9999 });
+    expect(sentData.events).toEqual(['custom']);
+    // Defaults for unset fields still present
+    expect(sentData.outflow_1d).toEqual({});
+  });
+
+  it('should throw on invalid --data JSON during create', async () => {
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    await expect(cmd(['create'], {}, {}, {
+      name: 'Test',
+      type: 'sm-token-flows',
+      chains: 'ethereum',
+      telegram: '123',
+      data: '{bad}',
+    })).rejects.toThrow('--data must be valid JSON');
+  });
+
+  it('should accept --data as object (not string) during create', async () => {
+    const mockApi = { alertsCreate: vi.fn().mockResolvedValue({ id: 'new' }) };
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    await cmd(['create'], mockApi, {}, {
+      name: 'Test',
+      type: 'sm-token-flows',
+      chains: 'ethereum',
+      telegram: '123',
+      data: { chains: ['solana'] },
+    });
+    const sentData = mockApi.alertsCreate.mock.calls[0][0].data;
+    expect(sentData.chains).toEqual(['solana']);
   });
 });
 
