@@ -44,15 +44,14 @@ function mockApi(overrides = {}) {
 // ── Tests ──
 
 describe('agent command', () => {
-  let log, errorOutput, write, cmd;
+  let log, write, cmd;
 
   afterEach(() => { vi.restoreAllMocks(); });
 
   beforeEach(() => {
     log = vi.fn();
-    errorOutput = vi.fn();
     write = vi.fn();
-    cmd = buildAgentCommands({ log, errorOutput, write })['agent'];
+    cmd = buildAgentCommands({ log, write })['agent'];
   });
 
   // ── Help output ──
@@ -149,19 +148,6 @@ describe('agent command', () => {
         .rejects.toThrow('Invalid --conversation-id');
     });
 
-    it('falls back to UUID when conversation-id is boolean true', async () => {
-      const api = mockApi();
-      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-        mockSSEResponse('data: {"type":"finish","conversation_id":"c1"}\n\ndata: [DONE]\n\n')
-      );
-
-      await cmd(['test'], api, {}, { 'conversation-id': true });
-
-      const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
-      // Should be a UUID, not "true"
-      expect(body.conversation_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
-    });
-
     it('falls back to UUID when conversation-id is empty string', async () => {
       const api = mockApi();
       const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
@@ -220,7 +206,7 @@ describe('agent command', () => {
       vi.spyOn(globalThis, 'fetch').mockResolvedValue({
         ok: false,
         status: 401,
-        headers: { get: () => 'application/json' },
+        headers: new Headers({ 'content-type': 'application/json' }),
         json: async () => ({ detail: 'API key required' }),
       });
 
@@ -238,7 +224,7 @@ describe('agent command', () => {
       vi.spyOn(globalThis, 'fetch').mockResolvedValue({
         ok: false,
         status: 429,
-        headers: { get: () => 'application/json' },
+        headers: new Headers({ 'content-type': 'application/json' }),
         json: async () => ({ detail: 'Too many requests' }),
       });
 
@@ -256,7 +242,7 @@ describe('agent command', () => {
       vi.spyOn(globalThis, 'fetch').mockResolvedValue({
         ok: false,
         status: 500,
-        headers: { get: () => 'application/json' },
+        headers: new Headers({ 'content-type': 'application/json' }),
         json: async () => ({ detail: 'Internal agent failure' }),
       });
 
@@ -302,7 +288,7 @@ describe('agent command', () => {
       });
     }
 
-    it('streams text and tool calls to stderr/stdout', async () => {
+    it('streams text and tool calls to stdout', async () => {
       const api = mockApi();
       const sseEvents = [
         { type: 'delta', text: 'Hello ' },
@@ -320,19 +306,16 @@ describe('agent command', () => {
 
       await cmd(['test question'], api, {}, {});
 
-      // errorOutput receives thinking indicator
-      expect(errorOutput).toHaveBeenCalledWith('Thinking... (mode: fast)');
-
       // write receives the delta text chunks
       expect(write).toHaveBeenCalledWith('Hello ');
       expect(write).toHaveBeenCalledWith('world');
 
-      // errorOutput receives tool call names with ⚙ prefix
-      expect(errorOutput).toHaveBeenCalledWith('⚙ token_search');
+      // log receives tool call names with ⚙ prefix
+      expect(log).toHaveBeenCalledWith('⚙ token_search');
 
-      // errorOutput receives conversation continuation hint
-      const allErrorCalls = errorOutput.mock.calls.map(c => c[0]);
-      expect(allErrorCalls.some(c => c.includes('nansen agent') && c.includes('conv-stream'))).toBe(true);
+      // log receives conversation continuation hint
+      const allLogCalls = log.mock.calls.map(c => c[0]);
+      expect(allLogCalls.some(c => c.includes('nansen agent') && c.includes('conv-stream'))).toBe(true);
     });
   });
 
@@ -424,17 +407,14 @@ describe('agent command', () => {
   // ── No response goes to stderr ──
 
   describe('no response output', () => {
-    it('sends "(no response from agent)" to stderr, not stdout', async () => {
+    it('sends "(no response from agent)" to stdout', async () => {
       vi.spyOn(globalThis, 'fetch').mockResolvedValue(
         mockSSEResponse('data: {"type":"finish","conversation_id":"c1"}\n\ndata: [DONE]\n\n')
       );
 
       await cmd(['test'], mockApi(), {}, {});
 
-      expect(errorOutput).toHaveBeenCalledWith('(no response from agent)');
-      // log (stdout) should NOT have the message
-      const logCalls = log.mock.calls.map(c => c[0]);
-      expect(logCalls).not.toContain('(no response from agent)');
+      expect(log).toHaveBeenCalledWith('(no response from agent)');
     });
   });
 });
