@@ -1,5 +1,0 @@
-Thinking... (mode: fast)
-tools used: token_discovery_screener
-
-To continue this conversation:
-  nansen agent "<follow-up>" --conversation-id c20960d3-7cdf-449c-a5d5-af0b7314d294
