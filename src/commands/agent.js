@@ -295,15 +295,18 @@ NOTE: This endpoint is currently internal-only (requires a Nansen internal accou
 
       // ── Streaming output mode ──
       let hasOutput = false;
+      let midLine = false; // true when write() was called without a trailing newline
       let result;
       try {
         result = await consumeSSEStream(response, {
           onDelta(text) {
+            if (!midLine && text.trim() === '') return;
             write(text);
             hasOutput = true;
+            midLine = text.length > 0 && !text.endsWith('\n');
           },
           onToolCall(name) {
-            if (hasOutput) write('\n');
+            if (midLine) { write('\n'); midLine = false; }
             log(`⚙ ${name}`);
           },
         });
@@ -312,7 +315,7 @@ NOTE: This endpoint is currently internal-only (requires a Nansen internal accou
       }
 
       // Ensure a trailing newline after streamed text
-      if (hasOutput) {
+      if (midLine) {
         write('\n');
       }
 
