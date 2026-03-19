@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.20.0
+
+### Minor Changes
+
+- [#302](https://github.com/nansen-ai/nansen-cli/pull/302) [`3f0a5ab`](https://github.com/nansen-ai/nansen-cli/commit/3f0a5abad463c0386122efbe746809913aa823ba) Thanks [@arein](https://github.com/arein)! - Add post-install onboarding that interactively offers to install the Nansen AI coding skill and run a test query after `npm install -g nansen-cli`. Non-interactive environments (CI, piped stdin) receive a one-liner tip and are never blocked.
+
+### Patch Changes
+
+- [#313](https://github.com/nansen-ai/nansen-cli/pull/313) [`bb4d9e4`](https://github.com/nansen-ai/nansen-cli/commit/bb4d9e475158147645cae9b8bdd2555568a1e515) Thanks [@0xlaveen](https://github.com/0xlaveen)! - Update API key setup URL from app.nansen.ai/api to app.nansen.ai/auth/agent-setup across CLI help text, error messages, README, and postinstall script.
+
 ## 1.19.0
 
 ### Minor Changes
