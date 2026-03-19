@@ -282,8 +282,12 @@ NOTE: This endpoint is currently internal-only (requires a Nansen internal accou
 
       // ── JSON mode: buffer everything, return structured data ──
       if (flags.json) {
-        const result = await consumeSSEStream(response);
-        clearTimeout(timer);
+        let result;
+        try {
+          result = await consumeSSEStream(response);
+        } finally {
+          clearTimeout(timer);
+        }
         return {
           conversation_id: result.conversationId || conversationId,
           mode: modeName,
@@ -329,7 +333,7 @@ NOTE: This endpoint is currently internal-only (requires a Nansen internal accou
       const effectiveConvId = result.conversationId || conversationId;
       const expertFlag = expert ? ' --expert' : '';
       errorOutput(`\nTo continue this conversation:`);
-      errorOutput(`  nansen agent "<follow-up>" --conversation-id ${effectiveConvId}${expertFlag}`);
+      errorOutput(`  nansen agent "<follow-up>" --conversation-id "${effectiveConvId}"${expertFlag}`);
 
       return;
     },
