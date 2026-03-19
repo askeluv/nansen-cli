@@ -183,7 +183,7 @@ describe('agent command', () => {
         'data: [DONE]\n\n',
       ].join('');
 
-      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
         mockSSEResponse(sseData)
       );
 
@@ -199,7 +199,7 @@ describe('agent command', () => {
 
     it('returns expert mode in JSON output', async () => {
       const api = mockApi();
-      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
         mockSSEResponse('data: {"type":"finish","conversation_id":"c1"}\n\ndata: [DONE]\n\n')
       );
 
