@@ -132,16 +132,21 @@ describe('agent command', () => {
   // ── --conversation-id validation ──
 
   describe('conversation-id validation', () => {
-    it('uses provided conversation-id string', async () => {
+    it('uses provided valid UUID conversation-id', async () => {
       const api = mockApi();
       const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
         mockSSEResponse('data: {"type":"finish","conversation_id":"c1"}\n\ndata: [DONE]\n\n')
       );
 
-      await cmd(['test'], api, {}, { 'conversation-id': 'my-conv-123' });
+      await cmd(['test'], api, {}, { 'conversation-id': '550e8400-e29b-41d4-a716-446655440000' });
 
       const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
-      expect(body.conversation_id).toBe('my-conv-123');
+      expect(body.conversation_id).toBe('550e8400-e29b-41d4-a716-446655440000');
+    });
+
+    it('rejects non-UUID conversation-id', async () => {
+      await expect(cmd(['test'], mockApi(), {}, { 'conversation-id': 'my-conv-123' }))
+        .rejects.toThrow('Invalid --conversation-id');
     });
 
     it('falls back to UUID when conversation-id is boolean true', async () => {
@@ -376,40 +381,43 @@ describe('agent command', () => {
 
   // ── Conversation ID validation ──
 
-  describe('conversation-id validation', () => {
-    it('warns when conversation-id contains spaces', async () => {
-      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-        mockSSEResponse('data: {"type":"finish","conversation_id":"c1"}\n\ndata: [DONE]\n\n')
-      );
-
-      await cmd(['test'], mockApi(), {}, { 'conversation-id': 'what are the top tokens' });
-
-      expect(errorOutput).toHaveBeenCalledWith(
-        expect.stringContaining("doesn't look like a conversation ID"),
-      );
+  describe('conversation-id strict UUID validation', () => {
+    it('throws INVALID_PARAMS when conversation-id is not a UUID', async () => {
+      try {
+        await cmd(['test'], mockApi(), {}, { 'conversation-id': 'what are the top tokens' });
+        expect.unreachable('should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(NansenError);
+        expect(err.code).toBe(ErrorCode.INVALID_PARAMS);
+        expect(err.message).toContain('Invalid --conversation-id');
+      }
     });
 
-    it('warns when conversation-id is very long', async () => {
-      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-        mockSSEResponse('data: {"type":"finish","conversation_id":"c1"}\n\ndata: [DONE]\n\n')
-      );
-
-      await cmd(['test'], mockApi(), {}, { 'conversation-id': 'a'.repeat(101) });
-
-      expect(errorOutput).toHaveBeenCalledWith(
-        expect.stringContaining("doesn't look like a conversation ID"),
-      );
+    it('throws for non-UUID strings like "abc-123"', async () => {
+      await expect(cmd(['test'], mockApi(), {}, { 'conversation-id': 'abc-123-def' }))
+        .rejects.toThrow('Invalid --conversation-id');
     });
 
-    it('does not warn for valid UUID conversation-id', async () => {
+    it('accepts a valid UUID v4', async () => {
       vi.spyOn(globalThis, 'fetch').mockResolvedValue(
         mockSSEResponse('data: {"type":"finish","conversation_id":"c1"}\n\ndata: [DONE]\n\n')
       );
 
-      await cmd(['test'], mockApi(), {}, { 'conversation-id': 'abc-123-def' });
+      await cmd(['test'], mockApi(), {}, { 'conversation-id': '550e8400-e29b-41d4-a716-446655440000' });
 
-      const warnCalls = errorOutput.mock.calls.filter(c => c[0].includes("doesn't look like"));
-      expect(warnCalls).toHaveLength(0);
+      const body = JSON.parse(globalThis.fetch.mock.calls[0][1].body);
+      expect(body.conversation_id).toBe('550e8400-e29b-41d4-a716-446655440000');
+    });
+
+    it('accepts uppercase UUIDs', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        mockSSEResponse('data: {"type":"finish","conversation_id":"c1"}\n\ndata: [DONE]\n\n')
+      );
+
+      await cmd(['test'], mockApi(), {}, { 'conversation-id': '550E8400-E29B-41D4-A716-446655440000' });
+
+      const body = JSON.parse(globalThis.fetch.mock.calls[0][1].body);
+      expect(body.conversation_id).toBe('550E8400-E29B-41D4-A716-446655440000');
     });
   });
 

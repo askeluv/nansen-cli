@@ -174,19 +174,20 @@ USAGE:
 
 OPTIONS:
   --expert                     Use expert mode (default: fast)
-  --conversation-id <id>       Continue a previous conversation
+  --conversation-id <uuid>     Continue a previous conversation (UUID v4)
   --json                       Output raw JSON instead of formatted text
 
 CONVERSATION FLOW:
-  Each request generates a conversation ID. To continue a multi-turn
-  conversation, pass it back with --conversation-id. The ID and a
-  ready-to-copy follow-up command are printed to stderr after each response.
+  Each request generates a UUID v4 conversation ID. To continue a
+  multi-turn conversation, pass it back with --conversation-id. The ID
+  and a ready-to-copy follow-up command are printed to stderr after each
+  response.
 
 EXAMPLES:
   nansen agent "What are the top smart money inflows on Ethereum today?"
   nansen agent "Show me the largest whale wallets on Solana"
   nansen agent "Analyze wallet 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045" --expert
-  nansen agent "Tell me more about their DeFi positions" --conversation-id abc123
+  nansen agent "Tell me more about their DeFi positions" --conversation-id 550e8400-e29b-41d4-a716-446655440000
 
 NOTE: This endpoint is currently internal-only (requires a Nansen internal account).`,
       };
@@ -209,12 +210,23 @@ NOTE: This endpoint is currently internal-only (requires a Nansen internal accou
       const endpoint = expert ? '/api/v1/agent/expert' : '/api/v1/agent/fast';
       const modeName = expert ? 'expert' : 'fast';
 
-      // ── Conversation ID ──
+      // ── Conversation ID (must be UUID v4) ──
+      const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       const rawConvId = options['conversation-id'];
-      if (typeof rawConvId === 'string' && rawConvId && (rawConvId.length > 100 || rawConvId.includes(' '))) {
-        errorOutput(`Warning: --conversation-id "${rawConvId.slice(0, 60)}${rawConvId.length > 60 ? '...' : ''}" doesn't look like a conversation ID. Did you forget to quote the question?`);
+      let conversationId;
+      if (typeof rawConvId === 'string' && rawConvId) {
+        if (!UUID_RE.test(rawConvId)) {
+          throw new NansenError(
+            `Invalid --conversation-id: expected a UUID (e.g. 550e8400-e29b-41d4-a716-446655440000), got "${rawConvId.slice(0, 60)}${rawConvId.length > 60 ? '...' : ''}"`,
+            ErrorCode.INVALID_PARAMS,
+            null,
+            { detail: 'conversation-id must be a UUID v4' },
+          );
+        }
+        conversationId = rawConvId;
+      } else {
+        conversationId = crypto.randomUUID();
       }
-      const conversationId = (typeof rawConvId === 'string' && rawConvId) ? rawConvId : crypto.randomUUID();
 
       // ── Auth guard ──
       if (!apiInstance.apiKey) {
