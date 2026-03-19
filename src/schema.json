@@ -836,7 +836,8 @@
         },
         "conversation-id": {
           "type": "string",
-          "description": "Continue a previous conversation by passing its ID"
+          "format": "uuid",
+          "description": "Continue a previous conversation by passing its UUID v4 ID"
         },
         "json": {
           "type": "boolean",
