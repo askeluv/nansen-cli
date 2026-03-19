@@ -317,6 +317,30 @@ describe('agent command', () => {
       const allLogCalls = log.mock.calls.map(c => c[0]);
       expect(allLogCalls.some(c => c.includes('nansen agent') && c.includes('conv-stream'))).toBe(true);
     });
+
+    it('does not emit a blank line between consecutive tool calls separated by a newline delta', async () => {
+      const api = mockApi();
+      const sseEvents = [
+        { type: 'tool_call', name: 'token_ohlcv' },
+        { type: 'delta', text: '\n' },
+        { type: 'tool_call', name: 'token_current_top_holders' },
+        { type: 'finish', conversation_id: 'conv-tools' },
+      ];
+
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'text/event-stream' }),
+        body: mockSSEStream(sseEvents),
+      });
+
+      await cmd(['test question'], api, {}, {});
+
+      // The newline delta between tool calls must be suppressed
+      expect(write).not.toHaveBeenCalledWith('\n');
+      expect(log).toHaveBeenCalledWith('⚙ token_ohlcv');
+      expect(log).toHaveBeenCalledWith('⚙ token_current_top_holders');
+    });
   });
 
   // ── Timeout ──
