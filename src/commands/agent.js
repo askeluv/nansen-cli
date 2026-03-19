@@ -64,7 +64,7 @@ function throwApiError(message, status, serverDetail) {
  * @param {Function} [callbacks.onToolCall] – called with each tool name
  * @returns {{ text: string, toolCalls: string[], conversationId: string|null }}
  */
-async function consumeSSEStream(response, callbacks = {}) {
+export async function consumeSSEStream(response, callbacks = {}) {
   const { onDelta, onToolCall } = callbacks;
   const chunks = [];
   const toolCalls = [];
@@ -80,6 +80,7 @@ async function consumeSSEStream(response, callbacks = {}) {
 
     // SSE: split on double-newline boundaries
     let boundary;
+    let done = false;
     while ((boundary = buffer.indexOf('\n\n')) !== -1) {
       const frame = buffer.slice(0, boundary);
       buffer = buffer.slice(boundary + 2);
@@ -87,7 +88,7 @@ async function consumeSSEStream(response, callbacks = {}) {
       for (const line of frame.split('\n')) {
         if (!line.startsWith('data: ')) continue;
         const payload = line.slice(6);
-        if (payload === '[DONE]') break;
+        if (payload === '[DONE]') { done = true; break; }
 
         let event;
         try {
@@ -117,7 +118,9 @@ async function consumeSSEStream(response, callbacks = {}) {
             break;
         }
       }
+      if (done) break;
     }
+    if (done) break;
   }
 
   if (errorPayload) {
@@ -137,14 +140,14 @@ async function consumeSSEStream(response, callbacks = {}) {
  *
  * @param {object} [deps]
  * @param {Function} [deps.log]     – stdout line output (default: console.log)
- * @param {Function} [deps.errLog]  – stderr line output (default: console.error)
- * @param {Function} [deps.write]   – raw stdout writer, no trailing newline (default: process.stdout.write)
+ * @param {Function} [deps.errorOutput]  – stderr line output (default: console.error)
+ * @param {Function} [deps.write]        – raw stdout writer, no trailing newline (default: process.stdout.write)
  * @returns {object} command map
  */
 export function buildAgentCommands(deps = {}) {
   const {
     log = console.log,
-    errLog = console.error,
+    errorOutput = console.error,
     write = (s) => process.stdout.write(s),
   } = deps;
 
@@ -204,7 +207,18 @@ NOTE: This endpoint is currently internal-only (requires a Nansen internal accou
       const modeName = expert ? 'expert' : 'fast';
 
       // ── Conversation ID ──
-      const conversationId = options['conversation-id'] || crypto.randomUUID();
+      const rawConvId = options['conversation-id'];
+      const conversationId = (typeof rawConvId === 'string' && rawConvId) ? rawConvId : crypto.randomUUID();
+
+      // ── Auth guard ──
+      if (!apiInstance.apiKey) {
+        throw new NansenError(
+          'Not logged in. Run: nansen login',
+          ErrorCode.UNAUTHORIZED,
+          401,
+          { detail: 'No API key configured' },
+        );
+      }
 
       // ── Request ──
       const url = `${apiInstance.baseUrl}${endpoint}`;
@@ -256,7 +270,7 @@ NOTE: This endpoint is currently internal-only (requires a Nansen internal accou
       }
 
       // ── Streaming output mode ──
-      errLog(`Thinking... (mode: ${modeName})`);
+      errorOutput(`Thinking... (mode: ${modeName})`);
 
       let hasOutput = false;
       const result = await consumeSSEStream(response, {
@@ -265,7 +279,7 @@ NOTE: This endpoint is currently internal-only (requires a Nansen internal accou
           hasOutput = true;
         },
         onToolCall(name) {
-          errLog(`⚙ ${name}`);
+          errorOutput(`⚙ ${name}`);
         },
       });
 
@@ -276,7 +290,7 @@ NOTE: This endpoint is currently internal-only (requires a Nansen internal accou
 
       // Summarize tool calls after the response
       if (result.toolCalls.length > 0) {
-        errLog(`tools used: ${result.toolCalls.join(', ')}`);
+        errorOutput(`tools used: ${result.toolCalls.join(', ')}`);
       }
 
       if (!hasOutput) {
@@ -286,8 +300,8 @@ NOTE: This endpoint is currently internal-only (requires a Nansen internal accou
       // Print conversation continuation hint
       const effectiveConvId = result.conversationId || conversationId;
       const expertFlag = expert ? ' --expert' : '';
-      errLog(`\nTo continue this conversation:`);
-      errLog(`  nansen agent "<follow-up>" --conversation-id ${effectiveConvId}${expertFlag}`);
+      errorOutput(`\nTo continue this conversation:`);
+      errorOutput(`  nansen agent "<follow-up>" --conversation-id ${effectiveConvId}${expertFlag}`);
 
       return;
     },

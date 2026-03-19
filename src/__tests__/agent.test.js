@@ -1,0 +1,312 @@
+/**
+ * Agent command tests
+ */
+
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { buildAgentCommands, consumeSSEStream } from '../commands/agent.js';
+import { NansenError, ErrorCode } from '../api.js';
+
+// ── Helpers ──
+
+/** Create a mock ReadableStream from SSE string chunks. */
+function mockSSEBody(chunks) {
+  const encoder = new TextEncoder();
+  return {
+    async *[Symbol.asyncIterator]() {
+      for (const chunk of chunks) {
+        yield encoder.encode(chunk);
+      }
+    },
+  };
+}
+
+/** Build a mock Response with an SSE body. */
+function mockSSEResponse(sseText) {
+  const chunks = Array.isArray(sseText) ? sseText : [sseText];
+  return {
+    ok: true,
+    status: 200,
+    headers: new Headers({ 'content-type': 'text/event-stream' }),
+    body: mockSSEBody(chunks),
+  };
+}
+
+/** Build a mock apiInstance. */
+function mockApi(overrides = {}) {
+  return {
+    apiKey: 'test-key',
+    baseUrl: 'https://api.nansen.ai',
+    defaultHeaders: {},
+    ...overrides,
+  };
+}
+
+// ── Tests ──
+
+describe('agent command', () => {
+  let log, errorOutput, write, cmd;
+
+  beforeEach(() => {
+    log = vi.fn();
+    errorOutput = vi.fn();
+    write = vi.fn();
+    cmd = buildAgentCommands({ log, errorOutput, write })['agent'];
+  });
+
+  // ── Help output ──
+
+  describe('help output', () => {
+    it('shows help with no args', async () => {
+      await cmd([], mockApi(), {}, {});
+      expect(log).toHaveBeenCalledTimes(1);
+      expect(log.mock.calls[0][0]).toContain('nansen agent');
+      expect(log.mock.calls[0][0]).toContain('USAGE');
+    });
+
+    it('shows help with --help flag', async () => {
+      await cmd([], mockApi(), { help: true }, {});
+      expect(log).toHaveBeenCalledTimes(1);
+      expect(log.mock.calls[0][0]).toContain('nansen agent');
+    });
+
+    it('shows help with "help" subcommand', async () => {
+      await cmd(['help'], mockApi(), {}, {});
+      expect(log).toHaveBeenCalledTimes(1);
+      expect(log.mock.calls[0][0]).toContain('nansen agent');
+    });
+  });
+
+  // ── Auth guard ──
+
+  describe('auth guard', () => {
+    it('throws UNAUTHORIZED when no API key', async () => {
+      const api = mockApi({ apiKey: null });
+      await expect(cmd(['test question'], api, {}, {}))
+        .rejects.toThrow('Not logged in. Run: nansen login');
+    });
+
+    it('throws with correct error code', async () => {
+      const api = mockApi({ apiKey: '' });
+      try {
+        await cmd(['test question'], api, {}, {});
+        expect.unreachable('should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(NansenError);
+        expect(err.code).toBe(ErrorCode.UNAUTHORIZED);
+        expect(err.status).toBe(401);
+      }
+    });
+  });
+
+  // ── Flag handling ──
+
+  describe('flag handling', () => {
+    it('--expert sets expert endpoint', async () => {
+      const api = mockApi();
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        mockSSEResponse('data: {"type":"finish","conversation_id":"c1"}\n\ndata: [DONE]\n\n')
+      );
+
+      await cmd(['test'], api, { expert: true }, {});
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      const url = fetchSpy.mock.calls[0][0];
+      expect(url).toContain('/api/v1/agent/expert');
+      fetchSpy.mockRestore();
+    });
+
+    it('defaults to fast endpoint without --expert', async () => {
+      const api = mockApi();
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        mockSSEResponse('data: {"type":"finish","conversation_id":"c1"}\n\ndata: [DONE]\n\n')
+      );
+
+      await cmd(['test'], api, {}, {});
+
+      const url = fetchSpy.mock.calls[0][0];
+      expect(url).toContain('/api/v1/agent/fast');
+      fetchSpy.mockRestore();
+    });
+  });
+
+  // ── --conversation-id validation ──
+
+  describe('conversation-id validation', () => {
+    it('uses provided conversation-id string', async () => {
+      const api = mockApi();
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        mockSSEResponse('data: {"type":"finish","conversation_id":"c1"}\n\ndata: [DONE]\n\n')
+      );
+
+      await cmd(['test'], api, {}, { 'conversation-id': 'my-conv-123' });
+
+      const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+      expect(body.conversation_id).toBe('my-conv-123');
+      fetchSpy.mockRestore();
+    });
+
+    it('falls back to UUID when conversation-id is boolean true', async () => {
+      const api = mockApi();
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        mockSSEResponse('data: {"type":"finish","conversation_id":"c1"}\n\ndata: [DONE]\n\n')
+      );
+
+      await cmd(['test'], api, {}, { 'conversation-id': true });
+
+      const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+      // Should be a UUID, not "true"
+      expect(body.conversation_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+      fetchSpy.mockRestore();
+    });
+
+    it('falls back to UUID when conversation-id is empty string', async () => {
+      const api = mockApi();
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        mockSSEResponse('data: {"type":"finish","conversation_id":"c1"}\n\ndata: [DONE]\n\n')
+      );
+
+      await cmd(['test'], api, {}, { 'conversation-id': '' });
+
+      const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+      expect(body.conversation_id).toMatch(/^[0-9a-f]{8}-/);
+      fetchSpy.mockRestore();
+    });
+  });
+
+  // ── --json output ──
+
+  describe('--json output', () => {
+    it('returns structured JSON object', async () => {
+      const api = mockApi();
+      const sseData = [
+        'data: {"type":"delta","text":"Hello "}\n\n',
+        'data: {"type":"tool_call","name":"search"}\n\n',
+        'data: {"type":"delta","text":"world"}\n\n',
+        'data: {"type":"finish","conversation_id":"conv-42"}\n\n',
+        'data: [DONE]\n\n',
+      ].join('');
+
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        mockSSEResponse(sseData)
+      );
+
+      const result = await cmd(['test'], api, { json: true }, {});
+
+      expect(result).toEqual({
+        conversation_id: 'conv-42',
+        mode: 'fast',
+        text: 'Hello world',
+        tool_calls: ['search'],
+      });
+      fetchSpy.mockRestore();
+    });
+
+    it('returns expert mode in JSON output', async () => {
+      const api = mockApi();
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        mockSSEResponse('data: {"type":"finish","conversation_id":"c1"}\n\ndata: [DONE]\n\n')
+      );
+
+      const result = await cmd(['test'], api, { json: true, expert: true }, {});
+      expect(result.mode).toBe('expert');
+      fetchSpy.mockRestore();
+    });
+  });
+});
+
+// ── consumeSSEStream tests ──
+
+describe('consumeSSEStream', () => {
+  it('collects delta text chunks', async () => {
+    const response = mockSSEResponse([
+      'data: {"type":"delta","text":"Hello "}\n\ndata: {"type":"delta","text":"world"}\n\n',
+      'data: [DONE]\n\n',
+    ]);
+    const result = await consumeSSEStream(response);
+    expect(result.text).toBe('Hello world');
+  });
+
+  it('collects tool calls', async () => {
+    const response = mockSSEResponse([
+      'data: {"type":"tool_call","name":"token_search"}\n\n',
+      'data: {"type":"tool_call","name":"wallet_profiler"}\n\n',
+      'data: [DONE]\n\n',
+    ]);
+    const result = await consumeSSEStream(response);
+    expect(result.toolCalls).toEqual(['token_search', 'wallet_profiler']);
+  });
+
+  it('captures conversation_id from finish event', async () => {
+    const response = mockSSEResponse(
+      'data: {"type":"finish","conversation_id":"abc-123"}\n\ndata: [DONE]\n\n'
+    );
+    const result = await consumeSSEStream(response);
+    expect(result.conversationId).toBe('abc-123');
+  });
+
+  it('throws on error event', async () => {
+    const response = mockSSEResponse(
+      'data: {"type":"error","error":"Something broke","status_code":500}\n\ndata: [DONE]\n\n'
+    );
+    await expect(consumeSSEStream(response)).rejects.toThrow();
+  });
+
+  it('invokes onDelta callback for each text chunk', async () => {
+    const onDelta = vi.fn();
+    const response = mockSSEResponse([
+      'data: {"type":"delta","text":"A"}\n\n',
+      'data: {"type":"delta","text":"B"}\n\n',
+      'data: [DONE]\n\n',
+    ]);
+    await consumeSSEStream(response, { onDelta });
+    expect(onDelta).toHaveBeenCalledTimes(2);
+    expect(onDelta).toHaveBeenCalledWith('A');
+    expect(onDelta).toHaveBeenCalledWith('B');
+  });
+
+  it('invokes onToolCall callback', async () => {
+    const onToolCall = vi.fn();
+    const response = mockSSEResponse(
+      'data: {"type":"tool_call","name":"lookup"}\n\ndata: [DONE]\n\n'
+    );
+    await consumeSSEStream(response, { onToolCall });
+    expect(onToolCall).toHaveBeenCalledWith('lookup');
+  });
+
+  it('handles [DONE] correctly and stops processing', async () => {
+    // After [DONE], no more events should be processed
+    const onDelta = vi.fn();
+    const response = mockSSEResponse(
+      'data: {"type":"delta","text":"before"}\n\ndata: [DONE]\n\ndata: {"type":"delta","text":"after"}\n\n'
+    );
+    const result = await consumeSSEStream(response, { onDelta });
+    expect(result.text).toBe('before');
+    expect(onDelta).toHaveBeenCalledTimes(1);
+  });
+
+  it('handles partial SSE frames across chunks', async () => {
+    const response = mockSSEResponse([
+      'data: {"type":"del',
+      'ta","text":"split"}\n\n',
+      'data: [DONE]\n\n',
+    ]);
+    const result = await consumeSSEStream(response);
+    expect(result.text).toBe('split');
+  });
+
+  it('skips non-data lines', async () => {
+    const response = mockSSEResponse(
+      'event: message\ndata: {"type":"delta","text":"ok"}\n\ndata: [DONE]\n\n'
+    );
+    const result = await consumeSSEStream(response);
+    expect(result.text).toBe('ok');
+  });
+
+  it('skips malformed JSON gracefully', async () => {
+    const response = mockSSEResponse(
+      'data: {not json}\n\ndata: {"type":"delta","text":"ok"}\n\ndata: [DONE]\n\n'
+    );
+    const result = await consumeSSEStream(response);
+    expect(result.text).toBe('ok');
+  });
+});

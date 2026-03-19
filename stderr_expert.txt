@@ -1,0 +1,6 @@
+Thinking... (mode: expert)
+⚙ token_ohlcv
+tools used: token_ohlcv
+
+To continue this conversation:
+  nansen agent "<follow-up>" --conversation-id b6892299-2dd8-4160-9577-f22f2e32ca2e
