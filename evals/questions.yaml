@@ -2,4 +2,4 @@ questions:
   - id: wallet_balance
     question: Show me the portfolio for 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045
     expected_commands:
-      - nansen wallet portfolio
+      - nansen research profiler balance

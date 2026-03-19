@@ -1,3 +1,8 @@
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["anthropic", "pyyaml"]
+# ///
+
 """Eval runner for nansen-cli command selection.
 
 Tests whether an LLM can pick the right nansen-cli command for natural language questions.
