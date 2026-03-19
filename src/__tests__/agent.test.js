@@ -46,6 +46,8 @@ function mockApi(overrides = {}) {
 describe('agent command', () => {
   let log, errorOutput, write, cmd;
 
+  afterEach(() => { vi.restoreAllMocks(); });
+
   beforeEach(() => {
     log = vi.fn();
     errorOutput = vi.fn();
@@ -112,7 +114,6 @@ describe('agent command', () => {
       expect(fetchSpy).toHaveBeenCalledTimes(1);
       const url = fetchSpy.mock.calls[0][0];
       expect(url).toContain('/api/v1/agent/expert');
-      fetchSpy.mockRestore();
     });
 
     it('defaults to fast endpoint without --expert', async () => {
@@ -125,7 +126,6 @@ describe('agent command', () => {
 
       const url = fetchSpy.mock.calls[0][0];
       expect(url).toContain('/api/v1/agent/fast');
-      fetchSpy.mockRestore();
     });
   });
 
@@ -142,7 +142,6 @@ describe('agent command', () => {
 
       const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
       expect(body.conversation_id).toBe('my-conv-123');
-      fetchSpy.mockRestore();
     });
 
     it('falls back to UUID when conversation-id is boolean true', async () => {
@@ -156,7 +155,6 @@ describe('agent command', () => {
       const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
       // Should be a UUID, not "true"
       expect(body.conversation_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
-      fetchSpy.mockRestore();
     });
 
     it('falls back to UUID when conversation-id is empty string', async () => {
@@ -169,7 +167,6 @@ describe('agent command', () => {
 
       const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
       expect(body.conversation_id).toMatch(/^[0-9a-f]{8}-/);
-      fetchSpy.mockRestore();
     });
   });
 
@@ -198,7 +195,6 @@ describe('agent command', () => {
         text: 'Hello world',
         tool_calls: ['search'],
       });
-      fetchSpy.mockRestore();
     });
 
     it('returns expert mode in JSON output', async () => {
@@ -209,7 +205,129 @@ describe('agent command', () => {
 
       const result = await cmd(['test'], api, { json: true, expert: true }, {});
       expect(result.mode).toBe('expert');
-      fetchSpy.mockRestore();
+    });
+  });
+
+  // ── HTTP error responses ──
+
+  describe('HTTP error responses', () => {
+    it('throws UNAUTHORIZED on 401', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 401,
+        headers: { get: () => 'application/json' },
+        json: async () => ({ detail: 'API key required' }),
+      });
+
+      try {
+        await cmd(['test'], mockApi(), {}, {});
+        expect.unreachable('should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(NansenError);
+        expect(err.message).toBe('Not logged in. Run: nansen login');
+        expect(err.code).toBe(ErrorCode.UNAUTHORIZED);
+      }
+    });
+
+    it('throws RATE_LIMITED on 429', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 429,
+        headers: { get: () => 'application/json' },
+        json: async () => ({ detail: 'Too many requests' }),
+      });
+
+      try {
+        await cmd(['test'], mockApi(), {}, {});
+        expect.unreachable('should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(NansenError);
+        expect(err.message).toBe('Rate limited. Try again in a few seconds.');
+        expect(err.code).toBe(ErrorCode.RATE_LIMITED);
+      }
+    });
+
+    it('extracts detail from 500 JSON body', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        headers: { get: () => 'application/json' },
+        json: async () => ({ detail: 'Internal agent failure' }),
+      });
+
+      try {
+        await cmd(['test'], mockApi(), {}, {});
+        expect.unreachable('should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(NansenError);
+        expect(err.code).toBe(ErrorCode.SERVER_ERROR);
+        expect(err.details.detail).toBe('Internal agent failure');
+      }
+    });
+  });
+
+  // ── Network error ──
+
+  describe('network error', () => {
+    it('throws NETWORK_ERROR when fetch rejects', async () => {
+      globalThis.fetch = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+
+      try {
+        await cmd(['test'], mockApi(), {}, {});
+        expect.unreachable('should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(NansenError);
+        expect(err.code).toBe(ErrorCode.NETWORK_ERROR);
+        expect(err.message).toContain('ECONNREFUSED');
+      }
+    });
+  });
+
+  // ── Streaming output ──
+
+  describe('streaming output', () => {
+    function mockSSEStream(events) {
+      const encoder = new TextEncoder();
+      const text = events.map(e => `data: ${JSON.stringify(e)}\n\n`).join('') + 'data: [DONE]\n\n';
+      return new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode(text));
+          controller.close();
+        },
+      });
+    }
+
+    it('streams text and tool calls to stderr/stdout', async () => {
+      const api = mockApi();
+      const sseEvents = [
+        { type: 'delta', text: 'Hello ' },
+        { type: 'tool_call', name: 'token_search' },
+        { type: 'delta', text: 'world' },
+        { type: 'finish', conversation_id: 'conv-stream' },
+      ];
+
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'text/event-stream' }),
+        body: mockSSEStream(sseEvents),
+      });
+
+      await cmd(['test question'], api, {}, {});
+
+      // errorOutput receives thinking indicator
+      expect(errorOutput).toHaveBeenCalledWith('Thinking... (mode: fast)');
+
+      // write receives the delta text chunks
+      expect(write).toHaveBeenCalledWith('Hello ');
+      expect(write).toHaveBeenCalledWith('world');
+
+      // errorOutput receives tool call names with ⚙ prefix
+      expect(errorOutput).toHaveBeenCalledWith('⚙ token_search');
+
+      // errorOutput receives conversation continuation hint
+      const allErrorCalls = errorOutput.mock.calls.map(c => c[0]);
+      expect(allErrorCalls.some(c => c.includes('nansen agent') && c.includes('conv-stream'))).toBe(true);
     });
   });
 });
