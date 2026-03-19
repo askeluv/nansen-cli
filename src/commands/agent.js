@@ -27,7 +27,7 @@ function buildHeaders(apiInstance) {
     'X-Client-Version': packageVersion,
     ...telemetryHeaders(),
     ...(apiInstance.apiKey ? { 'apikey': apiInstance.apiKey } : {}),
-    ...apiInstance.defaultHeaders,
+    ...(apiInstance.defaultHeaders || {}),
   };
 }
 
