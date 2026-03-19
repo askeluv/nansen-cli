@@ -212,7 +212,7 @@ describe('agent command', () => {
 
   describe('HTTP error responses', () => {
     it('throws UNAUTHORIZED on 401', async () => {
-      globalThis.fetch = vi.fn().mockResolvedValue({
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue({
         ok: false,
         status: 401,
         headers: { get: () => 'application/json' },
@@ -230,7 +230,7 @@ describe('agent command', () => {
     });
 
     it('throws RATE_LIMITED on 429', async () => {
-      globalThis.fetch = vi.fn().mockResolvedValue({
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue({
         ok: false,
         status: 429,
         headers: { get: () => 'application/json' },
@@ -248,7 +248,7 @@ describe('agent command', () => {
     });
 
     it('extracts detail from 500 JSON body', async () => {
-      globalThis.fetch = vi.fn().mockResolvedValue({
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue({
         ok: false,
         status: 500,
         headers: { get: () => 'application/json' },
@@ -270,7 +270,7 @@ describe('agent command', () => {
 
   describe('network error', () => {
     it('throws NETWORK_ERROR when fetch rejects', async () => {
-      globalThis.fetch = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+      vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('ECONNREFUSED'));
 
       try {
         await cmd(['test'], mockApi(), {}, {});
@@ -306,7 +306,7 @@ describe('agent command', () => {
         { type: 'finish', conversation_id: 'conv-stream' },
       ];
 
-      globalThis.fetch = vi.fn().mockResolvedValue({
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue({
         ok: true,
         status: 200,
         headers: new Headers({ 'content-type': 'text/event-stream' }),
@@ -328,6 +328,105 @@ describe('agent command', () => {
       // errorOutput receives conversation continuation hint
       const allErrorCalls = errorOutput.mock.calls.map(c => c[0]);
       expect(allErrorCalls.some(c => c.includes('nansen agent') && c.includes('conv-stream'))).toBe(true);
+    });
+  });
+
+  // ── Timeout ──
+
+  describe('timeout', () => {
+    it('throws TIMEOUT on AbortError for fast mode', async () => {
+      const abortError = new DOMException('The operation was aborted', 'AbortError');
+      vi.spyOn(globalThis, 'fetch').mockRejectedValue(abortError);
+
+      try {
+        await cmd(['test'], mockApi(), {}, {});
+        expect.unreachable('should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(NansenError);
+        expect(err.code).toBe(ErrorCode.TIMEOUT);
+        expect(err.message).toContain('120s');
+      }
+    });
+
+    it('throws TIMEOUT with 300s for expert mode', async () => {
+      const abortError = new DOMException('The operation was aborted', 'AbortError');
+      vi.spyOn(globalThis, 'fetch').mockRejectedValue(abortError);
+
+      try {
+        await cmd(['test'], mockApi(), { expert: true }, {});
+        expect.unreachable('should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(NansenError);
+        expect(err.code).toBe(ErrorCode.TIMEOUT);
+        expect(err.message).toContain('300s');
+      }
+    });
+
+    it('passes AbortController signal to fetch', async () => {
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        mockSSEResponse('data: {"type":"finish","conversation_id":"c1"}\n\ndata: [DONE]\n\n')
+      );
+
+      await cmd(['test'], mockApi(), {}, {});
+
+      const fetchOptions = fetchSpy.mock.calls[0][1];
+      expect(fetchOptions.signal).toBeInstanceOf(AbortSignal);
+    });
+  });
+
+  // ── Conversation ID validation ──
+
+  describe('conversation-id validation', () => {
+    it('warns when conversation-id contains spaces', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        mockSSEResponse('data: {"type":"finish","conversation_id":"c1"}\n\ndata: [DONE]\n\n')
+      );
+
+      await cmd(['test'], mockApi(), {}, { 'conversation-id': 'what are the top tokens' });
+
+      expect(errorOutput).toHaveBeenCalledWith(
+        expect.stringContaining("doesn't look like a conversation ID"),
+      );
+    });
+
+    it('warns when conversation-id is very long', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        mockSSEResponse('data: {"type":"finish","conversation_id":"c1"}\n\ndata: [DONE]\n\n')
+      );
+
+      await cmd(['test'], mockApi(), {}, { 'conversation-id': 'a'.repeat(101) });
+
+      expect(errorOutput).toHaveBeenCalledWith(
+        expect.stringContaining("doesn't look like a conversation ID"),
+      );
+    });
+
+    it('does not warn for valid UUID conversation-id', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        mockSSEResponse('data: {"type":"finish","conversation_id":"c1"}\n\ndata: [DONE]\n\n')
+      );
+
+      await cmd(['test'], mockApi(), {}, { 'conversation-id': 'abc-123-def' });
+
+      const warnCalls = errorOutput.mock.calls.filter(c => c[0].includes("doesn't look like"));
+      expect(warnCalls).toHaveLength(0);
+    });
+  });
+
+  // ── No response goes to stderr ──
+
+  describe('no response output', () => {
+    it('sends "(no response from agent)" to stderr, not stdout', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        mockSSEResponse('data: {"type":"finish","conversation_id":"c1"}\n\ndata: [DONE]\n\n')
+      );
+
+      await cmd(['test'], mockApi(), {}, {});
+
+      expect(errorOutput).toHaveBeenCalledWith('(no response from agent)');
+      // log (stdout) should NOT have the message
+      const logCalls = log.mock.calls.map(c => c[0]);
+      expect(logCalls).not.toContain('(no response from agent)');
     });
   });
 });
@@ -418,6 +517,25 @@ describe('consumeSSEStream', () => {
     );
     const result = await consumeSSEStream(response);
     expect(result.text).toBe('ok');
+  });
+
+  it('handles \\r\\n line endings in SSE frames', async () => {
+    const response = mockSSEResponse([
+      'data: {"type":"delta","text":"crlf"}\r\n\r\n',
+      'data: [DONE]\r\n\r\n',
+    ]);
+    const result = await consumeSSEStream(response);
+    expect(result.text).toBe('crlf');
+  });
+
+  it('handles mixed \\r\\n and \\n line endings', async () => {
+    const response = mockSSEResponse([
+      'data: {"type":"delta","text":"mixed"}\r\n\r\ndata: {"type":"finish","conversation_id":"m1"}\n\n',
+      'data: [DONE]\n\n',
+    ]);
+    const result = await consumeSSEStream(response);
+    expect(result.text).toBe('mixed');
+    expect(result.conversationId).toBe('m1');
   });
 
   it('skips malformed JSON gracefully', async () => {

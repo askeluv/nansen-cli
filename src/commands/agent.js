@@ -78,6 +78,9 @@ export async function consumeSSEStream(response, callbacks = {}) {
   for await (const raw of reader) {
     buffer += decoder.decode(raw, { stream: true });
 
+    // Normalize \r\n and \r to \n (SSE spec allows all three line terminators)
+    buffer = buffer.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
     // SSE: split on double-newline boundaries
     let boundary;
     let done = false;
@@ -208,6 +211,9 @@ NOTE: This endpoint is currently internal-only (requires a Nansen internal accou
 
       // ── Conversation ID ──
       const rawConvId = options['conversation-id'];
+      if (typeof rawConvId === 'string' && rawConvId && (rawConvId.length > 100 || rawConvId.includes(' '))) {
+        errorOutput(`Warning: --conversation-id "${rawConvId.slice(0, 60)}${rawConvId.length > 60 ? '...' : ''}" doesn't look like a conversation ID. Did you forget to quote the question?`);
+      }
       const conversationId = (typeof rawConvId === 'string' && rawConvId) ? rawConvId : crypto.randomUUID();
 
       // ── Auth guard ──
@@ -227,14 +233,29 @@ NOTE: This endpoint is currently internal-only (requires a Nansen internal accou
         conversation_id: conversationId,
       };
 
+      // ── Timeout ──
+      const timeoutMs = expert ? 300_000 : 120_000; // 5min expert, 2min fast
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+
       let response;
       try {
         response = await fetch(url, {
           method: 'POST',
           headers: buildHeaders(apiInstance),
           body: JSON.stringify(body),
+          signal: controller.signal,
         });
       } catch (err) {
+        clearTimeout(timer);
+        if (err.name === 'AbortError') {
+          throw new NansenError(
+            `Request timed out after ${timeoutMs / 1000}s`,
+            ErrorCode.TIMEOUT,
+            504,
+            { detail: `${modeName} mode timeout (${timeoutMs / 1000}s)` },
+          );
+        }
         throw new NansenError(
           `Network error: ${err.message}`,
           ErrorCode.NETWORK_ERROR,
@@ -244,6 +265,7 @@ NOTE: This endpoint is currently internal-only (requires a Nansen internal accou
       }
 
       if (!response.ok) {
+        clearTimeout(timer);
         let serverDetail;
         if (response.headers.get('content-type')?.includes('application/json')) {
           try {
@@ -261,6 +283,7 @@ NOTE: This endpoint is currently internal-only (requires a Nansen internal accou
       // ── JSON mode: buffer everything, return structured data ──
       if (flags.json) {
         const result = await consumeSSEStream(response);
+        clearTimeout(timer);
         return {
           conversation_id: result.conversationId || conversationId,
           mode: modeName,
@@ -273,7 +296,9 @@ NOTE: This endpoint is currently internal-only (requires a Nansen internal accou
       errorOutput(`Thinking... (mode: ${modeName})`);
 
       let hasOutput = false;
-      const result = await consumeSSEStream(response, {
+      let result;
+      try {
+        result = await consumeSSEStream(response, {
         onDelta(text) {
           write(text);
           hasOutput = true;
@@ -282,6 +307,9 @@ NOTE: This endpoint is currently internal-only (requires a Nansen internal accou
           errorOutput(`⚙ ${name}`);
         },
       });
+      } finally {
+        clearTimeout(timer);
+      }
 
       // Ensure a trailing newline after streamed text
       if (hasOutput) {
@@ -294,7 +322,7 @@ NOTE: This endpoint is currently internal-only (requires a Nansen internal accou
       }
 
       if (!hasOutput) {
-        log('(no response from agent)');
+        errorOutput('(no response from agent)');
       }
 
       // Print conversation continuation hint
