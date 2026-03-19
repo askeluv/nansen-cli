@@ -7,6 +7,7 @@ import { NansenAPI, NansenError, ErrorCode, saveConfig, deleteConfig, getConfigF
 import { buildWalletCommands } from './wallet.js';
 import { buildTradingCommands } from './trading.js';
 import { formatAlertsTable, buildAlertsCommands } from './commands/alerts.js';
+import { buildAgentCommands } from './commands/agent.js';
 import { resolveAddress, isEnsName } from './ens.js';
 import fs from 'fs';
 import { getUpdateNotification, getUpgradeNotice, scheduleUpdateCheck } from './update-check.js';
@@ -683,6 +684,7 @@ COMMANDS:
   research    smart-money, profiler, token, search, perp, portfolio, points
   trade       quote, execute
   wallet      create, list, show, export, default, delete, forget-password
+  agent       Ask the Nansen AI research agent (fast/expert modes)
   alerts      list, create, update, toggle, delete
   web         search, fetch
   account     Show API key status, plan, and remaining credits
@@ -1581,7 +1583,7 @@ export async function runCLI(rawArgs, deps = {}) {
     return '';
   };
 
-  const commands = { ...buildCommands(deps), ...buildWalletCommands(deps), ...buildTradingCommands(deps), ...buildAlertsCommands(deps), ...commandOverrides };
+  const commands = { ...buildCommands(deps), ...buildWalletCommands(deps), ...buildTradingCommands(deps), ...buildAlertsCommands(deps), ...buildAgentCommands(deps), ...commandOverrides };
 
   if (flags.version || flags.v) {
     output(VERSION);
@@ -1620,7 +1622,7 @@ export async function runCLI(rawArgs, deps = {}) {
       }
       // First try subcommand help
       // Skip for 'trade'/'alerts' — their handlers show their own rich usage
-      if (command && subcommand && command !== 'trade' && command !== 'alerts') {
+      if (command && subcommand && command !== 'trade' && command !== 'alerts' && command !== 'agent') {
         const subHelp = generateSubcommandHelp(command, subcommand);
         if (subHelp) {
           output(deprecationNote(command) + subHelp);
@@ -1630,7 +1632,7 @@ export async function runCLI(rawArgs, deps = {}) {
       }
       // Then try command-level help (list subcommands)
       // Skip for 'trade'/'alerts' — let the handler show its own usage
-      const cmdSchemaLookup = command !== 'trade' && command !== 'alerts' && (SCHEMA.commands[command] || SCHEMA.commands.research.subcommands[command]);
+      const cmdSchemaLookup = command !== 'trade' && command !== 'alerts' && command !== 'agent' && (SCHEMA.commands[command] || SCHEMA.commands.research.subcommands[command]);
       if (command && cmdSchemaLookup) {
         const cmdSchema = cmdSchemaLookup;
         const lines = [`${command} — ${cmdSchema.description}`];

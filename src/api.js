@@ -11,12 +11,12 @@ import { getAnonymousId, TELEMETRY_DISABLED } from './telemetry.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-function telemetryHeaders() {
+export function telemetryHeaders() {
   if (TELEMETRY_DISABLED) return {};
   return { 'X-Anonymous-Id': getAnonymousId() };
 }
 
-const { version: packageVersion } = JSON.parse(
+export const { version: packageVersion } = JSON.parse(
   fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')
 );
 
