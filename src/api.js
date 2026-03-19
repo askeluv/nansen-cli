@@ -85,7 +85,7 @@ export class NansenError extends Error {
 /**
  * Map HTTP status codes to error codes
  */
-function statusToErrorCode(status, data = {}) {
+export function statusToErrorCode(status, data = {}) {
   const message = data?.message || data?.error || '';
   const messageLower = message.toLowerCase();
   

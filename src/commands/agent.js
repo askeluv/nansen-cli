@@ -4,18 +4,7 @@
  */
 
 import crypto from 'crypto';
-import { NansenError, ErrorCode, telemetryHeaders, packageVersion } from '../api.js';
-
-/** Map HTTP status to the most appropriate ErrorCode. */
-function errorCodeForStatus(status) {
-  if (status === 401) return ErrorCode.UNAUTHORIZED;
-  if (status === 403) return ErrorCode.FORBIDDEN;
-  if (status === 404) return ErrorCode.NOT_FOUND;
-  if (status === 429) return ErrorCode.RATE_LIMITED;
-  if (status === 504) return ErrorCode.TIMEOUT;
-  if (status >= 500) return ErrorCode.SERVER_ERROR;
-  return ErrorCode.UNKNOWN;
-}
+import { NansenError, ErrorCode, statusToErrorCode, telemetryHeaders, packageVersion } from '../api.js';
 
 /**
  * Build standard request headers, matching apiInstance.request() conventions.
@@ -46,7 +35,7 @@ function throwApiError(message, status, serverDetail) {
 
   throw new NansenError(
     friendlyMessage,
-    errorCodeForStatus(status),
+    statusToErrorCode(status),
     status,
     { detail: serverDetail || message, attempt: 1, retryAfterMs: null },
   );
@@ -143,21 +132,18 @@ export async function consumeSSEStream(response, callbacks = {}) {
  *
  * @param {object} [deps]
  * @param {Function} [deps.log]     – stdout line output (default: console.log)
- * @param {Function} [deps.errorOutput]  – stderr line output (default: console.error)
  * @param {Function} [deps.write]        – raw stdout writer, no trailing newline (default: process.stdout.write)
  * @returns {object} command map
  */
 export function buildAgentCommands(deps = {}) {
   const {
     log = console.log,
-    errorOutput = console.error,
     write = (s) => process.stdout.write(s),
   } = deps;
 
   return {
     'agent': async (args, apiInstance, flags, options) => {
-      const HELP = {
-        _top: `nansen agent — Nansen Research Agent
+      const HELP = `nansen agent — Nansen Research Agent
 
 Ask the Nansen AI agent research questions about crypto wallets, tokens,
 smart money flows, and on-chain activity. The agent uses Nansen's full
@@ -189,19 +175,18 @@ EXAMPLES:
   nansen agent "Analyze wallet 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045" --expert
   nansen agent "Tell me more about their DeFi positions" --conversation-id 550e8400-e29b-41d4-a716-446655440000
 
-NOTE: This endpoint is currently internal-only (requires a Nansen internal account).`,
-      };
+NOTE: This endpoint is currently internal-only (requires a Nansen internal account).`;
 
       // ── Help ──
       if (flags.help || flags.h || args[0] === 'help' || args.length === 0) {
-        log(HELP._top);
+        log(HELP);
         return;
       }
 
       // ── Parse question ──
       const question = args.join(' ').trim();
       if (!question) {
-        log(HELP._top);
+        log(HELP);
         return;
       }
 
@@ -238,7 +223,7 @@ NOTE: This endpoint is currently internal-only (requires a Nansen internal accou
         );
       }
 
-      // ── Request ──
+      // ── Request (no retry — SSE streams are not idempotent) ──
       const url = `${apiInstance.baseUrl}${endpoint}`;
       const body = {
         text: question,
@@ -309,20 +294,19 @@ NOTE: This endpoint is currently internal-only (requires a Nansen internal accou
       }
 
       // ── Streaming output mode ──
-      errorOutput(`Thinking... (mode: ${modeName})`);
-
       let hasOutput = false;
       let result;
       try {
         result = await consumeSSEStream(response, {
-        onDelta(text) {
-          write(text);
-          hasOutput = true;
-        },
-        onToolCall(name) {
-          errorOutput(`⚙ ${name}`);
-        },
-      });
+          onDelta(text) {
+            write(text);
+            hasOutput = true;
+          },
+          onToolCall(name) {
+            if (hasOutput) write('\n');
+            log(`⚙ ${name}`);
+          },
+        });
       } finally {
         clearTimeout(timer);
       }
@@ -332,20 +316,15 @@ NOTE: This endpoint is currently internal-only (requires a Nansen internal accou
         write('\n');
       }
 
-      // Summarize tool calls after the response
-      if (result.toolCalls.length > 0) {
-        errorOutput(`tools used: ${result.toolCalls.join(', ')}`);
-      }
-
       if (!hasOutput) {
-        errorOutput('(no response from agent)');
+        log('(no response from agent)');
       }
 
       // Print conversation continuation hint
       const effectiveConvId = result.conversationId || conversationId;
       const expertFlag = expert ? ' --expert' : '';
-      errorOutput(`\nTo continue this conversation:`);
-      errorOutput(`  nansen agent "<follow-up>" --conversation-id "${effectiveConvId}"${expertFlag}`);
+      log(`\nTo continue this conversation:`);
+      log(`  nansen agent "<follow-up>" --conversation-id "${effectiveConvId}"${expertFlag}`);
 
       return;
     },
