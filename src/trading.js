@@ -64,6 +64,230 @@ export function resolveTokenAddress(symbolOrAddress, chainName) {
   return resolved || symbolOrAddress;
 }
 
+// ============= Amount Unit Conversion =============
+
+/**
+ * Known token decimals by chain and address (lowercase).
+ * Used to convert human-readable token amounts to base units without RPC calls.
+ */
+const KNOWN_TOKEN_DECIMALS = {
+  solana: {
+    'so11111111111111111111111111111111111111112': 9,  // SOL
+    'epjfwdd5aufqssqem2qn1xzybapc8g4weggkzwytdt1v': 6,  // USDC
+    'es9vmfrzacermjfrf4h2fyd4kconky11mcce8benwnyb': 6,  // USDT
+  },
+  base: {
+    '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee': 18, // ETH
+    '0x4200000000000000000000000000000000000006': 18, // WETH
+    '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913': 6,  // USDC
+    '0xfde4c96c8593536e31f229ea8f37b2ada2699bb2': 6,  // USDT
+  },
+};
+
+/** Default decimals per chain (used when token is not in KNOWN_TOKEN_DECIMALS). */
+const DEFAULT_CHAIN_DECIMALS = { solana: 9, base: 18 };
+
+/**
+ * CoinGecko platform IDs for USD price lookups.
+ * Native token IDs are used for the simple/price endpoint.
+ */
+const COINGECKO_PLATFORMS = {
+  solana: { platform: 'solana', nativeId: 'solana' },
+  base:   { platform: 'base',   nativeId: 'ethereum' },
+};
+
+/** Native token sentinels per chain (address → CoinGecko native ID). */
+const NATIVE_TOKEN_SENTINELS = {
+  solana: { 'so11111111111111111111111111111111111111112': 'solana' },
+  base:   { '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee': 'ethereum' },
+};
+
+/**
+ * Parse a decimal string into BigInt base units, avoiding floating-point errors.
+ * e.g. parseUnits('1.5', 9) → 1500000000n
+ *      parseUnits('0.001', 18) → 1000000000000000n
+ *
+ * @param {string} value - Decimal number as string (e.g. '1.5', '100', '0.001')
+ * @param {number} decimals - Number of decimals for the token
+ * @returns {bigint} Amount in base units
+ */
+export function parseUnits(value, decimals) {
+  const str = String(value).trim();
+  if (str === '' || str === '.') throw new Error(`Invalid amount: "${value}"`);
+
+  // Handle negative values
+  const negative = str.startsWith('-');
+  const abs = negative ? str.slice(1) : str;
+
+  const [integer = '0', fraction = ''] = abs.split('.');
+  if (abs.split('.').length > 2) throw new Error(`Invalid amount (multiple decimal points): "${value}"`);
+
+  // Pad or truncate fraction to `decimals` digits
+  const paddedFraction = fraction.padEnd(decimals, '0').slice(0, decimals);
+
+  // Check for truncated precision
+  if (fraction.length > decimals) {
+    const truncated = fraction.slice(decimals);
+    if (truncated.replace(/0+$/, '').length > 0) {
+      throw new Error(
+        `Amount "${value}" has more decimal places than the token supports (${decimals}). ` +
+        `Truncated to ${integer}.${paddedFraction}`
+      );
+    }
+  }
+
+  const combined = integer + paddedFraction;
+  // Remove leading zeros but keep at least '0'
+  const cleaned = combined.replace(/^0+/, '') || '0';
+  const result = BigInt(cleaned);
+  return negative ? -result : result;
+}
+
+/**
+ * Get the number of decimals for a token.
+ * Checks KNOWN_TOKEN_DECIMALS first, then falls back to EVM RPC (decimals() call),
+ * or chain default for Solana.
+ *
+ * @param {string} address - Token address
+ * @param {string} chain - Chain name (solana, base)
+ * @returns {Promise<number>} Token decimals
+ */
+export async function getTokenDecimals(address, chain) {
+  const chainLower = chain.toLowerCase();
+  const addrLower = address.toLowerCase();
+
+  // Check known tokens
+  const chainDecimals = KNOWN_TOKEN_DECIMALS[chainLower];
+  if (chainDecimals && chainDecimals[addrLower] !== undefined) {
+    return chainDecimals[addrLower];
+  }
+
+  // EVM fallback: call decimals() on the token contract
+  if (CHAIN_MAP[chainLower]?.type === 'evm') {
+    try {
+      const result = await evmRpcCall(chainLower, 'eth_call', [
+        { to: address, data: '0x313ce567' }, // decimals() selector
+        'latest',
+      ]);
+      if (result && result !== '0x') {
+        return parseInt(result, 16);
+      }
+    } catch {
+      // Fall through to default
+    }
+  }
+
+  // Fall back to chain default
+  const defaultDec = DEFAULT_CHAIN_DECIMALS[chainLower];
+  if (defaultDec !== undefined) return defaultDec;
+
+  throw new Error(`Cannot determine decimals for token ${address} on ${chain}. Use --amount-unit base to specify raw base units.`);
+}
+
+/**
+ * Fetch the USD price of a token via CoinGecko's free API.
+ * No API key required.
+ *
+ * @param {string} address - Token address
+ * @param {string} chain - Chain name (solana, base)
+ * @returns {Promise<number>} Price in USD
+ */
+export async function getTokenPriceUsd(address, chain) {
+  const chainLower = chain.toLowerCase();
+  const addrLower = address.toLowerCase();
+  const config = COINGECKO_PLATFORMS[chainLower];
+  if (!config) throw new Error(`USD pricing not supported for chain: ${chain}`);
+
+  // Check if this is a native token sentinel
+  const nativeSentinels = NATIVE_TOKEN_SENTINELS[chainLower] || {};
+  const nativeId = nativeSentinels[addrLower];
+
+  let url;
+  if (nativeId) {
+    url = `https://api.coingecko.com/api/v3/simple/price?ids=${nativeId}&vs_currencies=usd`;
+  } else {
+    url = `https://api.coingecko.com/api/v3/simple/token_price/${config.platform}?contract_addresses=${address}&vs_currencies=usd`;
+  }
+
+  const res = await fetch(url, {
+    headers: { 'Accept': 'application/json' },
+  });
+
+  if (!res.ok) {
+    throw new Error(`Failed to fetch token price (HTTP ${res.status}). Try --amount-unit token instead.`);
+  }
+
+  const data = await res.json();
+
+  // Extract price from response
+  let price;
+  if (nativeId) {
+    price = data[nativeId]?.usd;
+  } else {
+    // CoinGecko keys by lowercase address
+    price = data[addrLower]?.usd;
+  }
+
+  if (!price || price <= 0) {
+    throw new Error(
+      `Could not find USD price for token ${address} on ${chain}. ` +
+      `Use --amount-unit token (with amount in token units) or --amount-unit base instead.`
+    );
+  }
+
+  return price;
+}
+
+/**
+ * Convert an amount from the specified unit to base units (wei, lamports, etc.).
+ *
+ * @param {string} amount - Amount string
+ * @param {string} amountUnit - 'usd', 'token', or 'base'
+ * @param {string} tokenAddress - Token address for decimals/price lookup
+ * @param {string} chain - Chain name
+ * @returns {Promise<string>} Amount in base units as a string (integer)
+ */
+export async function convertAmountToBaseUnits(amount, amountUnit, tokenAddress, chain) {
+  if (amountUnit === 'base') {
+    // Validate it's an integer
+    const str = String(amount);
+    if (str.includes('.')) {
+      throw new Error(
+        `Amount with --amount-unit base must be an integer (raw base units). Got: ${str}`
+      );
+    }
+    return str;
+  }
+
+  if (amountUnit === 'token') {
+    const decimals = await getTokenDecimals(tokenAddress, chain);
+    const baseUnits = parseUnits(amount, decimals);
+    if (baseUnits <= 0n) {
+      throw new Error(`Amount must be positive. Got: ${amount}`);
+    }
+    return baseUnits.toString();
+  }
+
+  if (amountUnit === 'usd') {
+    const usdAmount = parseFloat(amount);
+    if (isNaN(usdAmount) || usdAmount <= 0) {
+      throw new Error(`USD amount must be a positive number. Got: ${amount}`);
+    }
+    const priceUsd = await getTokenPriceUsd(tokenAddress, chain);
+    // Convert USD → token amount
+    const tokenAmount = usdAmount / priceUsd;
+    // Convert token amount → base units
+    const decimals = await getTokenDecimals(tokenAddress, chain);
+    const baseUnits = parseUnits(tokenAmount.toFixed(decimals), decimals);
+    if (baseUnits <= 0n) {
+      throw new Error(`Computed base units is zero — amount too small. USD: ${amount}, price: $${priceUsd}`);
+    }
+    return baseUnits.toString();
+  }
+
+  throw new Error(`Invalid --amount-unit: "${amountUnit}". Must be one of: usd, token, base`);
+}
+
 /**
  * Make a JSON-RPC call to an EVM RPC endpoint.
  * RPC URLs come from the shared CHAIN_RPCS registry in rpc-urls.js.
@@ -744,11 +968,13 @@ export function buildTradingCommands(deps = {}) {
       const slippage = options.slippage;
       const autoSlippage = flags['auto-slippage'] || flags.autoSlippage;
       const maxAutoSlippage = options['max-auto-slippage'];
-      const swapMode = options['swap-mode'] || 'exactIn';
+      const amountUnit = (options['amount-unit'] || 'usd').toLowerCase();
+      const amountSide = (options['amount-side'] || 'sell').toLowerCase();
+      const swapMode = options['swap-mode'] || (amountSide === 'buy' ? 'exactOut' : 'exactIn');
 
       if (!chain || !from || !to || !amount) {
         log(`
-Usage: nansen trade quote --chain <chain> --from <token> --to <token> --amount <baseUnits>
+Usage: nansen trade quote --chain <chain> --from <token> --to <token> --amount <amount>
 
 PREREQUISITE:
   A wallet must be configured before using this command (the trading API builds
@@ -759,27 +985,53 @@ OPTIONS:
   --chain <chain>           Chain: solana, base
   --from <symbol|address>   Input token (symbol like SOL, USDC or address)
   --to <symbol|address>     Output token (symbol like USDC, ETH or address)
-  --amount <units>          Amount in BASE UNITS (e.g. lamports, wei)
+  --amount <amount>         Amount to trade (see --amount-unit)
+  --amount-unit <unit>      Unit for amount: usd (default), token, or base
+                            usd   = dollar value (e.g. 20 = $20)
+                            token = human-readable token amount (e.g. 1.5 SOL)
+                            base  = raw base units (e.g. 1000000000 lamports)
+  --amount-side <side>      Which side the amount applies to: sell (default) or buy
+                            sell = amount is what you're selling (exactIn)
+                            buy  = amount is what you want to receive (exactOut)
   --wallet <name>           Wallet name (default: default wallet). Use "walletconnect" or "wc" for WalletConnect.
   --slippage <pct>          Slippage as decimal (e.g. 0.03 for 3%). Default: 0.03
   --auto-slippage           Enable auto slippage calculation
   --max-auto-slippage <pct> Max auto slippage when auto-slippage enabled
-  --swap-mode <mode>        exactIn (default) or exactOut
+  --swap-mode <mode>        exactIn (default) or exactOut (overrides --amount-side)
 
 EXAMPLES:
-  nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000
-  nansen trade quote --chain base --from ETH --to USDC --amount 1000000000000000000
-  nansen trade quote --chain solana --from So11111111111111111111111111111111111111112 --to EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v --amount 1000000000
+  nansen trade quote --chain solana --from SOL --to USDC --amount 20
+  nansen trade quote --chain base --from ETH --to USDC --amount 50 --amount-unit usd
+  nansen trade quote --chain solana --from SOL --to USDC --amount 1.5 --amount-unit token
+  nansen trade quote --chain base --from ETH --to USDC --amount 1000000000000000000 --amount-unit base
+  nansen trade quote --chain base --from USDC --to ETH --amount 100 --amount-side buy
 `);
         exit(1);
         return;
       }
 
-      const amountError = validateBaseUnitAmount(amount);
-      if (amountError) {
-        log(`Error: ${amountError}`);
+      // Validate amount-unit
+      if (!['usd', 'token', 'base'].includes(amountUnit)) {
+        log(`Error: Invalid --amount-unit "${amountUnit}". Must be one of: usd, token, base`);
         exit(1);
         return;
+      }
+
+      // Validate amount-side
+      if (!['sell', 'buy'].includes(amountSide)) {
+        log(`Error: Invalid --amount-side "${amountSide}". Must be one of: sell, buy`);
+        exit(1);
+        return;
+      }
+
+      // Only validate base-unit integer format when --amount-unit base
+      if (amountUnit === 'base') {
+        const amountError = validateBaseUnitAmount(amount);
+        if (amountError) {
+          log(`Error: ${amountError}`);
+          exit(1);
+          return;
+        }
       }
 
       try {
@@ -833,11 +1085,22 @@ EXAMPLES:
         const fromWarning = getWrappedNativeFromWarning(from, chain);
         if (fromWarning) log(`  ${fromWarning}`);
 
+        // Convert amount to base units based on --amount-unit and --amount-side
+        const targetToken = amountSide === 'buy' ? to : from;
+        let baseUnitAmount;
+        if (amountUnit === 'base') {
+          baseUnitAmount = amount;
+        } else {
+          log(`  Converting ${amount} ${amountUnit} → base units (${amountSide} side)...`);
+          baseUnitAmount = await convertAmountToBaseUnits(amount, amountUnit, targetToken, chain);
+          log(`  Base units: ${baseUnitAmount}`);
+        }
+
         const params = {
           chainIndex: chainConfig.index,
           fromTokenAddress: from,
           toTokenAddress: to,
-          amount,
+          amount: baseUnitAmount,
           userWalletAddress: walletAddress,
         };
         if (slippage) params.slippagePercent = slippage;
@@ -878,7 +1141,7 @@ EXAMPLES:
       } catch (err) {
         let message = err.message;
         if (err.code === 'INVALID_AMOUNT' || /amount/i.test(err.message)) {
-          message += '. Amounts must be in base units (e.g., 1000000000 lamports for 1 SOL, 1000000000000000000 wei for 1 ETH)';
+          message += '. Use --amount-unit to specify the unit: usd (default, e.g. 20 = $20), token (e.g. 1.5 SOL), or base (raw wei/lamports)';
         }
         log(`Error: ${message}`);
         if (err.details) log(`  Details: ${JSON.stringify(err.details)}`);

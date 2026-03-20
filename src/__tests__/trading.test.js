@@ -30,6 +30,10 @@ import {
   resolveTokenAddress,
   formatQuote,
   simulateEvmCall,
+  parseUnits,
+  getTokenDecimals,
+  getTokenPriceUsd,
+  convertAmountToBaseUnits,
 } from '../trading.js';
 import { keccak256, rlpEncode } from '../crypto.js';
 import { base58Decode } from '../transfer.js';
@@ -1320,7 +1324,7 @@ describe('validateBaseUnitAmount', () => {
 });
 
 describe('quote handler rejects decimal amounts before API call', () => {
-  it('should error on decimal amount and not call fetch', async () => {
+  it('should error on decimal amount in base mode and not call fetch', async () => {
     const origFetch = global.fetch;
     global.fetch = vi.fn();
 
@@ -1333,6 +1337,7 @@ describe('quote handler rejects decimal amounts before API call', () => {
 
     await cmds.quote([], null, {}, {
       chain: 'solana', from: 'So111', to: 'EPjFW', amount: '0.005',
+      'amount-unit': 'base',
     });
 
     expect(exitCalled).toBe(true);
@@ -1512,5 +1517,446 @@ describe('simulateEvmCall — insufficient funds error formatting', () => {
 
     expect(result.success).toBe(false);
     expect(result.reason).toContain('INSUFFICIENT_OUTPUT_AMOUNT');
+  });
+});
+
+// ============= Amount Unit Conversion =============
+
+describe('parseUnits', () => {
+  it('converts whole numbers', () => {
+    expect(parseUnits('1', 9)).toBe(1000000000n);
+    expect(parseUnits('1', 18)).toBe(1000000000000000000n);
+    expect(parseUnits('1', 6)).toBe(1000000n);
+    expect(parseUnits('100', 6)).toBe(100000000n);
+  });
+
+  it('converts decimal amounts', () => {
+    expect(parseUnits('1.5', 9)).toBe(1500000000n);
+    expect(parseUnits('0.001', 18)).toBe(1000000000000000n);
+    expect(parseUnits('0.5', 6)).toBe(500000n);
+    expect(parseUnits('1.23', 6)).toBe(1230000n);
+  });
+
+  it('handles zero', () => {
+    expect(parseUnits('0', 18)).toBe(0n);
+    expect(parseUnits('0.0', 9)).toBe(0n);
+  });
+
+  it('handles amounts with no integer part', () => {
+    expect(parseUnits('.5', 9)).toBe(500000000n);
+    expect(parseUnits('0.1', 18)).toBe(100000000000000000n);
+  });
+
+  it('pads short fractions', () => {
+    // 1.5 with 18 decimals → 1500000000000000000
+    expect(parseUnits('1.5', 18)).toBe(1500000000000000000n);
+  });
+
+  it('throws on excess precision', () => {
+    expect(() => parseUnits('1.1234567', 6)).toThrow('more decimal places');
+  });
+
+  it('allows trailing zeros beyond precision', () => {
+    // 1.500000 with 6 decimals is fine (trailing zeros)
+    expect(parseUnits('1.500000', 6)).toBe(1500000n);
+  });
+
+  it('throws on empty string', () => {
+    expect(() => parseUnits('', 18)).toThrow('Invalid amount');
+  });
+
+  it('throws on multiple decimal points', () => {
+    expect(() => parseUnits('1.2.3', 18)).toThrow('multiple decimal points');
+  });
+
+  it('handles large amounts without floating-point errors', () => {
+    // This is the key test: 1.1 ETH in base units should be exact
+    expect(parseUnits('1.1', 18)).toBe(1100000000000000000n);
+    // 999999.999999 USDC
+    expect(parseUnits('999999.999999', 6)).toBe(999999999999n);
+  });
+});
+
+describe('getTokenDecimals', () => {
+  it('returns known Solana token decimals', async () => {
+    expect(await getTokenDecimals('So11111111111111111111111111111111111111112', 'solana')).toBe(9);
+    expect(await getTokenDecimals('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', 'solana')).toBe(6);
+    expect(await getTokenDecimals('Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', 'solana')).toBe(6);
+  });
+
+  it('returns known Base token decimals', async () => {
+    expect(await getTokenDecimals('0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', 'base')).toBe(18);
+    expect(await getTokenDecimals('0x4200000000000000000000000000000000000006', 'base')).toBe(18);
+    expect(await getTokenDecimals('0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', 'base')).toBe(6);
+  });
+
+  it('is case-insensitive for addresses', async () => {
+    expect(await getTokenDecimals('0xEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE', 'base')).toBe(18);
+  });
+
+  it('falls back to chain default for unknown Solana tokens', async () => {
+    expect(await getTokenDecimals('UnknownMint1111111111111111111111111111111', 'solana')).toBe(9);
+  });
+
+  it('falls back to EVM RPC for unknown EVM tokens', async () => {
+    const origFetch = global.fetch;
+    // Mock RPC returning 8 decimals
+    const rpcResponse = JSON.stringify({
+      jsonrpc: '2.0', id: 1,
+      result: '0x0000000000000000000000000000000000000000000000000000000000000008',
+    });
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true, status: 200, text: async () => rpcResponse, json: async () => JSON.parse(rpcResponse),
+    });
+
+    const decimals = await getTokenDecimals('0x1234567890abcdef1234567890abcdef12345678', 'base');
+    expect(decimals).toBe(8);
+
+    global.fetch = origFetch;
+  });
+});
+
+describe('getTokenPriceUsd', () => {
+  it('fetches native token price', async () => {
+    const origFetch = global.fetch;
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true, status: 200,
+      json: async () => ({ solana: { usd: 150.42 } }),
+    });
+
+    const price = await getTokenPriceUsd('So11111111111111111111111111111111111111112', 'solana');
+    expect(price).toBe(150.42);
+
+    // Verify correct CoinGecko URL was called
+    const url = global.fetch.mock.calls[0][0];
+    expect(url).toContain('simple/price');
+    expect(url).toContain('ids=solana');
+
+    global.fetch = origFetch;
+  });
+
+  it('fetches ERC-20 token price', async () => {
+    const origFetch = global.fetch;
+    const tokenAddr = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true, status: 200,
+      json: async () => ({ [tokenAddr]: { usd: 1.0 } }),
+    });
+
+    const price = await getTokenPriceUsd(tokenAddr, 'base');
+    expect(price).toBe(1.0);
+
+    const url = global.fetch.mock.calls[0][0];
+    expect(url).toContain('simple/token_price/base');
+    expect(url).toContain(tokenAddr);
+
+    global.fetch = origFetch;
+  });
+
+  it('throws on HTTP error', async () => {
+    const origFetch = global.fetch;
+    global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 429 });
+
+    await expect(getTokenPriceUsd('So11111111111111111111111111111111111111112', 'solana'))
+      .rejects.toThrow('Failed to fetch token price');
+
+    global.fetch = origFetch;
+  });
+
+  it('throws when price is not found', async () => {
+    const origFetch = global.fetch;
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true, status: 200,
+      json: async () => ({}),
+    });
+
+    await expect(getTokenPriceUsd('0xunknowntoken', 'base'))
+      .rejects.toThrow('Could not find USD price');
+
+    global.fetch = origFetch;
+  });
+});
+
+describe('convertAmountToBaseUnits', () => {
+  it('passes through base units unchanged', async () => {
+    expect(await convertAmountToBaseUnits('1000000000', 'base', 'SOL', 'solana')).toBe('1000000000');
+  });
+
+  it('rejects decimals in base mode', async () => {
+    await expect(convertAmountToBaseUnits('1.5', 'base', 'SOL', 'solana'))
+      .rejects.toThrow('must be an integer');
+  });
+
+  it('converts token units for known tokens', async () => {
+    // 1.5 SOL = 1500000000 lamports
+    const result = await convertAmountToBaseUnits('1.5', 'token', 'So11111111111111111111111111111111111111112', 'solana');
+    expect(result).toBe('1500000000');
+  });
+
+  it('converts token units for USDC', async () => {
+    // 100 USDC = 100000000 (6 decimals)
+    const result = await convertAmountToBaseUnits('100', 'token', 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', 'solana');
+    expect(result).toBe('100000000');
+  });
+
+  it('converts token units for ETH', async () => {
+    // 0.01 ETH = 10000000000000000 wei
+    const result = await convertAmountToBaseUnits('0.01', 'token', '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', 'base');
+    expect(result).toBe('10000000000000000');
+  });
+
+  it('converts USD amounts', async () => {
+    const origFetch = global.fetch;
+    // Mock CoinGecko price response: SOL = $150
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true, status: 200,
+      json: async () => ({ solana: { usd: 150 } }),
+    });
+
+    // $30 at $150/SOL = 0.2 SOL = 200000000 lamports
+    const result = await convertAmountToBaseUnits('30', 'usd', 'So11111111111111111111111111111111111111112', 'solana');
+    expect(result).toBe('200000000');
+
+    global.fetch = origFetch;
+  });
+
+  it('rejects invalid amount-unit', async () => {
+    await expect(convertAmountToBaseUnits('1', 'percent', 'SOL', 'solana'))
+      .rejects.toThrow('Invalid --amount-unit');
+  });
+
+  it('rejects zero token amount', async () => {
+    await expect(convertAmountToBaseUnits('0', 'token', 'So11111111111111111111111111111111111111112', 'solana'))
+      .rejects.toThrow('must be positive');
+  });
+
+  it('rejects negative USD amount', async () => {
+    await expect(convertAmountToBaseUnits('-5', 'usd', 'So11111111111111111111111111111111111111112', 'solana'))
+      .rejects.toThrow('must be a positive number');
+  });
+});
+
+describe('quote command with amount-unit', () => {
+  it('defaults to usd amount-unit and converts before quoting', async () => {
+    const origFetch = global.fetch;
+    const output = [];
+    let exitCode = null;
+    const log = (msg) => output.push(msg);
+    const exit = (code) => { exitCode = code; };
+    const commands = buildTradingCommands({ log, exit });
+
+    // Create a wallet for the test
+    const walletDir = path.join(tempDir, '.nansen', 'wallets');
+    fs.mkdirSync(walletDir, { recursive: true });
+    fs.writeFileSync(path.join(walletDir, 'config.json'), JSON.stringify({
+      defaultWallet: 'test',
+      wallets: { test: { name: 'test' } },
+    }));
+    fs.writeFileSync(path.join(walletDir, 'test.json'), JSON.stringify({
+      name: 'test',
+      solana: { address: 'TestSolAddr111111111111111111111111111111' },
+      evm: { address: '0x1234567890abcdef1234567890abcdef12345678' },
+    }));
+
+    let fetchCallCount = 0;
+    global.fetch = vi.fn().mockImplementation(async (url) => {
+      fetchCallCount++;
+      if (url.includes('coingecko')) {
+        return {
+          ok: true, status: 200,
+          json: async () => ({ solana: { usd: 100 } }),
+        };
+      }
+      // Quote API response
+      return {
+        ok: true, status: 200,
+        text: async () => JSON.stringify({
+          success: true,
+          quotes: [{
+            aggregator: 'test',
+            inAmount: '200000000',
+            outAmount: '20000000',
+            inputMint: 'So11111111111111111111111111111111111111112',
+            outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+            inUsdValue: '20',
+            outUsdValue: '20',
+          }],
+        }),
+      };
+    });
+
+    await commands.quote([], null, {}, {
+      chain: 'solana',
+      from: 'SOL',
+      to: 'USDC',
+      amount: '20',
+    });
+
+    expect(exitCode).toBeNull(); // Should not exit with error
+    // Should have called CoinGecko for price
+    const cgCall = global.fetch.mock.calls.find(c => c[0].includes('coingecko'));
+    expect(cgCall).toBeTruthy();
+    // Should have logged conversion info
+    const conversionLog = output.find(l => l.includes('Converting'));
+    expect(conversionLog).toBeTruthy();
+    expect(conversionLog).toContain('usd');
+
+    global.fetch = origFetch;
+  });
+
+  it('skips conversion for --amount-unit base', async () => {
+    const origFetch = global.fetch;
+    const output = [];
+    let exitCode = null;
+    const log = (msg) => output.push(msg);
+    const exit = (code) => { exitCode = code; };
+    const commands = buildTradingCommands({ log, exit });
+
+    const walletDir = path.join(tempDir, '.nansen', 'wallets');
+    fs.mkdirSync(walletDir, { recursive: true });
+    fs.writeFileSync(path.join(walletDir, 'config.json'), JSON.stringify({
+      defaultWallet: 'test',
+      wallets: { test: { name: 'test' } },
+    }));
+    fs.writeFileSync(path.join(walletDir, 'test.json'), JSON.stringify({
+      name: 'test',
+      solana: { address: 'TestSolAddr111111111111111111111111111111' },
+      evm: { address: '0x1234567890abcdef1234567890abcdef12345678' },
+    }));
+
+    global.fetch = vi.fn().mockImplementation(async () => ({
+      ok: true, status: 200,
+      text: async () => JSON.stringify({
+        success: true,
+        quotes: [{
+          aggregator: 'test',
+          inAmount: '1000000000',
+          outAmount: '150000000',
+          inputMint: 'So11111111111111111111111111111111111111112',
+          outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+        }],
+      }),
+    }));
+
+    await commands.quote([], null, {}, {
+      chain: 'solana',
+      from: 'SOL',
+      to: 'USDC',
+      amount: '1000000000',
+      'amount-unit': 'base',
+    });
+
+    expect(exitCode).toBeNull();
+    // Should NOT call CoinGecko
+    const cgCall = global.fetch.mock.calls.find(c => c[0].includes('coingecko'));
+    expect(cgCall).toBeUndefined();
+    // Should NOT log conversion
+    const conversionLog = output.find(l => l.includes('Converting'));
+    expect(conversionLog).toBeUndefined();
+
+    global.fetch = origFetch;
+  });
+
+  it('rejects decimal amounts in base mode', async () => {
+    const output = [];
+    let exitCode = null;
+    const log = (msg) => output.push(msg);
+    const exit = (code) => { exitCode = code; };
+    const commands = buildTradingCommands({ log, exit });
+
+    await commands.quote([], null, {}, {
+      chain: 'solana',
+      from: 'SOL',
+      to: 'USDC',
+      amount: '1.5',
+      'amount-unit': 'base',
+    });
+
+    expect(exitCode).toBe(1);
+    const errorMsg = output.find(l => l.includes('base units'));
+    expect(errorMsg).toBeTruthy();
+  });
+
+  it('rejects invalid amount-unit', async () => {
+    const output = [];
+    let exitCode = null;
+    const log = (msg) => output.push(msg);
+    const exit = (code) => { exitCode = code; };
+    const commands = buildTradingCommands({ log, exit });
+
+    await commands.quote([], null, {}, {
+      chain: 'solana',
+      from: 'SOL',
+      to: 'USDC',
+      amount: '20',
+      'amount-unit': 'percent',
+    });
+
+    expect(exitCode).toBe(1);
+    const errorMsg = output.find(l => l.includes('Invalid --amount-unit'));
+    expect(errorMsg).toBeTruthy();
+  });
+
+  it('sets swapMode to exactOut when amount-side is buy', async () => {
+    const origFetch = global.fetch;
+    const output = [];
+    let exitCode = null;
+    const log = (msg) => output.push(msg);
+    const exit = (code) => { exitCode = code; };
+    const commands = buildTradingCommands({ log, exit });
+
+    const walletDir = path.join(tempDir, '.nansen', 'wallets');
+    fs.mkdirSync(walletDir, { recursive: true });
+    fs.writeFileSync(path.join(walletDir, 'config.json'), JSON.stringify({
+      defaultWallet: 'test',
+      wallets: { test: { name: 'test' } },
+    }));
+    fs.writeFileSync(path.join(walletDir, 'test.json'), JSON.stringify({
+      name: 'test',
+      solana: { address: 'TestSolAddr111111111111111111111111111111' },
+      evm: { address: '0x1234567890abcdef1234567890abcdef12345678' },
+    }));
+
+    let capturedParams = null;
+    const quoteResponse = JSON.stringify({
+      success: true,
+      quotes: [{
+        aggregator: 'test',
+        inAmount: '1000000000',
+        outAmount: '100000000',
+        inputMint: 'So11111111111111111111111111111111111111112',
+        outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+      }],
+    });
+    global.fetch = vi.fn().mockImplementation(async (url) => {
+      if (url.includes('coingecko')) {
+        // For amount-side buy, USDC price lookup (the "to" token)
+        const addr = 'epjfwdd5aufqssqem2qn1xzybapc8g4weggkzwytdt1v';
+        return {
+          ok: true, status: 200,
+          json: async () => ({ [addr]: { usd: 1.0 } }),
+        };
+      }
+      // Capture the quote API call params
+      capturedParams = new URL(url).searchParams;
+      return {
+        ok: true, status: 200,
+        text: async () => quoteResponse,
+      };
+    });
+
+    await commands.quote([], null, {}, {
+      chain: 'solana',
+      from: 'SOL',
+      to: 'USDC',
+      amount: '100',
+      'amount-side': 'buy',
+    });
+
+    expect(exitCode).toBeNull();
+    expect(capturedParams).toBeTruthy();
+    expect(capturedParams.get('swapMode')).toBe('exactOut');
+
+    global.fetch = origFetch;
   });
 });
