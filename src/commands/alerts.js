@@ -4,6 +4,7 @@
  */
 
 import { NansenError, ErrorCode } from '../api.js';
+import { buildDaemonCommand } from './daemon.js';
 
 // ============= Formatting =============
 
@@ -453,6 +454,7 @@ SUBCOMMANDS:
   update      Update an existing alert
   toggle      Enable or disable an alert
   delete      Delete an alert
+  daemon      Real-time alert streaming (run, start, stop, status, logs)
 
 Run: nansen alerts <subcommand> --help`,
 
@@ -682,8 +684,13 @@ USAGE:
         },
       };
 
+      if (sub === 'daemon') {
+        const daemonHandler = buildDaemonCommand({ log, getApiKey: () => apiInstance?.apiKey });
+        return daemonHandler(args.slice(1), apiInstance, flags, options);
+      }
+
       if (!handlers[sub]) {
-        throw new NansenError(`Unknown alerts subcommand: ${sub}. Available: list, create, update, toggle, delete`, ErrorCode.UNKNOWN);
+        throw new NansenError(`Unknown alerts subcommand: ${sub}. Available: list, create, update, toggle, delete, daemon`, ErrorCode.UNKNOWN);
       }
 
       // Subcommand-level help: --help flag or "help" as second positional arg

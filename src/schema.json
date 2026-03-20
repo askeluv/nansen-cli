@@ -696,6 +696,104 @@
         "delete": {
           "description": "Delete an alert. Usage: nansen alerts delete <id>",
           "options": {}
+        },
+        "daemon": {
+          "description": "Real-time alert streaming via WebSocket",
+          "subcommands": {
+            "run": {
+              "description": "Run daemon in foreground (alerts emitted as NDJSON on stdout)",
+              "options": {
+                "action": {
+                  "type": "string",
+                  "description": "Shell command to run per alert. Supports {alertId}, {alertName}, {alertType}, {firedAt} placeholders."
+                },
+                "action-env": {
+                  "type": "boolean",
+                  "description": "Pass alert JSON as NANSEN_ALERT env var instead of stdin"
+                },
+                "no-backfill": {
+                  "type": "boolean",
+                  "description": "Skip past-alert backfill on (re)connect"
+                },
+                "ws-url": {
+                  "type": "string",
+                  "description": "Override WebSocket server URL"
+                },
+                "state-file": {
+                  "type": "string",
+                  "description": "Path to state JSON (default: ~/.nansen/alerts-daemon-state.json)"
+                }
+              }
+            },
+            "start": {
+              "description": "Start daemon in background (writes PID file)",
+              "options": {
+                "action": {
+                  "type": "string",
+                  "description": "Shell command to run per alert"
+                },
+                "action-env": {
+                  "type": "boolean",
+                  "description": "Pass alert JSON as NANSEN_ALERT env var instead of stdin"
+                },
+                "no-backfill": {
+                  "type": "boolean",
+                  "description": "Skip past-alert backfill on (re)connect"
+                },
+                "ws-url": {
+                  "type": "string",
+                  "description": "Override WebSocket server URL"
+                },
+                "state-file": {
+                  "type": "string",
+                  "description": "Path to state JSON"
+                },
+                "pid-file": {
+                  "type": "string",
+                  "description": "Path to PID file (default: ~/.nansen/alerts-daemon.pid)"
+                },
+                "log-file": {
+                  "type": "string",
+                  "description": "Path to log file (default: ~/.nansen/alerts-daemon.log)"
+                }
+              }
+            },
+            "stop": {
+              "description": "Stop the running daemon",
+              "options": {
+                "pid-file": {
+                  "type": "string",
+                  "description": "Path to PID file"
+                }
+              }
+            },
+            "status": {
+              "description": "Show daemon state (running/stopped, last alert, uptime)",
+              "options": {
+                "state-file": {
+                  "type": "string",
+                  "description": "Path to state JSON"
+                },
+                "pid-file": {
+                  "type": "string",
+                  "description": "Path to PID file"
+                },
+                "log-file": {
+                  "type": "string",
+                  "description": "Path to log file"
+                }
+              }
+            },
+            "logs": {
+              "description": "Tail the daemon log file",
+              "options": {
+                "log-file": {
+                  "type": "string",
+                  "description": "Path to log file"
+                }
+              }
+            }
+          }
         }
       }
     },
