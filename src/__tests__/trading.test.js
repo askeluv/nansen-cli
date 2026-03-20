@@ -1720,8 +1720,13 @@ describe('convertAmountToBaseUnits', () => {
     global.fetch = origFetch;
   });
 
+  it('rejects percent amount-unit with helpful message', async () => {
+    await expect(convertAmountToBaseUnits('50', 'percent', 'SOL', 'solana'))
+      .rejects.toThrow('not yet supported');
+  });
+
   it('rejects invalid amount-unit', async () => {
-    await expect(convertAmountToBaseUnits('1', 'percent', 'SOL', 'solana'))
+    await expect(convertAmountToBaseUnits('1', 'foobar', 'SOL', 'solana'))
       .rejects.toThrow('Invalid --amount-unit');
   });
 
@@ -1733,6 +1738,46 @@ describe('convertAmountToBaseUnits', () => {
   it('rejects negative USD amount', async () => {
     await expect(convertAmountToBaseUnits('-5', 'usd', 'So11111111111111111111111111111111111111112', 'solana'))
       .rejects.toThrow('must be a positive number');
+  });
+
+  it('rejects suspiciously large USD amounts (>$1M)', async () => {
+    await expect(convertAmountToBaseUnits('1000000000', 'usd', 'So11111111111111111111111111111111111111112', 'solana'))
+      .rejects.toThrow('seems too large for a USD value');
+  });
+
+  it('allows USD amounts up to $1M', async () => {
+    const origFetch = global.fetch;
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true, status: 200,
+      json: async () => ({ solana: { usd: 150 } }),
+    });
+
+    // $1M exactly should NOT throw
+    const result = await convertAmountToBaseUnits('1000000', 'usd', 'So11111111111111111111111111111111111111112', 'solana');
+    expect(BigInt(result)).toBeGreaterThan(0n);
+
+    global.fetch = origFetch;
+  });
+
+  it('uses scaled BigInt arithmetic for USD conversion (no float precision loss)', async () => {
+    const origFetch = global.fetch;
+    // Mock CoinGecko price: ETH = $2500.50
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true, status: 200,
+      json: async () => ({ ethereum: { usd: 2500.50 } }),
+    });
+
+    // $100 at $2500.50/ETH = 0.03999200... ETH
+    // With scaled BigInt: usdScaled=10000000000, priceScaled=250050000000
+    // baseUnits = (10000000000 * 10^18) / 250050000000 = 39992003198720...
+    const result = await convertAmountToBaseUnits('100', 'usd', '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', 'base');
+    const baseUnits = BigInt(result);
+    expect(baseUnits).toBeGreaterThan(0n);
+    // Should be approximately 0.04 ETH (4e16 wei), not wildly off
+    expect(baseUnits).toBeGreaterThan(39000000000000000n);
+    expect(baseUnits).toBeLessThan(41000000000000000n);
+
+    global.fetch = origFetch;
   });
 });
 
@@ -1895,6 +1940,136 @@ describe('quote command with amount-unit', () => {
     expect(exitCode).toBe(1);
     const errorMsg = output.find(l => l.includes('Invalid --amount-unit'));
     expect(errorMsg).toBeTruthy();
+  });
+
+  it('rejects conflicting --swap-mode and --amount-side', async () => {
+    const output = [];
+    let exitCode = null;
+    const log = (msg) => output.push(msg);
+    const exit = (code) => { exitCode = code; };
+    const commands = buildTradingCommands({ log, exit });
+
+    await commands.quote([], null, {}, {
+      chain: 'solana',
+      from: 'SOL',
+      to: 'USDC',
+      amount: '20',
+      'amount-side': 'buy',
+      'swap-mode': 'exactIn',  // Conflicts: buy → exactOut, not exactIn
+    });
+
+    expect(exitCode).toBe(1);
+    const errorMsg = output.find(l => l.includes('conflicts with'));
+    expect(errorMsg).toBeTruthy();
+  });
+
+  it('allows matching --swap-mode and --amount-side', async () => {
+    const origFetch = global.fetch;
+    const output = [];
+    let exitCode = null;
+    const log = (msg) => output.push(msg);
+    const exit = (code) => { exitCode = code; };
+    const commands = buildTradingCommands({ log, exit });
+
+    const walletDir = path.join(tempDir, '.nansen', 'wallets');
+    fs.mkdirSync(walletDir, { recursive: true });
+    fs.writeFileSync(path.join(walletDir, 'config.json'), JSON.stringify({
+      defaultWallet: 'test',
+      wallets: { test: { name: 'test' } },
+    }));
+    fs.writeFileSync(path.join(walletDir, 'test.json'), JSON.stringify({
+      name: 'test',
+      solana: { address: 'TestSolAddr111111111111111111111111111111' },
+      evm: { address: '0x1234567890abcdef1234567890abcdef12345678' },
+    }));
+
+    global.fetch = vi.fn().mockImplementation(async (url) => {
+      if (url.includes('coingecko')) {
+        return { ok: true, status: 200, json: async () => ({ solana: { usd: 150 } }) };
+      }
+      return {
+        ok: true, status: 200,
+        text: async () => JSON.stringify({
+          success: true,
+          quotes: [{
+            aggregator: 'test', inAmount: '1000000000', outAmount: '100000000',
+            inputMint: 'So11111111111111111111111111111111111111112',
+            outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+          }],
+        }),
+      };
+    });
+
+    await commands.quote([], null, {}, {
+      chain: 'solana',
+      from: 'SOL',
+      to: 'USDC',
+      amount: '20',
+      'amount-side': 'sell',
+      'swap-mode': 'exactIn',  // Matches: sell → exactIn
+    });
+
+    // Should NOT have errored about conflicts
+    expect(output.find(l => l.includes('conflicts with'))).toBeUndefined();
+
+    global.fetch = origFetch;
+  });
+
+  it('converts token amount using buy-side token decimals when amount-side is buy', async () => {
+    const origFetch = global.fetch;
+    const output = [];
+    let exitCode = null;
+    let capturedParams = null;
+    const log = (msg) => output.push(msg);
+    const exit = (code) => { exitCode = code; };
+    const commands = buildTradingCommands({ log, exit });
+
+    const walletDir = path.join(tempDir, '.nansen', 'wallets');
+    fs.mkdirSync(walletDir, { recursive: true });
+    fs.writeFileSync(path.join(walletDir, 'config.json'), JSON.stringify({
+      defaultWallet: 'test',
+      wallets: { test: { name: 'test' } },
+    }));
+    fs.writeFileSync(path.join(walletDir, 'test.json'), JSON.stringify({
+      name: 'test',
+      solana: { address: 'TestSolAddr111111111111111111111111111111' },
+      evm: { address: '0x1234567890abcdef1234567890abcdef12345678' },
+    }));
+
+    const quoteResponse = JSON.stringify({
+      success: true,
+      quotes: [{
+        aggregator: 'test', inAmount: '5000000000', outAmount: '100000000',
+        inputMint: 'So11111111111111111111111111111111111111112',
+        outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+      }],
+    });
+    global.fetch = vi.fn().mockImplementation(async (url) => {
+      if (url.includes('quote')) {
+        capturedParams = new URL(url).searchParams;
+      }
+      return { ok: true, status: 200, text: async () => quoteResponse };
+    });
+
+    // --amount 100 --amount-unit token --amount-side buy
+    // "to" token is USDC (6 decimals) → 100 USDC = 100000000 base units
+    await commands.quote([], null, {}, {
+      chain: 'solana',
+      from: 'SOL',
+      to: 'USDC',
+      amount: '100',
+      'amount-unit': 'token',
+      'amount-side': 'buy',
+    });
+
+    expect(exitCode).toBeNull();
+    expect(capturedParams).toBeTruthy();
+    // Amount should be 100 USDC = 100 * 10^6 = 100000000 base units (USDC has 6 decimals)
+    expect(capturedParams.get('amount')).toBe('100000000');
+    // Should use exactOut for buy side
+    expect(capturedParams.get('swapMode')).toBe('exactOut');
+
+    global.fetch = origFetch;
   });
 
   it('sets swapMode to exactOut when amount-side is buy', async () => {

@@ -273,19 +273,34 @@ export async function convertAmountToBaseUnits(amount, amountUnit, tokenAddress,
     if (isNaN(usdAmount) || usdAmount <= 0) {
       throw new Error(`USD amount must be a positive number. Got: ${amount}`);
     }
+    if (usdAmount > 1000000) {
+      throw new Error(
+        `Amount $${usdAmount.toLocaleString()} seems too large for a USD value. ` +
+        `If this is a raw base-unit amount (wei/lamports), use --amount-unit base.`
+      );
+    }
     const priceUsd = await getTokenPriceUsd(tokenAddress, chain);
-    // Convert USD → token amount
-    const tokenAmount = usdAmount / priceUsd;
-    // Convert token amount → base units
     const decimals = await getTokenDecimals(tokenAddress, chain);
-    const baseUnits = parseUnits(tokenAmount.toFixed(decimals), decimals);
+    // Scale both values to integers (8 decimal places of precision for price)
+    const PRICE_SCALE = 100000000n; // 10^8
+    const usdScaled = BigInt(Math.round(usdAmount * 1e8));
+    const priceScaled = BigInt(Math.round(priceUsd * 1e8));
+    const baseUnits = (usdScaled * (10n ** BigInt(decimals))) / priceScaled;
     if (baseUnits <= 0n) {
       throw new Error(`Computed base units is zero — amount too small. USD: ${amount}, price: $${priceUsd}`);
     }
     return baseUnits.toString();
   }
 
-  throw new Error(`Invalid --amount-unit: "${amountUnit}". Must be one of: usd, token, base`);
+  if (amountUnit === 'percent') {
+    throw new Error(
+      'Percentage amounts (--amount-unit percent) are not yet supported in the CLI. ' +
+      'Use --amount-unit usd or --amount-unit token instead. ' +
+      'For "sell all", use --amount-unit token with your full balance.'
+    );
+  }
+
+  throw new Error(`Invalid --amount-unit "${amountUnit}". Must be one of: usd, token, base`);
 }
 
 /**
@@ -1008,6 +1023,17 @@ EXAMPLES:
 `);
         exit(1);
         return;
+      }
+
+      // Reject conflicting --swap-mode and --amount-side
+      if (options['swap-mode'] && options['amount-side']) {
+        const expected = options['amount-side'] === 'buy' ? 'exactOut' : 'exactIn';
+        if (options['swap-mode'] !== expected) {
+          log(`Error: --swap-mode ${options['swap-mode']} conflicts with --amount-side ${options['amount-side']}. ` +
+              `Use one or the other, not both.`);
+          exit(1);
+          return;
+        }
       }
 
       // Validate amount-unit
