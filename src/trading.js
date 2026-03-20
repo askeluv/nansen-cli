@@ -282,7 +282,6 @@ export async function convertAmountToBaseUnits(amount, amountUnit, tokenAddress,
     const priceUsd = await getTokenPriceUsd(tokenAddress, chain);
     const decimals = await getTokenDecimals(tokenAddress, chain);
     // Scale both values to integers (8 decimal places of precision for price)
-    const PRICE_SCALE = 100000000n; // 10^8
     const usdScaled = BigInt(Math.round(usdAmount * 1e8));
     const priceScaled = BigInt(Math.round(priceUsd * 1e8));
     const baseUnits = (usdScaled * (10n ** BigInt(decimals))) / priceScaled;

@@ -1803,9 +1803,7 @@ describe('quote command with amount-unit', () => {
       evm: { address: '0x1234567890abcdef1234567890abcdef12345678' },
     }));
 
-    let fetchCallCount = 0;
     global.fetch = vi.fn().mockImplementation(async (url) => {
-      fetchCallCount++;
       if (url.includes('coingecko')) {
         return {
           ok: true, status: 200,
@@ -1966,9 +1964,9 @@ describe('quote command with amount-unit', () => {
   it('allows matching --swap-mode and --amount-side', async () => {
     const origFetch = global.fetch;
     const output = [];
-    let exitCode = null;
+    let _exitCode = null;
     const log = (msg) => output.push(msg);
-    const exit = (code) => { exitCode = code; };
+    const exit = (code) => { _exitCode = code; };
     const commands = buildTradingCommands({ log, exit });
 
     const walletDir = path.join(tempDir, '.nansen', 'wallets');
