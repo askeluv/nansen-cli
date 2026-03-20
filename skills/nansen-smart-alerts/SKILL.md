@@ -41,6 +41,7 @@ nansen alerts delete <id>
 | `--telegram` | chat ID | optional | | |
 | `--slack` | webhook URL | optional | | |
 | `--discord` | webhook URL | optional | | |
+| `--webhook` | endpoint URL | optional | optional | |
 | `--description` | optional | optional | | |
 | `--enabled` | | flag | flag | |
 | `--disabled` | flag | flag | flag | |
@@ -131,7 +132,8 @@ nansen alerts create \
 ## Notes
 
 - Chain aliases: Hyperliquid = `hyperevm`, BSC = `bnb`.
-- Multiple channels can be combined: `--telegram 123 --slack https://...`
+- Multiple channels can be combined: `--telegram 123 --slack https://... --webhook https://...`
+- `--webhook <url>` sends a POST request with the alert payload to any HTTP/HTTPS endpoint. Useful for server deployments, Zapier, n8n, or custom integrations. The endpoint must be publicly reachable and return a 2xx response.
 - `--data '<json>'` merges raw JSON on top of named flags (escape hatch for fields without named flags).
 - Alert endpoints are internal-only. Non-internal users receive 404.
 - Use single quotes for names with `$` or special characters: `--name 'SM >$1M'`

@@ -801,6 +801,110 @@ describe('alerts create does not require --time-window', () => {
   });
 });
 
+describe('alerts create — webhook channel', () => {
+  it('should include webhook channel in alertsCreate payload', async () => {
+    const mockApi = { alertsCreate: vi.fn().mockResolvedValue({ id: 'new' }) };
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    await cmd(
+      ['create'],
+      mockApi,
+      {},
+      { name: 'Webhook Alert', type: 'sm-token-flows', chains: 'ethereum', webhook: 'https://example.com/hook', 'inflow-1h-min': 1000000 },
+    );
+    expect(mockApi.alertsCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channels: expect.arrayContaining([
+          { type: 'webhook', data: { url: 'https://example.com/hook' } },
+        ]),
+      }),
+    );
+  });
+
+  it('should combine webhook with other channels', async () => {
+    const mockApi = { alertsCreate: vi.fn().mockResolvedValue({ id: 'new' }) };
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    await cmd(
+      ['create'],
+      mockApi,
+      {},
+      { name: 'Multi-channel', type: 'sm-token-flows', chains: 'ethereum', telegram: '123', webhook: 'https://example.com/hook', 'inflow-1h-min': 500000 },
+    );
+    const call = mockApi.alertsCreate.mock.calls[0][0];
+    expect(call.channels).toHaveLength(2);
+    expect(call.channels).toEqual(
+      expect.arrayContaining([
+        { type: 'telegram', data: { chatId: '123' } },
+        { type: 'webhook', data: { url: 'https://example.com/hook' } },
+      ]),
+    );
+  });
+
+  it('should satisfy channel requirement with --webhook alone', async () => {
+    const mockApi = { alertsCreate: vi.fn().mockResolvedValue({ id: 'new' }) };
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    // Should NOT throw "a channel" missing error
+    await expect(
+      cmd(
+        ['create'],
+        mockApi,
+        {},
+        { name: 'Webhook Only', type: 'sm-token-flows', chains: 'ethereum', webhook: 'https://example.com/hook', 'inflow-1h-min': 1000000 },
+      ),
+    ).resolves.toBeDefined();
+  });
+
+  it('should include webhook in update channels', async () => {
+    const mockApi = {
+      alertsGet: vi.fn().mockResolvedValue({ type: 'sm-token-flows', data: { chains: ['ethereum'], inflow_1h: { min: 1000000 } } }),
+      alertsUpdate: vi.fn().mockResolvedValue({ id: 'abc123' }),
+    };
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    await cmd(['update', 'abc123'], mockApi, {}, { webhook: 'https://example.com/hook' });
+    expect(mockApi.alertsUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channels: [{ type: 'webhook', data: { url: 'https://example.com/hook' } }],
+      }),
+    );
+  });
+
+  it('should mention --webhook in the missing-channel error message', async () => {
+    const mockApi = { alertsCreate: vi.fn() };
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    let err;
+    try {
+      await cmd(['create'], mockApi, {}, { name: 'Test', type: 'sm-token-flows', chains: 'ethereum', 'inflow-1h-min': 1000000 });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeDefined();
+    expect(err.message).toContain('--webhook');
+  });
+
+  it('should rewrite API error for webhook channel index 0', async () => {
+    const { NansenError, ErrorCode } = await import('../api.js');
+    const mockApi = {
+      alertsCreate: vi.fn().mockRejectedValue(
+        new NansenError('Failed to send a welcome message to the channel index 0', ErrorCode.INVALID_PARAMS),
+      ),
+    };
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    let err;
+    try {
+      await cmd(
+        ['create'],
+        mockApi,
+        {},
+        { name: 'Test', type: 'sm-token-flows', chains: 'ethereum', webhook: 'https://example.com/hook', 'inflow-1h-min': 1000000 },
+      );
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeDefined();
+    expect(err.message).toContain('https://example.com/hook');
+    expect(err.message).toContain('2xx');
+  });
+});
+
 describe('alerts update — type inference', () => {
   it('should call alertsGet to infer type when type-specific flags used without --type', async () => {
     const mockApi = {
