@@ -97,7 +97,18 @@ def fragment_score(response: str, expected_fragments: list[str]) -> float:
     return matched / len(expected_fragments)
 
 
-def overall_score(cmd_match: bool, frag_score: float) -> float:
+def rejected_fragment_hits(response: str, rejected_fragments: list[str]) -> list[str]:
+    """Return list of rejected fragments found in the response."""
+    if not rejected_fragments:
+        return []
+    response_lower = response.lower()
+    return [f for f in rejected_fragments if f.lower() in response_lower]
+
+
+def overall_score(cmd_match: bool, frag_score: float, has_rejected: bool = False) -> float:
+    """Score is 0 if any rejected fragment matched, otherwise normal scoring."""
+    if has_rejected:
+        return 0.0
     return 0.5 * float(cmd_match) + 0.5 * frag_score
 
 
@@ -124,7 +135,9 @@ def run_question(
     answer = response.content[0].text
     cmd_match = command_matches(answer, question["expected_commands"])
     frag = fragment_score(answer, question.get("expected_fragments", []))
-    score = overall_score(cmd_match, frag)
+    rejected_hits = rejected_fragment_hits(answer, question.get("rejected_fragments", []))
+    has_rejected = len(rejected_hits) > 0
+    score = overall_score(cmd_match, frag, has_rejected)
 
     return {
         "id": question["id"],
@@ -134,8 +147,10 @@ def run_question(
         "command_match": cmd_match,
         "fragment_score": round(frag, 3),
         "overall_score": round(score, 3),
+        "rejected_hits": rejected_hits,
         "expected_commands": question["expected_commands"],
         "expected_fragments": question.get("expected_fragments", []),
+        "rejected_fragments": question.get("rejected_fragments", []),
         "skill": question.get("skill"),
     }
 
@@ -271,13 +286,22 @@ def main():
             result = run_question(client, args.model, q, help_text, cond)
             results[cond].append(result)
 
-            status = "✓" if result["command_match"] else "✗"
+            rejected = result.get("rejected_hits", [])
+            if rejected:
+                status = "✗"
+            elif result["command_match"]:
+                status = "✓"
+            else:
+                status = "✗"
             print(
                 f"  {status} [{q['id']}] "
                 f"score={result['overall_score']:.2f} "
                 f"frag={result['fragment_score']:.2f}"
             )
-            if not result["command_match"]:
+            if rejected:
+                print(f"    REJECTED fragments found: {rejected}")
+                print(f"    Got: {result['answer'][:120]}")
+            elif not result["command_match"]:
                 print(f"    Expected: {', '.join(q['expected_commands'])}")
                 print(f"    Got: {result['answer'][:120]}")
 

@@ -238,6 +238,86 @@ questions:
       - "30"
     skill: nansen-smart-money-tracker
 
+  # Trading: USD-intent amount (defensive — CLI only supports base units)
+  - id: trade_usd_intent_solana
+    question: Buy $20 worth of MPLX on Solana
+    expected_commands:
+      - nansen trade quote
+    expected_fragments:
+      - "trade quote"
+      - "--chain"
+      - "solana"
+      - "--amount"
+    rejected_fragments:
+      - "--amount 20"
+      - "--amount 20 "
+      - "--amount \"20\""
+    notes: >
+      The CLI only accepts base units (lamports/wei). Passing --amount 20 sends
+      20 lamports (~$0.000000), not $20 USD. The agent must either convert to
+      base units via a price lookup or warn that USD amounts aren't supported.
+    skill: nansen-trading
+
+  - id: trade_usd_intent_base
+    question: I want to spend $25 of ETH to buy VIRTUAL on Base
+    expected_commands:
+      - nansen trade quote
+    expected_fragments:
+      - "trade quote"
+      - "--chain"
+      - "base"
+      - "--amount"
+    rejected_fragments:
+      - "--amount 25"
+      - "--amount 25 "
+      - "--amount \"25\""
+    notes: >
+      Same as above — 25 wei is effectively zero ETH. Agent must not pass raw
+      dollar amounts as base units.
+    skill: nansen-trading
+
+  - id: trade_decimal_amount_eth
+    question: Swap 0.1 ETH for USDC on Base
+    expected_commands:
+      - nansen trade quote
+    expected_fragments:
+      - "trade quote"
+      - "--chain"
+      - "base"
+      - "--from"
+      - "--to"
+      - "--amount"
+      - "100000000000000000"
+    rejected_fragments:
+      - "--amount 0.1"
+      - "--amount \"0.1\""
+    notes: >
+      0.1 ETH = 100000000000000000 wei (1e17). The CLI rejects decimals, but
+      the agent should proactively convert to base units without trying decimals.
+    skill: nansen-trading
+
+  - id: trade_decimal_amount_sol
+    question: Trade 0.5 SOL for USDC on Solana
+    expected_commands:
+      - nansen trade quote
+    expected_fragments:
+      - "trade quote"
+      - "--chain"
+      - "solana"
+      - "--from"
+      - "SOL"
+      - "--to"
+      - "USDC"
+      - "--amount"
+      - "500000000"
+    rejected_fragments:
+      - "--amount 0.5"
+      - "--amount \"0.5\""
+    notes: >
+      0.5 SOL = 500000000 lamports (5e8). Agent must convert fractional token
+      amounts to base units.
+    skill: nansen-trading
+
   # Web search: multi-query (skill-specific pattern)
   - id: web_multi_search
     question: Search for both "ethereum ETF approval" and "solana ETF filing" at the same time
