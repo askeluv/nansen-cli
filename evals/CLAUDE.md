@@ -8,14 +8,14 @@ A/B testing harness for LLM command selection — measures whether skill docs im
 export ANTHROPIC_API_KEY="sk-ant-..."
 
 # Both conditions (baseline vs with-skills)
-uv run python evals/runner.py
+uv run --script evals/runner.py
 
 # Single condition
-uv run python evals/runner.py --condition baseline
-uv run python evals/runner.py --condition with-skills
+uv run --script evals/runner.py --condition baseline
+uv run --script evals/runner.py --condition with-skills
 
 # Different model
-uv run python evals/runner.py --model claude-sonnet-4-6
+uv run --script evals/runner.py --model claude-sonnet-4-6
 ```
 
 ## Structure
