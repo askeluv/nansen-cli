@@ -26,6 +26,7 @@ questions:
     question: What tokens are crypto funds accumulating on Ethereum?
     expected_commands:
       - nansen research smart-money netflow
+      - nansen research smart-money holdings
     expected_fragments:
       - "smart-money netflow"
       - '--labels'
@@ -159,6 +160,8 @@ questions:
       - nansen research smart-money dcas
     expected_fragments:
       - "smart-money dcas"
+      - "--chain"
+      - "solana"
     skill: nansen-dca-tracker
 
   # Smart money: dex-trades with label filter (skill-specific)
