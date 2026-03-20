@@ -58,13 +58,17 @@ nansen trade execute --quote "$quote_id"
 | ETH | Base | `0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee` |
 | USDC | Base | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` |
 
-## Amounts are in base units
+## Amounts are in base units — NEVER USD
+
+`--amount` accepts **integer base units only** (lamports, wei, etc). It is never a USD value.
 
 | Token | Decimals | 1 token = |
 |-------|----------|-----------|
 | SOL | 9 | `1000000000` |
 | ETH | 18 | `1000000000000000000` |
 | USDC | 6 | `1000000` |
+
+If the user says "$20 worth of X", you must convert USD → token amount → base units. For example, to buy $20 of SOL at $150/SOL: $20 ÷ $150 = 0.1333 SOL = 133,300,000 lamports → `--amount 133300000`. Use a price lookup (e.g. `nansen research token info`) to get the current price first.
 
 ## Flags
 

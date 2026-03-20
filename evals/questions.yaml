@@ -318,6 +318,97 @@ questions:
       amounts to base units.
     skill: nansen-trading
 
+  # Trading: round whole-token amount must convert to base units
+  - id: trade_whole_token_eth
+    question: Buy 5 ETH worth of USDC on Base
+    expected_commands:
+      - nansen trade quote
+    expected_fragments:
+      - "trade quote"
+      - "--chain"
+      - "base"
+      - "--amount"
+      - "5000000000000000000"
+    rejected_fragments:
+      - "--amount 5 "
+      - "--amount 5\n"
+      - "--amount \"5\""
+    notes: >
+      5 ETH = 5e18 wei. A round integer like 5 is the most common mistake —
+      the agent must never pass it raw.
+    skill: nansen-trading
+
+  # Trading: USDC spend amount must convert to base units (6 decimals)
+  - id: trade_usdc_spend
+    question: Spend 100 USDC to buy SOL on Solana
+    expected_commands:
+      - nansen trade quote
+    expected_fragments:
+      - "trade quote"
+      - "--chain"
+      - "solana"
+      - "--from"
+      - "USDC"
+      - "--to"
+      - "SOL"
+      - "--amount"
+      - "100000000"
+    rejected_fragments:
+      - "--amount 100 "
+      - "--amount 100\n"
+      - "--amount \"100\""
+    notes: >
+      100 USDC = 100,000,000 (1e8). Agent must know USDC has 6 decimals and
+      convert accordingly. Passing 100 sends 0.0001 USDC.
+    skill: nansen-trading
+
+  # Trading: small USDC amount for meme token (common agent pattern)
+  - id: trade_usdc_small_amount
+    question: Buy 20 USDC of BONK on Solana
+    expected_commands:
+      - nansen trade quote
+    expected_fragments:
+      - "trade quote"
+      - "--chain"
+      - "solana"
+      - "--from"
+      - "USDC"
+      - "--to"
+      - "--amount"
+      - "20000000"
+    rejected_fragments:
+      - "--amount 20 "
+      - "--amount 20\n"
+      - "--amount \"20\""
+    notes: >
+      20 USDC = 20,000,000 (2e7). This mirrors the exact failure from the
+      user report — small round number that looks correct but is off by 1e6.
+    skill: nansen-trading
+
+  # Trading: whole SOL amount (9 decimals)
+  - id: trade_whole_token_sol
+    question: Swap 2 SOL for USDC on Solana
+    expected_commands:
+      - nansen trade quote
+    expected_fragments:
+      - "trade quote"
+      - "--chain"
+      - "solana"
+      - "--from"
+      - "SOL"
+      - "--to"
+      - "USDC"
+      - "--amount"
+      - "2000000000"
+    rejected_fragments:
+      - "--amount 2 "
+      - "--amount 2\n"
+      - "--amount \"2\""
+    notes: >
+      2 SOL = 2,000,000,000 lamports (2e9). Round SOL amounts are common
+      and must be converted.
+    skill: nansen-trading
+
   # Web search: multi-query (skill-specific pattern)
   - id: web_multi_search
     question: Search for both "ethereum ETF approval" and "solana ETF filing" at the same time
