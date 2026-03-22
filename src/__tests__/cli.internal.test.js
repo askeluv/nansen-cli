@@ -3960,6 +3960,47 @@ describe('deprecation warnings', () => {
     expect(errors.some(e => e.includes('deprecated'))).toBe(false);
   });
 
+  it('should suppress deprecation warnings when NANSEN_NO_WARNINGS=1', async () => {
+    const errors = [];
+    const deps = {
+      output: () => {},
+      errorOutput: (msg) => errors.push(msg),
+      exit: () => {},
+      NansenAPIClass: function MockAPI() {
+        this.smartMoneyNetflow = vi.fn().mockResolvedValue({ data: [] });
+      }
+    };
+    const prev = process.env.NANSEN_NO_WARNINGS;
+    process.env.NANSEN_NO_WARNINGS = '1';
+    try {
+      await runCLI(['smart-money', 'netflow'], deps);
+      expect(errors.some(e => e.includes('deprecated'))).toBe(false);
+    } finally {
+      if (prev === undefined) delete process.env.NANSEN_NO_WARNINGS;
+      else process.env.NANSEN_NO_WARNINGS = prev;
+    }
+  });
+
+  it('should still warn when NANSEN_NO_WARNINGS is not set', async () => {
+    const errors = [];
+    const deps = {
+      output: () => {},
+      errorOutput: (msg) => errors.push(msg),
+      exit: () => {},
+      NansenAPIClass: function MockAPI() {
+        this.smartMoneyNetflow = vi.fn().mockResolvedValue({ data: [] });
+      }
+    };
+    const prev = process.env.NANSEN_NO_WARNINGS;
+    delete process.env.NANSEN_NO_WARNINGS;
+    try {
+      await runCLI(['smart-money', 'netflow'], deps);
+      expect(errors.some(e => e.includes('deprecated'))).toBe(true);
+    } finally {
+      if (prev !== undefined) process.env.NANSEN_NO_WARNINGS = prev;
+    }
+  });
+
   it('should include all expected categories in DEPRECATED_TO_RESEARCH', () => {
     expect(DEPRECATED_TO_RESEARCH.has('smart-money')).toBe(true);
     expect(DEPRECATED_TO_RESEARCH.has('profiler')).toBe(true);

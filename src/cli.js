@@ -1549,10 +1549,14 @@ export async function runCLI(rawArgs, deps = {}) {
   const subcommand = subArgs[0];
 
   // Deprecation warnings for commands that moved under 'research' or 'trade'
-  if (DEPRECATED_TO_RESEARCH.has(command)) {
-    errorOutput(`Warning: "nansen ${command}" is deprecated. Use "nansen research ${command}" instead.`);
-  } else if (DEPRECATED_TO_TRADE.has(command)) {
-    errorOutput(`Warning: "nansen ${command}" is deprecated. Use "nansen trade ${command}" instead.`);
+  // Suppressed when NANSEN_NO_WARNINGS=1 (agent/pipeline contexts where stdout must be clean JSON)
+  const suppressWarnings = process.env.NANSEN_NO_WARNINGS === '1';
+  if (!suppressWarnings) {
+    if (DEPRECATED_TO_RESEARCH.has(command)) {
+      errorOutput(`Warning: "nansen ${command}" is deprecated. Use "nansen research ${command}" instead.`);
+    } else if (DEPRECATED_TO_TRADE.has(command)) {
+      errorOutput(`Warning: "nansen ${command}" is deprecated. Use "nansen trade ${command}" instead.`);
+    }
   }
 
   const pretty = flags.pretty || flags.p;
