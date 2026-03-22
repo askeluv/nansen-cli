@@ -10,6 +10,7 @@ import { formatAlertsTable, buildAlertsCommands } from './commands/alerts.js';
 import { resolveAddress, isEnsName } from './ens.js';
 import fs from 'fs';
 import { getUpdateNotification, getUpgradeNotice, scheduleUpdateCheck } from './update-check.js';
+import { refreshCostMapIfStale, getCostForEndpoint } from './cost-cache.js';
 import { trackCommandSucceeded, trackCommandFailed } from './telemetry.js';
 import { createRequire } from 'module';
 import * as readline from 'readline';
@@ -1513,6 +1514,11 @@ export function generateSubcommandHelp(command, subcommand, prefix = null) {
     lines.push(`Params (* required): ${params.join(', ')}`);
   }
 
+  if (subSchema.endpoint) {
+    const cost = getCostForEndpoint(subSchema.endpoint);
+    if (cost) lines.push(`Cost: ${cost.free} credits (free) / ${cost.pro} credit(s) (pro)`);
+  }
+
   if (subSchema.returns?.length) {
     lines.push(`Returns: ${subSchema.returns.join(', ')}`);
   }
@@ -1563,6 +1569,7 @@ export async function runCLI(rawArgs, deps = {}) {
   const updateNotification = getUpdateNotification(VERSION);
   const upgradeNotice = getUpgradeNotice(VERSION);
   scheduleUpdateCheck();
+  await refreshCostMapIfStale();
   const notify = () => {
     if (upgradeNotice) errorOutput(upgradeNotice);
     if (updateNotification) errorOutput(updateNotification);

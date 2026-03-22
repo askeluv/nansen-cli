@@ -6,6 +6,7 @@
         "portfolio": {
           "subcommands": {
             "defi": {
+              "endpoint": "/api/v1/portfolio/defi-holdings",
               "description": "DeFi holdings across protocols",
               "options": {
                 "wallet": {
@@ -19,6 +20,7 @@
         "smart-money": {
           "subcommands": {
             "netflow": {
+              "endpoint": "/api/v1/smart-money/netflow",
               "description": "Net capital flows (inflows vs outflows)",
               "options": {
                 "chain": {
@@ -27,6 +29,7 @@
               }
             },
             "dex-trades": {
+              "endpoint": "/api/v1/smart-money/dex-trades",
               "description": "Real-time DEX trading activity",
               "options": {
                 "chain": {
@@ -35,12 +38,15 @@
               }
             },
             "perp-trades": {
+              "endpoint": "/api/v1/smart-money/perp-trades",
               "description": "Perpetual trading on Hyperliquid"
             },
             "dcas": {
+              "endpoint": "/api/v1/smart-money/dcas",
               "description": "DCA strategies on Jupiter"
             },
             "holdings": {
+              "endpoint": "/api/v1/smart-money/holdings",
               "description": "Aggregated token balances",
               "options": {
                 "chain": {
@@ -49,6 +55,7 @@
               }
             },
             "historical-holdings": {
+              "endpoint": "/api/v1/smart-money/historical-holdings",
               "description": "Historical holdings over time",
               "options": {
                 "chain": {
@@ -65,6 +72,7 @@
         "profiler": {
           "subcommands": {
             "transactions": {
+              "endpoint": "/api/v1/profiler/address/transactions",
               "description": "Transaction history",
               "options": {
                 "address": {
@@ -79,6 +87,7 @@
               }
             },
             "pnl-summary": {
+              "endpoint": "/api/v1/profiler/address/pnl-summary",
               "description": "Summarized PnL metrics",
               "options": {
                 "address": {
@@ -93,6 +102,7 @@
               }
             },
             "balance": {
+              "endpoint": "/api/v1/profiler/address/current-balance",
               "description": "Current token holdings",
               "options": {
                 "address": {
@@ -104,6 +114,7 @@
               }
             },
             "counterparties": {
+              "endpoint": "/api/v1/profiler/address/counterparties",
               "description": "Top counterparties by volume",
               "options": {
                 "address": {
@@ -118,6 +129,7 @@
               }
             },
             "historical-balances": {
+              "endpoint": "/api/v1/profiler/address/historical-balances",
               "description": "Historical balances over time",
               "options": {
                 "address": {
@@ -132,6 +144,7 @@
               }
             },
             "related-wallets": {
+              "endpoint": "/api/v1/profiler/address/related-wallets",
               "description": "Find wallets related to an address",
               "options": {
                 "address": {
@@ -143,6 +156,7 @@
               }
             },
             "pnl": {
+              "endpoint": "/api/v1/profiler/address/pnl",
               "description": "PnL and trade performance",
               "options": {
                 "address": {
@@ -157,6 +171,7 @@
               }
             },
             "labels": {
+              "endpoint": "/api/v1/profiler/address/labels",
               "description": "Behavioral and entity labels",
               "options": {
                 "address": {
@@ -168,6 +183,7 @@
               }
             },
             "perp-positions": {
+              "endpoint": "/api/v1/profiler/perp-positions",
               "description": "Current perpetual positions",
               "options": {
                 "address": {
@@ -176,6 +192,7 @@
               }
             },
             "perp-trades": {
+              "endpoint": "/api/v1/profiler/perp-trades",
               "description": "Perpetual trading history",
               "options": {
                 "address": {
@@ -187,6 +204,7 @@
               }
             },
             "search": {
+              "endpoint": "/api/v1/search/entity-name",
               "description": "Search for entities by name",
               "options": {
                 "query": {
@@ -251,6 +269,7 @@
         "token": {
           "subcommands": {
             "flows": {
+              "endpoint": "/api/v1/tgm/flows",
               "description": "Token flow metrics",
               "options": {
                 "chain": {
@@ -265,6 +284,7 @@
               }
             },
             "who-bought-sold": {
+              "endpoint": "/api/v1/tgm/who-bought-sold",
               "description": "Recent buyers and sellers",
               "options": {
                 "chain": {
@@ -279,6 +299,7 @@
               }
             },
             "dex-trades": {
+              "endpoint": "/api/v1/tgm/dex-trades",
               "description": "DEX trading activity",
               "options": {
                 "chain": {
@@ -293,6 +314,7 @@
               }
             },
             "transfers": {
+              "endpoint": "/api/v1/tgm/transfers",
               "description": "Token transfer history",
               "options": {
                 "chain": {
@@ -307,6 +329,7 @@
               }
             },
             "holders": {
+              "endpoint": "/api/v1/tgm/holders",
               "description": "Token holder analysis",
               "options": {
                 "chain": {
@@ -318,6 +341,7 @@
               }
             },
             "pnl": {
+              "endpoint": "/api/v1/tgm/pnl-leaderboard",
               "description": "PnL leaderboard",
               "options": {
                 "chain": {
@@ -332,6 +356,7 @@
               }
             },
             "perp-pnl-leaderboard": {
+              "endpoint": "/api/v1/tgm/perp-pnl-leaderboard",
               "description": "Perp PnL leaderboard by token",
               "options": {
                 "symbol": {
@@ -343,6 +368,7 @@
               }
             },
             "perp-positions": {
+              "endpoint": "/api/v1/tgm/perp-positions",
               "description": "Open perp positions by token symbol",
               "options": {
                 "symbol": {
@@ -351,6 +377,7 @@
               }
             },
             "perp-trades": {
+              "endpoint": "/api/v1/tgm/perp-trades",
               "description": "Perp trades by token symbol",
               "options": {
                 "symbol": {
@@ -362,6 +389,7 @@
               }
             },
             "flow-intelligence": {
+              "endpoint": "/api/v1/tgm/flow-intelligence",
               "description": "Detailed flow intelligence by label",
               "options": {
                 "chain": {
@@ -376,6 +404,7 @@
               }
             },
             "info": {
+              "endpoint": "/api/v1/tgm/token-information",
               "description": "Get detailed information for a specific token",
               "options": {
                 "chain": {
@@ -390,6 +419,7 @@
               }
             },
             "indicators": {
+              "endpoint": "/api/v1/tgm/indicators",
               "description": "Risk and reward indicators for a token (Nansen Score)",
               "options": {
                 "chain": {
@@ -401,6 +431,7 @@
               }
             },
             "ohlcv": {
+              "endpoint": "/api/v1/tgm/token-ohlcv",
               "description": "OHLCV candle data for a token",
               "options": {
                 "chain": {
@@ -415,6 +446,7 @@
               }
             },
             "jup-dca": {
+              "endpoint": "/api/v1/tgm/jup-dca",
               "description": "Jupiter DCA orders for token",
               "options": {
                 "token": {
@@ -423,6 +455,7 @@
               }
             },
             "screener": {
+              "endpoint": "/api/v1/token-screener",
               "description": "Discover and filter tokens",
               "options": {
                 "timeframe": {
@@ -437,6 +470,7 @@
           "description": "Token God Mode - deep analytics for any token"
         },
         "search": {
+          "endpoint": "/api/v1/search/general",
           "description": "Search for tokens and entities across Nansen",
           "options": {
             "query": {
@@ -453,6 +487,7 @@
         "perp": {
           "subcommands": {
             "screener": {
+              "endpoint": "/api/v1/perp-screener",
               "description": "Screen perpetual futures contracts",
               "options": {
                 "days": {
@@ -461,6 +496,7 @@
               }
             },
             "leaderboard": {
+              "endpoint": "/api/v1/perp-leaderboard",
               "description": "Perpetual futures PnL leaderboard",
               "options": {
                 "days": {
@@ -474,6 +510,7 @@
         "prediction-market": {
           "subcommands": {
             "ohlcv": {
+              "endpoint": "/api/v1/prediction-market/ohlcv",
               "description": "Get Prediction Market OHLCV Candles",
               "options": {
                 "market-id": {
@@ -482,6 +519,7 @@
               }
             },
             "orderbook": {
+              "endpoint": "/api/v1/prediction-market/orderbook",
               "description": "Get Prediction Market Orderbook",
               "options": {
                 "market-id": {
@@ -490,6 +528,7 @@
               }
             },
             "top-holders": {
+              "endpoint": "/api/v1/prediction-market/top-holders",
               "description": "Get Prediction Market Top Holders",
               "options": {
                 "market-id": {
@@ -498,6 +537,7 @@
               }
             },
             "trades-by-market": {
+              "endpoint": "/api/v1/prediction-market/trades-by-market",
               "description": "Get Prediction Market Trades by Market",
               "options": {
                 "market-id": {
@@ -506,6 +546,7 @@
               }
             },
             "market-screener": {
+              "endpoint": "/api/v1/prediction-market/market-screener",
               "description": "Get Prediction Market Screener",
               "options": {
                 "query": {
@@ -514,6 +555,7 @@
               }
             },
             "event-screener": {
+              "endpoint": "/api/v1/prediction-market/event-screener",
               "description": "Get Prediction Market Event Screener",
               "options": {
                 "query": {
@@ -522,6 +564,7 @@
               }
             },
             "pnl-by-market": {
+              "endpoint": "/api/v1/prediction-market/pnl-by-market",
               "description": "Get Prediction Market PnL by Market",
               "options": {
                 "market-id": {
@@ -530,6 +573,7 @@
               }
             },
             "pnl-by-address": {
+              "endpoint": "/api/v1/prediction-market/pnl-by-address",
               "description": "Get Prediction Market PnL by Address",
               "options": {
                 "address": {
@@ -538,6 +582,7 @@
               }
             },
             "position-detail": {
+              "endpoint": "/api/v1/prediction-market/position-detail",
               "description": "Get Prediction Market Position Detail",
               "options": {
                 "market-id": {
@@ -546,6 +591,7 @@
               }
             },
             "trades-by-address": {
+              "endpoint": "/api/v1/prediction-market/trades-by-address",
               "description": "Get Prediction Market Trades by Address",
               "options": {
                 "address": {
@@ -554,6 +600,7 @@
               }
             },
             "categories": {
+              "endpoint": "/api/v1/prediction-market/categories",
               "description": "Get Prediction Market Categories"
             }
           },

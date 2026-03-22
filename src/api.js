@@ -486,7 +486,7 @@ export class NansenAPI {
         return cached;
       }
     }
-    
+
     let lastError;
     
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
