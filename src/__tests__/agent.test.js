@@ -416,6 +416,32 @@ describe('agent command', () => {
       expect(body.conversation_id).toBe('550e8400-e29b-41d4-a716-446655440000');
     });
 
+    it('uses last value when conversation-id is an array (repeated option)', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        mockSSEResponse('data: {"type":"finish","conversation_id":"c1"}\n\ndata: [DONE]\n\n')
+      );
+
+      const lastUuid = '11111111-1111-1111-1111-111111111111';
+      await cmd(['test'], mockApi(), {}, {
+        'conversation-id': ['aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', lastUuid],
+      });
+
+      const body = JSON.parse(globalThis.fetch.mock.calls[0][1].body);
+      expect(body.conversation_id).toBe(lastUuid);
+    });
+
+    it('falls back to generated UUID when conversation-id is boolean true', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        mockSSEResponse('data: {"type":"finish","conversation_id":"c1"}\n\ndata: [DONE]\n\n')
+      );
+
+      await cmd(['test'], mockApi(), {}, { 'conversation-id': true });
+
+      const body = JSON.parse(globalThis.fetch.mock.calls[0][1].body);
+      // Should be a generated UUID, not the boolean
+      expect(body.conversation_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    });
+
     it('accepts uppercase UUIDs', async () => {
       vi.spyOn(globalThis, 'fetch').mockResolvedValue(
         mockSSEResponse('data: {"type":"finish","conversation_id":"c1"}\n\ndata: [DONE]\n\n')

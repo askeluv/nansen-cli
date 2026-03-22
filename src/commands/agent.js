@@ -198,17 +198,18 @@ NOTE: This endpoint is currently internal-only (requires a Nansen internal accou
       // ── Conversation ID (must be UUID v4) ──
       const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       const rawConvId = options['conversation-id'];
+      const convIdStr = Array.isArray(rawConvId) ? rawConvId[rawConvId.length - 1] : rawConvId;
       let conversationId;
-      if (typeof rawConvId === 'string' && rawConvId) {
-        if (!UUID_RE.test(rawConvId)) {
+      if (typeof convIdStr === 'string' && convIdStr) {
+        if (!UUID_RE.test(convIdStr)) {
           throw new NansenError(
-            `Invalid --conversation-id: expected a UUID (e.g. 550e8400-e29b-41d4-a716-446655440000), got "${rawConvId.slice(0, 60)}${rawConvId.length > 60 ? '...' : ''}"`,
+            `Invalid --conversation-id: expected a UUID (e.g. 550e8400-e29b-41d4-a716-446655440000), got "${convIdStr.slice(0, 60)}${convIdStr.length > 60 ? '...' : ''}"`,
             ErrorCode.INVALID_PARAMS,
             null,
             { detail: 'conversation-id must be a UUID v4' },
           );
         }
-        conversationId = rawConvId;
+        conversationId = convIdStr;
       } else {
         conversationId = crypto.randomUUID();
       }
