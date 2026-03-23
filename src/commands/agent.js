@@ -5,6 +5,7 @@
 
 import crypto from 'crypto';
 import { NansenError, ErrorCode, statusToErrorCode, telemetryHeaders, packageVersion } from '../api.js';
+import { getCostForEndpoint } from '../cost-cache.js';
 
 /**
  * Build standard request headers, matching apiInstance.request() conventions.
@@ -145,7 +146,15 @@ export function buildAgentCommands(deps = {}) {
 
   return {
     'agent': async (args, apiInstance, flags, options) => {
-      const HELP = `nansen agent — Nansen Research Agent
+      // ── Help ──
+      if (flags.help || flags.h || args[0] === 'help' || args.length === 0) {
+        const fmtCost = (c) => `${c.free} credit${c.free === 1 ? '' : 's'} (Free tier) / ${c.pro} credit${c.pro === 1 ? '' : 's'} (Pro tier)`;
+        const fastCost = getCostForEndpoint('/api/v1/agent/fast');
+        const expertCost = getCostForEndpoint('/api/v1/agent/expert');
+        const costSection = (fastCost || expertCost)
+          ? `\nCOST:\n${fastCost ? `  fast:   ${fmtCost(fastCost)}\n` : ''}${expertCost ? `  expert: ${fmtCost(expertCost)}\n` : ''}`
+          : '';
+        log(`nansen agent — Nansen Research Agent
 
 Ask the Nansen AI agent research questions about crypto wallets, tokens,
 smart money flows, and on-chain activity. The agent uses Nansen's full
@@ -164,7 +173,7 @@ OPTIONS:
   --expert                     Use expert mode (default: fast)
   --conversation-id <uuid>     Continue a previous conversation (UUID v4)
   --json                       Output raw JSON instead of formatted text
-
+${costSection}
 CONVERSATION FLOW:
   Each request generates a UUID v4 conversation ID. To continue a
   multi-turn conversation, pass it back with --conversation-id. The ID
@@ -175,13 +184,7 @@ EXAMPLES:
   nansen agent "What are the top smart money inflows on Ethereum today?"
   nansen agent "Show me the largest whale wallets on Solana"
   nansen agent "Analyze wallet 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045" --expert
-  nansen agent "Tell me more about their DeFi positions" --conversation-id 550e8400-e29b-41d4-a716-446655440000
-
-NOTE: This endpoint is currently internal-only (requires a Nansen internal account).`;
-
-      // ── Help ──
-      if (flags.help || flags.h || args[0] === 'help' || args.length === 0) {
-        log(HELP);
+  nansen agent "Tell me more about their DeFi positions" --conversation-id 550e8400-e29b-41d4-a716-446655440000`);
         return;
       }
 
