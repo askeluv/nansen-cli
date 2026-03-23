@@ -109,6 +109,18 @@ If the `.credentials` file fallback is used, the CLI prints a warning on every o
 
 ## Create
 
+### Privy (server-side, no password)
+
+```bash
+nansen wallet create --provider privy
+# Or with a custom name:
+nansen wallet create --name trading --provider privy
+```
+
+Requires `PRIVY_APP_ID` + `PRIVY_APP_SECRET` env vars. No password needed.
+
+### Local (encrypted on disk, password required)
+
 ```bash
 # Ask the user for a password first, then:
 NANSEN_WALLET_PASSWORD="<password_from_user>" nansen wallet create
