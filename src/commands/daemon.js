@@ -97,9 +97,15 @@ export function buildDaemonCommand(deps = {}) {
         }
 
         const wsUrl = options['ws-url'];
-        const restUrl = wsUrl
-          ? wsUrl.replace(/^ws/, 'http').replace('/v1/smart-alert/stream', '/api/v1/smart-alert/past-alerts')
-          : undefined;
+        // Best-effort derivation of REST URL from WebSocket URL (for dev/test use).
+        // Parse properly instead of fragile string replacement.
+        let restUrl;
+        if (wsUrl) {
+          const parsed = new URL(wsUrl);
+          parsed.protocol = parsed.protocol === 'wss:' ? 'https:' : 'http:';
+          parsed.pathname = '/api/v1/smart-alert/past-alerts';
+          restUrl = parsed.toString();
+        }
 
         const daemon = new AlertsDaemon({
           apiKey,
@@ -132,8 +138,7 @@ export function buildDaemonCommand(deps = {}) {
 
         // Spawn detached child
         const { spawn } = await import('child_process');
-        const argv = [
-          ...process.argv.slice(0, 2), // node + script path
+        const runFlags = [
           'alerts', 'daemon', 'run',
           ...(options['ws-url'] ? ['--ws-url', options['ws-url']] : []),
           ...(options.action ? ['--action', options.action] : []),
@@ -143,7 +148,17 @@ export function buildDaemonCommand(deps = {}) {
           '--log-file', logFile,
         ];
 
-        const child = spawn(process.execPath, argv.slice(1), {
+        // Detect whether we're running as a Node script or a compiled/shim binary.
+        // When installed globally (e.g. `nansen` shim), process.argv[1] is the
+        // binary itself and we invoke it directly. When running as a Node script
+        // (e.g. `node src/index.js`), we need process.execPath + script path.
+        const scriptPath = process.argv[1] ?? '';
+        const isNodeScript = scriptPath.endsWith('.js') || scriptPath.endsWith('.mjs');
+        const [bin, spawnArgs] = isNodeScript
+          ? [process.execPath, [scriptPath, ...runFlags]]
+          : [scriptPath, runFlags];
+
+        const child = spawn(bin, spawnArgs, {
           detached: true,
           stdio: 'ignore',
           env: process.env,
@@ -194,6 +209,18 @@ export function buildDaemonCommand(deps = {}) {
           logFile,
           pidFile,
         };
+
+        if (flags.pretty) {
+          log(JSON.stringify(status, null, 2));
+        } else {
+          log(`Status:     ${running ? 'running' : 'stopped'}`);
+          if (running) log(`PID:        ${pid}`);
+          if (status.sessionId) log(`Session:    ${status.sessionId}`);
+          if (status.lastAlertAt) log(`Last alert: ${status.lastAlertAt} (${status.lastAlertId})`);
+          log(`PID file:   ${pidFile}`);
+          log(`Log file:   ${logFile}`);
+          log(`State file: ${stateFile}`);
+        }
 
         return status;
       },

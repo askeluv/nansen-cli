@@ -317,6 +317,9 @@ export class AlertsDaemon extends EventEmitter {
       return;
     }
 
+    if (alerts.length === 50) {
+      this.log('warn', 'Backfill may be truncated — got 50 alerts (limit). Consider reducing reconnect downtime.');
+    }
     this.log('info', `Replaying ${alerts.length} missed alert(s)`);
     for (const alert of alerts) {
       this.emit('alert', alert);
