@@ -186,8 +186,12 @@ NOTE: This endpoint is currently internal-only (requires a Nansen internal accou
       // ── Parse question ──
       const question = args.join(' ').trim();
       if (!question) {
-        log(HELP);
-        return;
+        throw new NansenError(
+          'Query cannot be empty. Usage: nansen agent "<question>"',
+          ErrorCode.INVALID_PARAMS,
+          null,
+          { detail: 'Empty query string' },
+        );
       }
 
       // ── Mode ──
