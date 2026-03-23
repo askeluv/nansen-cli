@@ -1498,6 +1498,12 @@ export function generateSubcommandHelp(command, subcommand, prefix = null) {
   const lines = [];
   lines.push(`${command} ${subcommand} — ${subSchema.description || 'No description'}`);
 
+  if (DEPRECATED_TO_RESEARCH.has(command)) {
+    lines.push(`Deprecated: use "nansen research ${command} ${subcommand}" instead.`);
+  } else if (DEPRECATED_TO_TRADE.has(command)) {
+    lines.push(`Deprecated: use "nansen trade ${subcommand}" instead.`);
+  }
+
   if (subSchema.options) {
     const params = Object.entries(subSchema.options).map(([name, opt]) => {
       const parts = [`--${name}`];
@@ -1548,16 +1554,6 @@ export async function runCLI(rawArgs, deps = {}) {
   const subArgs = positional.slice(1);
   const subcommand = subArgs[0];
 
-  // Deprecation warnings for commands that moved under 'research' or 'trade'
-  // Suppressed when NANSEN_NO_WARNINGS=1 (agent/pipeline contexts where stdout must be clean JSON)
-  const suppressWarnings = process.env.NANSEN_NO_WARNINGS === '1';
-  if (!suppressWarnings) {
-    if (DEPRECATED_TO_RESEARCH.has(command)) {
-      errorOutput(`Warning: "nansen ${command}" is deprecated. Use "nansen research ${command}" instead.`);
-    } else if (DEPRECATED_TO_TRADE.has(command)) {
-      errorOutput(`Warning: "nansen ${command}" is deprecated. Use "nansen trade ${command}" instead.`);
-    }
-  }
 
   const pretty = flags.pretty || flags.p;
   const table = flags.table || flags.t;
@@ -1625,6 +1621,11 @@ export async function runCLI(rawArgs, deps = {}) {
       if (command && cmdSchemaLookup) {
         const cmdSchema = cmdSchemaLookup;
         const lines = [`${command} — ${cmdSchema.description}`];
+        if (DEPRECATED_TO_RESEARCH.has(command)) {
+          lines.push(`Deprecated: use "nansen research ${command}" instead.`);
+        } else if (DEPRECATED_TO_TRADE.has(command)) {
+          lines.push(`Deprecated: use "nansen trade ${command}" instead.`);
+        }
         if (cmdSchema.subcommands) {
           lines.push('Subcommands: ' + Object.keys(cmdSchema.subcommands).join(', '));
           lines.push(`Use: nansen ${command} <subcommand> --help`);

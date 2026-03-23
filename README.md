@@ -21,8 +21,6 @@ export NANSEN_API_KEY=...      # env var (highest priority)
 nansen logout                  # remove saved key
 ```
 
-**Agent / pipeline mode:** set `NANSEN_NO_WARNINGS=1` to suppress deprecation warnings from being written to stderr. Useful when capturing output with `2>&1` in agent chains where clean JSON stdout is required.
-
 Get your API key at [app.nansen.ai/auth/agent-setup](https://app.nansen.ai/auth/agent-setup).
 
 ## Commands
