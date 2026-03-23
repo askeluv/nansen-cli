@@ -199,13 +199,85 @@ export async function executeTransaction(params, { retries = 2, retryDelayMs = 1
   throw lastError;
 }
 
+// ============= Bridge Status =============
+
+/**
+ * Check the status of a cross-chain bridge transaction.
+ * @param {string} txHash - Source chain transaction hash
+ * @param {string} fromChain - Source chain name (e.g. 'base')
+ * @param {string} toChain - Destination chain name (e.g. 'solana')
+ * @returns {Promise<object>} Bridge status
+ */
+export async function getBridgeStatus(txHash, fromChain, toChain) {
+  const fromConfig = resolveChain(fromChain);
+  const toConfig = resolveChain(toChain);
+  const url = new URL('/bridge/status', TRADING_API_URL);
+  url.searchParams.set('txHash', txHash);
+  url.searchParams.set('fromChain', fromConfig.index);
+  url.searchParams.set('toChain', toConfig.index);
+
+  const res = await fetch(url.toString(), { headers: { 'Accept': 'application/json' } });
+  const text = await res.text();
+  let body;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    throw Object.assign(
+      new Error(`Bridge status API returned non-JSON response (status ${res.status}).`),
+      { code: 'BRIDGE_STATUS_ERROR', status: res.status, details: text.slice(0, 200) }
+    );
+  }
+  if (!res.ok) {
+    throw Object.assign(
+      new Error(body.message || `Bridge status check failed with status ${res.status}`),
+      { code: body.code || 'BRIDGE_STATUS_ERROR', status: res.status, details: body.details }
+    );
+  }
+  return body;
+}
+
+/**
+ * Poll bridge status until completion or timeout.
+ * @param {string} txHash - Source chain transaction hash
+ * @param {string} fromChain - Source chain name
+ * @param {string} toChain - Destination chain name
+ * @param {object} [opts]
+ * @param {number} [opts.timeoutMs=600000] - Timeout (default 10 min)
+ * @param {number} [opts.pollMs=10000] - Poll interval (default 10s)
+ * @param {Function} [opts.log=console.log] - Logger
+ * @returns {Promise<object>} Final bridge status
+ */
+export async function pollBridgeStatus(txHash, fromChain, toChain, { timeoutMs = 600000, pollMs = 10000, log = console.log } = {}) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const status = await getBridgeStatus(txHash, fromChain, toChain);
+    const sending = status.sending?.status || status.status || 'pending';
+    const receiving = status.receiving?.status || 'pending';
+    log(`  Bridge: ${sending} → ${receiving}`);
+
+    if (status.status === 'DONE' || status.receiving?.status === 'DONE') return status;
+    if (status.status === 'FAILED') {
+      throw Object.assign(
+        new Error(`Bridge failed: ${status.substatusMessage || 'unknown error'}`),
+        { code: 'BRIDGE_FAILED', details: status }
+      );
+    }
+
+    await new Promise(r => setTimeout(r, pollMs));
+  }
+  throw Object.assign(
+    new Error(`Bridge status polling timed out after ${timeoutMs / 1000}s. Check manually with: nansen trade bridge-status --tx-hash ${txHash} --from-chain ${fromChain} --to-chain ${toChain}`),
+    { code: 'BRIDGE_TIMEOUT' }
+  );
+}
+
 // ============= Quote Storage =============
 
 /**
  * Save a quote response to disk for later execution.
  * @returns {string} Quote ID
  */
-export function saveQuote(quoteResponse, chain, signerType = 'local', privyWalletIds = null) {
+export function saveQuote(quoteResponse, chain, signerType = 'local', privyWalletIds = null, toChain = null) {
   const dir = getQuotesDir();
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -216,6 +288,7 @@ export function saveQuote(quoteResponse, chain, signerType = 'local', privyWalle
   const quoteId = `${timestamp}-${hash}`;
 
   const data = { quoteId, chain, timestamp, signerType, response: quoteResponse };
+  if (toChain) data.toChain = toChain;
   if (privyWalletIds) data.privyWalletIds = privyWalletIds;
 
   fs.writeFileSync(path.join(dir, `${quoteId}.json`), JSON.stringify(data, null, 2), { mode: 0o600 });
@@ -808,6 +881,15 @@ export function formatQuote(quote, index) {
   if (quote.tradingFeeInUsd) lines.push(`    Trading Fee:  $${quote.tradingFeeInUsd}`);
   if (quote.networkFeeInUsd) lines.push(`    Network Fee:  $${quote.networkFeeInUsd}`);
   if (quote.approvalAddress && !isNativeToken(quote.inputMint)) lines.push(`    ⚠ Requires token approval to: ${quote.approvalAddress}`);
+  const meta = quote.metadata || {};
+  if (meta.isCrossChain) {
+    if (meta.bridgeTool) lines.push(`    Bridge:       ${meta.bridgeTool}`);
+    if (meta.executionDuration) lines.push(`    Est. Time:    ~${Math.round(meta.executionDuration / 60)} min`);
+    if (meta.feeCosts?.length) {
+      const totalFees = meta.feeCosts.reduce((sum, f) => sum + parseFloat(f.amountUSD || 0), 0);
+      if (totalFees > 0) lines.push(`    Bridge Fees:  $${totalFees.toFixed(2)}`);
+    }
+  }
   if (quote.priceImpactPct) {
     const impactAbs = Math.abs(parseFloat(quote.priceImpactPct));
     if (impactAbs > 5) {
@@ -828,17 +910,21 @@ export function buildTradingCommands(deps = {}) {
   return {
     'quote': async (args, apiInstance, flags, options) => {
       const chain = options.chain || args[0];
+      const toChainRaw = options['to-chain'];
       const fromRaw = options.from || options['from-token'] || args[1];
       const toRaw = options.to || options['to-token'] || args[2];
+      const effectiveToChain = toChainRaw || chain;
       const from = resolveTokenAddress(fromRaw, chain);
-      const to = resolveTokenAddress(toRaw, chain);
+      const to = resolveTokenAddress(toRaw, effectiveToChain);
       const amount = options.amount || args[3];
       const walletName = options.wallet;
+      const toWallet = options['to-wallet'];
       const slippage = options.slippage;
       const autoSlippage = flags['auto-slippage'];
       const maxAutoSlippage = options['max-auto-slippage'];
       const swapMode = options['swap-mode'] || 'exactIn';
       const amountUnit = options['amount-unit'];
+      const gasless = flags.gasless;
 
       if (!chain || !from || !to || !amount) {
         log(`
@@ -850,22 +936,26 @@ PREREQUISITE:
   Set one up with: nansen wallet create
 
 OPTIONS:
-  --chain <chain>           Chain: solana, base
+  --chain <chain>           Source chain: solana, base
+  --to-chain <chain>        Destination chain for cross-chain swap (e.g. solana, base)
   --from <symbol|address>   Input token (symbol like SOL, USDC or address)
   --to <symbol|address>     Output token (symbol like USDC, ETH or address)
   --amount <units>          Amount in BASE UNITS (e.g. lamports, wei)
   --amount-unit <unit>      "token" to specify amount in token units (e.g. 0.5 SOL)
   --wallet <name>           Wallet name (default: default wallet). Use "walletconnect" or "wc" for WalletConnect.
+  --to-wallet <address>     Destination wallet address (auto-derived for cross-chain if omitted)
   --slippage <pct>          Slippage as decimal (e.g. 0.03 for 3%). Default: 0.03
   --auto-slippage           Enable auto slippage calculation
   --max-auto-slippage <pct> Max auto slippage when auto-slippage enabled
   --swap-mode <mode>        exactIn (default) or exactOut
+  --gasless                 Enable destination chain gas provisioning (cross-chain only)
 
 EXAMPLES:
   nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000
   nansen trade quote --chain solana --from SOL --to USDC --amount 0.5 --amount-unit token
   nansen trade quote --chain base --from ETH --to USDC --amount 1000000000000000000
-  nansen trade quote --chain solana --from So11111111111111111111111111111111111111112 --to EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v --amount 1000000000
+  nansen trade quote --chain base --to-chain solana --from USDC --to USDC --amount 1000000
+  nansen trade quote --chain solana --to-chain base --from SOL --to ETH --amount 1000000000
 `);
         exit(1);
         return;
@@ -981,7 +1071,14 @@ EXAMPLES:
           }
         }
 
-        log(`\nFetching quote on ${chainConfig.name}...`);
+        const toChainConfig = toChainRaw ? resolveChain(toChainRaw) : null;
+        const isCrossChain = toChainConfig && toChainConfig.index !== chainConfig.index;
+
+        if (isCrossChain) {
+          log(`\nFetching cross-chain quote: ${chainConfig.name} → ${toChainConfig.name}...`);
+        } else {
+          log(`\nFetching quote on ${chainConfig.name}...`);
+        }
         log(`  Wallet: ${walletAddress}`);
 
         const fromWarning = getWrappedNativeFromWarning(from, chain);
@@ -994,6 +1091,21 @@ EXAMPLES:
           amount: resolvedAmount,
           userWalletAddress: walletAddress,
         };
+        if (isCrossChain) {
+          params.toChainIndex = toChainConfig.index;
+          if (toWallet) {
+            params.toWalletAddress = toWallet;
+          } else if (chainConfig.type !== toChainConfig.type) {
+            // Solana↔Base: auto-derive the destination address from the same wallet
+            const effectiveWalletName = walletName || getWalletConfig()?.defaultWallet;
+            if (effectiveWalletName) {
+              const walletData = showWallet(effectiveWalletName);
+              params.toWalletAddress = toChainConfig.type === 'solana' ? walletData.solana : walletData.evm;
+              log(`  Destination wallet: ${params.toWalletAddress}`);
+            }
+          }
+          if (gasless) params.gasless = true;
+        }
         if (slippage) params.slippagePercent = slippage;
         if (autoSlippage) params.autoSlippage = true;
         if (maxAutoSlippage) params.maxAutoSlippagePercent = maxAutoSlippage;
@@ -1014,7 +1126,7 @@ EXAMPLES:
         response.quotes.forEach((q, i) => log(formatQuote(q, i)));
 
         const signerType = isWalletConnect ? 'walletconnect' : walletProvider;
-        const quoteId = saveQuote(response, chain, signerType, privyWalletIds);
+        const quoteId = saveQuote(response, chain, signerType, privyWalletIds, isCrossChain ? toChainRaw : null);
         log(`\n  Quote ID: ${quoteId}`);
         log(`  Execute:  nansen trade execute --quote ${quoteId}`);
         if (response.quotes.length > 1) {
@@ -1518,6 +1630,23 @@ EXAMPLES:
                 log(`    Tx Hash:   ${wcResult.txHash}`);
                 log(`    Chain:       ${chainConfig.name}`);
                 log(`    Explorer:    ${chainConfig.explorer}${wcResult.txHash}`);
+
+                // Cross-chain: poll bridge status after source tx success
+                if (quoteData.toChain && quoteData.toChain !== quoteData.chain) {
+                  log(`\n  Cross-chain bridge in progress (${chainConfig.name} → ${resolveChain(quoteData.toChain).name})...`);
+                  try {
+                    const bridgeResult = await pollBridgeStatus(wcResult.txHash, quoteData.chain, quoteData.toChain, { log });
+                    log(`\n  ✓ Bridge completed!`);
+                    if (bridgeResult.receiving?.txHash) {
+                      const toChainConfig = resolveChain(quoteData.toChain);
+                      log(`    Destination tx: ${toChainConfig.explorer}${bridgeResult.receiving.txHash}`);
+                    }
+                  } catch (bridgeErr) {
+                    log(`\n  Bridge status: ${bridgeErr.message}`);
+                    log(`  Check later with: nansen trade bridge-status --tx-hash ${wcResult.txHash} --from-chain ${quoteData.chain} --to-chain ${quoteData.toChain}`);
+                  }
+                }
+
                 log('');
                 return undefined; // Success
               }
@@ -1704,6 +1833,23 @@ EXAMPLES:
                   log(`      ${e.inputAmount} ${e.inputMint?.slice(0, 8)}... → ${e.outputAmount} ${e.outputMint?.slice(0, 8)}...`);
                 });
               }
+
+              // Cross-chain: poll bridge status after source tx success
+              if (quoteData.toChain && quoteData.toChain !== quoteData.chain) {
+                log(`\n  Cross-chain bridge in progress (${chainConfig.name} → ${resolveChain(quoteData.toChain).name})...`);
+                try {
+                  const bridgeResult = await pollBridgeStatus(txId, quoteData.chain, quoteData.toChain, { log });
+                  log(`\n  ✓ Bridge completed!`);
+                  if (bridgeResult.receiving?.txHash) {
+                    const toChainConfig = resolveChain(quoteData.toChain);
+                    log(`    Destination tx: ${toChainConfig.explorer}${bridgeResult.receiving.txHash}`);
+                  }
+                } catch (bridgeErr) {
+                  log(`\n  Bridge status: ${bridgeErr.message}`);
+                  log(`  Check later with: nansen trade bridge-status --tx-hash ${txId} --from-chain ${quoteData.chain} --to-chain ${quoteData.toChain}`);
+                }
+              }
+
               log('');
               return undefined; // Success — done
             } else {
@@ -1714,8 +1860,12 @@ EXAMPLES:
             }
 
           } catch (quoteErr) {
-            log(`  ❌ Quote ${quoteName} failed: ${quoteErr.message}`);
-            lastQuoteError = `${quoteName}: ${quoteErr.message}`;
+            const msg = quoteErr.message || '';
+            log(`  ❌ Quote ${quoteName} failed: ${msg}`);
+            if (msg.includes('AccountNotFound') && chainType === 'solana') {
+              log(`  Hint: Your Solana wallet may not have enough SOL to cover transaction fees (~0.005 SOL minimum).`);
+            }
+            lastQuoteError = `${quoteName}: ${msg}`;
             if (qi + 1 < endIndex) log(`  Trying next quote...`);
           }
         }
@@ -1726,6 +1876,56 @@ EXAMPLES:
         exit(1);
         return undefined;
 
+      } catch (err) {
+        log(`Error: ${err.message}`);
+        if (err.details) log(`  Details: ${JSON.stringify(err.details)}`);
+        exit(1);
+      }
+    },
+
+    'bridge-status': async (args, _apiInstance, _flags, options) => {
+      const txHash = options['tx-hash'] || args[0];
+      const fromChain = options['from-chain'] || args[1];
+      const toChain = options['to-chain'] || args[2];
+
+      if (!txHash || !fromChain || !toChain) {
+        log(`
+Usage: nansen trade bridge-status --tx-hash <hash> --from-chain <chain> --to-chain <chain>
+
+Check the status of a cross-chain bridge transaction.
+
+OPTIONS:
+  --tx-hash <hash>          Source chain transaction hash
+  --from-chain <chain>      Source chain (solana or base)
+  --to-chain <chain>        Destination chain (solana or base)
+
+EXAMPLES:
+  nansen trade bridge-status --tx-hash 0xabc... --from-chain base --to-chain solana
+`);
+        exit(1);
+        return;
+      }
+
+      try {
+        const status = await getBridgeStatus(txHash, fromChain, toChain);
+        log(`\nBridge Status: ${status.status || 'unknown'}`);
+        if (status.substatus) log(`  Substatus:   ${status.substatus}`);
+        if (status.substatusMessage) log(`  Message:     ${status.substatusMessage}`);
+        if (status.tool) log(`  Bridge:      ${status.tool}`);
+        if (status.sending?.txHash) {
+          log(`  Sending:`);
+          log(`    Tx:        ${status.sending.txHash}`);
+          if (status.sending.amount) log(`    Amount:    ${status.sending.amount}`);
+          if (status.sending.txLink) log(`    Explorer:  ${status.sending.txLink}`);
+        }
+        if (status.receiving?.txHash) {
+          log(`  Receiving:`);
+          log(`    Tx:        ${status.receiving.txHash}`);
+          if (status.receiving.amount) log(`    Amount:    ${status.receiving.amount}`);
+          if (status.receiving.txLink) log(`    Explorer:  ${status.receiving.txLink}`);
+        }
+        if (status.lifiExplorerLink) log(`  Li.Fi:       ${status.lifiExplorerLink}`);
+        log('');
       } catch (err) {
         log(`Error: ${err.message}`);
         if (err.details) log(`  Details: ${JSON.stringify(err.details)}`);

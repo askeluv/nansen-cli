@@ -19,7 +19,7 @@ src/
 ├── cli.js          # Command router, arg parsing, schema, formatOutput()
 ├── api.js          # NansenAPI client (REST, retry, cache, x402 auto-pay)
 ├── wallet.js       # Wallet CRUD (create/list/show/export/delete/send)
-├── trading.js      # Quote + execute swaps (OKX router via API)
+├── trading.js      # Quote + execute swaps, including cross-chain (Li.Fi via API)
 ├── transfer.js     # Token/native transfers (EVM + Solana)
 ├── x402.js         # x402 payment orchestration (picks network, signs)
 ├── x402-evm.js     # EVM payment signing (EIP-3009)
@@ -34,8 +34,9 @@ Command routing: `buildCommands()` (cli.js) + `buildWalletCommands()` (wallet.js
 ## Data Flows
 
 ```
-Trade:  CLI args → GET /defi/quote → wallet decrypt → sign tx → POST /defi/execute
-x402:   any API call → 402 → x402.js ranks requirements → sign USDC (EVM first, Solana fallback)
+Trade:       CLI args → GET /quote → wallet decrypt → sign tx → POST /execute
+Cross-chain: CLI args → GET /quote (toChainIndex) → sign source tx → POST /execute → poll /bridge/status
+x402:        any API call → 402 → x402.js ranks requirements → sign USDC (EVM first, Solana fallback)
 ```
 
 ## Style
@@ -85,6 +86,7 @@ If you are contributing changes, read [CONTRIBUTING.md](CONTRIBUTING.md) for the
 6. **CreateATA path** (transfer.js) has limited test coverage — add tests if modifying
 7. **`CHAIN_RPCS`** in `src/rpc-urls.js` is the single source of truth for chain RPC endpoints — both `transfer.js` and `trading.js` import from it. Adding a new chain only requires one edit here. Override via `NANSEN_BASE_RPC`, `NANSEN_EVM_RPC`, `NANSEN_SOLANA_RPC`.
 8. **`src/schema.json` is manually maintained** — no codegen. When adding a new CLI command or option, update schema.json by hand. Key fields: `description`, `required`, `default`, `chains`. Omit `type`, `enum`, `returns` (those live in skills). AI editors: do not skip this step.
+9. **Cross-chain bridge polling:** `pollBridgeStatus` has a 10-minute timeout. Bridges can take longer — users can check manually with `nansen trade bridge-status`.
 
 ## Networks
 

@@ -1447,18 +1447,22 @@ export function buildCommands(deps = {}) {
       log(`nansen trade — DEX trading commands
 
 SUBCOMMANDS:
-  quote       Get a swap quote (price, route, fees)
-  execute     Sign and broadcast a quoted swap
+  quote          Get a swap quote (price, route, fees)
+  execute        Sign and broadcast a quoted swap
+  bridge-status  Check cross-chain bridge transaction status
 
 USAGE:
   nansen trade quote --chain <chain> --from <token> --to <token> --amount <units> [--wallet <name>]
+  nansen trade quote --chain <chain> --to-chain <chain> --from <token> --to <token> --amount <units>
   nansen trade execute --quote <quoteId> [--wallet <name>]
+  nansen trade bridge-status --tx-hash <hash> --from-chain <chain> --to-chain <chain>
 
 EXAMPLES:
   nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000
   nansen trade quote --chain base --from ETH --to USDC --amount 1000000000000000000
-  nansen trade quote --chain base --from ETH --to USDC --amount 1000000000000000000 --wallet walletconnect
+  nansen trade quote --chain base --to-chain solana --from USDC --to USDC --amount 1000000
   nansen trade execute --quote 1708900000000-abc123
+  nansen trade bridge-status --tx-hash 0xabc... --from-chain base --to-chain solana
 
 WALLET:
   --wallet <name>   Use a named wallet, or "walletconnect" / "wc" for WalletConnect (EVM only).
@@ -1470,7 +1474,7 @@ SYMBOLS:
       return;
     }
     if (!tradingCmds[sub]) {
-      throw new NansenError(`Unknown trade subcommand: ${sub}. Available: quote, execute`, ErrorCode.UNKNOWN);
+      throw new NansenError(`Unknown trade subcommand: ${sub}. Available: quote, execute, bridge-status`, ErrorCode.UNKNOWN);
     }
     return tradingCmds[sub](args.slice(1), apiInstance, flags, options);
   };

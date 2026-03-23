@@ -1,6 +1,6 @@
 ---
 name: nansen-trading
-description: Execute DEX swaps on Solana or Base. Use when buying or selling a token, getting a swap quote, or executing a trade.
+description: Execute DEX swaps on Solana or Base, including cross-chain bridges. Use when buying or selling a token, getting a swap quote, or executing a trade.
 metadata:
   openclaw:
     requires:
@@ -39,6 +39,31 @@ Symbols resolve automatically: `SOL`, `ETH`, `USDC`, `USDT`, `WETH`. Raw address
 
 ```bash
 nansen trade execute --quote <quote-id>
+```
+
+## Cross-Chain Swap
+
+Bridge tokens between Solana and Base using `--to-chain`:
+
+```bash
+nansen trade quote \
+  --chain base \
+  --to-chain solana \
+  --from USDC \
+  --to USDC \
+  --amount 1000000
+```
+
+For Solana↔Base bridges, the destination wallet address is auto-derived from your wallet (which stores both EVM and Solana keys). Override with `--to-wallet <address>` if needed.
+
+Use `--gasless` to receive native gas on the destination chain (a small portion of the bridged amount is converted to cover gas fees there). Note: you still need gas on the **source** chain to submit the initial transaction (e.g. SOL for Solana→Base, ETH for Base→Solana).
+
+## Bridge Status
+
+After executing a cross-chain swap, the CLI polls bridge status automatically. To check manually:
+
+```bash
+nansen trade bridge-status --tx-hash <hash> --from-chain base --to-chain solana
 ```
 
 ## Agent pattern
@@ -81,15 +106,20 @@ If the user says "$20 worth of X", you must convert USD → token amount, then e
 
 | Flag | Purpose |
 |------|---------|
-| `--chain` | `solana` or `base` |
+| `--chain` | Source chain: `solana` or `base` |
+| `--to-chain` | Destination chain for cross-chain swap (omit for same-chain) |
 | `--from` | Source token (symbol or address) |
-| `--to` | Destination token (symbol or address) |
+| `--to` | Destination token (symbol or address, resolved against destination chain) |
 | `--amount` | Amount in base units (integer), or token units with `--amount-unit token` |
 | `--amount-unit` | Set to `token` to specify amount in token units (e.g. 0.5 SOL) |
 | `--wallet` | Wallet name (default: default wallet) |
+| `--to-wallet` | Destination wallet address (auto-derived for cross-chain if omitted) |
 | `--slippage` | Slippage tolerance as decimal (e.g. 0.03) |
+| `--gasless` | Enable destination chain gas provisioning (cross-chain only) |
 | `--quote` | Quote ID for execute |
 | `--no-simulate` | Skip pre-broadcast simulation |
+| `--tx-hash` | Source tx hash (for bridge-status) |
+| `--from-chain` | Source chain (for bridge-status) |
 
 ## Environment Variables
 

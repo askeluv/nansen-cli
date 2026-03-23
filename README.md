@@ -36,7 +36,7 @@ nansen schema [command] [--pretty]    # full command reference (no API key neede
 
 **Research categories:** `smart-money` (`sm`), `token` (`tgm`), `profiler` (`prof`), `portfolio` (`port`), `prediction-market` (`pm`), `search`, `perp`, `points`
 
-**Trade:** `quote`, `execute` — DEX swaps on Solana and Base.
+**Trade:** `quote`, `execute`, `bridge-status` — DEX swaps on Solana and Base, including cross-chain bridges.
 
 **Wallet:** `create`, `list`, `show`, `export`, `default`, `delete`, `send` — local or Privy server-side wallets (EVM + Solana).
 

@@ -32,6 +32,8 @@ import {
   convertToBaseUnits,
   formatQuote,
   simulateEvmCall,
+  getBridgeStatus,
+  pollBridgeStatus,
 } from '../trading.js';
 import { keccak256, rlpEncode } from '../crypto.js';
 import { base58Decode } from '../transfer.js';
@@ -231,6 +233,20 @@ describe('quote storage', () => {
     const loaded = loadQuote(quoteId);
     expect(loaded.signerType).toBe('privy');
     expect(loaded.privyWalletIds).toEqual(privyWalletIds);
+  });
+
+  it('should save and load toChain for cross-chain quotes', () => {
+    const quoteId = saveQuote(evmQuoteResponse, 'base', 'local', null, 'solana');
+    const loaded = loadQuote(quoteId);
+    expect(loaded.chain).toBe('base');
+    expect(loaded.toChain).toBe('solana');
+  });
+
+  it('should not include toChain when null', () => {
+    const quoteId = saveQuote(evmQuoteResponse, 'base', 'local', null, null);
+    const loaded = loadQuote(quoteId);
+    expect(loaded.chain).toBe('base');
+    expect(loaded.toChain).toBeUndefined();
   });
 });
 
@@ -1756,5 +1772,143 @@ describe('simulateEvmCall — insufficient funds error formatting', () => {
 
     expect(result.success).toBe(false);
     expect(result.reason).toContain('INSUFFICIENT_OUTPUT_AMOUNT');
+  });
+});
+
+// ============= Cross-Chain Support =============
+
+describe('formatQuote cross-chain metadata', () => {
+  it('should display bridge info when isCrossChain is true', () => {
+    const output = formatQuote({
+      aggregator: 'lifi',
+      inputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+      outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+      inAmount: '1000000',
+      outAmount: '998000',
+      metadata: {
+        isCrossChain: true,
+        bridgeTool: 'stargate',
+        executionDuration: 300,
+        feeCosts: [
+          { amountUSD: '0.50' },
+          { amountUSD: '0.25' },
+        ],
+      },
+    });
+    expect(output).toContain('Bridge:       stargate');
+    expect(output).toContain('Est. Time:    ~5 min');
+    expect(output).toContain('Bridge Fees:  $0.75');
+  });
+
+  it('should not display bridge info for same-chain quotes', () => {
+    const output = formatQuote({
+      aggregator: 'okx',
+      inputMint: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+      outputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+      inAmount: '1000000000000000000',
+      outAmount: '3500000000',
+    });
+    expect(output).not.toContain('Bridge');
+    expect(output).not.toContain('Est. Time');
+  });
+});
+
+describe('cross-chain token resolution', () => {
+  it('should resolve --to token against destination chain', () => {
+    // USDC on solana vs base have different addresses
+    const solanaUSDC = resolveTokenAddress('USDC', 'solana');
+    const baseUSDC = resolveTokenAddress('USDC', 'base');
+    expect(solanaUSDC).toBe('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
+    expect(baseUSDC).toBe('0x833589fcd6edb6e08f4c7c32d4f71b54bda02913');
+    expect(solanaUSDC).not.toBe(baseUSDC);
+  });
+});
+
+describe('getBridgeStatus', () => {
+  it('should call bridge status endpoint and return result', async () => {
+    const origFetch = global.fetch;
+    const mockResponse = {
+      status: 'DONE',
+      tool: 'stargate',
+      sending: { txHash: '0xabc', amount: '1000000' },
+      receiving: { txHash: '0xdef', amount: '998000' },
+    };
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify(mockResponse),
+    });
+
+    const result = await getBridgeStatus('0xabc', 'base', 'solana');
+    expect(result.status).toBe('DONE');
+    expect(result.tool).toBe('stargate');
+    expect(result.receiving.txHash).toBe('0xdef');
+
+    // Verify correct URL params
+    const callUrl = new URL(global.fetch.mock.calls[0][0]);
+    expect(callUrl.searchParams.get('txHash')).toBe('0xabc');
+    expect(callUrl.searchParams.get('fromChain')).toBe('8453');
+    expect(callUrl.searchParams.get('toChain')).toBe('501');
+
+    global.fetch = origFetch;
+  });
+
+  it('should throw on API error', async () => {
+    const origFetch = global.fetch;
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      text: async () => JSON.stringify({ message: 'Transaction not found' }),
+    });
+
+    await expect(getBridgeStatus('0xbad', 'base', 'solana'))
+      .rejects.toThrow('Transaction not found');
+
+    global.fetch = origFetch;
+  });
+});
+
+describe('pollBridgeStatus', () => {
+  it('should return immediately when status is DONE', async () => {
+    const origFetch = global.fetch;
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ status: 'DONE', receiving: { status: 'DONE', txHash: '0xfinal' } }),
+    });
+
+    const result = await pollBridgeStatus('0xabc', 'base', 'solana', { log: () => {} });
+    expect(result.status).toBe('DONE');
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+
+    global.fetch = origFetch;
+  });
+
+  it('should throw on FAILED status', async () => {
+    const origFetch = global.fetch;
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ status: 'FAILED', substatusMessage: 'Slippage too high' }),
+    });
+
+    await expect(pollBridgeStatus('0xabc', 'base', 'solana', { log: () => {} }))
+      .rejects.toThrow('Bridge failed: Slippage too high');
+
+    global.fetch = origFetch;
+  });
+
+  it('should timeout after timeoutMs', async () => {
+    const origFetch = global.fetch;
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ status: 'PENDING' }),
+    });
+
+    await expect(pollBridgeStatus('0xabc', 'base', 'solana', { timeoutMs: 50, pollMs: 10, log: () => {} }))
+      .rejects.toThrow('polling timed out');
+
+    global.fetch = origFetch;
   });
 });

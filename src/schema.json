@@ -772,12 +772,16 @@
       "description": "DEX trading commands",
       "subcommands": {
         "quote": {
-          "description": "Get a DEX swap quote (chain, tokens, amount)",
+          "description": "Get a DEX swap quote (same-chain or cross-chain)",
           "options": {
             "chain": {
               "type": "string",
               "default": "base",
-              "description": "Blockchain (solana or base)"
+              "description": "Source blockchain (solana or base)"
+            },
+            "to-chain": {
+              "type": "string",
+              "description": "Destination blockchain for cross-chain swap (solana or base). Omit for same-chain."
             },
             "from": {
               "type": "string",
@@ -787,7 +791,7 @@
             "to": {
               "type": "string",
               "required": true,
-              "description": "Token to buy (address or symbol)"
+              "description": "Token to buy (address or symbol, resolved against destination chain for cross-chain)"
             },
             "amount": {
               "type": "string",
@@ -801,6 +805,14 @@
             "wallet": {
               "type": "string",
               "description": "Wallet name (or \"walletconnect\"/\"wc\" for WalletConnect, EVM only). A configured wallet is required \u2014 run `nansen wallet create` if you haven't set one up yet."
+            },
+            "to-wallet": {
+              "type": "string",
+              "description": "Destination wallet address for cross-chain swaps. Auto-derived from wallet if omitted."
+            },
+            "gasless": {
+              "type": "boolean",
+              "description": "Receive native gas on the destination chain (a portion of bridged amount is converted). Source chain gas is still required."
             }
           },
           "prerequisites": [
@@ -818,6 +830,26 @@
             "wallet": {
               "type": "string",
               "description": "Wallet name, or \"walletconnect\"/\"wc\" for WalletConnect (EVM only)"
+            }
+          }
+        },
+        "bridge-status": {
+          "description": "Check cross-chain bridge transaction status",
+          "options": {
+            "tx-hash": {
+              "type": "string",
+              "required": true,
+              "description": "Source chain transaction hash"
+            },
+            "from-chain": {
+              "type": "string",
+              "required": true,
+              "description": "Source chain (solana or base)"
+            },
+            "to-chain": {
+              "type": "string",
+              "required": true,
+              "description": "Destination chain (solana or base)"
             }
           }
         }

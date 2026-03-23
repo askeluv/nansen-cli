@@ -229,7 +229,7 @@ describe('telemetry tracking for all first-level commands', () => {
       'account', 'login', 'logout', 'schema', 'cache', 'changelog',
       'web',
       // wallet & trading
-      'wallet', 'trade', 'quote', 'execute',
+      'wallet', 'trade', 'quote', 'execute', 'bridge-status',
       // help is a meta command, intentionally not tracked
       'help',
     ]);
