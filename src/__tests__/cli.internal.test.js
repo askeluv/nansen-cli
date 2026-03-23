@@ -3987,6 +3987,32 @@ describe('deprecation warnings', () => {
     expect(errors.some(e => e.includes('deprecated'))).toBe(false);
     expect(result.type).toBe('no-output');
   });
+
+  it('should show deprecation note in help output for deprecated research commands', async () => {
+    const outputs = [];
+    const deps = {
+      output: (msg) => outputs.push(msg),
+      errorOutput: () => {},
+      exit: () => {}
+    };
+    await runCLI(['smart-money', '--help'], deps);
+    const combined = outputs.join('\n');
+    expect(combined).toContain('deprecated');
+    expect(combined).toContain('nansen research smart-money');
+  });
+
+  it('should show deprecation note in subcommand help for deprecated research commands', async () => {
+    const outputs = [];
+    const deps = {
+      output: (msg) => outputs.push(msg),
+      errorOutput: () => {},
+      exit: () => {}
+    };
+    await runCLI(['smart-money', 'netflow', '--help'], deps);
+    const combined = outputs.join('\n');
+    expect(combined).toContain('deprecated');
+    expect(combined).toContain('nansen research smart-money');
+  });
 });
 
 describe('SCHEMA structure', () => {

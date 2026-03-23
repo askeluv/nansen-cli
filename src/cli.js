@@ -1568,6 +1568,13 @@ export async function runCLI(rawArgs, deps = {}) {
     if (updateNotification) errorOutput(updateNotification);
   };
 
+  // Deprecation note for help output
+  const deprecationNote = (cmd) => {
+    if (DEPRECATED_TO_RESEARCH.has(cmd)) return `Note: "nansen ${cmd}" is deprecated. Use "nansen research ${cmd}" instead.\n\n`;
+    if (DEPRECATED_TO_TRADE.has(cmd)) return `Note: "nansen ${cmd}" is deprecated. Use "nansen trade ${cmd}" instead.\n\n`;
+    return '';
+  };
+
   const commands = { ...buildCommands(deps), ...buildWalletCommands(deps), ...buildTradingCommands(deps), ...buildAlertsCommands(deps), ...commandOverrides };
 
   if (flags.version || flags.v) {
@@ -1586,6 +1593,7 @@ export async function runCLI(rawArgs, deps = {}) {
           const subHelp = generateSubcommandHelp(category, deepSub, `research ${subcommand}`);
           if (subHelp) {
             output(subHelp);
+            notify();
             return { type: 'subcommand-help', command: category, subcommand: deepSub };
           }
         }
@@ -1599,6 +1607,7 @@ export async function runCLI(rawArgs, deps = {}) {
             lines.push(`Use: nansen research ${category} <subcommand> --help`);
           }
           output(lines.join('\n'));
+          notify();
           return { type: 'command-help', command: `research ${category}` };
         }
       }
@@ -1607,7 +1616,8 @@ export async function runCLI(rawArgs, deps = {}) {
       if (command && subcommand && command !== 'trade' && command !== 'alerts') {
         const subHelp = generateSubcommandHelp(command, subcommand);
         if (subHelp) {
-          output(subHelp);
+          output(deprecationNote(command) + subHelp);
+          notify();
           return { type: 'subcommand-help', command, subcommand };
         }
       }
@@ -1634,7 +1644,8 @@ export async function runCLI(rawArgs, deps = {}) {
         if (cmdSchema.examples?.length) {
           lines.push(`\nExamples:\n  ${cmdSchema.examples.join('\n  ')}`);
         }
-        output(lines.join('\n'));
+        output(deprecationNote(command) + lines.join('\n'));
+        notify();
         return { type: 'command-help', command };
       }
     }
@@ -1648,6 +1659,7 @@ export async function runCLI(rawArgs, deps = {}) {
       };
       if (simpleHelp[command]) {
         output(simpleHelp[command]);
+        notify();
         return { type: 'command-help', command };
       }
     }

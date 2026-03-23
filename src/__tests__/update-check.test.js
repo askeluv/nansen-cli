@@ -269,6 +269,32 @@ describe('update notification in CLI', () => {
     expect(errors.length).toBe(0);
   });
 
+  it('should show update notification for command --help', async () => {
+    writeCache({ latest: '99.0.0', checkedAt: Date.now() });
+    const { runCLI } = await import('../cli.js');
+    await runCLI(['smart-money', '--help'], mockDeps());
+
+    expect(errors.some(e => e.includes('Update available'))).toBe(true);
+    expect(errors.some(e => e.includes('99.0.0'))).toBe(true);
+  });
+
+  it('should show update notification for subcommand --help', async () => {
+    writeCache({ latest: '99.0.0', checkedAt: Date.now() });
+    const { runCLI } = await import('../cli.js');
+    await runCLI(['smart-money', 'netflow', '--help'], mockDeps());
+
+    expect(errors.some(e => e.includes('Update available'))).toBe(true);
+    expect(errors.some(e => e.includes('99.0.0'))).toBe(true);
+  });
+
+  it('should show update notification for simple command --help', async () => {
+    writeCache({ latest: '99.0.0', checkedAt: Date.now() });
+    const { runCLI } = await import('../cli.js');
+    await runCLI(['schema', '--help'], mockDeps());
+
+    expect(errors.some(e => e.includes('Update available'))).toBe(true);
+  });
+
   it('should NOT show notification on stderr for API errors (limited to help only)', async () => {
     writeCache({ latest: '99.0.0', checkedAt: Date.now() });
     const { runCLI } = await import('../cli.js');
