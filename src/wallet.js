@@ -596,8 +596,15 @@ export function buildWalletCommands(deps = {}) {
         // All other subcommands fall through to unified handlers below
       }
 
+      const isPrivy = options.provider === 'privy' || process.env.NANSEN_WALLET_PROVIDER === 'privy';
+
       const handlers = {
         'create': async () => {
+          // Privy wallets are handled above — if we reach here with provider=privy,
+          // the privy path already failed and called exit(). Guard against environments
+          // where exit() does not terminate (agent frameworks, test harnesses).
+          if (isPrivy) return;
+
           const name = options.name || args[1] || 'default';
 
           let password;

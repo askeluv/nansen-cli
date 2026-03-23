@@ -603,6 +603,36 @@ describe('Privy wallet delete and export', () => {
   });
 });
 
+describe('Privy wallet create does not emit PASSWORD_REQUIRED', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('does not show PASSWORD_REQUIRED when --provider privy and privy creation fails', async () => {
+    // Mock privy.js to throw (simulates missing env vars)
+    vi.doMock('../privy.js', () => ({
+      createPrivyWalletPair: vi.fn().mockRejectedValue(
+        new Error('Privy credentials required. Set PRIVY_APP_ID and PRIVY_APP_SECRET environment variables.')
+      ),
+    }));
+
+    const { buildWalletCommands } = await import('../wallet.js');
+    const output = [];
+    const exitCodes = [];
+    const cmds = buildWalletCommands({
+      log: (m) => output.push(m),
+      exit: (code) => exitCodes.push(code),
+    });
+
+    await cmds.wallet(['create'], null, {}, { provider: 'privy' });
+
+    const joined = output.join('\n');
+    expect(joined).toContain('Privy credentials required');
+    expect(joined).not.toContain('PASSWORD_REQUIRED');
+    expect(exitCodes).toContain(1);
+  });
+});
+
 describe('Wallet list/show CLI output for provider', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
