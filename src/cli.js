@@ -1516,7 +1516,7 @@ export function generateSubcommandHelp(command, subcommand, prefix = null) {
 
   if (subSchema.endpoint) {
     const cost = getCostForEndpoint(subSchema.endpoint);
-    if (cost) lines.push(`Cost: ${cost.free} credits (free) / ${cost.pro} credit(s) (pro)`);
+    if (cost) lines.push(`Cost: ${cost.free} credit${cost.free === 1 ? '' : 's'} (Free tier) / ${cost.pro} credit${cost.pro === 1 ? '' : 's'} (Pro tier)`);
   }
 
   if (subSchema.returns?.length) {
@@ -1569,7 +1569,6 @@ export async function runCLI(rawArgs, deps = {}) {
   const updateNotification = getUpdateNotification(VERSION);
   const upgradeNotice = getUpgradeNotice(VERSION);
   scheduleUpdateCheck();
-  await refreshCostMapIfStale();
   const notify = () => {
     if (upgradeNotice) errorOutput(upgradeNotice);
     if (updateNotification) errorOutput(updateNotification);
@@ -1590,6 +1589,7 @@ export async function runCLI(rawArgs, deps = {}) {
   }
 
   if (command === 'help' || flags.help || flags.h) {
+    await refreshCostMapIfStale();
     // Check for subcommand-specific help: nansen <command> <subcommand> --help
     if (flags.help || flags.h) {
       // Handle 'research <category> <sub> --help' (3-level)
