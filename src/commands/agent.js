@@ -131,13 +131,15 @@ export async function consumeSSEStream(response, callbacks = {}) {
  * Build the `agent` command handler.
  *
  * @param {object} [deps]
- * @param {Function} [deps.log]     – stdout line output (default: console.log)
- * @param {Function} [deps.write]        – raw stdout writer, no trailing newline (default: process.stdout.write)
+ * @param {Function} [deps.log]      – stdout line output (default: console.log)
+ * @param {Function} [deps.errorLog] – stderr line output (default: console.error)
+ * @param {Function} [deps.write]    – raw stdout writer, no trailing newline (default: process.stdout.write)
  * @returns {object} command map
  */
 export function buildAgentCommands(deps = {}) {
   const {
     log = console.log,
+    errorLog = console.error,
     write = (s) => process.stdout.write(s),
   } = deps;
 
@@ -311,7 +313,7 @@ NOTE: This endpoint is currently internal-only (requires a Nansen internal accou
           },
           onToolCall(name) {
             if (midLine) { write('\n'); midLine = false; }
-            log(`⚙ ${name}`);
+            errorLog(`⚙ ${name}`);
           },
         });
       } finally {
@@ -330,8 +332,8 @@ NOTE: This endpoint is currently internal-only (requires a Nansen internal accou
       // Print conversation continuation hint
       const effectiveConvId = result.conversationId || conversationId;
       const expertFlag = expert ? ' --expert' : '';
-      log(`\nTo continue this conversation:`);
-      log(`  nansen agent "<follow-up>" --conversation-id "${effectiveConvId}"${expertFlag}`);
+      errorLog(`\nTo continue this conversation:`);
+      errorLog(`  nansen agent "<follow-up>" --conversation-id "${effectiveConvId}"${expertFlag}`);
 
       return;
     },

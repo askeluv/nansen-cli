@@ -44,14 +44,15 @@ function mockApi(overrides = {}) {
 // ── Tests ──
 
 describe('agent command', () => {
-  let log, write, cmd;
+  let log, errorLog, write, cmd;
 
   afterEach(() => { vi.restoreAllMocks(); });
 
   beforeEach(() => {
     log = vi.fn();
+    errorLog = vi.fn();
     write = vi.fn();
-    cmd = buildAgentCommands({ log, write })['agent'];
+    cmd = buildAgentCommands({ log, errorLog, write })['agent'];
   });
 
   // ── Help output ──
@@ -310,12 +311,12 @@ describe('agent command', () => {
       expect(write).toHaveBeenCalledWith('Hello ');
       expect(write).toHaveBeenCalledWith('world');
 
-      // log receives tool call names with ⚙ prefix
-      expect(log).toHaveBeenCalledWith('⚙ token_search');
+      // errorLog receives tool call names with ⚙ prefix (stderr)
+      expect(errorLog).toHaveBeenCalledWith('⚙ token_search');
 
-      // log receives conversation continuation hint
-      const allLogCalls = log.mock.calls.map(c => c[0]);
-      expect(allLogCalls.some(c => c.includes('nansen agent') && c.includes('conv-stream'))).toBe(true);
+      // errorLog receives conversation continuation hint (stderr)
+      const allErrorCalls = errorLog.mock.calls.map(c => c[0]);
+      expect(allErrorCalls.some(c => c.includes('nansen agent') && c.includes('conv-stream'))).toBe(true);
     });
 
     it('does not emit a blank line between consecutive tool calls separated by a newline delta', async () => {
@@ -338,8 +339,8 @@ describe('agent command', () => {
 
       // The newline delta between tool calls must be suppressed
       expect(write).not.toHaveBeenCalledWith('\n');
-      expect(log).toHaveBeenCalledWith('⚙ token_ohlcv');
-      expect(log).toHaveBeenCalledWith('⚙ token_current_top_holders');
+      expect(errorLog).toHaveBeenCalledWith('⚙ token_ohlcv');
+      expect(errorLog).toHaveBeenCalledWith('⚙ token_current_top_holders');
     });
   });
 
