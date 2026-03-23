@@ -27,7 +27,7 @@ function makeAlert(overrides = {}) {
   };
 }
 
-function makeDaemon(opts = {}) {
+function _makeDaemon(opts = {}) {
   class MockWS extends EventEmitter {
     constructor() {
       super();

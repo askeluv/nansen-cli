@@ -86,7 +86,7 @@ wss.on('connection', (ws, req) => {
       if (msg.type === 'ping') {
         ws.send(JSON.stringify({ type: 'pong', ts: msg.ts }));
       }
-    } catch {}
+    } catch { /* ignore unparseable client messages */ }
   });
 
   // Fire mock alerts on interval

@@ -129,7 +129,7 @@ export class AlertsDaemon extends EventEmitter {
     this._running = false;
     this._clearTimers();
     if (this._ws) {
-      try { this._ws.close(1000, 'daemon stopped'); } catch {}
+      try { this._ws.close(1000, 'daemon stopped'); } catch { /* ignore close errors */ }
       this._ws = null;
     }
     this.log('info', 'Daemon stopped');
@@ -369,7 +369,7 @@ export class AlertsDaemon extends EventEmitter {
       process.stderr.write(line + '\n');
     }
     if (this.logFile) {
-      try { fs.appendFileSync(this.logFile, line + '\n'); } catch {}
+      try { fs.appendFileSync(this.logFile, line + '\n'); } catch { /* ignore log write errors */ }
     }
     this.emit('log', { level, message, line });
   }

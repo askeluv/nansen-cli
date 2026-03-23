@@ -182,7 +182,7 @@ export function buildDaemonCommand(deps = {}) {
         let state = {};
         try {
           state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-        } catch {}
+        } catch { /* state file may not exist yet */ }
 
         const status = {
           running,
