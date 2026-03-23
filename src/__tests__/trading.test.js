@@ -883,6 +883,67 @@ describe('WalletConnect quote support', () => {
 
     vi.restoreAllMocks();
   });
+
+  it('should forward amount-unit as query param', async () => {
+    createWallet('default', 'testpass');
+
+    let capturedUrl = '';
+    const origFetch = global.fetch;
+    global.fetch = vi.fn().mockImplementation(async (url) => {
+      capturedUrl = url.toString();
+      return {
+        ok: true,
+        text: async () => JSON.stringify({
+          success: true,
+          quotes: [{ aggregator: 'test' }],
+          metadata: { quoteId: 'test-id' },
+        }),
+      };
+    });
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    await cmds.quote([], null, {}, {
+      chain: 'solana',
+      from: 'SOL',
+      to: 'USDC',
+      amount: '20',
+      'amount-unit': 'usd',
+    });
+
+    expect(capturedUrl).toContain('amountUnit=usd');
+
+    global.fetch = origFetch;
+  });
+
+  it('should not include amountUnit when flag is omitted', async () => {
+    createWallet('default', 'testpass');
+
+    let capturedUrl = '';
+    const origFetch = global.fetch;
+    global.fetch = vi.fn().mockImplementation(async (url) => {
+      capturedUrl = url.toString();
+      return {
+        ok: true,
+        text: async () => JSON.stringify({
+          success: true,
+          quotes: [{ aggregator: 'test' }],
+          metadata: { quoteId: 'test-id' },
+        }),
+      };
+    });
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    await cmds.quote([], null, {}, {
+      chain: 'solana',
+      from: 'SOL',
+      to: 'USDC',
+      amount: '1000000000',
+    });
+
+    expect(capturedUrl).not.toContain('amountUnit');
+
+    global.fetch = origFetch;
+  });
 });
 
 describe('WalletConnect execute support', () => {

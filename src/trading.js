@@ -745,6 +745,7 @@ export function buildTradingCommands(deps = {}) {
       const autoSlippage = flags['auto-slippage'] || flags.autoSlippage;
       const maxAutoSlippage = options['max-auto-slippage'];
       const swapMode = options['swap-mode'] || 'exactIn';
+      const amountUnit = options['amount-unit'];
 
       if (!chain || !from || !to || !amount) {
         log(`
@@ -765,6 +766,7 @@ OPTIONS:
   --auto-slippage           Enable auto slippage calculation
   --max-auto-slippage <pct> Max auto slippage when auto-slippage enabled
   --swap-mode <mode>        exactIn (default) or exactOut
+  --amount-unit <unit>      How to interpret --amount: usd, token, or raw (default: raw)
 
 EXAMPLES:
   nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000
@@ -775,11 +777,13 @@ EXAMPLES:
         return;
       }
 
-      const amountError = validateBaseUnitAmount(amount);
-      if (amountError) {
-        log(`Error: ${amountError}`);
-        exit(1);
-        return;
+      if (!amountUnit || amountUnit === 'raw') {
+        const amountError = validateBaseUnitAmount(amount);
+        if (amountError) {
+          log(`Error: ${amountError}`);
+          exit(1);
+          return;
+        }
       }
 
       try {
@@ -844,6 +848,7 @@ EXAMPLES:
         if (autoSlippage) params.autoSlippage = true;
         if (maxAutoSlippage) params.maxAutoSlippagePercent = maxAutoSlippage;
         if (swapMode !== 'exactIn') params.swapMode = swapMode;
+        if (amountUnit) params.amountUnit = amountUnit;
 
         const response = await getQuote(params);
 

@@ -58,9 +58,11 @@ nansen trade execute --quote "$quote_id"
 | ETH | Base | `0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee` |
 | USDC | Base | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` |
 
-## Amounts are in base units — NEVER USD
+## Amount units
 
-`--amount` accepts **integer base units only** (lamports, wei, etc). It is never a USD value.
+`--amount` defaults to raw units (wei/lamports). Use `--amount-unit` to change interpretation.
+
+**Raw units (default, backward compatible):**
 
 | Token | Decimals | 1 token = |
 |-------|----------|-----------|
@@ -68,7 +70,22 @@ nansen trade execute --quote "$quote_id"
 | ETH | 18 | `1000000000000000000` |
 | USDC | 6 | `1000000` |
 
-If the user says "$20 worth of X", you must convert USD → token amount → base units. For example, to buy $20 of SOL at $150/SOL: $20 ÷ $150 = 0.1333 SOL = 133,300,000 lamports → `--amount 133300000`. Use a price lookup (e.g. `nansen research token info`) to get the current price first.
+**USD (recommended for agents on Solana — server-side conversion, no extra lookup needed):**
+
+```bash
+# Sell $20 worth of SOL for USDC
+nansen trade quote --chain solana --from SOL --to USDC --amount 20 --amount-unit usd
+
+# Buy $50 worth of SOL, paying in USDC (use --swap-mode exactOut)
+nansen trade quote --chain solana --from USDC --to SOL --amount 50 --amount-unit usd --swap-mode exactOut
+```
+
+**Token units (human-readable decimals):**
+
+```bash
+# Sell 0.5 SOL
+nansen trade quote --chain solana --from SOL --to USDC --amount 0.5 --amount-unit token
+```
 
 ## Flags
 
@@ -77,7 +94,9 @@ If the user says "$20 worth of X", you must convert USD → token amount → bas
 | `--chain` | `solana` or `base` |
 | `--from` | Source token (symbol or address) |
 | `--to` | Destination token (symbol or address) |
-| `--amount` | Amount in base units (integer) |
+| `--amount` | Amount to trade (interpretation depends on `--amount-unit`) |
+| `--amount-unit` | `raw` (default), `usd`, or `token` |
+| `--swap-mode` | `exactIn` (default) or `exactOut` |
 | `--wallet` | Wallet name (default: default wallet) |
 | `--slippage` | Slippage tolerance as decimal (e.g. 0.03) |
 | `--quote` | Quote ID for execute |

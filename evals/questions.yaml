@@ -238,7 +238,7 @@ questions:
       - "30"
     skill: nansen-smart-money-tracker
 
-  # Trading: USD-intent amount (defensive — CLI only supports base units)
+  # Trading: USD-intent amount — agent should use --amount-unit usd
   - id: trade_usd_intent_solana
     question: Buy $20 worth of MPLX on Solana
     expected_commands:
@@ -247,15 +247,13 @@ questions:
       - "trade quote"
       - "--chain"
       - "solana"
-      - "--amount"
-    rejected_fragments:
+      - "--amount-unit"
+      - "usd"
       - "--amount 20"
-      - "--amount 20 "
-      - "--amount \"20\""
     notes: >
-      The CLI only accepts base units (lamports/wei). Passing --amount 20 sends
-      20 lamports (~$0.000000), not $20 USD. The agent must either convert to
-      base units via a price lookup or warn that USD amounts aren't supported.
+      The CLI supports --amount-unit usd for server-side USD conversion.
+      The agent should use --amount 20 --amount-unit usd rather than converting
+      to base units via a price lookup.
     skill: nansen-trading
 
   - id: trade_usd_intent_base
@@ -266,14 +264,12 @@ questions:
       - "trade quote"
       - "--chain"
       - "base"
-      - "--amount"
-    rejected_fragments:
+      - "--amount-unit"
+      - "usd"
       - "--amount 25"
-      - "--amount 25 "
-      - "--amount \"25\""
     notes: >
-      Same as above — 25 wei is effectively zero ETH. Agent must not pass raw
-      dollar amounts as base units.
+      Same as above — agent should use --amount 25 --amount-unit usd rather
+      than converting to base units.
     skill: nansen-trading
 
   - id: trade_decimal_amount_eth

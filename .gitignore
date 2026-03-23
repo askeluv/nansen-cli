@@ -12,3 +12,6 @@ node_modules/
 .vscode/
 .idea/
 coverage/
+
+# Internal docs
+docs/superpowers/
