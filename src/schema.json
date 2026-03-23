@@ -463,6 +463,10 @@
                 },
                 "chain": {
                   "default": "solana"
+                },
+                "include-stablecoin": {
+                  "description": "Include stablecoins in screener results",
+                  "default": false
                 }
               }
             }

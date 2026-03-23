@@ -1200,8 +1200,14 @@ export function buildCommands(deps = {}) {
       // Convenience filter for smart money only
       const onlySmartMoney = options['smart-money'] || flags['smart-money'] || false;
       if (onlySmartMoney) {
-        filters.include_smart_money_labels = filters.include_smart_money_labels || 
+        filters.include_smart_money_labels = filters.include_smart_money_labels ||
           ['Fund', 'Smart Trader', '30D Smart Trader', '90D Smart Trader', '180D Smart Trader'];
+      }
+
+      // Convenience filter to include stablecoins in screener results
+      const includeStablecoin = options['include-stablecoin'] || flags['include-stablecoin'] || false;
+      if (includeStablecoin) {
+        filters.include_stablecoin = true;
       }
 
       const handlers = {
@@ -1257,7 +1263,7 @@ export function buildCommands(deps = {}) {
         'help': () => ({
           commands: ['info', 'ohlcv', 'screener', 'holders', 'flows', 'dex-trades', 'pnl', 'who-bought-sold', 'flow-intelligence', 'transfers', 'jup-dca', 'perp-trades', 'perp-positions', 'perp-pnl-leaderboard'],
           description: 'Token God Mode endpoints',
-          example: 'nansen token screener --chain solana --timeframe 24h --smart-money'
+          example: 'nansen token screener --chain solana --timeframe 24h --smart-money --include-stablecoin'
         })
       };
 

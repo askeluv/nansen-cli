@@ -1769,9 +1769,20 @@ describe('buildCommands', () => {
         tokenScreener: vi.fn().mockResolvedValue({ data: [] })
       };
       await commands['token'](['screener'], mockApi, { 'smart-money': true }, {});
-      
+
       expect(mockApi.tokenScreener).toHaveBeenCalledWith(
         expect.objectContaining({ filters: { include_smart_money_labels: ['Fund', 'Smart Trader', '30D Smart Trader', '90D Smart Trader', '180D Smart Trader'] } })
+      );
+    });
+
+    it('should set include_stablecoin filter from --include-stablecoin flag', async () => {
+      const mockApi = {
+        tokenScreener: vi.fn().mockResolvedValue({ data: [] })
+      };
+      await commands['token'](['screener'], mockApi, { 'include-stablecoin': true }, {});
+
+      expect(mockApi.tokenScreener).toHaveBeenCalledWith(
+        expect.objectContaining({ filters: { include_stablecoin: true } })
       );
     });
 
