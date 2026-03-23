@@ -269,7 +269,7 @@ describe('update notification in CLI', () => {
     expect(errors.length).toBe(0);
   });
 
-  it('should show notification on stderr for API errors too', async () => {
+  it('should NOT show notification on stderr for API errors (limited to help only)', async () => {
     writeCache({ latest: '99.0.0', checkedAt: Date.now() });
     const { runCLI } = await import('../cli.js');
     const deps = {
@@ -280,10 +280,10 @@ describe('update notification in CLI', () => {
     };
     await runCLI(['smart-money', 'netflow'], deps);
 
-    expect(errors.some(e => e.includes('Update available'))).toBe(true);
+    expect(errors.some(e => e.includes('Update available'))).toBe(false);
   });
 
-  it('should show notification on stderr for successful commands', async () => {
+  it('should NOT show notification on stderr for successful commands (limited to help only)', async () => {
     writeCache({ latest: '99.0.0', checkedAt: Date.now() });
     const { runCLI } = await import('../cli.js');
     const deps = {
@@ -294,7 +294,7 @@ describe('update notification in CLI', () => {
     };
     await runCLI(['smart-money', 'netflow'], deps);
 
-    expect(errors.some(e => e.includes('Update available'))).toBe(true);
+    expect(errors.some(e => e.includes('Update available'))).toBe(false);
     // stdout should still have the JSON data
     expect(outputs.length).toBe(1);
     expect(() => JSON.parse(outputs[0])).not.toThrow();

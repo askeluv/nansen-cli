@@ -701,6 +701,10 @@ EXAMPLES:
   nansen research profiler balance --address 0x... --chain ethereum
   nansen trade quote --chain base --from ETH --to USDC --amount 1000000000000000000
 
+DEPRECATED ALIASES (still work, will be removed in a future version):
+  smart-money, profiler, token, search, perp, portfolio, points → use "nansen research <command>"
+  quote, execute → use "nansen trade <command>"
+
 Research chains: ethereum, solana, base, bnb, arbitrum, polygon, optimism, avalanche, linea, scroll, mantle, ronin, sei, plasma, sonic, monad, hyperevm, iotaevm
 Trade chains: solana, base
 Labels: Fund, Smart Trader, 30D/90D/180D Smart Trader, Smart HL Perps Trader
@@ -1548,12 +1552,7 @@ export async function runCLI(rawArgs, deps = {}) {
   const subArgs = positional.slice(1);
   const subcommand = subArgs[0];
 
-  // Deprecation warnings for commands that moved under 'research' or 'trade'
-  if (DEPRECATED_TO_RESEARCH.has(command)) {
-    errorOutput(`Warning: "nansen ${command}" is deprecated. Use "nansen research ${command}" instead.`);
-  } else if (DEPRECATED_TO_TRADE.has(command)) {
-    errorOutput(`Warning: "nansen ${command}" is deprecated. Use "nansen trade ${command}" instead.`);
-  }
+
 
   const pretty = flags.pretty || flags.p;
   const table = flags.table || flags.t;
@@ -1587,7 +1586,6 @@ export async function runCLI(rawArgs, deps = {}) {
           const subHelp = generateSubcommandHelp(category, deepSub, `research ${subcommand}`);
           if (subHelp) {
             output(subHelp);
-            notify();
             return { type: 'subcommand-help', command: category, subcommand: deepSub };
           }
         }
@@ -1601,7 +1599,6 @@ export async function runCLI(rawArgs, deps = {}) {
             lines.push(`Use: nansen research ${category} <subcommand> --help`);
           }
           output(lines.join('\n'));
-          notify();
           return { type: 'command-help', command: `research ${category}` };
         }
       }
@@ -1611,7 +1608,6 @@ export async function runCLI(rawArgs, deps = {}) {
         const subHelp = generateSubcommandHelp(command, subcommand);
         if (subHelp) {
           output(subHelp);
-          notify();
           return { type: 'subcommand-help', command, subcommand };
         }
       }
@@ -1639,7 +1635,6 @@ export async function runCLI(rawArgs, deps = {}) {
           lines.push(`\nExamples:\n  ${cmdSchema.examples.join('\n  ')}`);
         }
         output(lines.join('\n'));
-        notify();
         return { type: 'command-help', command };
       }
     }
@@ -1653,7 +1648,6 @@ export async function runCLI(rawArgs, deps = {}) {
       };
       if (simpleHelp[command]) {
         output(simpleHelp[command]);
-        notify();
         return { type: 'command-help', command };
       }
     }
@@ -1681,7 +1675,6 @@ export async function runCLI(rawArgs, deps = {}) {
     const formatted = formatOutput(errorData, { pretty, table });
     output(formatted.text);
     trackCommandFailed({ command: fullCommand, duration_ms: Date.now() - startTime, error_code: 'UNKNOWN_COMMAND', flags: usedFlags, chain });
-    notify();
     exit(1);
     return { type: 'error', data: errorData };
   }
@@ -1709,7 +1702,6 @@ export async function runCLI(rawArgs, deps = {}) {
     // Commands that handle their own output return undefined
     if (result === undefined) {
       trackCommandSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, flags: usedFlags, chain });
-      notify();
       return { type: 'no-output', command };
     }
 
@@ -1718,7 +1710,6 @@ export async function runCLI(rawArgs, deps = {}) {
       const formatted = formatOutput(result, { pretty, table: false });
       output(formatted.text);
       trackCommandSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, flags: usedFlags, chain });
-      notify();
       return { type: 'schema', data: result };
     }
 
@@ -1731,7 +1722,6 @@ export async function runCLI(rawArgs, deps = {}) {
     // Alerts list with --table uses custom table format
     if (command === 'alerts' && subcommand === 'list' && table) {
       output(formatAlertsTable(result));
-      notify();
       return { type: 'success', data: result };
     }
 
@@ -1743,7 +1733,6 @@ export async function runCLI(rawArgs, deps = {}) {
         output(streamOutput);
       }
       trackCommandSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, from_cache: !!result?.fromCache, flags: usedFlags, chain });
-      notify();
       return { type: 'stream', data: result };
     }
 
@@ -1751,7 +1740,6 @@ export async function runCLI(rawArgs, deps = {}) {
     const formatted = formatOutput(successData, { pretty, table, csv });
     output(formatted.text);
     trackCommandSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, from_cache: !!result?.fromCache, flags: usedFlags, chain });
-    notify();
     return { type: csv ? 'csv' : 'success', data: result };
   } catch (error) {
     const errorData = formatError(error);
@@ -1765,7 +1753,6 @@ export async function runCLI(rawArgs, deps = {}) {
       flags: usedFlags,
       chain,
     });
-    notify();
     exit(1);
     return { type: 'error', data: errorData };
   }
