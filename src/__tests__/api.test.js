@@ -1212,6 +1212,20 @@ describe('NansenAPI', () => {
         expect(body.filters.min_value_usd).toBe(1000);
         expect(body.order_by).toEqual([{ field: 'value_usd', direction: 'DESC' }]);
       });
+
+      it('should pass label parameter', async () => {
+        setupMock(MOCK_RESPONSES.tokenFlows);
+        await api.tokenFlows({ tokenAddress: TEST_DATA.solana.token, chain: 'solana', label: 'exchange' });
+        const body = expectFetchCalledWith('/api/v1/tgm/flows');
+        expect(body.label).toBe('exchange');
+      });
+
+      it('should omit label when not provided', async () => {
+        setupMock(MOCK_RESPONSES.tokenFlows);
+        await api.tokenFlows({ tokenAddress: TEST_DATA.solana.token, chain: 'solana' });
+        const body = expectFetchCalledWith('/api/v1/tgm/flows');
+        expect(body.label).toBeUndefined();
+      });
     });
 
     describe('tokenDexTrades', () => {
