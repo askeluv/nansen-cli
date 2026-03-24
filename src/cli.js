@@ -1204,10 +1204,9 @@ export function buildCommands(deps = {}) {
           ['Fund', 'Smart Trader', '30D Smart Trader', '90D Smart Trader', '180D Smart Trader'];
       }
 
-      // Convenience filter to exclude stablecoins from screener results
-      const excludeStablecoins = options['exclude-stablecoins'] || flags['exclude-stablecoins'] || false;
-      if (excludeStablecoins) {
-        filters.include_stablecoins = false;
+      const includeStablecoins = options['include-stablecoins'] ?? flags['include-stablecoins'];
+      if (includeStablecoins !== undefined) {
+        filters.include_stablecoins = includeStablecoins;
       }
 
       const handlers = {
@@ -1263,7 +1262,7 @@ export function buildCommands(deps = {}) {
         'help': () => ({
           commands: ['info', 'ohlcv', 'screener', 'holders', 'flows', 'dex-trades', 'pnl', 'who-bought-sold', 'flow-intelligence', 'transfers', 'jup-dca', 'perp-trades', 'perp-positions', 'perp-pnl-leaderboard'],
           description: 'Token God Mode endpoints',
-          example: 'nansen token screener --chain solana --timeframe 24h --smart-money --exclude-stablecoins'
+          example: 'nansen token screener --chain solana --timeframe 24h --smart-money --include-stablecoins false'
         })
       };
 

@@ -464,9 +464,9 @@
                 "chain": {
                   "default": "solana"
                 },
-                "exclude-stablecoins": {
-                  "description": "Exclude stablecoins from screener results",
-                  "default": false
+                "include-stablecoins": {
+                  "description": "Whether to include stablecoins in screener results (default true on API side)",
+                  "default": true
                 }
               }
             }

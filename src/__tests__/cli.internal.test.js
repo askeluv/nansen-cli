@@ -1775,22 +1775,22 @@ describe('buildCommands', () => {
       );
     });
 
-    it('should set include_stablecoins=false filter from --exclude-stablecoins flag', async () => {
+    it('should set include_stablecoins filter from --include-stablecoins flag', async () => {
       const mockApi = {
         tokenScreener: vi.fn().mockResolvedValue({ data: [] })
       };
-      await commands['token'](['screener'], mockApi, { 'exclude-stablecoins': true }, {});
+      await commands['token'](['screener'], mockApi, { 'include-stablecoins': false }, {});
 
       expect(mockApi.tokenScreener).toHaveBeenCalledWith(
         expect.objectContaining({ filters: { include_stablecoins: false } })
       );
     });
 
-    it('should set include_smart_money_labels and include_stablecoins=false when --smart-money and --exclude-stablecoins are combined', async () => {
+    it('should set include_smart_money_labels and include_stablecoins when --smart-money and --include-stablecoins are combined', async () => {
       const mockApi = {
         tokenScreener: vi.fn().mockResolvedValue({ data: [] })
       };
-      await commands['token'](['screener'], mockApi, { 'smart-money': true, 'exclude-stablecoins': true }, {});
+      await commands['token'](['screener'], mockApi, { 'smart-money': true, 'include-stablecoins': false }, {});
 
       expect(mockApi.tokenScreener).toHaveBeenCalledWith(
         expect.objectContaining({
