@@ -3,7 +3,7 @@
  * Extracted from index.js for coverage
  */
 
-import { NansenAPI, NansenError, ErrorCode, saveConfig, deleteConfig, getConfigFile, clearCache, getCacheDir, validateAddress, sleep } from './api.js';
+import { NansenAPI, NansenError, ErrorCode, saveConfig, deleteConfig, getConfigFile, clearCache, getCacheDir, validateAddress, normalizeAddress, sleep } from './api.js';
 import { buildWalletCommands } from './wallet.js';
 import { buildTradingCommands } from './trading.js';
 import { formatAlertsTable, buildAlertsCommands } from './commands/alerts.js';
@@ -1185,7 +1185,7 @@ export function buildCommands(deps = {}) {
 
     'token': async (args, apiInstance, flags, options) => {
       const subcommand = args[0] || 'help';
-      const tokenAddress = options.token || options['token-address'];
+      const tokenAddress = normalizeAddress(options.token || options['token-address'], options.chain || 'solana');
       const tokenSymbol = options.symbol || options['token-symbol'];
       const chain = options.chain || 'solana';
       const chains = options.chains || [chain];

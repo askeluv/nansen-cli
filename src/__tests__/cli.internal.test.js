@@ -1841,7 +1841,7 @@ describe('buildCommands', () => {
 
       expect(stderrSpy).toHaveBeenCalledTimes(1);
       expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining('Price data unavailable'));
-      expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining('0x4ed4E862860beD51a9570b96d89aF5E1B0Efefed'));
+      expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining('0x4ed4e862860bed51a9570b96d89af5e1b0efefed'));
       expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining('open/high/low/close'));
       stderrSpy.mockRestore();
     });
