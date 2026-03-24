@@ -280,6 +280,10 @@
                 },
                 "days": {
                   "default": 30
+                },
+                "label": {
+                  "description": "Holder segment to filter flows by (top_100_holders, smart_money, public_figure, whale, exchange)",
+                  "default": "top_100_holders"
                 }
               }
             },

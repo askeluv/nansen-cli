@@ -974,7 +974,7 @@ export class NansenAPI {
   }
 
   async tokenFlows(params = {}) {
-    const { tokenAddress, chain = 'solana', filters = {}, orderBy, pagination, days = 30, date } = params;
+    const { tokenAddress, chain = 'solana', label, filters = {}, orderBy, pagination, days = 30, date } = params;
     if (tokenAddress) {
       const validation = validateTokenAddress(tokenAddress, chain);
       if (!validation.valid) throw new NansenError(validation.error, validation.code);
@@ -984,6 +984,7 @@ export class NansenAPI {
       token_address: tokenAddress,
       chain,
       date: dateRange,
+      label,
       filters,
       order_by: orderBy,
       pagination
