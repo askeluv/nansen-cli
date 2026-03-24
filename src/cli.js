@@ -1235,7 +1235,8 @@ export function buildCommands(deps = {}) {
         'holders': () => apiInstance.tokenHolders({ tokenAddress, chain, labelType: onlySmartMoney ? 'smart_money' : 'all_holders', filters, orderBy, pagination }),
         'flows': () => {
           const date = parseDateOption(options.date, days);
-          return apiInstance.tokenFlows({ tokenAddress, chain, filters, orderBy, pagination, days, date });
+          const label = options.label;
+          return apiInstance.tokenFlows({ tokenAddress, chain, label, filters, orderBy, pagination, days, date });
         },
         'dex-trades': () => apiInstance.tokenDexTrades({ tokenAddress, chain, onlySmartMoney, filters, orderBy, pagination, days }),
         'pnl': () => apiInstance.tokenPnlLeaderboard({ tokenAddress, chain, filters, orderBy, pagination, days }),
