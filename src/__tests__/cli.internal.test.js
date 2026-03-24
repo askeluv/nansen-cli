@@ -1786,6 +1786,22 @@ describe('buildCommands', () => {
       );
     });
 
+    it('should set include_smart_money_labels and include_stablecoins=false when --smart-money and --exclude-stablecoins are combined', async () => {
+      const mockApi = {
+        tokenScreener: vi.fn().mockResolvedValue({ data: [] })
+      };
+      await commands['token'](['screener'], mockApi, { 'smart-money': true, 'exclude-stablecoins': true }, {});
+
+      expect(mockApi.tokenScreener).toHaveBeenCalledWith(
+        expect.objectContaining({
+          filters: expect.objectContaining({
+            include_smart_money_labels: expect.any(Array),
+            include_stablecoins: false
+          })
+        })
+      );
+    });
+
     it('should filter screener results by search option (client-side, flat)', async () => {
       const mockApi = {
         tokenScreener: vi.fn().mockResolvedValue({ data: [
