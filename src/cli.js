@@ -1262,7 +1262,7 @@ export function buildCommands(deps = {}) {
         'help': () => ({
           commands: ['info', 'ohlcv', 'screener', 'holders', 'flows', 'dex-trades', 'pnl', 'who-bought-sold', 'flow-intelligence', 'transfers', 'jup-dca', 'perp-trades', 'perp-positions', 'perp-pnl-leaderboard'],
           description: 'Token God Mode endpoints',
-          example: 'nansen token screener --chain solana --timeframe 24h --smart-money --include-stablecoins=false'
+          example: 'nansen token screener --chain solana --timeframe 24h --smart-money --include-stablecoins false'
         })
       };
 
