@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.21.0
+
+### Minor Changes
+
+- [#315](https://github.com/nansen-ai/nansen-cli/pull/315) [`908fa0c`](https://github.com/nansen-ai/nansen-cli/commit/908fa0ccdf18cb79b7efb58b9b31f66e0afedff6) Thanks [@TimNooren](https://github.com/TimNooren)! - Add `nansen agent` command for the Nansen AI research agent with fast/expert modes, SSE streaming, conversation continuation, and JSON output.
+
+### Patch Changes
+
+- [#326](https://github.com/nansen-ai/nansen-cli/pull/326) [`1532ba4`](https://github.com/nansen-ai/nansen-cli/commit/1532ba420174ed7635a42641f0c1a2802077fdc0) Thanks [@TimNooren](https://github.com/TimNooren)! - Show API credit cost in research subcommand help text (fetched from OpenAPI spec, cached 24h).
+
+- [#330](https://github.com/nansen-ai/nansen-cli/pull/330) [`a6b9b8f`](https://github.com/nansen-ai/nansen-cli/commit/a6b9b8fc7d291ee7375941bb275c224939338161) Thanks [@0xlaveen](https://github.com/0xlaveen)! - Suppress misleading PASSWORD_REQUIRED error when `--provider privy` is specified. Privy wallets don't need a password — only the Privy-specific credentials error is now shown when PRIVY_APP_ID/PRIVY_APP_SECRET are missing.
+
+- [#329](https://github.com/nansen-ai/nansen-cli/pull/329) [`f047833`](https://github.com/nansen-ai/nansen-cli/commit/f047833c7e6fb55cb713e0b69f82282fe87d4566) Thanks [@TimNooren](https://github.com/TimNooren)! - Limit deprecation warnings and update notices to help output only, keeping stdout/stderr clean for programmatic usage.
+
+- [#332](https://github.com/nansen-ai/nansen-cli/pull/332) [`e9b6de1`](https://github.com/nansen-ai/nansen-cli/commit/e9b6de17fdba3f46733dff026c2495c095bfbf35) Thanks [@0xlaveen](https://github.com/0xlaveen)! - docs: add trading examples and Privy wallet setup to README
+
 ## 1.20.0
 
 ### Minor Changes
