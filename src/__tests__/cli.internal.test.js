@@ -1775,14 +1775,14 @@ describe('buildCommands', () => {
       );
     });
 
-    it('should set exclude_stablecoins filter from --exclude-stablecoins flag', async () => {
+    it('should set include_stablecoins=false filter from --exclude-stablecoins flag', async () => {
       const mockApi = {
         tokenScreener: vi.fn().mockResolvedValue({ data: [] })
       };
       await commands['token'](['screener'], mockApi, { 'exclude-stablecoins': true }, {});
 
       expect(mockApi.tokenScreener).toHaveBeenCalledWith(
-        expect.objectContaining({ filters: { exclude_stablecoins: true } })
+        expect.objectContaining({ filters: { include_stablecoins: false } })
       );
     });
 

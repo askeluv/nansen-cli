@@ -1104,17 +1104,17 @@ describe('NansenAPI', () => {
         }
       });
 
-      it('should pass exclude_stablecoins filter when set', async () => {
+      it('should pass include_stablecoins filter when set to false', async () => {
         setupMock(MOCK_RESPONSES.tokenScreener);
 
         await api.tokenScreener({
           chains: ['solana'],
           timeframe: '24h',
-          filters: { exclude_stablecoins: true }
+          filters: { include_stablecoins: false }
         });
 
         const body = expectFetchCalledWith('/api/v1/token-screener');
-        expect(body.filters.exclude_stablecoins).toBe(true);
+        expect(body.filters.include_stablecoins).toBe(false);
       });
     });
 

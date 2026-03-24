@@ -1207,7 +1207,7 @@ export function buildCommands(deps = {}) {
       // Convenience filter to exclude stablecoins from screener results
       const excludeStablecoins = options['exclude-stablecoins'] || flags['exclude-stablecoins'] || false;
       if (excludeStablecoins) {
-        filters.exclude_stablecoins = true;
+        filters.include_stablecoins = false;
       }
 
       const handlers = {
