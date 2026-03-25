@@ -21,8 +21,8 @@ import { CHAIN_RPCS } from './rpc-urls.js';
 const TRADING_API_URL = process.env.NANSEN_TRADING_API_URL || 'https://trading-api.nansen.ai';
 
 const CHAIN_MAP = {
-  solana:   { index: '501', type: 'solana', chainId: 501,  name: 'Solana',   explorer: 'https://solscan.io/tx/' },
-  base:     { index: '8453', type: 'evm',   chainId: 8453, name: 'Base',     explorer: 'https://basescan.org/tx/' },
+  solana:   { index: '501', type: 'solana', chainId: 501,  name: 'Solana',   explorer: 'https://solscan.io/tx/', lifiChainId: '1151111081099710' },
+  base:     { index: '8453', type: 'evm',   chainId: 8453, name: 'Base',     explorer: 'https://basescan.org/tx/', lifiChainId: '8453' },
 };
 
 // Extend when adding new EVM chains (e.g. arbitrum WETH, polygon WMATIC)
@@ -213,8 +213,8 @@ export async function getBridgeStatus(txHash, fromChain, toChain) {
   const toConfig = resolveChain(toChain);
   const url = new URL('/bridge/status', TRADING_API_URL);
   url.searchParams.set('txHash', txHash);
-  url.searchParams.set('fromChain', fromConfig.index);
-  url.searchParams.set('toChain', toConfig.index);
+  url.searchParams.set('fromChain', fromConfig.lifiChainId || fromConfig.index);
+  url.searchParams.set('toChain', toConfig.lifiChainId || toConfig.index);
 
   const res = await fetch(url.toString(), { headers: { 'Accept': 'application/json' } });
   const text = await res.text();

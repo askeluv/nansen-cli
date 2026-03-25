@@ -1848,7 +1848,7 @@ describe('getBridgeStatus', () => {
     const callUrl = new URL(global.fetch.mock.calls[0][0]);
     expect(callUrl.searchParams.get('txHash')).toBe('0xabc');
     expect(callUrl.searchParams.get('fromChain')).toBe('8453');
-    expect(callUrl.searchParams.get('toChain')).toBe('501');
+    expect(callUrl.searchParams.get('toChain')).toBe('1151111081099710');
 
     global.fetch = origFetch;
   });
