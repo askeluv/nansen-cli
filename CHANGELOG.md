@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.22.0
+
+### Minor Changes
+
+- [#336](https://github.com/nansen-ai/nansen-cli/pull/336) [`c3b1fbd`](https://github.com/nansen-ai/nansen-cli/commit/c3b1fbdee46c15326a1656bf27a314f6c55dddf8) Thanks [@kome12](https://github.com/kome12)! - Add --label option to `token flows` command to filter by holder segment (top_100_holders, smart_money, public_figure, whale, exchange).
+
+- [#334](https://github.com/nansen-ai/nansen-cli/pull/334) [`83244c6`](https://github.com/nansen-ai/nansen-cli/commit/83244c658d4ece2072dea0c6ed405a088c98aa4f) Thanks [@kome12](https://github.com/kome12)! - Add `--include-stablecoins` flag to `token screener` command. Pass `--include-stablecoins false` to exclude stablecoins from screener results (API default is `true`). Supports combined usage with `--smart-money`.
+
+- [#339](https://github.com/nansen-ai/nansen-cli/pull/339) [`27ebcfc`](https://github.com/nansen-ai/nansen-cli/commit/27ebcfc2a3afd836db595df6d5a2a5f9242b624c) Thanks [@TimNooren](https://github.com/TimNooren)! - Add --amount-unit token flag to trade quote for human-readable amounts
+
 ## 1.21.0
 
 ### Minor Changes
