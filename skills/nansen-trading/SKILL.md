@@ -58,9 +58,16 @@ nansen trade execute --quote "$quote_id"
 | ETH | Base | `0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee` |
 | USDC | Base | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` |
 
-## Amounts are in base units — NEVER USD
+## Amounts
 
-`--amount` accepts **integer base units only** (lamports, wei, etc). It is never a USD value.
+By default, `--amount` accepts **integer base units** (lamports, wei, etc). Use `--amount-unit token` to specify human-readable token amounts instead — the CLI resolves decimals locally and sends base units to the API.
+
+```bash
+# Base units (default)
+nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000
+# Token units (0.5 SOL = 500000000 lamports, resolved automatically)
+nansen trade quote --chain solana --from SOL --to USDC --amount 0.5 --amount-unit token
+```
 
 | Token | Decimals | 1 token = |
 |-------|----------|-----------|
@@ -68,7 +75,7 @@ nansen trade execute --quote "$quote_id"
 | ETH | 18 | `1000000000000000000` |
 | USDC | 6 | `1000000` |
 
-If the user says "$20 worth of X", you must convert USD → token amount → base units. For example, to buy $20 of SOL at $150/SOL: $20 ÷ $150 = 0.1333 SOL = 133,300,000 lamports → `--amount 133300000`. Use a price lookup (e.g. `nansen research token info`) to get the current price first.
+If the user says "$20 worth of X", you must convert USD → token amount, then either pass base units or use `--amount-unit token`. For example, to buy $20 of SOL at $150/SOL: $20 ÷ $150 = 0.1333 SOL → `--amount 0.1333 --amount-unit token`. Use a price lookup (e.g. `nansen research token info`) to get the current price first.
 
 ## Flags
 
@@ -77,7 +84,8 @@ If the user says "$20 worth of X", you must convert USD → token amount → bas
 | `--chain` | `solana` or `base` |
 | `--from` | Source token (symbol or address) |
 | `--to` | Destination token (symbol or address) |
-| `--amount` | Amount in base units (integer) |
+| `--amount` | Amount in base units (integer), or token units with `--amount-unit token` |
+| `--amount-unit` | Set to `token` to specify amount in token units (e.g. 0.5 SOL) |
 | `--wallet` | Wallet name (default: default wallet) |
 | `--slippage` | Slippage tolerance as decimal (e.g. 0.03) |
 | `--quote` | Quote ID for execute |

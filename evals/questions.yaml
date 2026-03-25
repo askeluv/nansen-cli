@@ -276,6 +276,12 @@ questions:
       dollar amounts as base units.
     skill: nansen-trading
 
+  # NOTE: The evals below have no rejected_fragments because both base-unit
+  # conversion (--amount 500000000) and --amount-unit token (--amount 0.5
+  # --amount-unit token) are valid. The eval runner uses substring matching
+  # for rejected_fragments, so patterns like "--amount 0.5 " would also
+  # match the valid "--amount 0.5 --amount-unit token" form.
+
   - id: trade_decimal_amount_eth
     question: Swap 0.1 ETH for USDC on Base
     expected_commands:
@@ -287,13 +293,10 @@ questions:
       - "--from"
       - "--to"
       - "--amount"
-      - "100000000000000000"
-    rejected_fragments:
-      - "--amount 0.1"
-      - "--amount \"0.1\""
     notes: >
-      0.1 ETH = 100000000000000000 wei (1e17). The CLI rejects decimals, but
-      the agent should proactively convert to base units without trying decimals.
+      0.1 ETH = 100000000000000000 wei (1e17). Two valid approaches:
+      (a) --amount 100000000000000000 (manual conversion to base units), or
+      (b) --amount 0.1 --amount-unit token (CLI resolves decimals locally).
     skill: nansen-trading
 
   - id: trade_decimal_amount_sol
@@ -309,13 +312,10 @@ questions:
       - "--to"
       - "USDC"
       - "--amount"
-      - "500000000"
-    rejected_fragments:
-      - "--amount 0.5"
-      - "--amount \"0.5\""
     notes: >
-      0.5 SOL = 500000000 lamports (5e8). Agent must convert fractional token
-      amounts to base units.
+      0.5 SOL = 500000000 lamports (5e8). Two valid approaches:
+      (a) --amount 500000000 (manual conversion to base units), or
+      (b) --amount 0.5 --amount-unit token (CLI resolves decimals locally).
     skill: nansen-trading
 
   # Trading: round whole-token amount must convert to base units
@@ -328,17 +328,14 @@ questions:
       - "--chain"
       - "base"
       - "--amount"
-      - "5000000000000000000"
-    rejected_fragments:
-      - "--amount 5 "
-      - "--amount 5\n"
-      - "--amount \"5\""
     notes: >
-      5 ETH = 5e18 wei. A round integer like 5 is the most common mistake —
-      the agent must never pass it raw.
+      5 ETH = 5e18 wei. Two valid approaches:
+      (a) --amount 5000000000000000000 (manual conversion), or
+      (b) --amount 5 --amount-unit token (CLI resolves decimals locally).
+      Passing --amount 5 without --amount-unit token sends 5 wei (~$0).
     skill: nansen-trading
 
-  # Trading: USDC spend amount must convert to base units (6 decimals)
+  # Trading: USDC spend amount
   - id: trade_usdc_spend
     question: Spend 100 USDC to buy SOL on Solana
     expected_commands:
@@ -352,14 +349,10 @@ questions:
       - "--to"
       - "SOL"
       - "--amount"
-      - "100000000"
-    rejected_fragments:
-      - "--amount 100 "
-      - "--amount 100\n"
-      - "--amount \"100\""
     notes: >
-      100 USDC = 100,000,000 (1e8). Agent must know USDC has 6 decimals and
-      convert accordingly. Passing 100 sends 0.0001 USDC.
+      100 USDC = 100,000,000 (1e8). Two valid approaches:
+      (a) --amount 100000000 (manual conversion), or
+      (b) --amount 100 --amount-unit token (CLI resolves decimals locally).
     skill: nansen-trading
 
   # Trading: small USDC amount for meme token (common agent pattern)
@@ -375,14 +368,10 @@ questions:
       - "USDC"
       - "--to"
       - "--amount"
-      - "20000000"
-    rejected_fragments:
-      - "--amount 20 "
-      - "--amount 20\n"
-      - "--amount \"20\""
     notes: >
-      20 USDC = 20,000,000 (2e7). This mirrors the exact failure from the
-      user report — small round number that looks correct but is off by 1e6.
+      20 USDC = 20,000,000 (2e7). Two valid approaches:
+      (a) --amount 20000000 (manual conversion), or
+      (b) --amount 20 --amount-unit token (CLI resolves decimals locally).
     skill: nansen-trading
 
   # Trading: whole SOL amount (9 decimals)
@@ -399,14 +388,10 @@ questions:
       - "--to"
       - "USDC"
       - "--amount"
-      - "2000000000"
-    rejected_fragments:
-      - "--amount 2 "
-      - "--amount 2\n"
-      - "--amount \"2\""
     notes: >
-      2 SOL = 2,000,000,000 lamports (2e9). Round SOL amounts are common
-      and must be converted.
+      2 SOL = 2,000,000,000 lamports (2e9). Two valid approaches:
+      (a) --amount 2000000000 (manual conversion), or
+      (b) --amount 2 --amount-unit token (CLI resolves decimals locally).
     skill: nansen-trading
 
   # Trading: must use `nansen trade`, not `nansen agent` (agent can't execute trades)

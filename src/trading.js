@@ -683,6 +683,85 @@ export function getWrappedNativeFromWarning(tokenAddress, chain) {
   return null;
 }
 
+// ============= Token Decimal Resolution =============
+
+// Hardcoded decimals for well-known tokens — avoids RPC calls in the common case.
+const KNOWN_DECIMALS = {
+  // Solana
+  'So11111111111111111111111111111111111111112': 9,   // SOL/WSOL
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': 6, // USDC
+  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB': 6,  // USDT
+  // Base (EVM) — lowercase for case-insensitive matching
+  '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee': 18, // ETH native
+  '0x4200000000000000000000000000000000000006': 18, // WETH
+  '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913': 6, // USDC
+  '0xfde4c96c8593536e31f229ea8f37b2ada2699bb2': 6, // USDT
+};
+
+/**
+ * Resolve the number of decimals for a token.
+ * Checks a hardcoded map first, then falls back to an RPC call.
+ * Solana: getAccountInfo with jsonParsed encoding.
+ * EVM: eth_call to decimals() selector 0x313ce567.
+ */
+export async function resolveTokenDecimals(tokenAddress, chainName) {
+  // Normalise for map lookup (EVM addresses are case-insensitive)
+  const key = tokenAddress.startsWith('0x') ? tokenAddress.toLowerCase() : tokenAddress;
+  if (KNOWN_DECIMALS[key] !== undefined) return KNOWN_DECIMALS[key];
+
+  const chain = chainName.toLowerCase();
+  const chainConfig = CHAIN_MAP[chain];
+  if (!chainConfig) throw new Error(`Unknown chain: ${chain}`);
+
+  if (chainConfig.type === 'solana') {
+    const rpcUrl = CHAIN_RPCS.solana;
+    const res = await fetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getAccountInfo', params: [tokenAddress, { encoding: 'jsonParsed' }] }),
+    });
+    const body = await res.json();
+    const decimals = body.result?.value?.data?.parsed?.info?.decimals;
+    if (decimals === undefined) throw new Error(`Could not resolve decimals for Solana token ${tokenAddress}`);
+    return decimals;
+  }
+
+  // EVM — eth_call to decimals()
+  const result = await evmRpcCall(chain, 'eth_call', [{ to: tokenAddress, data: '0x313ce567' }, 'latest']);
+  const decimals = parseInt(result, 16);
+  if (isNaN(decimals) || decimals > 255) throw new Error(`Could not resolve decimals for EVM token ${tokenAddress}`);
+  return decimals;
+}
+
+/**
+ * Convert a human-readable token amount to base units using string math.
+ * Avoids floating-point precision issues by operating on digit strings.
+ * Example: convertToBaseUnits('0.5', 9) => '500000000'
+ */
+export function convertToBaseUnits(amount, decimals) {
+  const str = String(amount);
+  if (!/^\d+(\.\d+)?$/.test(str)) {
+    throw new Error(`Invalid amount: "${str}". Must be a non-negative number (e.g. "0.5", "100").`);
+  }
+  const dotIndex = str.indexOf('.');
+  if (dotIndex === -1) {
+    // Whole number — append zeros and strip leading zeros
+    const raw = str + '0'.repeat(decimals);
+    return raw.replace(/^0+/, '') || '0';
+  }
+  const whole = str.slice(0, dotIndex);
+  let frac = str.slice(dotIndex + 1);
+  if (frac.length > decimals) {
+    // Truncate excess fractional digits
+    frac = frac.slice(0, decimals);
+  } else {
+    frac = frac.padEnd(decimals, '0');
+  }
+  // Strip leading zeros from the combined result
+  const raw = (whole + frac).replace(/^0+/, '') || '0';
+  return raw;
+}
+
 /**
  * Check if amount contains a decimal point (i.e. not in base units).
  * Returns an error string if invalid, or null if OK. Pure function.
@@ -690,8 +769,12 @@ export function getWrappedNativeFromWarning(tokenAddress, chain) {
 export function validateBaseUnitAmount(amount) {
   if (!amount) return null;
   const str = String(amount);
+  if (str.startsWith('-')) {
+    return 'Amount cannot be negative. Got: ' + str;
+  }
   if (str.includes('.')) {
-    return 'Amount must be in base units (integer), not token units. ' +
+    return 'Amount must be in base units (integer). ' +
+      'Use --amount-unit token to specify token amounts (e.g. --amount 0.5 --amount-unit token). ' +
       'Examples: 1000000000 lamports = 1 SOL, 1000000000000000000 wei = 1 ETH, ' +
       '1000000 = 1 USDC. Got: ' + str;
   }
@@ -745,6 +828,7 @@ export function buildTradingCommands(deps = {}) {
       const autoSlippage = flags['auto-slippage'] || flags.autoSlippage;
       const maxAutoSlippage = options['max-auto-slippage'];
       const swapMode = options['swap-mode'] || 'exactIn';
+      const amountUnit = options['amount-unit'];
 
       if (!chain || !from || !to || !amount) {
         log(`
@@ -760,6 +844,7 @@ OPTIONS:
   --from <symbol|address>   Input token (symbol like SOL, USDC or address)
   --to <symbol|address>     Output token (symbol like USDC, ETH or address)
   --amount <units>          Amount in BASE UNITS (e.g. lamports, wei)
+  --amount-unit <unit>      "token" to specify amount in token units (e.g. 0.5 SOL)
   --wallet <name>           Wallet name (default: default wallet). Use "walletconnect" or "wc" for WalletConnect.
   --slippage <pct>          Slippage as decimal (e.g. 0.03 for 3%). Default: 0.03
   --auto-slippage           Enable auto slippage calculation
@@ -768,6 +853,7 @@ OPTIONS:
 
 EXAMPLES:
   nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000
+  nansen trade quote --chain solana --from SOL --to USDC --amount 0.5 --amount-unit token
   nansen trade quote --chain base --from ETH --to USDC --amount 1000000000000000000
   nansen trade quote --chain solana --from So11111111111111111111111111111111111111112 --to EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v --amount 1000000000
 `);
@@ -775,11 +861,32 @@ EXAMPLES:
         return;
       }
 
-      const amountError = validateBaseUnitAmount(amount);
-      if (amountError) {
-        log(`Error: ${amountError}`);
+      // Validate --amount-unit if provided
+      if (amountUnit && amountUnit !== 'token' && amountUnit !== 'base') {
+        log(`Error: Unknown --amount-unit "${amountUnit}". Supported values: token, base`);
         exit(1);
         return;
+      }
+
+      // When --amount-unit token is used, resolve decimals and convert to base units.
+      // Otherwise, validate that the amount is already in base units (integer).
+      let resolvedAmount = amount;
+      if (amountUnit === 'token') {
+        try {
+          const decimals = await resolveTokenDecimals(from, chain);
+          resolvedAmount = convertToBaseUnits(amount, decimals);
+        } catch (err) {
+          log(`Error resolving token decimals: ${err.message}`);
+          exit(1);
+          return;
+        }
+      } else {
+        const amountError = validateBaseUnitAmount(amount);
+        if (amountError) {
+          log(`Error: ${amountError}`);
+          exit(1);
+          return;
+        }
       }
 
       try {
@@ -837,7 +944,7 @@ EXAMPLES:
           chainIndex: chainConfig.index,
           fromTokenAddress: from,
           toTokenAddress: to,
-          amount,
+          amount: resolvedAmount,
           userWalletAddress: walletAddress,
         };
         if (slippage) params.slippagePercent = slippage;

@@ -28,6 +28,8 @@ import {
   getWrappedNativeFromWarning,
   validateBaseUnitAmount,
   resolveTokenAddress,
+  resolveTokenDecimals,
+  convertToBaseUnits,
   formatQuote,
   simulateEvmCall,
 } from '../trading.js';
@@ -1317,6 +1319,11 @@ describe('validateBaseUnitAmount', () => {
   it('should return null for non-numeric strings (let API handle)', () => {
     expect(validateBaseUnitAmount('abc')).toBeNull();
   });
+
+  it('should return error for negative amounts', () => {
+    const result = validateBaseUnitAmount('-100');
+    expect(result).toContain('negative');
+  });
 });
 
 describe('quote handler rejects decimal amounts before API call', () => {
@@ -1333,6 +1340,180 @@ describe('quote handler rejects decimal amounts before API call', () => {
 
     await cmds.quote([], null, {}, {
       chain: 'solana', from: 'So111', to: 'EPjFW', amount: '0.005',
+    });
+
+    expect(exitCalled).toBe(true);
+    expect(logs.some(l => l.includes('base units'))).toBe(true);
+    expect(global.fetch).not.toHaveBeenCalled();
+
+    global.fetch = origFetch;
+  });
+});
+
+// ============= Token Decimal Resolution =============
+
+describe('resolveTokenDecimals', () => {
+  it('should return hardcoded decimals for known Solana tokens', async () => {
+    expect(await resolveTokenDecimals('So11111111111111111111111111111111111111112', 'solana')).toBe(9);
+    expect(await resolveTokenDecimals('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', 'solana')).toBe(6);
+    expect(await resolveTokenDecimals('Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', 'solana')).toBe(6);
+  });
+
+  it('should return hardcoded decimals for known EVM tokens (case-insensitive)', async () => {
+    expect(await resolveTokenDecimals('0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', 'base')).toBe(18);
+    expect(await resolveTokenDecimals('0xEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE', 'base')).toBe(18);
+    expect(await resolveTokenDecimals('0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', 'base')).toBe(6);
+  });
+
+  it('should fall back to Solana RPC for unknown tokens', async () => {
+    const origFetch = global.fetch;
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        result: { value: { data: { parsed: { info: { decimals: 8 } } }, owner: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' } },
+      }),
+    });
+
+    const decimals = await resolveTokenDecimals('UnknownMint111111111111111111111111111111111', 'solana');
+    expect(decimals).toBe(8);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+
+    global.fetch = origFetch;
+  });
+
+  it('should fall back to EVM RPC for unknown tokens', async () => {
+    const origFetch = global.fetch;
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x0000000000000000000000000000000000000000000000000000000000000012' }),
+    });
+
+    const decimals = await resolveTokenDecimals('0x1234567890abcdef1234567890abcdef12345678', 'base');
+    expect(decimals).toBe(18); // 0x12 = 18
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+
+    global.fetch = origFetch;
+  });
+
+  it('should throw for unknown chain', async () => {
+    await expect(resolveTokenDecimals('0xabc', 'polygon')).rejects.toThrow('Unknown chain');
+  });
+});
+
+describe('convertToBaseUnits', () => {
+  it('should convert decimal amounts correctly', () => {
+    expect(convertToBaseUnits('0.5', 9)).toBe('500000000');
+    expect(convertToBaseUnits('1.5', 6)).toBe('1500000');
+    expect(convertToBaseUnits('0.1', 18)).toBe('100000000000000000');
+  });
+
+  it('should handle whole numbers', () => {
+    expect(convertToBaseUnits('2', 9)).toBe('2000000000');
+    expect(convertToBaseUnits('5', 18)).toBe('5000000000000000000');
+    expect(convertToBaseUnits('100', 6)).toBe('100000000');
+  });
+
+  it('should handle very small amounts without precision loss', () => {
+    expect(convertToBaseUnits('0.000000001', 9)).toBe('1');
+    expect(convertToBaseUnits('0.000001', 6)).toBe('1');
+  });
+
+  it('should handle zero', () => {
+    expect(convertToBaseUnits('0', 9)).toBe('0');
+    expect(convertToBaseUnits('0.0', 9)).toBe('0');
+  });
+
+  it('should truncate excess fractional digits', () => {
+    expect(convertToBaseUnits('1.1234567890', 6)).toBe('1123456');
+  });
+
+  it('should reject invalid amount strings', () => {
+    expect(() => convertToBaseUnits('abc', 9)).toThrow('Invalid amount');
+    expect(() => convertToBaseUnits('1.2.3', 9)).toThrow('Invalid amount');
+    expect(() => convertToBaseUnits('', 9)).toThrow('Invalid amount');
+    expect(() => convertToBaseUnits('-5', 9)).toThrow('Invalid amount');
+    expect(() => convertToBaseUnits('-0.5', 9)).toThrow('Invalid amount');
+  });
+});
+
+describe('quote command with --amount-unit token', () => {
+  it('should convert token amount to base units before API call', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const origFetch = global.fetch;
+    const fetchCalls = [];
+    global.fetch = vi.fn().mockImplementation(async (url, opts) => {
+      fetchCalls.push({ url: url.toString(), opts });
+      return {
+        ok: true,
+        text: async () => JSON.stringify({
+          success: true,
+          quotes: [{ aggregator: 'test', inAmount: '500000000', outAmount: '1000000', inputMint: 'So111', outputMint: 'EPjFW' }],
+        }),
+      };
+    });
+
+    const logs = [];
+    const cmds = buildTradingCommands({
+      log: (msg) => logs.push(msg),
+      exit: () => {},
+    });
+
+    await cmds.quote([], null, {}, {
+      chain: 'solana',
+      from: 'SOL',
+      to: 'USDC',
+      amount: '0.5',
+      'amount-unit': 'token',
+    });
+
+    // The API call should contain the converted amount (500000000 lamports)
+    const quoteCall = fetchCalls.find(c => c.url.includes('quote'));
+    expect(quoteCall).toBeDefined();
+    expect(quoteCall.url).toContain('amount=500000000');
+    // Should NOT contain amountUnit in URL (API always gets raw units)
+    expect(quoteCall.url).not.toContain('amountUnit');
+
+    global.fetch = origFetch;
+    delete process.env.NANSEN_WALLET_PASSWORD;
+  });
+
+  it('should reject unknown --amount-unit values', async () => {
+    const origFetch = global.fetch;
+    global.fetch = vi.fn();
+
+    const logs = [];
+    let exitCalled = false;
+    const cmds = buildTradingCommands({
+      log: (msg) => logs.push(msg),
+      exit: () => { exitCalled = true; },
+    });
+
+    await cmds.quote([], null, {}, {
+      chain: 'solana', from: 'SOL', to: 'USDC', amount: '0.5', 'amount-unit': 'foo',
+    });
+
+    expect(exitCalled).toBe(true);
+    expect(logs.some(l => l.includes('Supported values: token, base'))).toBe(true);
+    expect(global.fetch).not.toHaveBeenCalled();
+
+    global.fetch = origFetch;
+  });
+
+  it('should still validate base units when --amount-unit is not set', async () => {
+    const origFetch = global.fetch;
+    global.fetch = vi.fn();
+
+    const logs = [];
+    let exitCalled = false;
+    const cmds = buildTradingCommands({
+      log: (msg) => logs.push(msg),
+      exit: () => { exitCalled = true; },
+    });
+
+    await cmds.quote([], null, {}, {
+      chain: 'solana', from: 'SOL', to: 'USDC', amount: '0.5',
     });
 
     expect(exitCalled).toBe(true);

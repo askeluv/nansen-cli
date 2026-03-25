@@ -762,7 +762,11 @@
             "amount": {
               "type": "string",
               "required": true,
-              "description": "Amount to swap"
+              "description": "Amount to swap (base units by default, or token units with --amount-unit token)"
+            },
+            "amount-unit": {
+              "type": "string",
+              "description": "\"token\" to specify amount in token units (e.g. 0.5 SOL), or \"base\" for base units (default). Decimals are resolved locally and the API always receives base units."
             },
             "wallet": {
               "type": "string",
