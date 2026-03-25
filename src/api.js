@@ -295,11 +295,12 @@ export function validateAddress(address, chain = 'ethereum') {
 
 /**
  * Normalize EVM address to lowercase for API compatibility.
- * The Nansen API is case-sensitive for EVM addresses (checksummed addresses
- * return empty results). See: https://github.com/nansen-ai/nansen-api/issues/993
+ * The API should handle case-insensitive addresses server-side, but this is
+ * a defensive client-side measure since checksummed addresses currently
+ * return empty results.
  */
 export function normalizeAddress(address, chain = 'ethereum') {
-  if (address && typeof address === 'string' && EVM_CHAINS.includes(chain)) {
+  if (address && typeof address === 'string' && address.startsWith('0x') && EVM_CHAINS.includes(chain)) {
     return address.toLowerCase();
   }
   return address;

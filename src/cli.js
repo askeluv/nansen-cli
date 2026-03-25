@@ -1185,9 +1185,9 @@ export function buildCommands(deps = {}) {
 
     'token': async (args, apiInstance, flags, options) => {
       const subcommand = args[0] || 'help';
-      const tokenAddress = normalizeAddress(options.token || options['token-address'], options.chain || 'solana');
-      const tokenSymbol = options.symbol || options['token-symbol'];
       const chain = options.chain || 'solana';
+      const tokenAddress = normalizeAddress(options.token || options['token-address'], chain);
+      const tokenSymbol = options.symbol || options['token-symbol'];
       const chains = options.chains || [chain];
       const timeframe = options.timeframe || '24h';
       const filters = options.filters || {};
