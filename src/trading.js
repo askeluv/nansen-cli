@@ -713,6 +713,18 @@ export async function resolveTokenDecimals(tokenAddress, chainName) {
   const chainConfig = CHAIN_MAP[chain];
   if (!chainConfig) throw new Error(`Unknown chain: ${chain}`);
 
+  // Validate address format before making RPC calls.
+  // A bare symbol like "SOL" that didn't resolve means it's not recognized on this chain.
+  if (chainConfig.type === 'solana') {
+    if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(tokenAddress)) {
+      throw new Error(`"${tokenAddress}" is not a recognized token on ${chainName}. Use a valid Solana address (base58, 32-44 chars).`);
+    }
+  } else {
+    if (!/^0x[0-9a-fA-F]{40}$/.test(tokenAddress)) {
+      throw new Error(`"${tokenAddress}" is not a recognized token on ${chainName}. Use a valid EVM address (0x + 40 hex chars).`);
+    }
+  }
+
   if (chainConfig.type === 'solana') {
     const rpcUrl = CHAIN_RPCS.solana;
     const res = await fetch(rpcUrl, {
@@ -752,7 +764,11 @@ export function convertToBaseUnits(amount, decimals) {
   const whole = str.slice(0, dotIndex);
   let frac = str.slice(dotIndex + 1);
   if (frac.length > decimals) {
-    // Truncate excess fractional digits
+    // Reject if meaningful (non-zero) digits would be lost
+    const excess = frac.slice(decimals);
+    if (/[1-9]/.test(excess)) {
+      throw new Error(`Amount "${str}" has more fractional digits than the token supports (${decimals} decimals). The smallest unit is ${decimals === 0 ? '1 token' : '0.' + '0'.repeat(decimals - 1) + '1'}.`);
+    }
     frac = frac.slice(0, decimals);
   } else {
     frac = frac.padEnd(decimals, '0');
@@ -873,7 +889,8 @@ EXAMPLES:
       let resolvedAmount = amount;
       if (amountUnit === 'token') {
         try {
-          const decimals = await resolveTokenDecimals(from, chain);
+          const tokenForDecimals = swapMode === 'exactOut' ? to : from;
+          const decimals = await resolveTokenDecimals(tokenForDecimals, chain);
           resolvedAmount = convertToBaseUnits(amount, decimals);
         } catch (err) {
           log(`Error resolving token decimals: ${err.message}`);

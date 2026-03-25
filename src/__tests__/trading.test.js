@@ -1398,6 +1398,18 @@ describe('resolveTokenDecimals', () => {
   it('should throw for unknown chain', async () => {
     await expect(resolveTokenDecimals('0xabc', 'polygon')).rejects.toThrow('Unknown chain');
   });
+
+  it('should reject bare symbol on EVM chain', async () => {
+    await expect(resolveTokenDecimals('SOL', 'base')).rejects.toThrow('not a recognized token on base');
+  });
+
+  it('should reject EVM address on Solana chain', async () => {
+    await expect(resolveTokenDecimals('0x1234567890abcdef1234567890abcdef12345678', 'solana')).rejects.toThrow('not a recognized token on solana');
+  });
+
+  it('should reject bare symbol on Solana chain', async () => {
+    await expect(resolveTokenDecimals('ETH', 'solana')).rejects.toThrow('not a recognized token on solana');
+  });
 });
 
 describe('convertToBaseUnits', () => {
@@ -1423,8 +1435,14 @@ describe('convertToBaseUnits', () => {
     expect(convertToBaseUnits('0.0', 9)).toBe('0');
   });
 
-  it('should truncate excess fractional digits', () => {
-    expect(convertToBaseUnits('1.1234567890', 6)).toBe('1123456');
+  it('should ignore trailing zeros beyond token decimals', () => {
+    expect(convertToBaseUnits('1.12345600', 6)).toBe('1123456');
+  });
+
+  it('should reject amounts with meaningful excess fractional digits', () => {
+    expect(() => convertToBaseUnits('1.1234567890', 6)).toThrow('more fractional digits');
+    expect(() => convertToBaseUnits('1.5', 0)).toThrow('more fractional digits');
+    expect(() => convertToBaseUnits('0.001', 2)).toThrow('more fractional digits');
   });
 
   it('should reject invalid amount strings', () => {
@@ -1474,6 +1492,48 @@ describe('quote command with --amount-unit token', () => {
     expect(quoteCall.url).toContain('amount=500000000');
     // Should NOT contain amountUnit in URL (API always gets raw units)
     expect(quoteCall.url).not.toContain('amountUnit');
+
+    global.fetch = origFetch;
+    delete process.env.NANSEN_WALLET_PASSWORD;
+  });
+
+  it('should resolve decimals against --to token in exactOut mode', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const origFetch = global.fetch;
+    const fetchCalls = [];
+    global.fetch = vi.fn().mockImplementation(async (url, opts) => {
+      fetchCalls.push({ url: url.toString(), opts });
+      return {
+        ok: true,
+        text: async () => JSON.stringify({
+          success: true,
+          quotes: [{ aggregator: 'test', inAmount: '1000000', outAmount: '1000000', inputMint: 'So111', outputMint: 'EPjFW' }],
+        }),
+      };
+    });
+
+    const logs = [];
+    const cmds = buildTradingCommands({
+      log: (msg) => logs.push(msg),
+      exit: () => {},
+    });
+
+    // exactOut: "I want exactly 1 USDC out" — should resolve decimals against USDC (6), not SOL (9)
+    await cmds.quote([], null, {}, {
+      chain: 'solana',
+      from: 'SOL',
+      to: 'USDC',
+      amount: '1',
+      'amount-unit': 'token',
+      'swap-mode': 'exactOut',
+    });
+
+    const quoteCall = fetchCalls.find(c => c.url.includes('quote'));
+    expect(quoteCall).toBeDefined();
+    // 1 USDC = 1000000 (6 decimals), NOT 1000000000 (9 decimals from SOL)
+    expect(quoteCall.url).toContain('amount=1000000');
 
     global.fetch = origFetch;
     delete process.env.NANSEN_WALLET_PASSWORD;
