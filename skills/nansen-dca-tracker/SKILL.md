@@ -1,6 +1,6 @@
 ---
 name: nansen-dca-tracker
-description: "What tokens are whales dollar-cost averaging into? Jupiter DCA strategies by smart money and target token fundamentals."
+description: "Track whale dollar-cost averaging strategies on Solana via Nansen CLI. Shows smart money DCA positions, target token fundamentals, and flow intelligence. Use when the user asks about DCA activity, whale accumulation, smart money strategies, or token conviction signals."
 metadata:
   openclaw:
     requires:
