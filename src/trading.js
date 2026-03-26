@@ -250,7 +250,15 @@ export async function getBridgeStatus(txHash, fromChain, toChain) {
 export async function pollBridgeStatus(txHash, fromChain, toChain, { timeoutMs = 600000, pollMs = 10000, log = console.log } = {}) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const status = await getBridgeStatus(txHash, fromChain, toChain);
+    let status;
+    try {
+      status = await getBridgeStatus(txHash, fromChain, toChain);
+    } catch (err) {
+      // Transient errors (502, 503, network failures) — retry after poll interval.
+      log(`  Bridge: poll error (${err.status || err.code || 'unknown'}) — retrying...`);
+      await new Promise(r => setTimeout(r, pollMs));
+      continue;
+    }
     const sending = status.sending?.status || status.status || 'pending';
     const receiving = status.receiving?.status || 'pending';
     log(`  Bridge: ${sending} → ${receiving}`);

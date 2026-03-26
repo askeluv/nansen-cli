@@ -5,6 +5,6 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['src/**/*.e2e.test.js'],
-    testTimeout: 120000,
+    testTimeout: 720000, // 12 min — cross-chain bridges can take up to 10 min
   },
 });
