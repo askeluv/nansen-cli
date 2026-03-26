@@ -8,6 +8,7 @@ import { buildWalletCommands } from './wallet.js';
 import { buildTradingCommands } from './trading.js';
 import { formatAlertsTable, buildAlertsCommands } from './commands/alerts.js';
 import { buildAgentCommands } from './commands/agent.js';
+import { buildSignalsCommands } from './commands/signals.js';
 import { resolveAddress, isEnsName } from './ens.js';
 import fs from 'fs';
 import { getUpdateNotification, getUpgradeNotice, scheduleUpdateCheck } from './update-check.js';
@@ -1589,7 +1590,7 @@ export async function runCLI(rawArgs, deps = {}) {
     return '';
   };
 
-  const commands = { ...buildCommands(deps), ...buildWalletCommands(deps), ...buildTradingCommands(deps), ...buildAlertsCommands(deps), ...buildAgentCommands(deps), ...commandOverrides };
+  const commands = { ...buildCommands(deps), ...buildWalletCommands(deps), ...buildTradingCommands(deps), ...buildAlertsCommands(deps), ...buildAgentCommands(deps), ...buildSignalsCommands(deps), ...commandOverrides };
 
   if (flags.version || flags.v) {
     output(VERSION);
