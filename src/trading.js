@@ -115,9 +115,6 @@ export async function getQuote(params) {
   }
 
   const headers = { 'Accept': 'application/json' };
-  if (process.env.NANSEN_API_KEY) {
-    headers['Authorization'] = `Bearer ${process.env.NANSEN_API_KEY}`;
-  }
 
   const res = await fetch(url.toString(), { headers });
 
@@ -156,10 +153,6 @@ export async function executeTransaction(params, { retries = 2, retryDelayMs = 1
     'Content-Type': 'application/json',
     'Accept': 'application/json',
   };
-  if (process.env.NANSEN_API_KEY) {
-    headers['Authorization'] = `Bearer ${process.env.NANSEN_API_KEY}`;
-  }
-
   let lastError;
   for (let attempt = 0; attempt <= retries; attempt++) {
     if (attempt > 0) {
