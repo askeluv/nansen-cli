@@ -1240,7 +1240,8 @@ export function buildCommands(deps = {}) {
         'pnl': () => apiInstance.tokenPnlLeaderboard({ tokenAddress, chain, filters, orderBy, pagination, days }),
         'who-bought-sold': () => {
           const date = parseDateOption(options.date, days);
-          return apiInstance.tokenWhoBoughtSold({ tokenAddress, chain, filters, orderBy, pagination, days, date });
+          const buyOrSell = options['buy-or-sell'] || 'BUY';
+          return apiInstance.tokenWhoBoughtSold({ tokenAddress, chain, buyOrSell, filters, orderBy, pagination, days, date });
         },
         'flow-intelligence': () => apiInstance.tokenFlowIntelligence({ tokenAddress, chain, days }),
         'transfers': () => {

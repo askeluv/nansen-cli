@@ -1030,7 +1030,7 @@ export class NansenAPI {
   }
 
   async tokenWhoBoughtSold(params = {}) {
-    const { tokenAddress, chain = 'solana', filters = {}, orderBy, pagination, days = 30, date } = params;
+    const { tokenAddress, chain = 'solana', buyOrSell = 'BUY', filters = {}, orderBy, pagination, days = 30, date } = params;
     if (tokenAddress) {
       const validation = validateTokenAddress(tokenAddress, chain);
       if (!validation.valid) throw new NansenError(validation.error, validation.code);
@@ -1039,6 +1039,7 @@ export class NansenAPI {
     return this.request('/api/v1/tgm/who-bought-sold', {
       token_address: tokenAddress,
       chain,
+      buy_or_sell: buyOrSell,
       date: dateRange,
       filters,
       order_by: orderBy,

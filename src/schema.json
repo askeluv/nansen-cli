@@ -300,6 +300,11 @@
                 },
                 "days": {
                   "default": 30
+                },
+                "buy-or-sell": {
+                  "description": "Filter by buy or sell side",
+                  "enum": ["BUY", "SELL"],
+                  "default": "BUY"
                 }
               }
             },

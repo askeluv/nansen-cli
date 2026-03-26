@@ -1338,6 +1338,7 @@ describe('NansenAPI', () => {
         const body = expectFetchCalledWith('/api/v1/tgm/who-bought-sold');
         expect(body.token_address).toBe(TEST_DATA.solana.token);
         expect(body.chain).toBe('solana');
+        expect(body.buy_or_sell).toBe('BUY');
         expect(body.date).toBeDefined();
 
         expect(result.buyers).toBeInstanceOf(Array);
@@ -1360,6 +1361,19 @@ describe('NansenAPI', () => {
         const to = new Date(body.date.to);
         const diffDays = Math.round((to - from) / (1000 * 60 * 60 * 24));
         expect(diffDays).toBe(14);
+      });
+
+      it('should pass buyOrSell parameter to request body', async () => {
+        setupMock(MOCK_RESPONSES.tokenWhoBoughtSold);
+
+        await api.tokenWhoBoughtSold({
+          tokenAddress: TEST_DATA.solana.token,
+          chain: 'solana',
+          buyOrSell: 'SELL'
+        });
+
+        const body = expectFetchCalledWith('/api/v1/tgm/who-bought-sold');
+        expect(body.buy_or_sell).toBe('SELL');
       });
     });
 

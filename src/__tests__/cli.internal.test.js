@@ -1897,6 +1897,28 @@ describe('buildCommands', () => {
       );
     });
 
+    it('should pass buy-or-sell to who-bought-sold handler', async () => {
+      const mockApi = {
+        tokenWhoBoughtSold: vi.fn().mockResolvedValue({ data: [] })
+      };
+      await commands['token'](['who-bought-sold'], mockApi, {}, { token: '0xabc', 'buy-or-sell': 'SELL' });
+
+      expect(mockApi.tokenWhoBoughtSold).toHaveBeenCalledWith(
+        expect.objectContaining({ buyOrSell: 'SELL' })
+      );
+    });
+
+    it('should default buy-or-sell to BUY in who-bought-sold handler', async () => {
+      const mockApi = {
+        tokenWhoBoughtSold: vi.fn().mockResolvedValue({ data: [] })
+      };
+      await commands['token'](['who-bought-sold'], mockApi, {}, { token: '0xabc' });
+
+      expect(mockApi.tokenWhoBoughtSold).toHaveBeenCalledWith(
+        expect.objectContaining({ buyOrSell: 'BUY' })
+      );
+    });
+
     it('should pass days to flow-intelligence handler', async () => {
       const mockApi = {
         tokenFlowIntelligence: vi.fn().mockResolvedValue({ data: [] })
