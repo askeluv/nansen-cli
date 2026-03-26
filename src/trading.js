@@ -878,6 +878,16 @@ EXAMPLES:
         return;
       }
 
+      // Static input validation — catches common agent errors (wrong addresses,
+      // same-token swaps, bad amounts) before any network or wallet call.
+      try {
+        validateQuoteInput({ chain, from, to, amount });
+      } catch (validationErr) {
+        log(`Error: ${validationErr.message}`);
+        exit(1);
+        return;
+      }
+
       // When --amount-unit token is used, resolve decimals and convert to base units.
       // Otherwise, validate that the amount is already in base units (integer).
       let resolvedAmount = amount;
@@ -898,15 +908,6 @@ EXAMPLES:
           exit(1);
           return;
         }
-      }
-
-      // Pre-quote input validation — catches common agent errors before any network call
-      try {
-        validateQuoteInput({ chain, from, to, amount });
-      } catch (validationErr) {
-        log(`Error: ${validationErr.message}`);
-        exit(1);
-        return;
       }
 
       try {
