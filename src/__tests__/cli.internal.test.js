@@ -814,7 +814,7 @@ describe('alerts create — webhook channel', () => {
     expect(mockApi.alertsCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         channels: expect.arrayContaining([
-          { type: 'webhook', data: { url: 'https://example.com/hook' } },
+          { type: 'webhook', data: { webhookUrl: 'https://example.com/hook' } },
         ]),
       }),
     );
@@ -834,7 +834,7 @@ describe('alerts create — webhook channel', () => {
     expect(call.channels).toEqual(
       expect.arrayContaining([
         { type: 'telegram', data: { chatId: '123' } },
-        { type: 'webhook', data: { url: 'https://example.com/hook' } },
+        { type: 'webhook', data: { webhookUrl: 'https://example.com/hook' } },
       ]),
     );
   });
@@ -862,7 +862,7 @@ describe('alerts create — webhook channel', () => {
     await cmd(['update', 'abc123'], mockApi, {}, { webhook: 'https://example.com/hook' });
     expect(mockApi.alertsUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
-        channels: [{ type: 'webhook', data: { url: 'https://example.com/hook' } }],
+        channels: [{ type: 'webhook', data: { webhookUrl: 'https://example.com/hook' } }],
       }),
     );
   });

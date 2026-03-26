@@ -565,7 +565,7 @@ USAGE:
         if (options.telegram) channels.push({ type: 'telegram', data: { chatId: String(options.telegram) } });
         if (options.slack) channels.push({ type: 'slack', data: { webhookUrl: options.slack } });
         if (options.discord) channels.push({ type: 'discord', data: { webhookUrl: options.discord } });
-        if (options.webhook) channels.push({ type: 'webhook', data: { url: options.webhook } });
+        if (options.webhook) channels.push({ type: 'webhook', data: { webhookUrl: options.webhook } });
         return channels.length > 0 ? channels : null;
       }
 
@@ -709,7 +709,7 @@ USAGE:
               : ch?.type === 'discord'
                 ? `Invalid Discord webhook URL. Check the URL and try again.`
                 : ch?.type === 'webhook'
-                  ? `Invalid webhook URL (${ch.data.url}). Ensure the endpoint is reachable and returns 2xx.`
+                  ? `Invalid webhook URL (${ch.data.webhookUrl}). Ensure the endpoint is reachable and returns 2xx.`
                   : err.message;
           throw new NansenError(hint, err.code ?? ErrorCode.INVALID_PARAMS, err.status);
         }
