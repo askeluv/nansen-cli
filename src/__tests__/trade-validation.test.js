@@ -143,3 +143,45 @@ describe('validateQuoteInput', () => {
     });
   });
 });
+
+describe('quote handler integration', () => {
+  it('rejects same-token swap at quote time', async () => {
+    const { buildTradingCommands } = await import('../trading.js');
+    const logs = [];
+    let exitCode = null;
+    const commands = buildTradingCommands({
+      log: (msg) => logs.push(msg),
+      exit: (code) => { exitCode = code; },
+    });
+
+    await commands.quote([], null, {}, {
+      chain: 'solana',
+      from: 'SOL',
+      to: 'SOL',
+      amount: '1000000000',
+    });
+
+    expect(exitCode).toBe(1);
+    expect(logs.some(l => /Cannot swap .* for itself/.test(l))).toBe(true);
+  });
+
+  it('rejects invalid address format at quote time', async () => {
+    const { buildTradingCommands } = await import('../trading.js');
+    const logs = [];
+    let exitCode = null;
+    const commands = buildTradingCommands({
+      log: (msg) => logs.push(msg),
+      exit: (code) => { exitCode = code; },
+    });
+
+    await commands.quote([], null, {}, {
+      chain: 'solana',
+      from: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+      to: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+      amount: '1000000000',
+    });
+
+    expect(exitCode).toBe(1);
+    expect(logs.some(l => /Invalid sell token address/.test(l))).toBe(true);
+  });
+});

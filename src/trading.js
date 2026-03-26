@@ -13,6 +13,7 @@ import { base58Decode } from './transfer.js';
 import { keccak256, signSecp256k1, rlpEncode } from './crypto.js';
 import { getWalletConnectAddress, sendTransactionViaWalletConnect, sendSolanaTransactionViaWalletConnect, sendApprovalViaWalletConnect } from './walletconnect-trading.js';
 import { retrievePassword } from './keychain.js';
+import { validateQuoteInput } from './trade-validation.js';
 import { CHAIN_RPCS } from './rpc-urls.js';
 
 // ============= Constants =============
@@ -897,6 +898,15 @@ EXAMPLES:
           exit(1);
           return;
         }
+      }
+
+      // Pre-quote input validation — catches common agent errors before any network call
+      try {
+        validateQuoteInput({ chain, from, to, amount });
+      } catch (validationErr) {
+        log(`Error: ${validationErr.message}`);
+        exit(1);
+        return;
       }
 
       try {
