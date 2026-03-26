@@ -49,16 +49,24 @@ Open-source, CLI-first eval tool (now part of OpenAI as of March 2026, still MIT
 
 **How it works:**
 - Declarative YAML configs define test cases without code. Run via `npx promptfoo eval`.
-- Supports 60+ LLM providers. Test cases define inputs, expected outputs, and assertion types.
+- Supports 60+ LLM providers. Each test runs against every prompt-provider combination in a matrix.
 - Agent evals test the *system* not just the model — tracks tool calls, decision chains, error handling.
+
+**Assertion types (5 categories):**
+- **Deterministic:** `contains`, `equals`, `is-json`, `regex`, `starts-with`, `cost`, `latency`, `javascript`, `python`
+- **Model-graded:** `llm-rubric` (sends output + rubric to judge model, returns `{reason, score: 0-1, pass: bool}`), `factuality`, `answer-relevance`
+- **Similarity:** `similar` (embedding cosine), `rouge`, `bleu`
+- **Agent/trajectory:** `trajectory:tool-used`, `trajectory:tool-sequence` for verifying tool call paths
+- **Custom:** JS/Python functions receive full context and return 0-1 scores
+- Weighted assertions with configurable `weight` property; final score = weighted average
 
 **Key patterns relevant to nansen-cli:**
 - **Non-determinism handling**: `--repeat N` runs each test case multiple times to measure variance.
 - **Intermediate step evaluation**: two agents may produce identical outputs but with very different
   cost/latency profiles (3 file reads vs 30). Promptfoo captures this.
 - **Red teaming**: 50+ vulnerability types (injection, jailbreaks) — relevant for a financial CLI.
-- **CI/CD**: native GitHub Action blocks merges that degrade quality scores.
-- **MCP server support**: can expose eval tools to agents being evaluated.
+- **CI/CD**: native GitHub Action (`promptfoo/promptfoo-action`) blocks merges that degrade quality scores.
+- **Runs 100% locally** — prompts never leave the machine.
 
 **Architecture:**
 ```yaml
@@ -76,9 +84,12 @@ tests:
         value: "--smart-money"
       - type: not-contains
         value: "nansen agent"
+      - type: trajectory:tool-used
+        value: "token_holders"
 ```
 
-Used by 127 Fortune 500 companies. [github.com/promptfoo/promptfoo](https://github.com/promptfoo/promptfoo)
+Used by 127 Fortune 500 companies. Acquired by OpenAI March 2026, remains MIT licensed.
+[github.com/promptfoo/promptfoo](https://github.com/promptfoo/promptfoo)
 
 ### Braintrust
 
@@ -89,13 +100,24 @@ Full-platform eval solution with experiment tracking and production monitoring.
 - Each eval run is linked to the exact prompt version, model, and dataset that produced it.
 - Ships 25+ built-in scorers (accuracy, relevance, safety).
 
+**Two-layer agent evaluation architecture:**
+- **Reasoning layer**: planning, tool selection — evaluated in the LLM
+- **Action layer**: API calls, DB queries, result processing — evaluated in the scaffold
+- Failures in each layer require different fixes. This separation is powerful for CLI agents
+  where command selection (reasoning) and command execution (action) are distinct.
+
+**Scoring approaches:**
+- **Deterministic comparison**: equality checks when expected outputs are known
+- **LLM-as-judge**: AutoEvals library, returns scores on [0, 1] with metadata/rationale
+- **Loop (AI-assisted)**: describe criteria in natural language; Braintrust generates custom scorers automatically
+- **Tracing**: captures every agent decision, enables span-level scoring and component-level metrics
+
 **Key patterns:**
-- **Agent trajectory evaluation**: measures entire multi-step interactions — tool selection,
-  parameter construction, error handling, final answer synthesis.
 - **Offline + Online modes**: offline experiments compare approaches pre-deployment; online scoring
   evaluates live production requests automatically.
 - **CI/CD gating**: native GitHub Action blocks merges that reduce quality scores.
-- **Experiment diffing**: compare two runs side-by-side with per-case deltas (similar to nansen-cli's A/B table, but with time-series tracking).
+- **Production-to-eval pipeline**: production traces become eval cases with one click.
+- **Experiment diffing**: compare two runs side-by-side with per-case deltas.
 
 Used by Notion, Stripe, Zapier. [braintrust.dev](https://www.braintrust.dev/)
 
@@ -112,6 +134,12 @@ Lightweight, TypeScript-native eval runner — positioned as "Vitest for AI apps
 - The project already uses Vitest and ESM JS — Evalite would integrate naturally.
 - MIT licensed, local-only, no vendor lock-in.
 - Familiar test ergonomics (mocks, lifecycle hooks, `describe`/`it` patterns).
+- **Trial system**: `trialCount` option runs each test case N times to measure variance.
+  Configurable globally in `evalite.config.ts` or per-eval.
+- **Caching**: strongly recommended in watch mode to avoid burning API credits.
+- **Custom storage backends**: persist results anywhere for tracking trends over time.
+
+Note: relatively young (v1 beta). Smaller ecosystem than promptfoo or Braintrust.
 
 [github.com/mattpocock/evalite](https://github.com/mattpocock/evalite)
 
@@ -177,12 +205,40 @@ From their engineering post ["Demystifying Evals for AI Agents"](https://www.ant
 6. **Eval harness vs. agent harness**: when you evaluate "an agent," you are evaluating the
    scaffold + model together. Keep them separable.
 
+7. **pass@k vs pass^k** — a critical distinction:
+   - **pass@k**: probability at least 1 of k attempts succeeds. Good for retry-able tools.
+   - **pass^k**: probability all k attempts succeed. Good for user-facing consistency.
+   - These diverge dramatically: at k=10, pass@k can approach 100% while pass^k falls to near zero.
+   - "Forces a decision: are you building a tool that can be retried, or a behavior users
+     expect to be consistent." For nansen-cli, trading commands need pass^k (consistency)
+     while research commands can tolerate pass@k (retry-able).
+
+8. **Eval categories that graduate**:
+   - **Capability evals**: "What can this agent do well?" Start at low pass rates.
+   - **Regression evals**: "Can it still handle previous tasks?" Should stay near 100%.
+   - Tasks graduate from capability → regression as the agent improves.
+
+9. **Infrastructure noise**: pass rates fluctuate with time of day due to API latency variance.
+   Two agents with different resource budgets and time limits are not taking the same test.
+
 ### OpenAI Evals
 
 - The `evals` repo provides a framework + registry of benchmarks. Run via `oaieval` CLI.
 - The newer Evals API enables programmatic "measure → improve → ship" loops.
 - For agents, they recommend **trace grading** (evaluating the full sequence of tool calls and
   decisions, not just final output).
+
+**5 grader types:**
+1. **String Check**: deterministic, 0 or 1 (`eq`, `ne`, `like`, `ilike`)
+2. **Text Similarity**: cosine, fuzzy_match, bleu, rouge variants
+3. **Score Model**: LLM assigns numerical score [0, 1]
+4. **Label Model**: LLM assigns categorical labels ("pass"/"fail")
+5. **Python Grader**: arbitrary code, expects `grade()` returning float
+6. **Multi Grader**: combines graders via formula for composite scores
+
+**Warning — grader hacking**: models being trained can learn to exploit weaknesses in model graders.
+Detect by comparing model grader scores vs. expert human scores. A model that hacked the grader
+scores high on automated evals but poorly on human evals.
 
 [github.com/openai/evals](https://github.com/openai/evals)
 
@@ -214,6 +270,21 @@ Standard usability metrics applicable to any CLI:
 | **Error Rate** | Actions that don't lead to expected outcomes | Lower is better |
 | **Error Recovery** | Whether users can correct mistakes, retries needed | Higher recovery = better UX |
 | **Satisfaction** | Single Ease Question (SEQ) or SUS scores | 68+ SUS = above average |
+
+### CLI Usability Testing (from [clig.dev](https://clig.dev/))
+
+Key insight: **90% of CLI testing is about whether documentation is clear and intuitive.**
+Without docs, you are walking the user through the product, which defeats the purpose.
+
+Design principles that should inform evals:
+- **Human-first design**: if a command is used primarily by humans, design for humans first
+- **Composability**: small, simple programs with clean interfaces that combine into larger systems
+- **Discoverability**: support conversational interaction; make functionality discoverable via help text
+- **Stability**: subcommands, arguments, flags, config files, env vars are all interfaces —
+  commit to keeping them working
+
+Testing tools: BATS (Bash Automated Testing System) for end-to-end CLI testing at the binary level,
+expect/autoexpect for interactive session simulation.
 
 ### CLI-Anything (HKUDS)
 
@@ -428,3 +499,10 @@ before building features. The existing A/B framework is a strong foundation for 
 - [Vercel — Eval-Driven Development](https://vercel.com/blog/eval-driven-development-build-better-ai-faster)
 - [Eugene Yan — Eval Process](https://eugeneyan.com/writing/eval-process/)
 - [MeasuringU — Task Completion Rate](https://measuringu.com/task-completion/)
+- [clig.dev — Command Line Interface Guidelines](https://clig.dev/)
+- [LangChain — State of AI Agents](https://www.langchain.com/state-of-agent-engineering)
+- [Anthropic — Infrastructure Noise in Agentic Coding Evals](https://www.anthropic.com/engineering/infrastructure-noise)
+- [Promptfoo — Assertion Types](https://www.promptfoo.dev/docs/configuration/expected-outputs/)
+- [Promptfoo — Evaluate Coding Agents](https://www.promptfoo.dev/docs/guides/evaluate-coding-agents/)
+- [OpenAI — Graders Guide](https://platform.openai.com/docs/guides/graders)
+- [OpenAI — Agent Evals](https://platform.openai.com/docs/guides/agent-evals)
