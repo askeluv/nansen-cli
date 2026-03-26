@@ -870,7 +870,7 @@ export function buildCommands(deps = {}) {
         return;
       }
 
-      let apiKey = options['api-key'] || options.apiKey;
+      let apiKey = options['api-key'];
 
       if (!apiKey) {
         apiKey = process.env.NANSEN_API_KEY;

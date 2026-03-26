@@ -907,7 +907,7 @@ export function buildWalletCommands(deps = {}) {
             }
             password = resolved.password;
           }
-          const dryRun = flags['dry-run'] || flags.dryRun;
+          const dryRun = flags['dry-run'];
 
           try {
             const sendOpts = {

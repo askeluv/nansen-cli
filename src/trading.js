@@ -834,7 +834,7 @@ export function buildTradingCommands(deps = {}) {
       const amount = options.amount || args[3];
       const walletName = options.wallet;
       const slippage = options.slippage;
-      const autoSlippage = flags['auto-slippage'] || flags.autoSlippage;
+      const autoSlippage = flags['auto-slippage'];
       const maxAutoSlippage = options['max-auto-slippage'];
       const swapMode = options['swap-mode'] || 'exactIn';
       const amountUnit = options['amount-unit'];
@@ -1006,7 +1006,7 @@ EXAMPLES:
     'execute': async (args, apiInstance, flags, options) => {
       const quoteId = options.quote || options['quote-id'] || args[0];
       const walletName = options.wallet;
-      const noSimulate = flags['no-simulate'] || flags.noSimulate;
+      const noSimulate = flags['no-simulate'];
 
       if (!quoteId) {
         log(`
