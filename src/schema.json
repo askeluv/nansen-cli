@@ -669,6 +669,10 @@
               "type": "string",
               "description": "Discord webhook URL for notifications"
             },
+            "webhook": {
+              "type": "string",
+              "description": "HTTP/HTTPS endpoint URL to POST alert payloads to"
+            },
             "data": {
               "type": "string",
               "description": "Alert config JSON. --chains is merged on top."
@@ -709,6 +713,10 @@
             "discord": {
               "type": "string",
               "description": "Discord webhook URL"
+            },
+            "webhook": {
+              "type": "string",
+              "description": "HTTP/HTTPS endpoint URL to POST alert payloads to"
             },
             "data": {
               "type": "string",
