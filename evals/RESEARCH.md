@@ -716,15 +716,23 @@ Track: pass rate, fragment score, latency, input/output tokens, cost per eval.
 
 ### Why Braintrust
 
-Braintrust provides the **experiment tracking over time** and **CI/CD gating** that the current
+Braintrust provides the **experiment tracking over time** and **CI/CD visibility** that the current
 one-shot JSON results lack. Key advantages:
 
-1. **Experiment history**: every eval run is versioned and comparable
-2. **Regression detection**: automatic alerting when scores drop
-3. **GitHub Action**: blocks PRs that degrade eval quality
-4. **AutoEvals scorers**: 25+ built-in scorers (factuality, relevance, similarity)
-5. **Two-layer architecture**: separately score reasoning (command selection) and action (execution)
-6. **Free tier**: 1M trace spans + 10k scores/month — more than enough for nansen-cli
+1. **Experiment history**: every eval run is versioned, linked to git commit SHA, and comparable
+2. **PR comments**: GitHub Action posts score comparisons showing improvements/regressions per metric
+3. **AutoEvals scorers**: 25+ built-in scorers (factuality, relevance, similarity, JSON validity)
+4. **Two-layer architecture**: separately score reasoning (command selection) and action (execution)
+5. **trialCount**: built-in non-determinism handling — run each case N times to measure variance
+6. **Free tier**: 1M trace spans + 10k scores/month (14-day experiment retention)
+
+**Caveats:**
+- **No built-in CI gating**: the GitHub Action posts score reports but does NOT fail the build on
+  regressions. To block merges, wrap the eval in a script that parses output and exits non-zero.
+- **No YAML datasets**: everything is JSON/code (unlike promptfoo). Test cases defined inline or
+  via managed datasets.
+- **14-day retention on free tier**: experiment data deleted after 2 weeks. Pro ($249/mo) extends
+  to 1 month. For long-term tracking on free tier, archive results to local JSON.
 
 ### Architecture
 
@@ -813,17 +821,37 @@ on:
   pull_request:
     paths: ['skills/**', 'src/cli.js', 'src/schema.json', 'evals/**']
 
+permissions:
+  pull-requests: write
+  contents: read
+
 jobs:
   eval:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
+        with:
+          node-version: 20
       - run: npm install
       - uses: braintrustdata/eval-action@v1
         with:
           api_key: ${{ secrets.BRAINTRUST_API_KEY }}
-          command: npx tsx evals/braintrust-runner.ts
+          runtime: node
+          root: evals/
+```
+
+**Note:** The action posts a formatted PR comment with metric comparisons (average score,
+improvements, regressions vs baseline). It does NOT fail the build on score drops.
+To enforce quality gates, add a post-eval check:
+
+```yaml
+      - name: Check eval thresholds
+        run: |
+          # Parse braintrust output and fail if pass rate < 85%
+          node evals/check-threshold.js --min-pass-rate 0.85
 ```
 
 ### Tracking Over Time
@@ -834,6 +862,15 @@ Braintrust automatically tracks:
 - **Model comparison** (run same dataset against Sonnet vs Opus)
 - **Skill-level analysis** (group by skill metadata to find weakest skills)
 - **Cost/latency** (token usage and response time per experiment)
+- **Git commit linkage** (every experiment stores the commit SHA it was run against)
+
+**Available AutoEvals scorers for nansen-cli:**
+- `ExactMatch` — for deterministic command validation
+- `LevenshteinScorer` — for fuzzy command matching
+- `Factuality` — for multi-step workflow answer quality (LLM-graded)
+- `JSONValidity` — for execution eval output validation
+- `Moderation` — for safety eval of agent responses
+- Custom code scorers (return 0-1 score) — for fragment matching and rejected fragment checks
 
 ### Migration Path
 
