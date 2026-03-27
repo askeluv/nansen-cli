@@ -864,7 +864,10 @@ export async function resolveUsdPrice(apiInstance, tokenAddress, chain) {
     chain,
     limit: 1,
   });
-  const token = result.tokens?.[0];
+  const isEvm = tokenAddress.startsWith('0x');
+  const token = result.tokens?.find(t =>
+    isEvm ? t.address?.toLowerCase() === tokenAddress.toLowerCase() : t.address === tokenAddress
+  );
   if (!token?.price) {
     throw new Error(`Could not resolve USD price for ${tokenAddress} on ${chain}. The token may not have pricing data.`);
   }
