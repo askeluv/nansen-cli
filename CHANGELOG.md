@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.23.1
+
+### Patch Changes
+
+- [#361](https://github.com/nansen-ai/nansen-cli/pull/361) [`ff22da3`](https://github.com/nansen-ai/nansen-cli/commit/ff22da376c1072ef06e84054f6ee31c058e6e08c) Thanks [@TimNooren](https://github.com/TimNooren)! - fix(alerts): error when --webhook-secret is passed without --webhook
+
+  Previously, passing --webhook-secret with a non-webhook channel (e.g. --telegram)
+  silently discarded the secret with no warning. The alert was created successfully
+  but without any signing, giving the false impression that the secret was active.
+
+  Now throws an actionable error: "--webhook-secret requires --webhook".
+
+- [#358](https://github.com/nansen-ai/nansen-cli/pull/358) [`70ee712`](https://github.com/nansen-ai/nansen-cli/commit/70ee71205343fb2d003eb5f50144e266bdc6109e) Thanks [@TimNooren](https://github.com/TimNooren)! - Add pre-quote trade input validation: rejects same-token swaps, invalid address formats, and non-positive amounts before any network call.
+
 ## 1.23.0
 
 ### Minor Changes
