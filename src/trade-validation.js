@@ -14,16 +14,16 @@ const SUPPORTED_CHAINS = ['solana', 'base'];
  */
 export function validateQuoteInput({ chain, from, to, amount }) {
   // 1. Chain must be supported
-  if (!SUPPORTED_CHAINS.includes(chain?.toLowerCase())) {
+  const normalizedChain = chain?.toLowerCase();
+  if (!SUPPORTED_CHAINS.includes(normalizedChain)) {
     throw new Error(
       `Unsupported chain "${chain}". Supported chains: ${SUPPORTED_CHAINS.join(', ')}.`
     );
   }
-  const normalizedChain = chain.toLowerCase();
 
   // 2. Amount must be a positive finite number
-  const numAmount = parseFloat(amount);
-  if (!amount || !Number.isFinite(numAmount) || numAmount <= 0) {
+  const numAmount = Number(amount);
+  if (!Number.isFinite(numAmount) || numAmount <= 0) {
     throw new Error(
       `Invalid amount "${amount}". Must be a positive number.`
     );
