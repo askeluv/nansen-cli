@@ -936,6 +936,33 @@ describe('alerts create — webhook channel', () => {
     expect(mockApi.alertsCreate).not.toHaveBeenCalled();
   });
 
+  it('should reject --webhook-secret when --webhook is not provided', async () => {
+    const mockApi = { alertsCreate: vi.fn().mockResolvedValue({ id: 'new' }) };
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    await expect(cmd(
+      ['create'],
+      mockApi,
+      {},
+      { name: 'Secret No Webhook', type: 'sm-token-flows', chains: 'ethereum', telegram: '123456', "webhook-secret": 'mysupersecretkey123', 'inflow-1h-min': 1000000 },
+    )).rejects.toThrow('--webhook-secret requires --webhook');
+    expect(mockApi.alertsCreate).not.toHaveBeenCalled();
+  });
+
+  it('should reject --webhook-secret without --webhook on update', async () => {
+    const mockApi = {
+      alertsGet: vi.fn().mockResolvedValue({ type: 'sm-token-flows', data: { chains: ['ethereum'], inflow_1h: { min: 1000000 }, inflow_1d: {}, inflow_7d: {}, outflow_1h: {}, outflow_1d: {}, outflow_7d: {}, netflow_1h: {}, netflow_1d: {}, netflow_7d: {}, inclusion: {}, exclusion: {}, events: ['sm-token-flows'] } }),
+      alertsUpdate: vi.fn().mockResolvedValue({ id: 'abc123' }),
+    };
+    const cmd = buildAlertsCommands({ log: vi.fn() })['alerts'];
+    await expect(cmd(
+      ['update', 'abc123'],
+      mockApi,
+      {},
+      { telegram: '123456', "webhook-secret": 'mysupersecretkey123' },
+    )).rejects.toThrow('--webhook-secret requires --webhook');
+    expect(mockApi.alertsUpdate).not.toHaveBeenCalled();
+  });
+
   it('should rewrite API error for webhook channel index 0', async () => {
     const { NansenError, ErrorCode } = await import('../api.js');
     const mockApi = {

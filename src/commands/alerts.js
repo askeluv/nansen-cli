@@ -560,8 +560,11 @@ USAGE:
         return;
       }
 
-      // Build channels array from --telegram/--slack/--discord flags
+      // Build channels array from --telegram/--slack/--discord/--webhook flags
       function buildChannels() {
+        if (options["webhook-secret"] && !options.webhook) {
+          throw new NansenError('--webhook-secret requires --webhook', ErrorCode.INVALID_PARAMS);
+        }
         const channels = [];
         if (options.telegram) channels.push({ type: 'telegram', data: { chatId: String(options.telegram) } });
         if (options.slack) channels.push({ type: 'slack', data: { webhookUrl: options.slack } });
