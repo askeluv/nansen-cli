@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.23.0
+
+### Minor Changes
+
+- [#341](https://github.com/nansen-ai/nansen-cli/pull/341) [`4b60056`](https://github.com/nansen-ai/nansen-cli/commit/4b6005697d52b5d432b9b32bcd1d36422f9166cc) Thanks [@gulshngill](https://github.com/gulshngill)! - Add `--webhook <url>` and `--webhook-secret <secret>` flags to `alerts create` and `alerts update`.
+
+  Allows alerts to be delivered to any HTTP/HTTPS endpoint via POST, alongside
+  the existing `--telegram`, `--slack`, and `--discord` channels. The optional
+  `--webhook-secret` enables HMAC payload signing for verification.
+
+### Patch Changes
+
+- [#344](https://github.com/nansen-ai/nansen-cli/pull/344) [`3dc09cc`](https://github.com/nansen-ai/nansen-cli/commit/3dc09cc8aa38cd4da4ae305f83e9599efb3b9ff9) Thanks [@0xlaveen](https://github.com/0xlaveen)! - Add nansen-agent-guide skill — routing guide for when to use `nansen agent` vs direct CLI data commands
+
+- [#347](https://github.com/nansen-ai/nansen-cli/pull/347) [`a243c7a`](https://github.com/nansen-ai/nansen-cli/commit/a243c7a33f28057949d2060c732083642422eb18) Thanks [@kome12](https://github.com/kome12)! - Add --buy-or-sell option to `token who-bought-sold` command — allows filtering by buy or sell side (BUY | SELL, defaults to BUY)
+
 ## 1.22.0
 
 ### Minor Changes
