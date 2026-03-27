@@ -73,7 +73,7 @@ If you are contributing changes, read [CONTRIBUTING.md](CONTRIBUTING.md) for the
 - Profiler beta endpoints use `recordsPerPage` not `per_page` (CLI handles automatically)
 - `profiler perp-positions` → no pagination support; API ignores the parameter
 - `smart-money netflow --timeframe` → silently accepted but has no effect; response always includes all timeframes (1h, 24h, 7d, 30d)
-- `nansen research search` → does NOT match by raw address (returns 0 results); use `profiler labels` for address-based lookup
+- `nansen research search` → matches by name, symbol, or address; use `profiler labels` for richer address metadata (labels, tags)
 - `--chain bnb` → accepted as input but response `chain` field returns `bsc`
 
 ## Known Gotchas

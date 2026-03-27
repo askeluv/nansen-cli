@@ -1603,6 +1603,148 @@ describe('quote command with --amount-unit token', () => {
   });
 });
 
+describe('quote command with --amount-unit usd', () => {
+  it('should convert USD amount to base units before API call', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const origFetch = global.fetch;
+    const fetchCalls = [];
+    global.fetch = vi.fn(async (url, opts) => {
+      fetchCalls.push({ url: url.toString(), opts });
+      // Mock the quote API response
+      return {
+        ok: true,
+        text: async () => JSON.stringify({
+          success: true,
+          quotes: [{
+            inAmount: '604800000',
+            outAmount: '50000000',
+            inputMint: 'So11111111111111111111111111111111111111112',
+            outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+            aggregator: 'test',
+          }],
+        }),
+      };
+    });
+
+    // Mock API instance with generalSearch returning SOL price
+    const mockApiInstance = {
+      generalSearch: vi.fn().mockResolvedValue({
+        tokens: [{ address: 'So11111111111111111111111111111111111111112', chain: 'solana', price: 82.72 }],
+      }),
+    };
+
+    const cmds = buildTradingCommands({ log: vi.fn(), exit: vi.fn() });
+    await cmds.quote([], mockApiInstance, {}, {
+      chain: 'solana',
+      from: 'SOL',
+      to: 'USDC',
+      amount: '50',
+      'amount-unit': 'usd',
+    });
+
+    // generalSearch should have been called with the resolved SOL address
+    expect(mockApiInstance.generalSearch).toHaveBeenCalledWith({
+      query: 'So11111111111111111111111111111111111111112',
+      resultType: 'token',
+      chain: 'solana',
+      limit: 1,
+    });
+
+    // The API call should contain the converted amount
+    // 50 / 82.72 = 0.60435... SOL = 604353... lamports (9 decimals)
+    const quoteCall = fetchCalls.find(c => c.url.includes('quote'));
+    expect(quoteCall).toBeDefined();
+    // Amount should be an integer (base units), not contain a decimal
+    const urlParams = new URL(quoteCall.url).searchParams;
+    const amount = urlParams.get('amount');
+    expect(amount).toMatch(/^\d+$/);
+    // Should NOT contain amountUnit in URL
+    expect(quoteCall.url).not.toContain('amountUnit');
+
+    global.fetch = origFetch;
+    delete process.env.NANSEN_WALLET_PASSWORD;
+  });
+
+  it('should price the --to token in exactOut mode', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const origFetch = global.fetch;
+    global.fetch = vi.fn(async () => ({
+      ok: true,
+      text: async () => JSON.stringify({
+        success: true,
+        quotes: [{
+          inAmount: '1000000000',
+          outAmount: '1000000',
+          inputMint: 'So11111111111111111111111111111111111111112',
+          outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+          aggregator: 'test',
+        }],
+      }),
+    }));
+
+    const mockApiInstance = {
+      generalSearch: vi.fn().mockResolvedValue({
+        tokens: [{ address: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', chain: 'solana', price: 1.0 }],
+      }),
+    };
+
+    const cmds = buildTradingCommands({ log: vi.fn(), exit: vi.fn() });
+    await cmds.quote([], mockApiInstance, {}, {
+      chain: 'solana',
+      from: 'SOL',
+      to: 'USDC',
+      amount: '50',
+      'amount-unit': 'usd',
+      'swap-mode': 'exactOut',
+    });
+
+    // Should have searched for USDC (the --to token), not SOL
+    expect(mockApiInstance.generalSearch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        query: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+      }),
+    );
+
+    global.fetch = origFetch;
+    delete process.env.NANSEN_WALLET_PASSWORD;
+  });
+
+  it('should error when price lookup fails', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const origFetch = global.fetch;
+    global.fetch = vi.fn();
+
+    const mockApiInstance = {
+      generalSearch: vi.fn().mockResolvedValue({ tokens: [] }),
+    };
+
+    let exitCalled = false;
+    const cmds = buildTradingCommands({
+      log: vi.fn(),
+      exit: vi.fn(() => { exitCalled = true; }),
+    });
+
+    await cmds.quote([], mockApiInstance, {}, {
+      chain: 'solana',
+      from: 'SOL',
+      to: 'USDC',
+      amount: '50',
+      'amount-unit': 'usd',
+    });
+
+    expect(exitCalled).toBe(true);
+
+    global.fetch = origFetch;
+    delete process.env.NANSEN_WALLET_PASSWORD;
+  });
+});
+
 // ============= API Error Handling =============
 
 describe('API error handling', () => {
@@ -1946,5 +2088,51 @@ describe('pollBridgeStatus', () => {
       .rejects.toThrow('polling timed out');
 
     global.fetch = origFetch;
+describe('resolveUsdPrice', () => {
+  it('should return USD price from search API', async () => {
+    const mockApi = {
+      generalSearch: vi.fn().mockResolvedValue({
+        tokens: [{ address: 'So11111111111111111111111111111111111111112', chain: 'solana', price: 82.5 }],
+      }),
+    };
+    const { resolveUsdPrice } = await import('../trading.js');
+    const price = await resolveUsdPrice(mockApi, 'So11111111111111111111111111111111111111112', 'solana');
+    expect(price).toBe(82.5);
+    expect(mockApi.generalSearch).toHaveBeenCalledWith({
+      query: 'So11111111111111111111111111111111111111112',
+      resultType: 'token',
+      chain: 'solana',
+      limit: 1,
+    });
   });
+
+  it('should throw when search returns no tokens', async () => {
+    const mockApi = {
+      generalSearch: vi.fn().mockResolvedValue({ tokens: [] }),
+    };
+    const { resolveUsdPrice } = await import('../trading.js');
+    await expect(resolveUsdPrice(mockApi, 'So11111111111111111111111111111111111111112', 'solana'))
+      .rejects.toThrow('Could not resolve USD price');
+  });
+
+  it('should throw when price is null', async () => {
+    const mockApi = {
+      generalSearch: vi.fn().mockResolvedValue({
+        tokens: [{ address: 'So11111111111111111111111111111111111111112', chain: 'solana', price: null }],
+      }),
+    };
+    const { resolveUsdPrice } = await import('../trading.js');
+    await expect(resolveUsdPrice(mockApi, 'So11111111111111111111111111111111111111112', 'solana'))
+      .rejects.toThrow('Could not resolve USD price');
+  });
+
+  it('should throw when price is 0', async () => {
+    const mockApi = {
+      generalSearch: vi.fn().mockResolvedValue({
+        tokens: [{ address: 'So11111111111111111111111111111111111111112', chain: 'solana', price: 0 }],
+      }),
+    };
+    const { resolveUsdPrice } = await import('../trading.js');
+    await expect(resolveUsdPrice(mockApi, 'So11111111111111111111111111111111111111112', 'solana'))
+      .rejects.toThrow('Could not resolve USD price');  });
 });

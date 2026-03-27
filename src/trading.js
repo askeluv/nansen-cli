@@ -854,6 +854,24 @@ export function convertToBaseUnits(amount, decimals) {
 }
 
 /**
+ * Fetch the current USD price for a token via the Nansen search API.
+ * Used by --amount-unit usd to convert dollar amounts to token amounts.
+ */
+export async function resolveUsdPrice(apiInstance, tokenAddress, chain) {
+  const result = await apiInstance.generalSearch({
+    query: tokenAddress,
+    resultType: 'token',
+    chain,
+    limit: 1,
+  });
+  const token = result.tokens?.[0];
+  if (!token?.price) {
+    throw new Error(`Could not resolve USD price for ${tokenAddress} on ${chain}. The token may not have pricing data.`);
+  }
+  return token.price;
+}
+
+/**
  * Check if amount contains a decimal point (i.e. not in base units).
  * Returns an error string if invalid, or null if OK. Pure function.
  */
@@ -954,7 +972,7 @@ OPTIONS:
   --from <symbol|address>   Input token (symbol like SOL, USDC or address)
   --to <symbol|address>     Output token (symbol like USDC, ETH or address)
   --amount <units>          Amount in BASE UNITS (e.g. lamports, wei)
-  --amount-unit <unit>      "token" to specify amount in token units (e.g. 0.5 SOL)
+  --amount-unit <unit>      "token" for token units (e.g. 0.5 SOL), "usd" for USD (e.g. 50)
   --wallet <name>           Wallet name (default: default wallet). Use "walletconnect" or "wc" for WalletConnect.
   --to-wallet <address>     Destination wallet address (auto-derived for cross-chain if omitted)
   --slippage <pct>          Slippage as decimal (e.g. 0.03 for 3%). Default: 0.03
@@ -965,6 +983,7 @@ OPTIONS:
 EXAMPLES:
   nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000
   nansen trade quote --chain solana --from SOL --to USDC --amount 0.5 --amount-unit token
+  nansen trade quote --chain solana --from SOL --to USDC --amount 50 --amount-unit usd
   nansen trade quote --chain base --from ETH --to USDC --amount 1000000000000000000
   nansen trade quote --chain base --to-chain solana --from USDC --to USDC --amount 1000000
   nansen trade quote --chain solana --to-chain base --from SOL --to ETH --amount 1000000000
@@ -974,8 +993,8 @@ EXAMPLES:
       }
 
       // Validate --amount-unit if provided
-      if (amountUnit && amountUnit !== 'token' && amountUnit !== 'base') {
-        log(`Error: Unknown --amount-unit "${amountUnit}". Supported values: token, base`);
+      if (amountUnit && amountUnit !== 'token' && amountUnit !== 'base' && amountUnit !== 'usd') {
+        log(`Error: Unknown --amount-unit "${amountUnit}". Supported values: token, base, usd`);
         exit(1);
         return;
       }
@@ -994,7 +1013,22 @@ EXAMPLES:
       // Otherwise, validate that the amount is already in base units (integer).
       let resolvedAmount = amount;
       let resolvedDecimals;
-      if (amountUnit === 'token') {
+      if (amountUnit === 'usd') {
+        try {
+          const tokenForPrice = swapMode === 'exactOut' ? to : from;
+          const price = await resolveUsdPrice(apiInstance, tokenForPrice, chain);
+          const decimals = await resolveTokenDecimals(tokenForPrice, chain);
+          // Truncate to token precision to avoid floating-point excess digits
+          const tokenAmount = parseFloat(amount) / price;
+          const factor = Math.pow(10, decimals);
+          const truncated = String(Math.floor(tokenAmount * factor) / factor);
+          resolvedAmount = convertToBaseUnits(truncated, decimals);
+        } catch (err) {
+          log(`Error converting USD amount: ${err.message}`);
+          exit(1);
+          return;
+        }
+      } else if (amountUnit === 'token') {
         try {
           const tokenForDecimals = swapMode === 'exactOut' ? to : from;
           resolvedDecimals = await resolveTokenDecimals(tokenForDecimals, chain);
