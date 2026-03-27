@@ -924,7 +924,7 @@ export function buildTradingCommands(deps = {}) {
       const maxAutoSlippage = options['max-auto-slippage'];
       const swapMode = options['swap-mode'] || 'exactIn';
       const amountUnit = options['amount-unit'];
-      const gasless = flags.gasless;
+      const provisionGas = flags['provision-gas'];
 
       if (!chain || !from || !to || !amount) {
         log(`
@@ -948,7 +948,7 @@ OPTIONS:
   --auto-slippage           Enable auto slippage calculation
   --max-auto-slippage <pct> Max auto slippage when auto-slippage enabled
   --swap-mode <mode>        exactIn (default) or exactOut
-  --gasless                 Enable destination chain gas provisioning (cross-chain only)
+  --provision-gas           Receive native gas on destination chain (cross-chain only)
 
 EXAMPLES:
   nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000
@@ -1104,7 +1104,7 @@ EXAMPLES:
               log(`  Destination wallet: ${params.toWalletAddress}`);
             }
           }
-          if (gasless) params.gasless = true;
+          if (provisionGas) params.gasless = true;
         }
         if (slippage) params.slippagePercent = slippage;
         if (autoSlippage) params.autoSlippage = true;

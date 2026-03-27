@@ -810,7 +810,7 @@
               "type": "string",
               "description": "Destination wallet address for cross-chain swaps. Auto-derived from wallet if omitted."
             },
-            "gasless": {
+            "provision-gas": {
               "type": "boolean",
               "description": "Receive native gas on the destination chain (a portion of bridged amount is converted). Source chain gas is still required."
             }
