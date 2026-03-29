@@ -13,7 +13,7 @@ import { base58Decode } from './transfer.js';
 import { keccak256, signSecp256k1, rlpEncode } from './crypto.js';
 import { getWalletConnectAddress, sendTransactionViaWalletConnect, sendSolanaTransactionViaWalletConnect, sendApprovalViaWalletConnect } from './walletconnect-trading.js';
 import { retrievePassword } from './keychain.js';
-import { validateQuoteInput } from './trade-validation.js';
+import { validateQuoteInput, validateBalance } from './trade-validation.js';
 import { CHAIN_RPCS } from './rpc-urls.js';
 
 // ============= Constants =============
@@ -891,11 +891,12 @@ EXAMPLES:
       // When --amount-unit token is used, resolve decimals and convert to base units.
       // Otherwise, validate that the amount is already in base units (integer).
       let resolvedAmount = amount;
+      let resolvedDecimals;
       if (amountUnit === 'token') {
         try {
           const tokenForDecimals = swapMode === 'exactOut' ? to : from;
-          const decimals = await resolveTokenDecimals(tokenForDecimals, chain);
-          resolvedAmount = convertToBaseUnits(amount, decimals);
+          resolvedDecimals = await resolveTokenDecimals(tokenForDecimals, chain);
+          resolvedAmount = convertToBaseUnits(amount, resolvedDecimals);
         } catch (err) {
           log(`Error resolving token decimals: ${err.message}`);
           exit(1);
@@ -953,6 +954,31 @@ EXAMPLES:
           log('No wallet found. A wallet address is required for quotes because the trading API builds a transaction specific to the sender.\nCreate one with: nansen wallet create');
           exit(1);
           return;
+        }
+
+        // Balance pre-check — catches zero balances and insufficient funds
+        // before wasting a quote API call. Only runs for --amount-unit token
+        // in exactIn mode (in exactOut, the amount is the buy amount so
+        // comparing it against the sell token balance is meaningless).
+        if (amountUnit === 'token' && swapMode !== 'exactOut') {
+          try {
+            const { adjustedAmount: balanceAdjusted } = await validateBalance({
+              chain,
+              from,
+              amount,
+              amountUnit,
+              walletAddress,
+              decimals: resolvedDecimals,
+              symbol: fromRaw,
+            });
+            if (balanceAdjusted !== amount) {
+              resolvedAmount = convertToBaseUnits(balanceAdjusted, resolvedDecimals);
+            }
+          } catch (balanceErr) {
+            log(`Error: ${balanceErr.message}`);
+            exit(1);
+            return;
+          }
         }
 
         log(`\nFetching quote on ${chainConfig.name}...`);
