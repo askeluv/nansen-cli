@@ -825,13 +825,7 @@ async function sendTokensViaWalletConnect({ to, amount, chain, token, max, dryRu
   let txTo, txValue, txData;
 
   if (token) {
-    // Validate ERC-20 contract
-    const code = await rpcCall(rpcUrl, 'eth_getCode', [token, 'latest']);
-    if (!code || code === '0x' || code === '0x0') {
-      throw new Error(`Address ${token} is not a contract — not a valid ERC-20 token`);
-    }
-    const decResult = await rpcCall(rpcUrl, 'eth_call', [{ to: token, data: '0x313ce567' }, 'latest']);
-    const decimals = parseInt(decResult, 16);
+    const decimals = await validateErc20Token(rpcUrl, token);
 
     if (max) {
       // Max ERC-20: full token balance
