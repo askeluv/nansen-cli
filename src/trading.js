@@ -924,7 +924,6 @@ export function buildTradingCommands(deps = {}) {
       const maxAutoSlippage = options['max-auto-slippage'];
       const swapMode = options['swap-mode'] || 'exactIn';
       const amountUnit = options['amount-unit'];
-      const provisionGas = flags['provision-gas'];
 
       if (!chain || !from || !to || !amount) {
         log(`
@@ -948,7 +947,6 @@ OPTIONS:
   --auto-slippage           Enable auto slippage calculation
   --max-auto-slippage <pct> Max auto slippage when auto-slippage enabled
   --swap-mode <mode>        exactIn (default) or exactOut
-  --provision-gas           Receive native gas on destination chain (cross-chain, EVM destinations only)
 
 EXAMPLES:
   nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000
@@ -1102,17 +1100,6 @@ EXAMPLES:
               const walletData = showWallet(effectiveWalletName);
               params.toWalletAddress = toChainConfig.type === 'solana' ? walletData.solana : walletData.evm;
               log(`  Destination wallet: ${params.toWalletAddress}`);
-            }
-          }
-          if (provisionGas) {
-            // Gas sponsorship is disabled for all cross-chain swaps involving Solana
-            // (both as source and destination) due to prior abuse. Li.Fuel also only
-            // supports EVM destinations. Passing gasless=true with Solana causes
-            // Li.Fi to return zero quotes, so we must block it here.
-            if (chainConfig.type === 'solana' || toChainConfig.type === 'solana') {
-              log('  ⚠ --provision-gas is not supported for cross-chain swaps involving Solana. Ignoring flag.');
-            } else {
-              params.gasless = true;
             }
           }
         }
