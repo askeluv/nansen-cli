@@ -969,7 +969,7 @@ EXAMPLES:
       // Static input validation — catches common agent errors (wrong addresses,
       // same-token swaps, bad amounts) before any network or wallet call.
       try {
-        validateQuoteInput({ chain, from, to, amount });
+        validateQuoteInput({ chain, toChain: toChainRaw || null, from, to, amount });
       } catch (validationErr) {
         log(`Error: ${validationErr.message}`);
         exit(1);

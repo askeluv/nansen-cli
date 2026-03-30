@@ -13,12 +13,19 @@ const SUPPORTED_CHAINS = ['solana', 'base'];
  * Validate quote inputs before any network call.
  * Throws on validation failure with an actionable error message.
  */
-export function validateQuoteInput({ chain, from, to, amount }) {
+export function validateQuoteInput({ chain, toChain, from, to, amount }) {
   // 1. Chain must be supported
   const normalizedChain = chain?.toLowerCase();
   if (!SUPPORTED_CHAINS.includes(normalizedChain)) {
     throw new Error(
       `Unsupported chain "${chain}". Supported chains: ${SUPPORTED_CHAINS.join(', ')}.`
+    );
+  }
+
+  const normalizedToChain = toChain ? toChain.toLowerCase() : normalizedChain;
+  if (toChain && !SUPPORTED_CHAINS.includes(normalizedToChain)) {
+    throw new Error(
+      `Unsupported destination chain "${toChain}". Supported chains: ${SUPPORTED_CHAINS.join(', ')}.`
     );
   }
 
@@ -37,20 +44,22 @@ export function validateQuoteInput({ chain, from, to, amount }) {
       `Invalid sell token address for ${normalizedChain}. ${fromResult.error}`
     );
   }
-  const toResult = validateAddress(to, normalizedChain);
+  const toResult = validateAddress(to, normalizedToChain);
   if (!toResult.valid) {
     throw new Error(
-      `Invalid buy token address for ${normalizedChain}. ${toResult.error}`
+      `Invalid buy token address for ${normalizedToChain}. ${toResult.error}`
     );
   }
 
-  // 4. Sell and buy token must be different
-  const fromNorm = normalizedChain === 'solana' ? from : from.toLowerCase();
-  const toNorm = normalizedChain === 'solana' ? to : to.toLowerCase();
-  if (fromNorm === toNorm) {
-    throw new Error(
-      `Cannot swap ${from} for itself. Sell and buy tokens must be different.`
-    );
+  // 4. Sell and buy token must be different (only applies to same-chain swaps)
+  if (normalizedChain === normalizedToChain) {
+    const fromNorm = normalizedChain === 'solana' ? from : from.toLowerCase();
+    const toNorm = normalizedChain === 'solana' ? to : to.toLowerCase();
+    if (fromNorm === toNorm) {
+      throw new Error(
+        `Cannot swap ${from} for itself. Sell and buy tokens must be different.`
+      );
+    }
   }
 }
 
