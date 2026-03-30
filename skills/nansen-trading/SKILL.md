@@ -56,7 +56,7 @@ nansen trade quote \
 
 For Solana↔Base bridges, the destination wallet address is auto-derived from your wallet (which stores both EVM and Solana keys). Override with `--to-wallet <address>` if needed.
 
-Use `--provision-gas` to receive native gas on the destination chain (a small portion of the bridged amount is converted to cover gas fees there). Note: you still need gas on the **source** chain to submit the initial transaction (e.g. SOL for Solana→Base, ETH for Base→Solana).
+Use `--provision-gas` to receive native gas on the destination chain (a small portion of the bridged amount is converted to cover gas fees there). **EVM destinations only** — Solana is not supported as a destination for gas provisioning (Li.Fuel limitation). You still need gas on the **source** chain to submit the initial transaction (e.g. SOL for Solana→Base, ETH for Base→Solana).
 
 ## Bridge Status
 
@@ -115,7 +115,7 @@ If the user says "$20 worth of X", you must convert USD → token amount, then e
 | `--wallet` | Wallet name (default: default wallet) |
 | `--to-wallet` | Destination wallet address (auto-derived for cross-chain if omitted) |
 | `--slippage` | Slippage tolerance as decimal (e.g. 0.03) |
-| `--provision-gas` | Receive native gas on destination chain (cross-chain only) |
+| `--provision-gas` | Receive native gas on destination chain (cross-chain, EVM destinations only) |
 | `--quote` | Quote ID for execute |
 | `--no-simulate` | Skip pre-broadcast simulation |
 | `--tx-hash` | Source tx hash (for bridge-status) |

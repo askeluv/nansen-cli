@@ -948,7 +948,7 @@ OPTIONS:
   --auto-slippage           Enable auto slippage calculation
   --max-auto-slippage <pct> Max auto slippage when auto-slippage enabled
   --swap-mode <mode>        exactIn (default) or exactOut
-  --provision-gas           Receive native gas on destination chain (cross-chain only)
+  --provision-gas           Receive native gas on destination chain (cross-chain, EVM destinations only)
 
 EXAMPLES:
   nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000
@@ -1104,7 +1104,15 @@ EXAMPLES:
               log(`  Destination wallet: ${params.toWalletAddress}`);
             }
           }
-          if (provisionGas) params.gasless = true;
+          if (provisionGas) {
+            // Li.Fuel (fromAmountForGas) only supports EVM destination chains.
+            // Solana is not supported — warn and skip the parameter.
+            if (toChainConfig.type === 'solana') {
+              log('  ⚠ --provision-gas is not supported for Solana destinations (Li.Fuel is EVM-only). Ignoring flag.');
+            } else {
+              params.gasless = true;
+            }
+          }
         }
         if (slippage) params.slippagePercent = slippage;
         if (autoSlippage) params.autoSlippage = true;
