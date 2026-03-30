@@ -4,7 +4,7 @@
  */
 
 import crypto from 'crypto';
-import { base58Encode, base58Decode, base58DecodePubkey } from './wallet.js';
+import { base58Encode, base58DecodePubkey } from './wallet.js';
 
 // ============= Constants =============
 
