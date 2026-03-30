@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.24.0
+
+### Minor Changes
+
+- [#333](https://github.com/nansen-ai/nansen-cli/pull/333) [`c8fe79c`](https://github.com/nansen-ai/nansen-cli/commit/c8fe79c4ec5e1ba6acf2498d9bfbe14c726a913c) Thanks [@imhta](https://github.com/imhta)! - Add cross-chain swap support between Solana and Base via Li.Fi bridge.
+
+  `nansen trade quote --chain base --to-chain solana --from ETH --to SOL --amount 0.01 --amount-unit token`
+  `nansen trade execute --quote <id>`
+
+  Bridge status can be checked with `nansen trade bridge-status`.
+
+### Patch Changes
+
+- [#365](https://github.com/nansen-ai/nansen-cli/pull/365) [`56335af`](https://github.com/nansen-ai/nansen-cli/commit/56335af600e51436b30ad2fc1530aa754bac2a2f) Thanks [@TimNooren](https://github.com/TimNooren)! - Add balance pre-check before quote API calls. Validates sell token balance, auto-adjusts near-full-balance trades (≤2% over), and reserves gas fees for native token swaps (SOL/ETH).
+
 ## 1.23.1
 
 ### Patch Changes
