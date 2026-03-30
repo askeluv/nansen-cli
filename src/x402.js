@@ -41,16 +41,11 @@ export function parsePaymentRequirements(response) {
  * Returns all supported requirements in priority order.
  */
 function rankRequirements(requirements) {
-  const ranked = [];
-  // EVM first (gasless for client)
-  for (const r of requirements) {
-    if (isEvmNetwork(r.network)) ranked.push(r);
-  }
-  // Then Solana
-  for (const r of requirements) {
-    if (isSvmNetwork(r.network)) ranked.push(r);
-  }
-  return ranked;
+  // EVM first (gasless for client), then Solana
+  return [
+    ...requirements.filter(r => isEvmNetwork(r.network)),
+    ...requirements.filter(r => isSvmNetwork(r.network)),
+  ];
 }
 
 /**
