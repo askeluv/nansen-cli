@@ -56,7 +56,7 @@ nansen trade quote \
 
 For Solana↔Base bridges, the destination wallet address is auto-derived from your wallet (which stores both EVM and Solana keys). Override with `--to-wallet <address>` if needed.
 
-Use `--provision-gas` to receive native gas on the destination chain (a small portion of the bridged amount is converted to cover gas fees there). **EVM destinations only** — Solana is not supported as a destination for gas provisioning (Li.Fuel limitation). You still need gas on the **source** chain to submit the initial transaction (e.g. SOL for Solana→Base, ETH for Base→Solana).
+Use `--provision-gas` to receive native gas on the destination chain (a small portion of the bridged amount is converted to cover gas fees there). **Not supported for cross-chain swaps involving Solana** (either as source or destination) — gas sponsorship is currently disabled for Solana cross-chain routes. You still need gas on the **source** chain to submit the initial transaction (e.g. SOL for Solana→Base, ETH for Base→Solana).
 
 ## Bridge Status
 

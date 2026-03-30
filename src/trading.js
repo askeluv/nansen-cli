@@ -1105,10 +1105,12 @@ EXAMPLES:
             }
           }
           if (provisionGas) {
-            // Li.Fuel (fromAmountForGas) only supports EVM destination chains.
-            // Solana is not supported — warn and skip the parameter.
-            if (toChainConfig.type === 'solana') {
-              log('  ⚠ --provision-gas is not supported for Solana destinations (Li.Fuel is EVM-only). Ignoring flag.');
+            // Gas sponsorship is disabled for all cross-chain swaps involving Solana
+            // (both as source and destination) due to prior abuse. Li.Fuel also only
+            // supports EVM destinations. Passing gasless=true with Solana causes
+            // Li.Fi to return zero quotes, so we must block it here.
+            if (chainConfig.type === 'solana' || toChainConfig.type === 'solana') {
+              log('  ⚠ --provision-gas is not supported for cross-chain swaps involving Solana. Ignoring flag.');
             } else {
               params.gasless = true;
             }

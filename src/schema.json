@@ -812,7 +812,7 @@
             },
             "provision-gas": {
               "type": "boolean",
-              "description": "Receive native gas on the destination chain via Li.Fuel (EVM destinations only; not supported for Solana). Source chain gas is still required."
+              "description": "Receive native gas on the destination chain via Li.Fuel. Not supported for cross-chain swaps involving Solana (either direction). Source chain gas is still required."
             }
           },
           "prerequisites": [
