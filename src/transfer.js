@@ -4,8 +4,7 @@
  */
 
 import crypto from 'crypto';
-import { base58 } from '@scure/base';
-import { base58Encode, exportWallet, getWalletConfig, verifyPassword, showWallet } from './wallet.js';
+import { base58Encode, base58Decode, base58DecodePubkey, exportWallet, getWalletConfig, verifyPassword, showWallet } from './wallet.js';
 import { keccak256, signSecp256k1, rlpEncode } from './crypto.js';
 import { getWalletConnectAddress, sendTransactionViaWalletConnect } from './walletconnect-trading.js';
 import { EVM_CHAIN_IDS } from './chain-ids.js';
@@ -21,19 +20,6 @@ const ATA_PROGRAM = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
 
 // Alias: buildEvmTransaction uses 'evm' as a generic fallback
 const CHAIN_IDS = { ...EVM_CHAIN_IDS, evm: 1 };
-
-// ============= Base58 =============
-
-function base58Decode(str) {
-  return Buffer.from(base58.decode(str));
-}
-
-function base58DecodePubkey(str) {
-  const raw = base58Decode(str);
-  if (raw.length === 32) return raw;
-  if (raw.length < 32) return Buffer.concat([Buffer.alloc(32 - raw.length), raw]);
-  return raw.subarray(raw.length - 32);
-}
 
 // ============= Address Validation =============
 

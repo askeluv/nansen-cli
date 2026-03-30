@@ -4,9 +4,8 @@
 
 import { describe, it, expect } from 'vitest';
 import crypto from 'crypto';
+import { base58Decode, base58Encode } from '../wallet.js';
 import {
-  base58Decode,
-  base58Encode,
   encodeCompactU16,
   deriveATA,
   isSvmNetwork,

@@ -40,6 +40,17 @@ export function base58Encode(buf) {
   return base58.encode(buf instanceof Uint8Array ? buf : Uint8Array.from(buf));
 }
 
+export function base58Decode(str) {
+  return Buffer.from(base58.decode(str));
+}
+
+export function base58DecodePubkey(str) {
+  const raw = base58Decode(str);
+  if (raw.length === 32) return raw;
+  if (raw.length < 32) return Buffer.concat([Buffer.alloc(32 - raw.length), raw]);
+  return raw.subarray(raw.length - 32);
+}
+
 // ============= Encryption =============
 
 /**

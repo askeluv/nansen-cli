@@ -4,13 +4,7 @@
  */
 
 import crypto from 'crypto';
-import { base58 } from '@scure/base';
-
-// ============= Base58 Encode =============
-
-export function base58Encode(buf) {
-  return base58.encode(buf instanceof Uint8Array ? buf : Uint8Array.from(buf));
-}
+import { base58Encode, base58Decode, base58DecodePubkey } from './wallet.js';
 
 // ============= Constants =============
 
@@ -23,25 +17,6 @@ const _SYSTEM_PROGRAM = '11111111111111111111111111111111';
 
 const DEFAULT_COMPUTE_UNIT_LIMIT = 20000;
 const DEFAULT_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 1;
-
-// ============= Base58 Decode =============
-
-export function base58Decode(str) {
-  return Buffer.from(base58.decode(str));
-}
-
-/**
- * Decode a base58 string to exactly 32 bytes (left-pad with zeros).
- * Use for Solana public keys and hashes.
- */
-export function base58DecodePubkey(str) {
-  const raw = base58Decode(str);
-  if (raw.length === 32) return raw;
-  if (raw.length < 32) {
-    return Buffer.concat([Buffer.alloc(32 - raw.length), raw]);
-  }
-  return raw.subarray(raw.length - 32);
-}
 
 // ============= Compact-u16 Encoding =============
 // (Solana's variable-length integer format, from trading.js pattern)
