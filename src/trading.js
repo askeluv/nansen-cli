@@ -1016,15 +1016,17 @@ EXAMPLES:
       // Otherwise, validate that the amount is already in base units (integer).
       let resolvedAmount = amount;
       let resolvedDecimals;
+      let usdTokenAmount; // token-unit amount after USD conversion (for balance pre-check)
       if (amountUnit === 'usd') {
         try {
           const tokenForPrice = swapMode === 'exactOut' ? to : from;
           const price = await resolveUsdPrice(apiInstance, tokenForPrice, chain);
-          const decimals = await resolveTokenDecimals(tokenForPrice, chain);
+          resolvedDecimals = await resolveTokenDecimals(tokenForPrice, chain);
           // Convert USD to token amount, then to base units via string math.
           // Use toFixed() instead of String() to avoid scientific notation for small values.
           const tokenAmount = parseFloat(amount) / price;
-          resolvedAmount = convertToBaseUnits(tokenAmount.toFixed(decimals), decimals);
+          usdTokenAmount = tokenAmount.toFixed(resolvedDecimals);
+          resolvedAmount = convertToBaseUnits(usdTokenAmount, resolvedDecimals);
         } catch (err) {
           log(`Error converting USD amount: ${err.message}`);
           exit(1);
@@ -1095,21 +1097,24 @@ EXAMPLES:
         }
 
         // Balance pre-check — catches zero balances and insufficient funds
-        // before wasting a quote API call. Only runs for --amount-unit token
-        // in exactIn mode (in exactOut, the amount is the buy amount so
-        // comparing it against the sell token balance is meaningless).
-        if (amountUnit === 'token' && swapMode !== 'exactOut') {
+        // before wasting a quote API call. Runs for --amount-unit token and
+        // usd (after USD→token conversion) in exactIn mode. In exactOut the
+        // amount is the buy amount so comparing against sell balance is meaningless.
+        if ((amountUnit === 'token' || amountUnit === 'usd') && swapMode !== 'exactOut') {
           try {
+            // For USD, pass the converted token-unit amount so validateBalance
+            // can compare against the wallet balance in token units.
+            const tokenUnitAmount = amountUnit === 'usd' ? usdTokenAmount : amount;
             const { adjustedAmount: balanceAdjusted } = await validateBalance({
               chain,
               from,
-              amount,
-              amountUnit,
+              amount: tokenUnitAmount,
+              amountUnit: 'token',
               walletAddress,
               decimals: resolvedDecimals,
               symbol: fromRaw,
             });
-            if (balanceAdjusted !== amount) {
+            if (balanceAdjusted !== tokenUnitAmount) {
               resolvedAmount = convertToBaseUnits(balanceAdjusted, resolvedDecimals);
             }
           } catch (balanceErr) {

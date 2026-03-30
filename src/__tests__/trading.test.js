@@ -1762,6 +1762,93 @@ describe('quote command with --amount-unit usd', () => {
     delete process.env.NANSEN_WALLET_PASSWORD;
   });
 
+  it('should run balance pre-check after USD conversion', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const origFetch = global.fetch;
+    // Mock RPC: getBalance returns 0 lamports (zero SOL balance)
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ jsonrpc: '2.0', id: 1, result: { value: 0 } }),
+    });
+
+    const mockApiInstance = {
+      generalSearch: vi.fn().mockResolvedValue({
+        tokens: [{ address: 'So11111111111111111111111111111111111111112', chain: 'solana', price: 84.0 }],
+      }),
+    };
+
+    const logs = [];
+    let exitCode = null;
+    const cmds = buildTradingCommands({
+      log: (msg) => logs.push(msg),
+      exit: (code) => { exitCode = code; },
+    });
+
+    await cmds.quote([], mockApiInstance, {}, {
+      chain: 'solana',
+      from: 'SOL',
+      to: 'USDC',
+      amount: '50',
+      'amount-unit': 'usd',
+    });
+
+    // Should fail with balance error, not reach the quote API
+    expect(exitCode).toBe(1);
+    expect(logs.some(l => /No SOL balance in wallet/.test(l))).toBe(true);
+
+    global.fetch = origFetch;
+    delete process.env.NANSEN_WALLET_PASSWORD;
+  });
+
+  it('should skip balance pre-check in exactOut mode with USD', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const origFetch = global.fetch;
+    global.fetch = vi.fn(async () => ({
+      ok: true,
+      text: async () => JSON.stringify({
+        success: true,
+        quotes: [{
+          inAmount: '1000000000',
+          outAmount: '50000000',
+          inputMint: 'So11111111111111111111111111111111111111112',
+          outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+          aggregator: 'test',
+        }],
+      }),
+    }));
+
+    const mockApiInstance = {
+      generalSearch: vi.fn().mockResolvedValue({
+        tokens: [{ address: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', chain: 'solana', price: 1.0 }],
+      }),
+    };
+
+    let exitCode = null;
+    const cmds = buildTradingCommands({
+      log: vi.fn(),
+      exit: (code) => { exitCode = code; },
+    });
+
+    await cmds.quote([], mockApiInstance, {}, {
+      chain: 'solana',
+      from: 'SOL',
+      to: 'USDC',
+      amount: '50',
+      'amount-unit': 'usd',
+      'swap-mode': 'exactOut',
+    });
+
+    // exactOut should skip balance check and succeed (reach quote API)
+    expect(exitCode).toBeNull();
+
+    global.fetch = origFetch;
+    delete process.env.NANSEN_WALLET_PASSWORD;
+  });
+
   it('should error when price lookup fails', async () => {
     createWallet('default', 'testpass');
     process.env.NANSEN_WALLET_PASSWORD = 'testpass';
