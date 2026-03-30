@@ -892,10 +892,16 @@ export function formatQuote(quote, index) {
   const meta = quote.metadata || {};
   if (meta.isCrossChain) {
     if (meta.bridgeTool) lines.push(`    Bridge:       ${meta.bridgeTool}`);
-    if (meta.executionDuration) lines.push(`    Est. Time:    ~${Math.round(meta.executionDuration / 60)} min`);
+    if (meta.executionDuration) {
+      const mins = Math.round(meta.executionDuration / 60);
+      lines.push(`    Est. Time:    ${mins < 1 ? '< 1 min' : `~${mins} min`}`);
+    }
     if (meta.feeCosts?.length) {
       const totalFees = meta.feeCosts.reduce((sum, f) => sum + parseFloat(f.amountUSD || 0), 0);
-      if (totalFees > 0) lines.push(`    Bridge Fees:  $${totalFees.toFixed(2)}`);
+      if (totalFees > 0) {
+        const feeStr = totalFees < 0.01 ? totalFees.toPrecision(1) : totalFees.toFixed(2);
+        lines.push(`    Bridge Fees:  $${feeStr}`);
+      }
     }
   }
   if (quote.priceImpactPct) {
@@ -1101,6 +1107,7 @@ EXAMPLES:
           params.toChainIndex = toChainConfig.index;
           if (toWallet) {
             params.toWalletAddress = toWallet;
+            log(`  Destination wallet: ${toWallet}`);
           } else if (chainConfig.type !== toChainConfig.type) {
             // Solana↔Base: auto-derive the destination address from the same wallet
             const effectiveWalletName = walletName || getWalletConfig()?.defaultWallet;

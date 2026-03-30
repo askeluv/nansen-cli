@@ -1800,6 +1800,42 @@ describe('formatQuote cross-chain metadata', () => {
     expect(output).toContain('Bridge Fees:  $0.75');
   });
 
+  it('should show adaptive precision for sub-cent bridge fees', () => {
+    const output = formatQuote({
+      aggregator: 'okx',
+      inputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+      outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+      inAmount: '50000',
+      outAmount: '49500',
+      metadata: {
+        isCrossChain: true,
+        bridgeTool: 'stargate',
+        executionDuration: 300,
+        feeCosts: [
+          { name: 'relay', amountUSD: '0.0005' },
+          { name: 'gas', amountUSD: '0.0003' },
+        ],
+      },
+    });
+    expect(output).toContain('Bridge Fees:  $0.0008');
+  });
+
+  it('should show "< 1 min" for fast bridges', () => {
+    const output = formatQuote({
+      aggregator: 'okx',
+      inputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+      outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+      inAmount: '50000',
+      outAmount: '49500',
+      metadata: {
+        isCrossChain: true,
+        bridgeTool: 'stargate',
+        executionDuration: 2,
+      },
+    });
+    expect(output).toContain('Est. Time:    < 1 min');
+  });
+
   it('should not display bridge info for same-chain quotes', () => {
     const output = formatQuote({
       aggregator: 'okx',
