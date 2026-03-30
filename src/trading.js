@@ -1021,11 +1021,10 @@ EXAMPLES:
           const tokenForPrice = swapMode === 'exactOut' ? to : from;
           const price = await resolveUsdPrice(apiInstance, tokenForPrice, chain);
           const decimals = await resolveTokenDecimals(tokenForPrice, chain);
-          // Truncate to token precision to avoid floating-point excess digits
+          // Convert USD to token amount, then to base units via string math.
+          // Use toFixed() instead of String() to avoid scientific notation for small values.
           const tokenAmount = parseFloat(amount) / price;
-          const factor = Math.pow(10, decimals);
-          const truncated = String(Math.floor(tokenAmount * factor) / factor);
-          resolvedAmount = convertToBaseUnits(truncated, decimals);
+          resolvedAmount = convertToBaseUnits(tokenAmount.toFixed(decimals), decimals);
         } catch (err) {
           log(`Error converting USD amount: ${err.message}`);
           exit(1);

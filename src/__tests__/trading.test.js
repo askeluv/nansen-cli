@@ -1713,6 +1713,55 @@ describe('quote command with --amount-unit usd', () => {
     delete process.env.NANSEN_WALLET_PASSWORD;
   });
 
+  it('should handle tiny USD amounts that produce scientific notation', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const origFetch = global.fetch;
+    const fetchCalls = [];
+    global.fetch = vi.fn(async (url, opts) => {
+      fetchCalls.push({ url: url.toString(), opts });
+      return {
+        ok: true,
+        text: async () => JSON.stringify({
+          success: true,
+          quotes: [{
+            inAmount: '118',
+            outAmount: '1',
+            inputMint: 'So11111111111111111111111111111111111111112',
+            outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+            aggregator: 'test',
+          }],
+        }),
+      };
+    });
+
+    const mockApiInstance = {
+      generalSearch: vi.fn().mockResolvedValue({
+        tokens: [{ address: 'So11111111111111111111111111111111111111112', chain: 'solana', price: 84.0 }],
+      }),
+    };
+
+    const cmds = buildTradingCommands({ log: vi.fn(), exit: vi.fn() });
+    await cmds.quote([], mockApiInstance, {}, {
+      chain: 'solana',
+      from: 'SOL',
+      to: 'USDC',
+      amount: '0.00001',
+      'amount-unit': 'usd',
+    });
+
+    const quoteCall = fetchCalls.find(c => c.url.includes('quote'));
+    expect(quoteCall).toBeDefined();
+    const urlParams = new URL(quoteCall.url).searchParams;
+    const amount = urlParams.get('amount');
+    // Must be a plain integer, not scientific notation
+    expect(amount).toMatch(/^\d+$/);
+
+    global.fetch = origFetch;
+    delete process.env.NANSEN_WALLET_PASSWORD;
+  });
+
   it('should error when price lookup fails', async () => {
     createWallet('default', 'testpass');
     process.env.NANSEN_WALLET_PASSWORD = 'testpass';
