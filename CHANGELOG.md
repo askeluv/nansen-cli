@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.25.0
+
+### Minor Changes
+
+- [#363](https://github.com/nansen-ai/nansen-cli/pull/363) [`6ae402e`](https://github.com/nansen-ai/nansen-cli/commit/6ae402ef1e5bdeacf83fe04bcf6e8e0c9f9c91b7) Thanks [@TimNooren](https://github.com/TimNooren)! - Add `--amount-unit usd` to trade commands — specify swap amounts in USD
+
+### Patch Changes
+
+- [#374](https://github.com/nansen-ai/nansen-cli/pull/374) [`0f14803`](https://github.com/nansen-ai/nansen-cli/commit/0f148031ef7590f3405c1dba9f31ad83768a7141) Thanks [@TimNooren](https://github.com/TimNooren)! - Fix cross-chain quote display: show adaptive precision for sub-cent bridge fees, "< 1 min" for fast bridges, and echo --to-wallet address in output
+
+- [#366](https://github.com/nansen-ai/nansen-cli/pull/366) [`f358fff`](https://github.com/nansen-ai/nansen-cli/commit/f358fffcc80136c4e609f2e056f2c5ffb052d626) Thanks [@kome12](https://github.com/kome12)! - fix(token): replace dead `--days` param with working `--timeframe` for `token flow-intelligence`
+
+  The `--days` option was accepted but never sent to the API, resulting in always fetching `1d` data. This replaces it with `--timeframe` (enum: `1h | 6h | 12h | 1d | 7d`, default `1d`) which maps correctly to the API parameter.
+
 ## 1.24.0
 
 ### Minor Changes
