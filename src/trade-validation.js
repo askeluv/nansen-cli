@@ -219,7 +219,7 @@ export async function validateBalance({ chain, from, amount, amountUnit, walletA
  * ready for convertToBaseUnits().
  */
 export async function resolvePercentAmount({ chain, from, walletAddress, percentage, decimals }) {
-  if (percentage <= 0 || percentage > 100) {
+  if (!Number.isFinite(percentage) || percentage <= 0 || percentage > 100) {
     throw new Error(
       percentage > 100
         ? `Cannot sell more than 100% of balance. Got: ${percentage}%`
