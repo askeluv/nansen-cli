@@ -5,6 +5,7 @@
 
 import crypto from 'crypto';
 import { base58Encode, base58DecodePubkey } from './wallet.js';
+import { encodeCompactU16 } from './transfer.js';
 
 // ============= Constants =============
 
@@ -17,22 +18,6 @@ const _SYSTEM_PROGRAM = '11111111111111111111111111111111';
 
 const DEFAULT_COMPUTE_UNIT_LIMIT = 20000;
 const DEFAULT_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 1;
-
-// ============= Compact-u16 Encoding =============
-// (Solana's variable-length integer format, from trading.js pattern)
-
-export function encodeCompactU16(value) {
-  if (value < 0x80) return Buffer.from([value]);
-  if (value < 0x4000) return Buffer.from([
-    (value & 0x7f) | 0x80,
-    (value >> 7) & 0x7f,
-  ]);
-  return Buffer.from([
-    (value & 0x7f) | 0x80,
-    ((value >> 7) & 0x7f) | 0x80,
-    (value >> 14) & 0x03,
-  ]);
-}
 
 // ============= PDA Derivation =============
 

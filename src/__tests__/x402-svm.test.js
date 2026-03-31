@@ -6,7 +6,6 @@ import { describe, it, expect } from 'vitest';
 import crypto from 'crypto';
 import { base58Decode, base58Encode } from '../wallet.js';
 import {
-  encodeCompactU16,
   deriveATA,
   isSvmNetwork,
   getSolanaRpcUrl,
@@ -48,28 +47,6 @@ describe('base58Decode', () => {
     const decoded = base58Decode('11111111111111111111111111111111');
     expect(decoded.length).toBe(32);
     expect(decoded.every(b => b === 0)).toBe(true);
-  });
-});
-
-describe('encodeCompactU16', () => {
-  it('should encode single-byte values', () => {
-    expect(encodeCompactU16(0)).toEqual(Buffer.from([0]));
-    expect(encodeCompactU16(1)).toEqual(Buffer.from([1]));
-    expect(encodeCompactU16(127)).toEqual(Buffer.from([127]));
-  });
-
-  it('should encode two-byte values', () => {
-    const buf = encodeCompactU16(128);
-    expect(buf.length).toBe(2);
-    expect(buf[0] & 0x80).toBe(0x80); // High bit set on first byte
-  });
-
-  it('should encode value 256 correctly', () => {
-    const buf = encodeCompactU16(256);
-    expect(buf.length).toBe(2);
-    // 256 = 0x100 → low 7 bits = 0, high bit set; second byte = 2
-    expect(buf[0]).toBe(0x80);
-    expect(buf[1]).toBe(2);
   });
 });
 
