@@ -796,11 +796,11 @@
             "amount": {
               "type": "string",
               "required": true,
-              "description": "Amount to swap (base units by default, or token units with --amount-unit token, or USD with --amount-unit usd)"
+              "description": "Amount to swap (base units by default, or token units with --amount-unit token, USD with --amount-unit usd, or percentage of balance with --amount-unit percent)"
             },
             "amount-unit": {
               "type": "string",
-              "description": "\"token\" to specify amount in token units (e.g. 0.5 SOL), \"usd\" to specify amount in USD (e.g. 50), or \"base\" for base units (default). The CLI resolves the current token price and decimals locally; the API always receives base units."
+              "description": "\"token\" to specify amount in token units (e.g. 0.5 SOL), \"usd\" to specify amount in USD (e.g. 50), \"percent\" to sell a percentage of your balance (e.g. 100 for all), or \"base\" for base units (default). The CLI resolves the current token price, decimals, and balance locally; the API always receives base units."
             },
             "wallet": {
               "type": "string",

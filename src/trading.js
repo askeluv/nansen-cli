@@ -975,7 +975,7 @@ OPTIONS:
   --from <symbol|address>   Input token (symbol like SOL, USDC or address)
   --to <symbol|address>     Output token (symbol like USDC, ETH or address)
   --amount <units>          Amount in BASE UNITS (e.g. lamports, wei)
-  --amount-unit <unit>      "token" for token units (e.g. 0.5 SOL), "usd" for USD (e.g. 50)
+  --amount-unit <unit>      "token" for token units, "usd" for USD, "percent" for % of balance
   --wallet <name>           Wallet name (default: default wallet). Use "walletconnect" or "wc" for WalletConnect.
   --to-wallet <address>     Destination wallet address (auto-derived for cross-chain if omitted)
   --slippage <pct>          Slippage as decimal (e.g. 0.03 for 3%). Default: 0.03
@@ -987,6 +987,7 @@ EXAMPLES:
   nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000
   nansen trade quote --chain solana --from SOL --to USDC --amount 0.5 --amount-unit token
   nansen trade quote --chain solana --from SOL --to USDC --amount 50 --amount-unit usd
+  nansen trade quote --chain solana --from SOL --to USDC --amount 100 --amount-unit percent
   nansen trade quote --chain base --from ETH --to USDC --amount 1000000000000000000
   nansen trade quote --chain base --to-chain solana --from USDC --to USDC --amount 1000000
   nansen trade quote --chain solana --to-chain base --from SOL --to ETH --amount 1000000000
