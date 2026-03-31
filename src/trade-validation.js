@@ -211,6 +211,61 @@ export async function validateBalance({ chain, from, amount, amountUnit, walletA
 }
 
 /**
+ * Resolve a percentage amount to a token-unit amount string.
+ * Fetches the wallet's balance of the sell token, calculates the percentage,
+ * and applies a native-token fee buffer when selling >=95%.
+ *
+ * Returns the amount in human-readable token units (e.g. "1.5"),
+ * ready for convertToBaseUnits().
+ */
+export async function resolvePercentAmount({ chain, from, walletAddress, percentage, decimals }) {
+  if (percentage <= 0 || percentage > 100) {
+    throw new Error(
+      percentage > 100
+        ? `Cannot sell more than 100% of balance. Got: ${percentage}%`
+        : `Percentage must be between 0 and 100. Got: ${percentage}%`
+    );
+  }
+
+  const normalizedChain = chain.toLowerCase();
+  const isNative = isNativeAddress(from, normalizedChain);
+
+  let balance;
+  if (isNative) {
+    balance = await fetchNativeBalance(normalizedChain, walletAddress);
+  } else {
+    balance = await fetchTokenBalance(normalizedChain, from, walletAddress, decimals);
+  }
+
+  if (balance === null) {
+    throw new Error(`Could not fetch balance for ${from} on ${normalizedChain}. Check your RPC connection.`);
+  }
+  if (balance === 0) {
+    const symbol = isNative ? (NATIVE_SYMBOLS[normalizedChain] || from) : from;
+    throw new Error(`No ${symbol} balance in wallet. You cannot trade a token you don't own.`);
+  }
+
+  // Calculate token amount from percentage.
+  // Use exact balance for 100% to avoid floating-point precision loss.
+  let tokenAmount = percentage === 100 ? balance : balance * (percentage / 100);
+
+  // Native token fee buffer: when selling >=95%, cap at balance - reserve.
+  if (isNative && percentage >= HIGH_PERCENTAGE_THRESHOLD) {
+    const reserve = FEE_BUFFER[normalizedChain] || 0;
+    const maxSellable = parseFloat((balance - reserve).toFixed(NATIVE_DECIMALS[normalizedChain]));
+    if (maxSellable <= 0) {
+      const symbol = NATIVE_SYMBOLS[normalizedChain] || from;
+      throw new Error(`Insufficient ${symbol} balance after reserving gas fees.`);
+    }
+    if (tokenAmount > maxSellable) {
+      tokenAmount = maxSellable;
+    }
+  }
+
+  return String(parseFloat(tokenAmount.toFixed(decimals)));
+}
+
+/**
  * Fetch an ERC-20 or SPL token balance for a wallet.
  * Returns balance in human-readable token units, or null on RPC failure.
  * Requires `decimals` to convert from base units.

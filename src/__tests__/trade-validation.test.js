@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { validateQuoteInput, fetchNativeBalance, fetchTokenBalance, validateBalance } from '../trade-validation.js';
+import { validateQuoteInput, fetchNativeBalance, fetchTokenBalance, validateBalance, resolvePercentAmount } from '../trade-validation.js';
 
 describe('validateQuoteInput', () => {
   const validSolana = {
@@ -596,6 +596,141 @@ describe('quote handler integration', () => {
 
     expect(exitCode).toBe(1);
     expect(logs.some(l => /Invalid sell token address/.test(l))).toBe(true);
+  });
+});
+
+describe('resolvePercentAmount', () => {
+  let origFetch;
+  beforeEach(() => { origFetch = global.fetch; });
+  afterEach(() => { global.fetch = origFetch; });
+
+  it('should calculate 50% of native SOL balance', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ jsonrpc: '2.0', id: 1, result: { value: 2_000_000_000 } }),
+    });
+
+    const result = await resolvePercentAmount({
+      chain: 'solana',
+      from: 'So11111111111111111111111111111111111111112',
+      walletAddress: '11111111111111111111111111111111',
+      percentage: 50,
+      decimals: 9,
+    });
+    expect(result).toBe('1');
+  });
+
+  it('should return exact balance for 100% of ERC-20 token', async () => {
+    const hexBalance = '0x' + (500_000_000n).toString(16).padStart(64, '0');
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ jsonrpc: '2.0', id: 1, result: hexBalance }),
+    });
+
+    const result = await resolvePercentAmount({
+      chain: 'base',
+      from: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+      walletAddress: '0x1234567890abcdef1234567890abcdef12345678',
+      percentage: 100,
+      decimals: 6,
+    });
+    expect(result).toBe('500');
+  });
+
+  it('should apply native fee buffer at 100% SOL', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ jsonrpc: '2.0', id: 1, result: { value: 1_000_000_000 } }),
+    });
+
+    const result = await resolvePercentAmount({
+      chain: 'solana',
+      from: 'So11111111111111111111111111111111111111112',
+      walletAddress: '11111111111111111111111111111111',
+      percentage: 100,
+      decimals: 9,
+    });
+    expect(result).toBe('0.995');
+  });
+
+  it('should not adjust amount when 95% is below fee buffer threshold', async () => {
+    const hexBalance = '0x' + (10n ** 18n).toString(16).padStart(64, '0');
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ jsonrpc: '2.0', id: 1, result: hexBalance }),
+    });
+
+    const result = await resolvePercentAmount({
+      chain: 'base',
+      from: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+      walletAddress: '0x1234567890abcdef1234567890abcdef12345678',
+      percentage: 95,
+      decimals: 18,
+    });
+    expect(result).toBe('0.95');
+  });
+
+  it('should reject percentage > 100', async () => {
+    await expect(resolvePercentAmount({
+      chain: 'solana',
+      from: 'So11111111111111111111111111111111111111112',
+      walletAddress: '11111111111111111111111111111111',
+      percentage: 150,
+      decimals: 9,
+    })).rejects.toThrow(/Cannot sell more than 100%/);
+  });
+
+  it('should reject percentage <= 0', async () => {
+    await expect(resolvePercentAmount({
+      chain: 'solana',
+      from: 'So11111111111111111111111111111111111111112',
+      walletAddress: '11111111111111111111111111111111',
+      percentage: 0,
+      decimals: 9,
+    })).rejects.toThrow(/must be between 0 and 100/);
+  });
+
+  it('should throw when balance is zero', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ jsonrpc: '2.0', id: 1, result: { value: 0 } }),
+    });
+
+    await expect(resolvePercentAmount({
+      chain: 'solana',
+      from: 'So11111111111111111111111111111111111111112',
+      walletAddress: '11111111111111111111111111111111',
+      percentage: 50,
+      decimals: 9,
+    })).rejects.toThrow(/No .* balance/);
+  });
+
+  it('should throw when balance fetch fails (null)', async () => {
+    global.fetch = vi.fn().mockRejectedValue(new Error('network error'));
+
+    await expect(resolvePercentAmount({
+      chain: 'solana',
+      from: 'So11111111111111111111111111111111111111112',
+      walletAddress: '11111111111111111111111111111111',
+      percentage: 50,
+      decimals: 9,
+    })).rejects.toThrow(/Could not fetch balance/);
+  });
+
+  it('should handle fractional percentages like 33.3%', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ jsonrpc: '2.0', id: 1, result: { value: 3_000_000_000 } }),
+    });
+
+    const result = await resolvePercentAmount({
+      chain: 'solana',
+      from: 'So11111111111111111111111111111111111111112',
+      walletAddress: '11111111111111111111111111111111',
+      percentage: 33.3,
+      decimals: 9,
+    });
+    expect(result).toBe('0.999');
   });
 });
 
