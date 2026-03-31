@@ -1881,6 +1881,171 @@ describe('quote command with --amount-unit usd', () => {
   });
 });
 
+describe('quote command with --amount-unit percent', () => {
+  it('should convert percentage to base units before API call', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const origFetch = global.fetch;
+    const fetchCalls = [];
+    global.fetch = vi.fn().mockImplementation(async (url, opts) => {
+      fetchCalls.push({ url: url.toString(), opts });
+
+      // Mock Solana getBalance — 2 SOL = 2_000_000_000 lamports
+      if (opts?.body?.includes?.('getBalance')) {
+        return {
+          ok: true,
+          json: async () => ({ jsonrpc: '2.0', id: 1, result: { value: 2_000_000_000 } }),
+        };
+      }
+
+      // Mock quote API
+      return {
+        ok: true,
+        text: async () => JSON.stringify({
+          success: true,
+          quotes: [{
+            aggregator: 'test',
+            inAmount: '1000000000',
+            outAmount: '50000000',
+            inputMint: 'So11111111111111111111111111111111111111112',
+            outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+          }],
+        }),
+      };
+    });
+
+    const logs = [];
+    const cmds = buildTradingCommands({
+      log: (msg) => logs.push(msg),
+      exit: () => {},
+    });
+
+    await cmds.quote([], null, {}, {
+      chain: 'solana',
+      from: 'SOL',
+      to: 'USDC',
+      amount: '50',
+      'amount-unit': 'percent',
+    });
+
+    // 50% of 2 SOL = 1 SOL = 1_000_000_000 lamports
+    const quoteCall = fetchCalls.find(c => c.url.includes('quote'));
+    expect(quoteCall).toBeDefined();
+    expect(quoteCall.url).toContain('amount=1000000000');
+
+    global.fetch = origFetch;
+    delete process.env.NANSEN_WALLET_PASSWORD;
+  });
+
+  it('should reject percent in exactOut mode', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const logs = [];
+    let exitCalled = false;
+    const cmds = buildTradingCommands({
+      log: (msg) => logs.push(msg),
+      exit: () => { exitCalled = true; },
+    });
+
+    await cmds.quote([], null, {}, {
+      chain: 'solana',
+      from: 'SOL',
+      to: 'USDC',
+      amount: '50',
+      'amount-unit': 'percent',
+      'swap-mode': 'exactOut',
+    });
+
+    expect(exitCalled).toBe(true);
+    expect(logs.some(l => l.includes('percent') && l.includes('exactOut'))).toBe(true);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+  });
+
+  it('should handle fractional percentages like 33.3%', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const origFetch = global.fetch;
+    const fetchCalls = [];
+    global.fetch = vi.fn().mockImplementation(async (url, opts) => {
+      fetchCalls.push({ url: url.toString(), opts });
+
+      // Mock Solana getBalance — 3 SOL = 3_000_000_000 lamports
+      if (opts?.body?.includes?.('getBalance')) {
+        return {
+          ok: true,
+          json: async () => ({ jsonrpc: '2.0', id: 1, result: { value: 3_000_000_000 } }),
+        };
+      }
+
+      // Mock quote API
+      return {
+        ok: true,
+        text: async () => JSON.stringify({
+          success: true,
+          quotes: [{
+            aggregator: 'test',
+            inAmount: '999000000',
+            outAmount: '50000000',
+            inputMint: 'So11111111111111111111111111111111111111112',
+            outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+          }],
+        }),
+      };
+    });
+
+    const logs = [];
+    const cmds = buildTradingCommands({
+      log: (msg) => logs.push(msg),
+      exit: () => {},
+    });
+
+    await cmds.quote([], null, {}, {
+      chain: 'solana',
+      from: 'SOL',
+      to: 'USDC',
+      amount: '33.3',
+      'amount-unit': 'percent',
+    });
+
+    // 33.3% of 3 SOL = 0.999 SOL = 999_000_000 lamports
+    const quoteCall = fetchCalls.find(c => c.url.includes('quote'));
+    expect(quoteCall).toBeDefined();
+    expect(quoteCall.url).toContain('amount=999000000');
+
+    global.fetch = origFetch;
+    delete process.env.NANSEN_WALLET_PASSWORD;
+  });
+
+  it('should reject percentage > 100', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const logs = [];
+    let exitCalled = false;
+    const cmds = buildTradingCommands({
+      log: (msg) => logs.push(msg),
+      exit: () => { exitCalled = true; },
+    });
+
+    await cmds.quote([], null, {}, {
+      chain: 'solana',
+      from: 'SOL',
+      to: 'USDC',
+      amount: '150',
+      'amount-unit': 'percent',
+    });
+
+    expect(exitCalled).toBe(true);
+    expect(logs.some(l => l.includes('100%'))).toBe(true);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+  });
+});
+
 // ============= API Error Handling =============
 
 describe('API error handling', () => {

@@ -13,7 +13,7 @@ import { base58Decode } from './transfer.js';
 import { keccak256, signSecp256k1, rlpEncode } from './crypto.js';
 import { getWalletConnectAddress, sendTransactionViaWalletConnect, sendSolanaTransactionViaWalletConnect, sendApprovalViaWalletConnect } from './walletconnect-trading.js';
 import { retrievePassword } from './keychain.js';
-import { validateQuoteInput, validateBalance } from './trade-validation.js';
+import { validateQuoteInput, validateBalance, resolvePercentAmount } from './trade-validation.js';
 import { CHAIN_RPCS } from './rpc-urls.js';
 
 // ============= Constants =============
@@ -996,8 +996,15 @@ EXAMPLES:
       }
 
       // Validate --amount-unit if provided
-      if (amountUnit && amountUnit !== 'token' && amountUnit !== 'base' && amountUnit !== 'usd') {
-        log(`Error: Unknown --amount-unit "${amountUnit}". Supported values: token, base, usd`);
+      if (amountUnit && amountUnit !== 'token' && amountUnit !== 'base' && amountUnit !== 'usd' && amountUnit !== 'percent') {
+        log(`Error: Unknown --amount-unit "${amountUnit}". Supported values: token, base, usd, percent`);
+        exit(1);
+        return;
+      }
+
+      // --amount-unit percent is only valid for exactIn (sell-side)
+      if (amountUnit === 'percent' && swapMode === 'exactOut') {
+        log('Error: --amount-unit percent is not supported with --swap-mode exactOut. Percentage is relative to your sell-token balance.');
         exit(1);
         return;
       }
@@ -1042,6 +1049,8 @@ EXAMPLES:
           exit(1);
           return;
         }
+      } else if (amountUnit === 'percent') {
+        // Resolved after wallet address is available — see percent resolution block below.
       } else {
         const amountError = validateBaseUnitAmount(amount);
         if (amountError) {
@@ -1094,6 +1103,26 @@ EXAMPLES:
           log('No wallet found. A wallet address is required for quotes because the trading API builds a transaction specific to the sender.\nCreate one with: nansen wallet create');
           exit(1);
           return;
+        }
+
+        // --amount-unit percent: fetch balance, calculate percentage, convert to base units.
+        // Placed after wallet resolution because we need the wallet address to fetch balance.
+        if (amountUnit === 'percent') {
+          try {
+            resolvedDecimals = await resolveTokenDecimals(from, chain);
+            const tokenAmount = await resolvePercentAmount({
+              chain,
+              from,
+              walletAddress,
+              percentage: parseFloat(amount),
+              decimals: resolvedDecimals,
+            });
+            resolvedAmount = convertToBaseUnits(tokenAmount, resolvedDecimals);
+          } catch (err) {
+            log(`Error: ${err.message}`);
+            exit(1);
+            return;
+          }
         }
 
         // Balance pre-check — catches zero balances and insufficient funds
