@@ -601,8 +601,15 @@ describe('quote handler integration', () => {
 
 describe('resolvePercentAmount', () => {
   let origFetch;
-  beforeEach(() => { origFetch = global.fetch; });
-  afterEach(() => { global.fetch = origFetch; });
+  let stderrSpy;
+  beforeEach(() => {
+    origFetch = global.fetch;
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    global.fetch = origFetch;
+    stderrSpy.mockRestore();
+  });
 
   it('should calculate 50% of native SOL balance', async () => {
     global.fetch = vi.fn().mockResolvedValue({
@@ -651,6 +658,9 @@ describe('resolvePercentAmount', () => {
       decimals: 9,
     });
     expect(result).toBe('0.995');
+    expect(stderrSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Reserving 0.005 SOL for gas')
+    );
   });
 
   it('should not adjust amount when 95% is below fee buffer threshold', async () => {

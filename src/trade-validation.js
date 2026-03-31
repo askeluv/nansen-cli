@@ -258,6 +258,10 @@ export async function resolvePercentAmount({ chain, from, walletAddress, percent
       throw new Error(`Insufficient ${symbol} balance after reserving gas fees.`);
     }
     if (tokenAmount > maxSellable) {
+      const symbol = NATIVE_SYMBOLS[normalizedChain] || from;
+      process.stderr.write(
+        `Warning: Reserving ${reserve} ${symbol} for gas. Adjusted sell amount to ${maxSellable} ${symbol}.\n`
+      );
       tokenAmount = maxSellable;
     }
   }
