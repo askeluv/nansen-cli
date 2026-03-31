@@ -5,7 +5,7 @@
 
 import crypto from 'crypto';
 import { base58Encode, base58DecodePubkey } from './wallet.js';
-import { encodeCompactU16 } from './transfer.js';
+import { encodeCompactU16, isOnEd25519Curve } from './transfer.js';
 
 // ============= Constants =============
 
@@ -41,63 +41,11 @@ export function deriveATA(ownerBase58, mintBase58, tokenProgramBase58 = TOKEN_PR
       .update(Buffer.concat([owner, tokenProgram, mint, Buffer.from([nonce]), ataProgramKey, Buffer.from('ProgramDerivedAddress')]))
       .digest();
 
-    if (!isOnCurve(hash)) {
+    if (!isOnEd25519Curve(hash)) {
       return base58Encode(hash);
     }
   }
   throw new Error('Could not derive ATA: no valid PDA found');
-}
-
-/**
- * Check if a 32-byte buffer represents a valid ed25519 curve point.
- * Ed25519 curve: -x² + y² = 1 + d*x²*y²  over GF(p) where p = 2^255 - 19
- * 
- * Decode y from the 32 bytes, compute x² = (y² - 1) / (d*y² + 1),
- * then check if x² is a quadratic residue (QR) mod p.
- */
-function isOnCurve(bytes) {
-  const p = (1n << 255n) - 19n;
-  const d = -121665n * modInverse(121666n, p) % p;
-
-  // Read y-coordinate (little-endian, clear top bit which is sign of x)
-  let y = 0n;
-  for (let i = 0; i < 32; i++) {
-    y |= BigInt(bytes[i]) << (BigInt(i) * 8n);
-  }
-  y &= (1n << 255n) - 1n; // Clear top bit
-
-  if (y >= p) return false;
-
-  // y² mod p
-  const y2 = modPow(y, 2n, p);
-  
-  // x² = (y² - 1) * inverse(d*y² + 1) mod p
-  const num = ((y2 - 1n) % p + p) % p;
-  const den = ((d * y2 + 1n) % p + p) % p;
-  const denInv = modInverse(den, p);
-  if (denInv === null) return false;
-  
-  const x2 = (num * denInv) % p;
-  
-  // Check if x² is a quadratic residue: x^((p-1)/2) == 1 mod p
-  if (x2 === 0n) return true;
-  const euler = modPow(x2, (p - 1n) / 2n, p);
-  return euler === 1n;
-}
-
-function modPow(base, exp, mod) {
-  let result = 1n;
-  base = ((base % mod) + mod) % mod;
-  while (exp > 0n) {
-    if (exp & 1n) result = (result * base) % mod;
-    exp >>= 1n;
-    base = (base * base) % mod;
-  }
-  return result;
-}
-
-function modInverse(a, mod) {
-  return modPow(((a % mod) + mod) % mod, mod - 2n, mod);
 }
 
 // ============= MessageV0 Builder =============

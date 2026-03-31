@@ -560,7 +560,7 @@ async function broadcastTransaction(signedTx, chain) {
 // ============= Public API =============
 
 // Exported for testing
-export { parseAmount, formatAmount, signEd25519, encodeCompactU16, base58Decode, base58DecodePubkey, deriveATA, validateEvmAddress, validateSolanaAddress, bigIntToHex };
+export { parseAmount, formatAmount, signEd25519, encodeCompactU16, base58Decode, base58DecodePubkey, deriveATA, isOnEd25519Curve, validateEvmAddress, validateSolanaAddress, bigIntToHex };
 
 /**
  * Send tokens via Privy server wallet. EVM uses Privy's sendTransaction (handles gas/nonce).
