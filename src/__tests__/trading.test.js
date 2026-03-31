@@ -2224,6 +2224,9 @@ describe('pollBridgeStatus', () => {
       .rejects.toThrow('polling timed out');
 
     global.fetch = origFetch;
+  });
+});
+
 describe('resolveUsdPrice', () => {
   it('should return USD price from search API', async () => {
     const mockApi = {
@@ -2270,5 +2273,6 @@ describe('resolveUsdPrice', () => {
     };
     const { resolveUsdPrice } = await import('../trading.js');
     await expect(resolveUsdPrice(mockApi, 'So11111111111111111111111111111111111111112', 'solana'))
-      .rejects.toThrow('Could not resolve USD price');  });
+      .rejects.toThrow('Could not resolve USD price');
+  });
 });
