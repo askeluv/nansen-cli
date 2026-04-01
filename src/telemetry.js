@@ -22,7 +22,7 @@ const { version: cliVersion } = JSON.parse(
 const TELEMETRY_URL =
   'https://bi-data-sources.nansen.ai/events-service-68ifmnpsx2uq7cgab8dw/v2/event';
 
-const TIMEOUT_MS = 2000;
+const TIMEOUT_MS = 1000;
 
 // ─── opt-out ──────────────────────────────────────────────
 
@@ -122,15 +122,17 @@ export function getSessionId() {
 // ─── send ──────────────────────────────────────────────────
 
 /**
- * Send a telemetry event. Fire-and-forget — never throws.
+ * Send a telemetry event. Returns a promise that resolves when the request
+ * completes (or fails/times out). Never rejects — errors are swallowed.
+ * Callers that need to ensure delivery before process.exit can await this.
  */
 function sendEvent(event) {
-  if (TELEMETRY_DISABLED) return;
+  if (TELEMETRY_DISABLED) return Promise.resolve();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   timer.unref();
 
-  fetch(TELEMETRY_URL, {
+  return fetch(TELEMETRY_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(event),
@@ -178,7 +180,7 @@ export function trackCommandSucceeded({
   flags = [],
   chain = null,
 }) {
-  sendEvent({
+  return sendEvent({
     event: 'cli_command_succeeded',
     event_source: getEventSource(),
     event_id: crypto.randomUUID(),
@@ -216,7 +218,7 @@ export function trackCommandFailed({
   flags = [],
   chain = null,
 }) {
-  sendEvent({
+  return sendEvent({
     event: 'cli_command_failed',
     event_source: getEventSource(),
     event_id: crypto.randomUUID(),

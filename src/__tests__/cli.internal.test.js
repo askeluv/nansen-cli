@@ -4217,11 +4217,11 @@ describe('deprecation warnings', () => {
       errorOutput: (msg) => errors.push(msg),
       exit: () => {}
     };
-    // quote with no args shows its help; confirms handler was reached
+    // quote with no args throws CommandError (missing args); confirms handler was reached
     const result = await runCLI(['quote'], deps);
     // No deprecation warnings should be emitted (limited to help output only)
     expect(errors.some(e => e.includes('deprecated'))).toBe(false);
-    expect(result.type).toBe('no-output');
+    expect(result.type).toBe('error');
   });
 
   it('should show deprecation note in help output for deprecated research commands', async () => {

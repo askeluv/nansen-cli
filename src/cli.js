@@ -3,7 +3,7 @@
  * Extracted from index.js for coverage
  */
 
-import { NansenAPI, NansenError, ErrorCode, saveConfig, deleteConfig, getConfigFile, clearCache, getCacheDir, validateAddress, normalizeAddress, sleep } from './api.js';
+import { NansenAPI, NansenError, CommandError, ErrorCode, saveConfig, deleteConfig, getConfigFile, clearCache, getCacheDir, validateAddress, normalizeAddress, sleep } from './api.js';
 import { buildWalletCommands } from './wallet.js';
 import { buildTradingCommands } from './trading.js';
 import { formatAlertsTable, buildAlertsCommands } from './commands/alerts.js';
@@ -1759,7 +1759,7 @@ export async function runCLI(rawArgs, deps = {}) {
 
     // Commands that handle their own output return undefined
     if (result === undefined) {
-      trackCommandSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, flags: usedFlags, chain });
+      await trackCommandSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, flags: usedFlags, chain });
       return { type: 'no-output', command };
     }
 
@@ -1767,7 +1767,7 @@ export async function runCLI(rawArgs, deps = {}) {
     if (command === 'schema') {
       const formatted = formatOutput(result, { pretty, table: false });
       output(formatted.text);
-      trackCommandSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, flags: usedFlags, chain });
+      await trackCommandSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, flags: usedFlags, chain });
       return { type: 'schema', data: result };
     }
 
@@ -1790,20 +1790,26 @@ export async function runCLI(rawArgs, deps = {}) {
       if (streamOutput) {
         output(streamOutput);
       }
-      trackCommandSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, from_cache: !!result?.fromCache, flags: usedFlags, chain });
+      await trackCommandSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, from_cache: !!result?.fromCache, flags: usedFlags, chain });
       return { type: 'stream', data: result };
     }
 
     const successData = { success: true, data: result };
     const formatted = formatOutput(successData, { pretty, table, csv });
     output(formatted.text);
-    trackCommandSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, from_cache: !!result?.fromCache, flags: usedFlags, chain });
+    await trackCommandSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, from_cache: !!result?.fromCache, flags: usedFlags, chain });
     return { type: csv ? 'csv' : 'success', data: result };
   } catch (error) {
-    const errorData = formatError(error);
-    const formatted = formatOutput(errorData, { pretty, table, csv });
-    output(formatted.text);
-    trackCommandFailed({
+    let errorData;
+    if (error instanceof CommandError) {
+      output(error.message);
+      errorData = { error: error.message, code: error.code };
+    } else {
+      errorData = formatError(error);
+      const formatted = formatOutput(errorData, { pretty, table, csv });
+      output(formatted.text);
+    }
+    await trackCommandFailed({
       command: fullCommand,
       duration_ms: Date.now() - startTime,
       error_code: error.code || 'UNKNOWN',

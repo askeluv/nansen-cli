@@ -163,8 +163,8 @@ describe('telemetry tracking for all first-level commands', () => {
   it('trade quote (missing args shows usage)', async () => {
     await runCLI(['trade', 'quote'], baseDeps());
     expect(wasTracked()).toBe(1);
-    expect(trackSucceeded).toHaveBeenCalledOnce();
-    expect(trackSucceeded.mock.calls[0][0].command).toBe('trade quote');
+    expect(trackFailed).toHaveBeenCalledOnce();
+    expect(trackFailed.mock.calls[0][0].command).toBe('trade quote');
   });
 
   // ── Error path ──

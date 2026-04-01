@@ -560,42 +560,32 @@ describe('validateBalance', () => {
 describe('quote handler integration', () => {
   it('rejects same-token swap at quote time', async () => {
     const { buildTradingCommands } = await import('../trading.js');
-    const logs = [];
-    let exitCode = null;
     const commands = buildTradingCommands({
-      log: (msg) => logs.push(msg),
-      exit: (code) => { exitCode = code; },
+      log: () => {},
+      exit: () => {},
     });
 
-    await commands.quote([], null, {}, {
+    await expect(commands.quote([], null, {}, {
       chain: 'solana',
       from: 'SOL',
       to: 'SOL',
       amount: '1000000000',
-    });
-
-    expect(exitCode).toBe(1);
-    expect(logs.some(l => /Cannot swap .* for itself/.test(l))).toBe(true);
+    })).rejects.toThrow(/Cannot swap .* for itself/);
   });
 
   it('rejects invalid address format at quote time', async () => {
     const { buildTradingCommands } = await import('../trading.js');
-    const logs = [];
-    let exitCode = null;
     const commands = buildTradingCommands({
-      log: (msg) => logs.push(msg),
-      exit: (code) => { exitCode = code; },
+      log: () => {},
+      exit: () => {},
     });
 
-    await commands.quote([], null, {}, {
+    await expect(commands.quote([], null, {}, {
       chain: 'solana',
       from: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
       to: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
       amount: '1000000000',
-    });
-
-    expect(exitCode).toBe(1);
-    expect(logs.some(l => /Invalid sell token address/.test(l))).toBe(true);
+    })).rejects.toThrow(/Invalid sell token address/);
   });
 });
 
@@ -775,23 +765,18 @@ describe('quote handler balance validation integration', () => {
     });
 
     const { buildTradingCommands } = await import('../trading.js');
-    const logs = [];
-    let exitCode = null;
     const commands = buildTradingCommands({
-      log: (msg) => logs.push(msg),
-      exit: (code) => { exitCode = code; },
+      log: () => {},
+      exit: () => {},
     });
 
-    await commands.quote([], null, {}, {
+    await expect(commands.quote([], null, {}, {
       chain: 'solana',
       from: 'SOL',
       to: 'USDC',
       amount: '1',
       'amount-unit': 'token',
       wallet: 'test-wallet',
-    });
-
-    expect(exitCode).toBe(1);
-    expect(logs.some(l => /No SOL balance in wallet/.test(l))).toBe(true);
+    })).rejects.toThrow(/No SOL balance in wallet/);
   });
 });
