@@ -5,7 +5,7 @@
 
 import crypto from 'crypto';
 import { base58Encode, base58DecodePubkey } from './wallet.js';
-import { encodeCompactU16, isOnEd25519Curve } from './transfer.js';
+import { encodeCompactU16, deriveATA as _deriveATA } from './transfer.js';
 
 // ============= Constants =============
 
@@ -13,7 +13,6 @@ const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 const _TOKEN_2022_PROGRAM = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
 const COMPUTE_BUDGET_PROGRAM = 'ComputeBudget111111111111111111111111111111';
 const MEMO_PROGRAM = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
-const ATA_PROGRAM = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
 const _SYSTEM_PROGRAM = '11111111111111111111111111111111';
 
 const DEFAULT_COMPUTE_UNIT_LIMIT = 20000;
@@ -23,29 +22,10 @@ const DEFAULT_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 1;
 
 /**
  * Derive Associated Token Account (ATA) address.
- * PDA seeds: [owner, tokenProgram, mint] with ATA program.
+ * Returns base58-encoded PDA. Delegates algorithm to transfer.js.
  */
 export function deriveATA(ownerBase58, mintBase58, tokenProgramBase58 = TOKEN_PROGRAM) {
-  const owner = base58DecodePubkey(ownerBase58);
-  const tokenProgram = base58DecodePubkey(tokenProgramBase58);
-  const mint = base58DecodePubkey(mintBase58);
-  const ataProgramKey = base58DecodePubkey(ATA_PROGRAM);
-
-  // find_program_address: try nonce 255 down to 0
-  // PDA = SHA256(seeds... || programId || "ProgramDerivedAddress")
-  // A valid PDA must NOT be on the ed25519 curve.
-  // Checking on-curve in pure JS without a full ed25519 implementation is hard.
-  // We use the mathematical approach: decode y-coordinate, compute x², check QR.
-  for (let nonce = 255; nonce >= 0; nonce--) {
-    const hash = crypto.createHash('sha256')
-      .update(Buffer.concat([owner, tokenProgram, mint, Buffer.from([nonce]), ataProgramKey, Buffer.from('ProgramDerivedAddress')]))
-      .digest();
-
-    if (!isOnEd25519Curve(hash)) {
-      return base58Encode(hash);
-    }
-  }
-  throw new Error('Could not derive ATA: no valid PDA found');
+  return base58Encode(_deriveATA(ownerBase58, mintBase58, tokenProgramBase58));
 }
 
 // ============= MessageV0 Builder =============
