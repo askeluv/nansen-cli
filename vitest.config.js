@@ -4,6 +4,9 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    env: {
+      NANSEN_NO_TELEMETRY: '1',
+    },
     include: ['src/**/*.test.js'],
     exclude: ['src/**/*.e2e.test.js'],
     coverage: {

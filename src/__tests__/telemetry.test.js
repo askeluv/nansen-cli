@@ -22,6 +22,7 @@ describe('telemetry', () => {
     fetchMock.mockClear();
     delete process.env.NANSEN_BASE_URL;
     delete process.env.NANSEN_SESSION_ID;
+    delete process.env.NANSEN_NO_TELEMETRY;
     ({ trackCommandSucceeded, trackCommandFailed, getAnonymousId, getSessionId } = await freshImport());
   });
 
