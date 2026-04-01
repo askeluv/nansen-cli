@@ -1,4 +1,8 @@
 name: CI
+# WARNING: Do not rename this file. The filename (ci.yml) is registered in the
+# npmjs Trusted Publishing configuration (org + repo + workflow file). Renaming
+# it will break OIDC authentication and npm publishes will fail silently or with
+# a 401. If you must rename it, update the workflow name in npmjs first.
 
 on:
   push:
