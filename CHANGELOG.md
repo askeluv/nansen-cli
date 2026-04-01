@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.26.0
+
+### Minor Changes
+
+- [#380](https://github.com/nansen-ai/nansen-cli/pull/380) [`12e4e25`](https://github.com/nansen-ai/nansen-cli/commit/12e4e25d50f50ff1ebbae160ba1016abd1cdbb4d) Thanks [@TimNooren](https://github.com/TimNooren)! - Add `--amount-unit percent` to trade commands, allowing trades as a percentage of wallet balance (e.g. `--amount 100 --amount-unit percent` to sell all)
+
+### Patch Changes
+
+- [#382](https://github.com/nansen-ai/nansen-cli/pull/382) [`d9c87ef`](https://github.com/nansen-ai/nansen-cli/commit/d9c87ef9df51a3e9c53ea59674ad9efe9aa33fb7) Thanks [@kome12](https://github.com/kome12)! - fix: default `profiler balance` chain to `'all'` instead of `'ethereum'`
+
+  Previously, `nansen profiler balance --address <addr>` without `--chain` defaulted to `ethereum`, returning empty results for wallets with no ETH mainnet holdings (e.g. Base-only or Solana-only wallets). Now defaults to `'all'`, letting the API auto-route based on address format.
+
 ## 1.25.1
 
 ### Patch Changes
