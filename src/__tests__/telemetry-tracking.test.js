@@ -69,6 +69,7 @@ describe('telemetry tracking for all first-level commands', () => {
     { category: 'perp',        sub: 'screener' },
     { category: 'portfolio',   sub: 'current', extraOpts: ['--address', '0x1234'] },
     { category: 'points',      sub: 'leaderboard' },
+    { category: 'signals',     sub: 'hl-cluster' },
     { category: 'prediction-market', sub: 'market-screener' },
   ];
 
@@ -223,7 +224,7 @@ describe('telemetry tracking for all first-level commands', () => {
     // Commands explicitly tested above (must stay in sync)
     const testedCommands = new Set([
       // research sub-categories (tested via both `research <cat>` and deprecated alias)
-      'smart-money', 'profiler', 'token', 'search', 'perp', 'portfolio', 'points', 'prediction-market',
+      'smart-money', 'profiler', 'token', 'search', 'perp', 'portfolio', 'points', 'signals', 'prediction-market',
       'research',
       // operational
       'account', 'login', 'logout', 'schema', 'cache', 'changelog',

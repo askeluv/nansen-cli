@@ -432,6 +432,19 @@ export function parseDateOption(dateOption, days = 30) {
   return { from, to };
 }
 
+/**
+ * Parse lookback shorthand like "7d" to day count.
+ * Returns fallbackDays for invalid input.
+ */
+export function parseLookbackDays(lastOption, fallbackDays = 7) {
+  if (!lastOption || typeof lastOption !== 'string') return fallbackDays;
+  const m = lastOption.trim().toLowerCase().match(/^(\d+)d$/);
+  if (!m) return fallbackDays;
+  const days = parseInt(m[1], 10);
+  if (!Number.isFinite(days) || days <= 0) return fallbackDays;
+  return days;
+}
+
 // Parse simple sort syntax: "field:direction" or "field" (defaults to DESC)
 export function parseSort(sortOption, orderByOption) {
   // If --order-by is provided, use it (full JSON control)
@@ -698,7 +711,7 @@ export const HELP = `Nansen CLI v${VERSION} — designed for AI agents.
 USAGE: nansen <command> [subcommand] [options]
 
 COMMANDS:
-  research    smart-money, profiler, token, search, perp, portfolio, points
+  research    smart-money, profiler, token, search, perp, portfolio, points, signals
   trade       quote, execute
   wallet      create, list, show, export, default, delete, forget-password
   agent       Ask the Nansen AI research agent (fast/expert modes)
@@ -719,6 +732,7 @@ EXAMPLES:
   nansen research smart-money netflow --chain solana
   nansen research token screener --chain solana --timeframe 24h
   nansen research profiler balance --address 0x... --chain ethereum
+  nansen research signals hl-cluster --last 7d --limit 200
   nansen trade quote --chain base --from ETH --to USDC --amount 1000000000000000000
 
 DEPRECATED ALIASES (still work, will be removed in a future version):
@@ -1405,6 +1419,37 @@ export function buildCommands(deps = {}) {
       return handlers[subcommand]();
     },
 
+    'signals': async (args, apiInstance, flags, options) => {
+      const subcommand = args[0] || 'help';
+      const pagination = buildPagination(options);
+      const orderBy = parseSort(options.sort, options['order-by']);
+      const lookbackDays = parseLookbackDays(options.last, 7);
+      const hasExplicitDate = options.from || options.to;
+      const date = hasExplicitDate
+        ? { from: options.from || options.to, to: options.to || options.from }
+        : parseDateOption(null, lookbackDays);
+
+      const filters = {};
+      if (options.coin) filters.coin = options.coin;
+      if (options['week-id']) filters.week_id = options['week-id'];
+      if (options.source) filters.source = options.source;
+
+      const handlers = {
+        'hl-cluster': () => apiInstance.signalsHlCluster({ filters, orderBy, pagination, date, days: lookbackDays }),
+        'help': () => ({
+          commands: ['hl-cluster'],
+          description: 'Internal event feeds for trading signals',
+          example: 'nansen research signals hl-cluster --last 7d --limit 200'
+        })
+      };
+
+      if (!handlers[subcommand]) {
+        return { error: `Unknown subcommand: ${subcommand}`, available: Object.keys(handlers) };
+      }
+
+      return handlers[subcommand]();
+    },
+
     'prediction-market': async (args, apiInstance, flags, options) => {
       if (Date.now() < new Date('2026-03-16T00:00:00Z').getTime()) {
         process.stderr.write('⚠️  PnL data for prediction markets is temporarily unavailable while we improve accuracy. We\'ll update once resolved.\n');
@@ -1446,7 +1491,7 @@ export function buildCommands(deps = {}) {
   };
 
   // 'research' delegates to the category handlers defined above
-  const RESEARCH_CATEGORIES = new Set(['smart-money', 'profiler', 'token', 'search', 'perp', 'portfolio', 'points', 'prediction-market']);
+  const RESEARCH_CATEGORIES = new Set(['smart-money', 'profiler', 'token', 'search', 'perp', 'portfolio', 'points', 'signals', 'prediction-market']);
 
   cmds['research'] = async (args, apiInstance, flags, options) => {
     const rawCategory = args[0];

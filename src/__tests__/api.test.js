@@ -119,6 +119,12 @@ const MOCK_RESPONSES = {
       { token_symbol: 'SOL', date: '2024-01-01', balance_usd: 100000 }
     ]
   },
+  signalsHlCluster: {
+    data: [
+      { signal_id: 'abc123', signal_type: 'ENTRY_LONG', coin: 'xyz:CL', source: 'live' }
+    ],
+    pagination: { page: 1, per_page: 200, is_last_page: true }
+  },
   // New Profiler endpoints
   addressHistoricalBalances: {
     balances: [
@@ -665,6 +671,38 @@ describe('NansenAPI', () => {
 
         const body = expectFetchCalledWith('/api/v1/smart-money/historical-holdings');
         expect(body.order_by).toEqual([{ field: 'balance_usd', direction: 'DESC' }]);
+      });
+    });
+
+    describe('signalsHlCluster', () => {
+      it('should fetch HL cluster signals with internal endpoint and defaults', async () => {
+        setupMock(MOCK_RESPONSES.signalsHlCluster);
+
+        const result = await api.signalsHlCluster({});
+
+        const body = expectFetchCalledWith('/api/internal/signals/hl-cluster');
+        expect(body.date).toBeDefined();
+        expect(body.date.from).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+        expect(body.date.to).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+        expect(result.data[0].signal_id).toBe('abc123');
+      });
+
+      it('should pass explicit date/filters/order/pagination', async () => {
+        setupMock(MOCK_RESPONSES.signalsHlCluster);
+
+        await api.signalsHlCluster({
+          date: { from: '2026-04-01', to: '2026-04-02' },
+          filters: { coin: 'xyz:CL', source: 'live' },
+          orderBy: [{ field: 'timestamp', direction: 'DESC' }],
+          pagination: { page: 2, per_page: 50 },
+        });
+
+        const body = expectFetchCalledWith('/api/internal/signals/hl-cluster');
+        expect(body.date).toEqual({ from: '2026-04-01', to: '2026-04-02' });
+        expect(body.filters.coin).toBe('xyz:CL');
+        expect(body.filters.source).toBe('live');
+        expect(body.order_by).toEqual([{ field: 'timestamp', direction: 'DESC' }]);
+        expect(body.pagination).toEqual({ page: 2, per_page: 50 });
       });
     });
   });

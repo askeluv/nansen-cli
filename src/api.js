@@ -763,6 +763,24 @@ export class NansenAPI {
     });
   }
 
+  // ============= Signals Endpoints =============
+
+  async signalsHlCluster(params = {}) {
+    const {
+      filters = {},
+      orderBy,
+      pagination,
+      date,
+      days = 7,
+    } = params;
+    return this.request('/api/internal/signals/hl-cluster', {
+      date: date || buildDateRange(days),
+      filters,
+      order_by: orderBy,
+      pagination,
+    });
+  }
+
   // ============= Profiler Endpoints =============
 
   async addressBalance(params = {}) {

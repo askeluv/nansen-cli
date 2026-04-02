@@ -71,6 +71,9 @@ const DOCUMENTED_ENDPOINTS = {
     { name: 'position-detail', method: 'pmPositionDetail', endpoint: '/api/v1/prediction-market/position-detail' },
     { name: 'categories', method: 'pmCategories', endpoint: '/api/v1/prediction-market/categories' },
   ],
+  signals: [
+    { name: 'hl-cluster', method: 'signalsHlCluster', endpoint: '/api/internal/signals/hl-cluster' },
+  ],
 };
 
 // Endpoints that are documented but return 404 (confirmed non-existent)
@@ -139,6 +142,14 @@ describe('API Endpoint Coverage', () => {
     }
   });
 
+  describe('Signals Endpoints', () => {
+    for (const ep of DOCUMENTED_ENDPOINTS.signals) {
+      it(`should have ${ep.name} method`, () => {
+        expect(typeof api[ep.method]).toBe('function');
+      });
+    }
+  });
+
   describe('Coverage Summary', () => {
     it('should report implemented endpoints', () => {
       const implemented = [
@@ -148,6 +159,7 @@ describe('API Endpoint Coverage', () => {
         ...DOCUMENTED_ENDPOINTS.composite,
         ...DOCUMENTED_ENDPOINTS.portfolio,
         ...DOCUMENTED_ENDPOINTS.search,
+        ...DOCUMENTED_ENDPOINTS.signals,
         ...DOCUMENTED_ENDPOINTS.predictionMarket,
       ];
       

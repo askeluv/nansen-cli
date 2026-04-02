@@ -546,6 +546,43 @@
           },
           "description": "Perpetual futures analytics"
         },
+        "signals": {
+          "subcommands": {
+            "hl-cluster": {
+              "endpoint": "/api/internal/signals/hl-cluster",
+              "description": "Hyperliquid cluster signal feed (internal)",
+              "options": {
+                "coin": {
+                  "description": "Filter by coin symbol"
+                },
+                "week-id": {
+                  "description": "Filter by week ID (e.g. 2026-W14)"
+                },
+                "source": {
+                  "description": "Filter by signal source",
+                  "enum": [
+                    "weekly",
+                    "live"
+                  ]
+                },
+                "last": {
+                  "description": "Relative lookback window, e.g. 7d",
+                  "default": "7d"
+                },
+                "from": {
+                  "description": "ISO start timestamp (overrides --last)"
+                },
+                "to": {
+                  "description": "ISO end timestamp (overrides --last)"
+                },
+                "limit": {
+                  "default": 200
+                }
+              }
+            }
+          },
+          "description": "Signal event feeds"
+        },
         "prediction-market": {
           "subcommands": {
             "ohlcv": {

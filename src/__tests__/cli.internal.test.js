@@ -2698,6 +2698,7 @@ describe('SCHEMA', () => {
     expect(r['profiler']).toBeDefined();
     expect(r['token']).toBeDefined();
     expect(r['portfolio']).toBeDefined();
+    expect(r['signals']).toBeDefined();
     expect(r['prediction-market']).toBeDefined();
   });
 
@@ -4110,6 +4111,7 @@ describe('research command routing', () => {
     expect(result.categories).toContain('smart-money');
     expect(result.categories).toContain('profiler');
     expect(result.categories).toContain('token');
+    expect(result.categories).toContain('signals');
   });
 
   it('should list categories for help subcommand', async () => {
@@ -4266,6 +4268,7 @@ describe('SCHEMA structure', () => {
     expect(researchSubs).toContain('perp');
     expect(researchSubs).toContain('portfolio');
     expect(researchSubs).toContain('points');
+    expect(researchSubs).toContain('signals');
     expect(researchSubs).toContain('prediction-market');
   });
 
