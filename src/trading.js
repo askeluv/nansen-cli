@@ -15,10 +15,12 @@ import { getWalletConnectAddress, sendTransactionViaWalletConnect, sendSolanaTra
 import { retrievePassword } from './keychain.js';
 import { validateQuoteInput, validateBalance, resolvePercentAmount } from './trade-validation.js';
 import { CHAIN_RPCS } from './rpc-urls.js';
+import { packageVersion } from './api.js';
 
 // ============= Constants =============
 
 const TRADING_API_URL = process.env.NANSEN_TRADING_API_URL || 'https://trading-api.nansen.ai';
+const CLIENT_USER_AGENT = `nansen-cli/${packageVersion}`;
 
 const CHAIN_MAP = {
   solana:   { index: '501', type: 'solana', chainId: 501,  name: 'Solana',   explorer: 'https://solscan.io/tx/', lifiChainId: '1151111081099710' },
@@ -115,7 +117,7 @@ export async function getQuote(params) {
     }
   }
 
-  const headers = { 'Accept': 'application/json' };
+  const headers = { 'Accept': 'application/json', 'User-Agent': CLIENT_USER_AGENT };
 
   const res = await fetch(url.toString(), { headers });
 
@@ -153,6 +155,7 @@ export async function executeTransaction(params, { retries = 2, retryDelayMs = 1
   const headers = {
     'Content-Type': 'application/json',
     'Accept': 'application/json',
+    'User-Agent': CLIENT_USER_AGENT,
   };
   let lastError;
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -216,7 +219,7 @@ export async function getBridgeStatus(txHash, fromChain, toChain) {
   url.searchParams.set('fromChain', fromConfig.lifiChainId || fromConfig.index);
   url.searchParams.set('toChain', toConfig.lifiChainId || toConfig.index);
 
-  const res = await fetch(url.toString(), { headers: { 'Accept': 'application/json' } });
+  const res = await fetch(url.toString(), { headers: { 'Accept': 'application/json', 'User-Agent': CLIENT_USER_AGENT } });
   const text = await res.text();
   let body;
   try {
