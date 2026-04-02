@@ -793,7 +793,6 @@ export function buildCommands(deps = {}) {
     saveConfigFn = saveConfig,
     deleteConfigFn = deleteConfig,
     getConfigFileFn = getConfigFile,
-    exit = process.exit,
     isTTY = process.stdin.isTTY
   } = deps;
 

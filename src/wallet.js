@@ -581,7 +581,7 @@ export async function deleteWallet(name, password) {
  * Build wallet command handlers for integration into CLI.
  */
 export function buildWalletCommands(deps = {}) {
-  const { log = console.log, promptFn: _promptFn, exit = process.exit } = deps;
+  const { log = console.log, promptFn: _promptFn } = deps;
 
   return {
     'wallet': async (args, apiInstance, flags, options) => {

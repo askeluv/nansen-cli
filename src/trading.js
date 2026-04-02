@@ -943,7 +943,7 @@ export function formatQuote(quote, index) {
  * Build trading command handlers for CLI integration.
  */
 export function buildTradingCommands(deps = {}) {
-  const { log = console.log, exit = process.exit } = deps;
+  const { log = console.log } = deps;
 
   return {
     'quote': async (args, apiInstance, flags, options) => {
