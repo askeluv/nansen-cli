@@ -895,12 +895,7 @@ export function buildCommands(deps = {}) {
 
       if (!apiKey && flags.human) {
         if (!isTTY) {
-          log(JSON.stringify({
-            error: 'NOT_A_TTY',
-            message: '--human requires an interactive terminal. Use --api-key or NANSEN_API_KEY env var instead.',
-          }));
-          exit(1);
-          return;
+          throw new CommandError('--human requires an interactive terminal. Use --api-key or NANSEN_API_KEY env var instead.', 'NOT_A_TTY');
         }
         log('Nansen CLI Login\n');
         log('Get your API key at: https://app.nansen.ai/auth/agent-setup\n');
@@ -908,17 +903,7 @@ export function buildCommands(deps = {}) {
       }
 
       if (!apiKey || apiKey.trim().length === 0) {
-        log(JSON.stringify({
-          error: 'API_KEY_REQUIRED',
-          message: 'No API key provided.',
-          resolution: [
-            'Run: nansen login --api-key <key>',
-            'Or set NANSEN_API_KEY environment variable',
-            'Get your API key at: https://app.nansen.ai/auth/agent-setup',
-          ],
-        }));
-        exit(1);
-        return;
+        throw new CommandError('No API key provided.\nRun: nansen login --api-key <key>\nOr set NANSEN_API_KEY environment variable\nGet your API key at: https://app.nansen.ai/auth/agent-setup', 'API_KEY_REQUIRED');
       }
 
       // Verify API key before saving
@@ -933,20 +918,9 @@ export function buildCommands(deps = {}) {
         accountInfo = await testApi.getAccount();
       } catch (error) {
         if (error.code === ErrorCode.UNAUTHORIZED) {
-          log(JSON.stringify({
-            error: 'INVALID_API_KEY',
-            message: 'The API key is not valid.',
-            resolution: ['Check your key at https://app.nansen.ai/auth/agent-setup']
-          }));
-        } else {
-          log(JSON.stringify({
-            error: 'VERIFICATION_FAILED',
-            message: `Could not verify API key: ${error.message}`,
-            resolution: ['Check your internet connection', 'Try again']
-          }));
+          throw new CommandError('The API key is not valid.\nCheck your key at https://app.nansen.ai/auth/agent-setup', 'INVALID_API_KEY');
         }
-        exit(1);
-        return;
+        throw new CommandError(`Could not verify API key: ${error.message}\nCheck your internet connection and try again`, 'VERIFICATION_FAILED');
       }
 
       // Key is valid - now save

@@ -378,13 +378,13 @@ describe('passwordless wallet CRUD', () => {
     const logs = [];
     const { buildWalletCommands } = await import('../wallet.js');
     const cmds = buildWalletCommands({ log: (m) => logs.push(m), promptFn, exit: () => {} });
-    // Dry run so we don't need RPC mocks
+    // Send will throw CommandError (no RPC mocks), but the point is promptFn was never called
     await cmds.wallet(['send'], null, { 'dry-run': true }, {
       to: '0x742d35Cc6bF4F3f4e0e3a8DD7e37ff4e4Be4E4B4',
       amount: '0.01',
       chain: 'base',
       wallet: 'nopass-send',
-    });
+    }).catch(() => {});
     expect(promptFn).not.toHaveBeenCalled();
   });
 
@@ -618,18 +618,16 @@ describe('Privy wallet create does not emit PASSWORD_REQUIRED', () => {
 
     const { buildWalletCommands } = await import('../wallet.js');
     const output = [];
-    const exitCodes = [];
     const cmds = buildWalletCommands({
       log: (m) => output.push(m),
-      exit: (code) => exitCodes.push(code),
+      exit: () => {},
     });
 
-    await cmds.wallet(['create'], null, {}, { provider: 'privy' });
+    const err = await cmds.wallet(['create'], null, {}, { provider: 'privy' }).catch(e => e);
 
-    const joined = output.join('\n');
-    expect(joined).toContain('Privy credentials required');
-    expect(joined).not.toContain('PASSWORD_REQUIRED');
-    expect(exitCodes).toContain(1);
+    expect(err.message).toContain('Privy credentials required');
+    expect(err.message).not.toContain('PASSWORD_REQUIRED');
+    expect(output.join('\n')).not.toContain('PASSWORD_REQUIRED');
   });
 });
 

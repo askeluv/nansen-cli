@@ -1222,8 +1222,7 @@ EXAMPLES:
       const noSimulate = flags['no-simulate'];
 
       if (!quoteId) {
-        log(`
-Usage: nansen trade execute --quote <quoteId> [options]
+        throw new CommandError(`Usage: nansen trade execute --quote <quoteId> [options]
 
 OPTIONS:
   --quote <id>              Quote ID from 'nansen quote'
@@ -1231,10 +1230,7 @@ OPTIONS:
   --no-simulate             Skip pre-broadcast simulation
 
 EXAMPLES:
-  nansen trade execute --quote 1708900000000-abc123
-`);
-        exit(1);
-        return;
+  nansen trade execute --quote 1708900000000-abc123`, 'MISSING_ARGS');
       }
 
       try {
@@ -1245,9 +1241,7 @@ EXAMPLES:
 
         const allQuotes = quoteData.response.quotes || [];
         if (!allQuotes.length) {
-          log('❌ No quote data found');
-          exit(1);
-          return;
+          throw new CommandError('No quote data found', 'NO_QUOTES');
         }
 
         // --quote-index pins a specific quote (no fallback)
@@ -1258,10 +1252,7 @@ EXAMPLES:
         // Check if any quote in range has transaction data before prompting for password
         const hasAnyTransaction = allQuotes.slice(startIndex, endIndex).some(q => q?.transaction);
         if (!hasAnyTransaction) {
-          log('❌ No quotes contain transaction data.');
-          log('  Ensure userWalletAddress was provided when fetching the quote.');
-          exit(1);
-          return;
+          throw new CommandError('No quotes contain transaction data.\nEnsure userWalletAddress was provided when fetching the quote.', 'NO_TRANSACTION');
         }
 
         // Determine if this is a WalletConnect or Privy-signed quote
@@ -1282,16 +1273,7 @@ EXAMPLES:
           if (walletConfig.passwordHash) {
             password = resolveTradePassword();
             if (!password) {
-              log(JSON.stringify({
-                error: 'PASSWORD_REQUIRED',
-                message: 'Wallet is encrypted and no password was found.',
-                resolution: [
-                  'Set NANSEN_WALLET_PASSWORD environment variable',
-                  'Or run: nansen wallet create (password is saved to OS keychain automatically)',
-                ],
-              }));
-              exit(1);
-              return;
+              throw new CommandError('Wallet is encrypted and no password was found.\nSet NANSEN_WALLET_PASSWORD environment variable\nOr run: nansen wallet create (password is saved to OS keychain automatically)', 'PASSWORD_REQUIRED');
             }
           }
 
@@ -1301,9 +1283,7 @@ EXAMPLES:
             effectiveWalletName = list.defaultWallet;
           }
           if (!effectiveWalletName) {
-            log('No wallet found. Create one with: nansen wallet create');
-            exit(1);
-            return;
+            throw new CommandError('No wallet found. Create one with: nansen wallet create', 'NO_WALLET');
           }
 
           exported = exportWallet(effectiveWalletName, password);
@@ -1311,9 +1291,7 @@ EXAMPLES:
           // Verify WalletConnect session is still active and address matches quote
           const wcAddress = await getWalletConnectAddress(chainType);
           if (!wcAddress) {
-            log('No WalletConnect session active. Run: walletconnect connect');
-            exit(1);
-            return;
+            throw new CommandError('No WalletConnect session active. Run: walletconnect connect', 'NO_WALLET');
           }
           // Check address matches the one used during quoting
           const quoteWallet = quoteData.response?.quotes?.[0]?.transaction?.from
@@ -1321,9 +1299,7 @@ EXAMPLES:
           if (quoteWallet && (chainType === 'solana'
             ? wcAddress.trim() !== quoteWallet.trim()
             : wcAddress.toLowerCase().trim() !== quoteWallet.toLowerCase().trim())) {
-            log(`Connected wallet (${wcAddress}) doesn't match quote. Get a new quote with --wallet walletconnect`);
-            exit(1);
-            return;
+            throw new CommandError(`Connected wallet (${wcAddress}) doesn't match quote. Get a new quote with --wallet walletconnect`, 'WALLET_MISMATCH');
           }
         }
 
@@ -1686,8 +1662,7 @@ EXAMPLES:
                     lastQuoteError = `${quoteName} reverted on-chain`;
                     continue;
                   }
-                  exit(1);
-                  return;
+                  throw new CommandError(`Transaction was broadcast but REVERTED on-chain.\nTx Hash: ${wcResult.txHash}\nExplorer: ${chainConfig.explorer}${wcResult.txHash}\nError: ${receiptErr.message}`, 'TX_REVERTED');
                 }
 
                 log(`\n  ✓ Transaction successful!`);
@@ -1877,10 +1852,7 @@ EXAMPLES:
                     lastQuoteError = `${quoteName} reverted on-chain`;
                     continue;
                   }
-                  log(`\n  The trading API reported success, but the contract execution failed.`);
-                  log(`  This can happen due to: stale quotes, insufficient gas, or liquidity changes.`);
-                  exit(1);
-                  return;
+                  throw new CommandError(`Transaction was broadcast but REVERTED on-chain.\nTx Hash: ${result.txHash}\nExplorer: ${explorerUrl}\nError: ${receiptErr.message}\nThe trading API reported success, but the contract execution failed.\nThis can happen due to: stale quotes, insufficient gas, or liquidity changes.`, 'TX_REVERTED');
                 }
               }
 
@@ -1935,15 +1907,13 @@ EXAMPLES:
         }
 
         // All quotes exhausted
-        log(`\n❌ All quotes failed. Last error: ${lastQuoteError || 'unknown'}`);
-        log('');
-        exit(1);
-        return undefined;
+        throw new CommandError(`All quotes failed. Last error: ${lastQuoteError || 'unknown'}`, 'ALL_QUOTES_FAILED');
 
       } catch (err) {
-        log(`Error: ${err.message}`);
-        if (err.details) log(`  Details: ${JSON.stringify(err.details)}`);
-        exit(1);
+        if (err instanceof CommandError) throw err;
+        let msg = `Error: ${err.message}`;
+        if (err.details) msg += `\n  Details: ${JSON.stringify(err.details)}`;
+        throw new CommandError(msg, err.code || 'EXECUTE_ERROR');
       }
     },
 
@@ -1953,8 +1923,7 @@ EXAMPLES:
       const toChain = options['to-chain'] || args[2];
 
       if (!txHash || !fromChain || !toChain) {
-        log(`
-Usage: nansen trade bridge-status --tx-hash <hash> --from-chain <chain> --to-chain <chain>
+        throw new CommandError(`Usage: nansen trade bridge-status --tx-hash <hash> --from-chain <chain> --to-chain <chain>
 
 Check the status of a cross-chain bridge transaction.
 
@@ -1964,10 +1933,7 @@ OPTIONS:
   --to-chain <chain>        Destination chain (solana or base)
 
 EXAMPLES:
-  nansen trade bridge-status --tx-hash 0xabc... --from-chain base --to-chain solana
-`);
-        exit(1);
-        return;
+  nansen trade bridge-status --tx-hash 0xabc... --from-chain base --to-chain solana`, 'MISSING_ARGS');
       }
 
       try {
@@ -1991,9 +1957,10 @@ EXAMPLES:
         if (status.lifiExplorerLink) log(`  Li.Fi:       ${status.lifiExplorerLink}`);
         log('');
       } catch (err) {
-        log(`Error: ${err.message}`);
-        if (err.details) log(`  Details: ${JSON.stringify(err.details)}`);
-        exit(1);
+        if (err instanceof CommandError) throw err;
+        let msg = `Error: ${err.message}`;
+        if (err.details) msg += `\n  Details: ${JSON.stringify(err.details)}`;
+        throw new CommandError(msg, err.code || 'BRIDGE_STATUS_ERROR');
       }
     },
   };

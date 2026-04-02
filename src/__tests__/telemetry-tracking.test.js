@@ -118,8 +118,8 @@ describe('telemetry tracking for all first-level commands', () => {
       getConfigFileFn: () => '/tmp/fake-config.json',
     }));
     expect(wasTracked()).toBe(1);
-    expect(trackSucceeded).toHaveBeenCalledOnce();
-    expect(trackSucceeded.mock.calls[0][0].command).toBe('login');
+    expect(trackFailed).toHaveBeenCalledOnce();
+    expect(trackFailed.mock.calls[0][0].command).toBe('login');
   });
 
   it('logout', async () => {

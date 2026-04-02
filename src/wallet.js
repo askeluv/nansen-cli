@@ -9,6 +9,7 @@ import path from 'path';
 import * as readline from 'readline';
 import { base58 } from '@scure/base';
 import { storePassword, retrievePassword, deletePassword, deleteCredentialsFile } from './keychain.js';
+import { CommandError } from './api.js';
 
 // ============= Constants =============
 
@@ -599,9 +600,7 @@ export function buildWalletCommands(deps = {}) {
             log('');
             return;
           } catch (err) {
-            log(`❌ ${err.message}`);
-            exit(1);
-            return;
+            throw new CommandError(err.message, 'PRIVY_ERROR');
           }
         }
         // All other subcommands fall through to unified handlers below
@@ -628,28 +627,19 @@ export function buildWalletCommands(deps = {}) {
 
             // Step 2: If --human flag, allow interactive prompt (requires TTY)
             if (!password && flags.human && !process.stdin.isTTY && !deps.promptFn) {
-              log(JSON.stringify({
-                error: 'NOT_A_TTY',
-                message: '--human requires an interactive terminal. Set NANSEN_WALLET_PASSWORD env var instead.',
-              }));
-              exit(1);
-              return;
+              throw new CommandError('--human requires an interactive terminal. Set NANSEN_WALLET_PASSWORD env var instead.', 'NOT_A_TTY');
             }
             if (!password && flags.human && (process.stdin.isTTY || deps.promptFn)) {
               password = await promptPassword('Enter wallet password: ', deps);
               if (password && password.length < 12) {
-                log('❌ Password must be at least 12 characters');
-                exit(1);
-                return;
+                throw new CommandError('Password must be at least 12 characters', 'INVALID_INPUT');
               }
               if (password) {
                 const config = getWalletConfig();
                 if (!config.passwordHash) {
                   const confirm = await promptPassword('Confirm password: ', deps);
                   if (password !== confirm) {
-                    log('❌ Passwords do not match');
-                    exit(1);
-                    return;
+                    throw new CommandError('Passwords do not match', 'INVALID_INPUT');
                   }
                 }
               }
@@ -657,20 +647,11 @@ export function buildWalletCommands(deps = {}) {
 
             // Step 3: No password available — return structured error for agents
             if (!password) {
-              log(JSON.stringify({
-                error: 'PASSWORD_REQUIRED',
-                message: 'A wallet password is required. Ask the user to provide one.',
-                instructions: 'Re-run with: NANSEN_WALLET_PASSWORD=<password> nansen wallet create',
-                note: 'Password must be at least 12 characters. After creation, the password is saved to the OS keychain automatically — future operations will not require it.',
-              }));
-              exit(1);
-              return;
+              throw new CommandError('A wallet password is required. Ask the user to provide one.\nRe-run with: NANSEN_WALLET_PASSWORD=<password> nansen wallet create\nPassword must be at least 12 characters. After creation, the password is saved to the OS keychain automatically — future operations will not require it.', 'PASSWORD_REQUIRED');
             }
 
             if (password.length < 12) {
-              log('❌ Password must be at least 12 characters');
-              exit(1);
-              return;
+              throw new CommandError('Password must be at least 12 characters', 'INVALID_INPUT');
             }
           }
 
@@ -678,9 +659,7 @@ export function buildWalletCommands(deps = {}) {
           if (password !== null) {
             const config = getWalletConfig();
             if (config.passwordHash && !verifyPassword(password, config)) {
-              log('❌ Incorrect password — does not match existing wallets.');
-              exit(1);
-              return;
+              throw new CommandError('Incorrect password — does not match existing wallets.', 'INCORRECT_PASSWORD');
             }
           }
 
@@ -725,8 +704,7 @@ export function buildWalletCommands(deps = {}) {
             log('');
             return;
           } catch (err) {
-            log(`❌ ${err.message}`);
-            exit(1);
+            throw new CommandError(err.message, 'CREATE_FAILED');
           }
         },
 
@@ -750,9 +728,7 @@ export function buildWalletCommands(deps = {}) {
         'show': async () => {
           const name = options.name || args[1];
           if (!name) {
-            log('Usage: nansen wallet show <name>');
-            exit(1);
-            return;
+            throw new CommandError('Usage: nansen wallet show <name>', 'MISSING_ARGS');
           }
           try {
             const result = showWallet(name);
@@ -764,25 +740,20 @@ export function buildWalletCommands(deps = {}) {
             log(`    Created: ${result.createdAt}\n`);
             return;
           } catch (err) {
-            log(`❌ ${err.message}`);
-            exit(1);
+            throw new CommandError(err.message, 'SHOW_FAILED');
           }
         },
 
         'export': async () => {
           const name = options.name || args[1];
           if (!name) {
-            log('Usage: nansen wallet export <name>');
-            exit(1);
-            return;
+            throw new CommandError('Usage: nansen wallet export <name>', 'MISSING_ARGS');
           }
 
           const config = getWalletConfig();
           const { password, error } = await resolvePasswordForCommand(config, flags, deps);
           if (error) {
-            log(error);
-            exit(1);
-            return;
+            throw new CommandError(error, 'PASSWORD_REQUIRED');
           }
           try {
             const result = exportWallet(name, password);
@@ -796,34 +767,28 @@ export function buildWalletCommands(deps = {}) {
             log('');
             return;
           } catch (err) {
-            log(`❌ ${err.message}`);
-            exit(1);
+            throw new CommandError(err.message, 'EXPORT_FAILED');
           }
         },
 
         'default': async () => {
           const name = options.name || args[1];
           if (!name) {
-            log('Usage: nansen wallet default <name>');
-            exit(1);
-            return;
+            throw new CommandError('Usage: nansen wallet default <name>', 'MISSING_ARGS');
           }
           try {
             const result = setDefaultWallet(name);
             log(`✓ Default wallet set to "${result.defaultWallet}"`);
             return;
           } catch (err) {
-            log(`❌ ${err.message}`);
-            exit(1);
+            throw new CommandError(err.message, 'DEFAULT_FAILED');
           }
         },
 
         'delete': async () => {
           const name = options.name || args[1];
           if (!name) {
-            log('Usage: nansen wallet delete <name>');
-            exit(1);
-            return;
+            throw new CommandError('Usage: nansen wallet delete <name>', 'MISSING_ARGS');
           }
 
           // Check if this is a Privy wallet (no password needed)
@@ -839,9 +804,7 @@ export function buildWalletCommands(deps = {}) {
             const config = getWalletConfig();
             const resolved = await resolvePasswordForCommand(config, flags, deps);
             if (resolved.error) {
-              log(resolved.error);
-              exit(1);
-              return;
+              throw new CommandError(resolved.error, 'PASSWORD_REQUIRED');
             }
             password = resolved.password;
           }
@@ -857,8 +820,7 @@ export function buildWalletCommands(deps = {}) {
             }
             return;
           } catch (err) {
-            log(`❌ ${err.message}`);
-            exit(1);
+            throw new CommandError(err.message, 'DELETE_FAILED');
           }
         },
 
@@ -866,28 +828,20 @@ export function buildWalletCommands(deps = {}) {
           const { sendTokens } = await import('./transfer.js');
 
           if (!options.to) {
-            log('❌ --to <address> is required');
-            exit(1);
-            return;
+            throw new CommandError('--to <address> is required', 'MISSING_ARGS');
           }
 
           const isMax = flags.max || options.amount === 'max';
           if (!options.amount && !isMax) {
-            log('❌ --amount <number> or --max is required');
-            exit(1);
-            return;
+            throw new CommandError('--amount <number> or --max is required', 'MISSING_ARGS');
           }
 
           if (!options.chain) {
-            log('❌ --chain <evm|solana> is required');
-            exit(1);
-            return;
+            throw new CommandError('--chain <evm|solana> is required', 'MISSING_ARGS');
           }
 
           if (!['evm', 'solana', 'ethereum', 'base'].includes(options.chain)) {
-            log('❌ --chain must be one of: evm, solana, ethereum, base');
-            exit(1);
-            return;
+            throw new CommandError('--chain must be one of: evm, solana, ethereum, base', 'INVALID_INPUT');
           }
 
           const isWalletConnect = options.wallet === 'walletconnect' || options.wallet === 'wc';
@@ -912,9 +866,7 @@ export function buildWalletCommands(deps = {}) {
             const sendConfig = getWalletConfig();
             const resolved = await resolvePasswordForCommand(sendConfig, flags, deps);
             if (resolved.error) {
-              log(resolved.error);
-              exit(1);
-              return;
+              throw new CommandError(resolved.error, 'PASSWORD_REQUIRED');
             }
             password = resolved.password;
           }
@@ -960,8 +912,7 @@ export function buildWalletCommands(deps = {}) {
             log('');
             return;
           } catch (err) {
-            log(`Error: ${err.message}`);
-            exit(1);
+            throw new CommandError(err.message, 'SEND_FAILED');
           }
         },
 
@@ -979,16 +930,7 @@ export function buildWalletCommands(deps = {}) {
         'secure': async () => {
           const { password, source } = retrievePassword();
           if (!password) {
-            log(JSON.stringify({
-              error: 'NO_PASSWORD_FOUND',
-              message: 'No wallet password found in any store.',
-              resolution: [
-                'Set NANSEN_WALLET_PASSWORD and run: nansen wallet secure',
-                'This will store it in the OS keychain.',
-              ],
-            }));
-            exit(1);
-            return;
+            throw new CommandError('No wallet password found in any store.\nSet NANSEN_WALLET_PASSWORD and run: nansen wallet secure', 'NO_PASSWORD_FOUND');
           }
 
           if (source === 'keychain') {
@@ -999,20 +941,10 @@ export function buildWalletCommands(deps = {}) {
           // Verify password actually decrypts wallets before overwriting keychain
           const walletConfig = getWalletConfig();
           if (walletConfig.passwordHash && !verifyPassword(password, walletConfig)) {
-            log(JSON.stringify({
-              error: 'INCORRECT_PASSWORD',
-              message: `Password from '${source}' does not match the wallet's stored hash.`,
-              resolution: source === 'file'
-                ? [
-                    'The password in ~/.nansen/wallets/.credentials is incorrect.',
-                    'Run: nansen wallet forget-password  then re-run with the correct password: NANSEN_WALLET_PASSWORD=<pw> nansen wallet secure',
-                  ]
-                : [
-                    'Unset NANSEN_WALLET_PASSWORD if it is stale, then re-run: nansen wallet secure',
-                  ],
-            }));
-            exit(1);
-            return;
+            const resolution = source === 'file'
+              ? 'The password in ~/.nansen/wallets/.credentials is incorrect.\nRun: nansen wallet forget-password  then re-run with the correct password: NANSEN_WALLET_PASSWORD=<pw> nansen wallet secure'
+              : 'Unset NANSEN_WALLET_PASSWORD if it is stale, then re-run: nansen wallet secure';
+            throw new CommandError(`Password from '${source}' does not match the wallet's stored hash.\n${resolution}`, 'INCORRECT_PASSWORD');
           }
 
           // Try to migrate to keychain
@@ -1027,18 +959,10 @@ export function buildWalletCommands(deps = {}) {
               log('  Removed ~/.nansen/wallets/.credentials.');
             }
           } else {
-            log(JSON.stringify({
-              error: 'KEYCHAIN_UNAVAILABLE',
-              message: source === 'file'
-                ? 'OS keychain is not available. Password remains in ~/.nansen/wallets/.credentials (insecure).'
-                : 'OS keychain is not available. Password is only in the NANSEN_WALLET_PASSWORD env var (not persisted).',
-              resolution: [
-                'Set NANSEN_WALLET_PASSWORD in a secrets manager or system keyring',
-                'Use a containerized secrets agent (e.g. Vault, 1Password CLI)',
-              ],
-            }));
-            exit(1);
-            return;
+            const msg = source === 'file'
+              ? 'OS keychain is not available. Password remains in ~/.nansen/wallets/.credentials (insecure).'
+              : 'OS keychain is not available. Password is only in the NANSEN_WALLET_PASSWORD env var (not persisted).';
+            throw new CommandError(`${msg}\nSet NANSEN_WALLET_PASSWORD in a secrets manager or system keyring.`, 'KEYCHAIN_UNAVAILABLE');
           }
         },
 
@@ -1104,9 +1028,7 @@ EXAMPLES:
       };
 
       if (!handlers[subcommand]) {
-        log(`Unknown subcommand: ${subcommand}. Available: ${Object.keys(handlers).join(', ')}`);
-        exit(1);
-        return;
+        throw new CommandError(`Unknown subcommand: ${subcommand}. Available: ${Object.keys(handlers).join(', ')}`, 'UNKNOWN_COMMAND');
       }
 
       // --help on any wallet subcommand shows wallet help instead of executing

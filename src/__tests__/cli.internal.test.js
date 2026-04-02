@@ -1781,17 +1781,21 @@ describe('buildCommands', () => {
     it('should exit when no API key provided', async () => {
       const savedEnv = process.env.NANSEN_API_KEY;
       delete process.env.NANSEN_API_KEY;
-      await commands.login([], null, {}, {});
-      if (savedEnv !== undefined) process.env.NANSEN_API_KEY = savedEnv;
-      expect(mockDeps.exit).toHaveBeenCalledWith(1);
+      try {
+        await expect(commands.login([], null, {}, {})).rejects.toThrow(/API key/);
+      } finally {
+        if (savedEnv !== undefined) process.env.NANSEN_API_KEY = savedEnv;
+      }
     });
 
     it('should exit when API key is whitespace', async () => {
       const savedEnv = process.env.NANSEN_API_KEY;
       delete process.env.NANSEN_API_KEY;
-      await commands.login([], null, {}, { 'api-key': '   ' });
-      if (savedEnv !== undefined) process.env.NANSEN_API_KEY = savedEnv;
-      expect(mockDeps.exit).toHaveBeenCalledWith(1);
+      try {
+        await expect(commands.login([], null, {}, { 'api-key': '   ' })).rejects.toThrow(/API key/);
+      } finally {
+        if (savedEnv !== undefined) process.env.NANSEN_API_KEY = savedEnv;
+      }
     });
 
     it('should save config with --api-key option after verification', async () => {
@@ -1810,34 +1814,32 @@ describe('buildCommands', () => {
     it('should exit when no API key available', async () => {
       const savedEnv = process.env.NANSEN_API_KEY;
       delete process.env.NANSEN_API_KEY;
-
-      await commands.login([], null, {}, {});
-
-      if (savedEnv !== undefined) process.env.NANSEN_API_KEY = savedEnv;
-      expect(mockDeps.exit).toHaveBeenCalledWith(1);
-      expect(logs.some(l => l.includes('API_KEY_REQUIRED'))).toBe(true);
+      try {
+        const err = await commands.login([], null, {}, {}).catch(e => e);
+        expect(err.code).toBe('API_KEY_REQUIRED');
+      } finally {
+        if (savedEnv !== undefined) process.env.NANSEN_API_KEY = savedEnv;
+      }
     });
 
     it('should reject invalid API key (401)', async () => {
       const mockApi = { getAccount: vi.fn().mockRejectedValue({ code: 'UNAUTHORIZED', message: 'Unauthorized' }) };
       mockDeps.NansenAPIClass.mockImplementation(function() { return mockApi; });
 
-      await commands.login([], null, {}, { 'api-key': 'invalid-key' });
+      const err = await commands.login([], null, {}, { 'api-key': 'invalid-key' }).catch(e => e);
 
-      expect(mockDeps.exit).toHaveBeenCalledWith(1);
+      expect(err.code).toBe('INVALID_API_KEY');
       expect(mockDeps.saveConfigFn).not.toHaveBeenCalled();
-      expect(logs.some(l => l.includes('INVALID_API_KEY'))).toBe(true);
     });
 
     it('should handle network errors during verification', async () => {
       const mockApi = { getAccount: vi.fn().mockRejectedValue({ code: 'NETWORK_ERROR', message: 'Network error' }) };
       mockDeps.NansenAPIClass.mockImplementation(function() { return mockApi; });
 
-      await commands.login([], null, {}, { 'api-key': 'some-key' });
+      const err = await commands.login([], null, {}, { 'api-key': 'some-key' }).catch(e => e);
 
-      expect(mockDeps.exit).toHaveBeenCalledWith(1);
+      expect(err.code).toBe('VERIFICATION_FAILED');
       expect(mockDeps.saveConfigFn).not.toHaveBeenCalled();
-      expect(logs.some(l => l.includes('VERIFICATION_FAILED'))).toBe(true);
     });
 
     it('should display account info on successful login', async () => {
@@ -2650,12 +2652,12 @@ describe('login/logout flow', () => {
     it('should exit when no API key available', async () => {
       const savedEnv = process.env.NANSEN_API_KEY;
       delete process.env.NANSEN_API_KEY;
-      
-      await commands.login([], null, {}, {});
-      
-      if (savedEnv !== undefined) process.env.NANSEN_API_KEY = savedEnv;
-      expect(logs.some(l => l.includes('API_KEY_REQUIRED'))).toBe(true);
-      expect(mockDeps.exit).toHaveBeenCalledWith(1);
+      try {
+        const err = await commands.login([], null, {}, {}).catch(e => e);
+        expect(err.code).toBe('API_KEY_REQUIRED');
+      } finally {
+        if (savedEnv !== undefined) process.env.NANSEN_API_KEY = savedEnv;
+      }
     });
   });
 
