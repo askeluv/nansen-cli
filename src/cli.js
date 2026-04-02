@@ -1780,6 +1780,7 @@ export async function runCLI(rawArgs, deps = {}) {
     // Alerts list with --table uses custom table format
     if (command === 'alerts' && subcommand === 'list' && table) {
       output(formatAlertsTable(result));
+      await trackCommandSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, flags: usedFlags, chain });
       return { type: 'success', data: result };
     }
 
