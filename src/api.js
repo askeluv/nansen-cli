@@ -455,13 +455,7 @@ export class NansenAPI {
       },
       body: JSON.stringify(NansenAPI.cleanBody(body)),
     });
-    if (!paidResponse.ok) {
-      if (process.env.DEBUG) {
-        const body = await paidResponse.text().catch(() => '');
-        console.error(`[x402] Payment rejected by ${walletLabel}: ${paidResponse.status} ${body.slice(0, 200)}`);
-      }
-      return null;
-    }
+    if (!paidResponse.ok) return null;
     if (walletLabel) {
       console.error(`[x402] Paid via ${walletLabel}${network ? ` (${network})` : ''}`);
     }

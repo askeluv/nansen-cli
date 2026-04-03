@@ -125,22 +125,6 @@ describe('loadOwsSdk', () => {
     expect(sdk1).toBe(sdk2);
   });
 
-  it('returns null when SDK is not installed', () => {
-    // Override createRequire to always throw
-    _resetSdkCache();
-    vi.doMock('module', async (importOriginal) => {
-      const original = await importOriginal();
-      return {
-        ...original,
-        createRequire: () => () => { throw new Error('not found'); },
-      };
-    });
-
-    // Re-import to pick up new mock — but since the module is already loaded,
-    // we test the cached behavior instead. The main test above confirms it loads.
-    const sdk = loadOwsSdk(); // uses cached mock from setUp
-    expect(sdk).toBe(mockSdk);
-  });
 });
 
 // ============= findOwsWallet =============
@@ -360,32 +344,6 @@ describe('createOwsPaymentSignatures (priority)', () => {
 
     expect(networks[0]).toBe('eip155:8453');
     expect(networks[1]).toBe('solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp');
-  });
-
-  it('yields nothing when SDK is not available', async () => {
-    // Force SDK cache to null
-    _resetSdkCache();
-    vi.doMock('module', async (importOriginal) => {
-      const original = await importOriginal();
-      return {
-        ...original,
-        createRequire: () => () => { throw new Error('not found'); },
-      };
-    });
-
-    // Since module is cached, manually force null
-    _resetSdkCache();
-    // Load with a fresh cache — but createRequire mock is module-level,
-    // so we need a different approach. Test the generator directly.
-    const response = make402ResponseWithHeaders([makeEvmRequirement()]);
-    // The module-level mock still returns mockSdk, so we test "no wallet" instead
-    mockSdk.listWallets.mockReturnValue([]);
-
-    const results = [];
-    for await (const item of createOwsPaymentSignatures(response, 'https://example.com')) {
-      results.push(item);
-    }
-    expect(results).toHaveLength(0);
   });
 
   it('yields nothing when no wallets found', async () => {

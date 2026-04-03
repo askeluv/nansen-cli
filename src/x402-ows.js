@@ -2,9 +2,6 @@
  * x402 Auto-Payment via Open Wallet Standard (OWS)
  *
  * Detects locally-installed OWS wallets and uses them for x402 payment signing.
- * EVM: EIP-712 typed data signing (EIP-3009 TransferWithAuthorization)
- * Solana: SPL TransferChecked transaction signing
- *
  * OWS never exposes private keys — signing happens inside the OWS vault.
  */
 
@@ -21,10 +18,6 @@ import {
   buildEIP712TypedData,
   buildPaymentSignatureHeader,
 } from './walletconnect-x402.js';
-
-// ---------------------------------------------------------------------------
-// SDK Loading
-// ---------------------------------------------------------------------------
 
 const GLOBAL_NODE_PATHS = [
   '/opt/homebrew/lib/node_modules/',
@@ -46,14 +39,12 @@ export function loadOwsSdk() {
     try {
       const require = createRequire(basePath);
       _sdkCache = require('@open-wallet-standard/core');
-      if (process.env.DEBUG) console.error(`[x402] OWS: Loaded SDK from ${basePath}`);
       return _sdkCache;
     } catch {
       continue;
     }
   }
 
-  if (process.env.DEBUG) console.error('[x402] OWS: SDK not found in global node_modules');
   _sdkCache = null;
   return null;
 }
@@ -64,44 +55,35 @@ export function _resetSdkCache() {
   _sdkResolved = false;
 }
 
-// ---------------------------------------------------------------------------
-// Wallet Resolution
-// ---------------------------------------------------------------------------
-
 /**
  * Find an OWS wallet to use for x402 payments.
  * Checks OWS_WALLET env var first, then picks the first wallet with EVM + Solana accounts.
- *
- * @returns {{ name: string, evmAddress: string, solanaAddress: string }} or null
  */
 export function findOwsWallet(sdk) {
   const envWallet = process.env.OWS_WALLET;
 
   if (envWallet) {
     try {
-      const wallet = sdk.getWallet(envWallet);
-      return extractAddresses(wallet);
+      return extractAddresses(sdk.getWallet(envWallet));
     } catch {
-      if (process.env.DEBUG) console.error(`[x402] OWS: Wallet "${envWallet}" not found`);
       return null;
     }
   }
 
   try {
-    const wallets = sdk.listWallets();
-    for (const wallet of wallets) {
+    for (const wallet of sdk.listWallets()) {
       const result = extractAddresses(wallet);
       if (result) return result;
     }
   } catch {
-    return null;
+    // OWS SDK not functional
   }
 
   return null;
 }
 
 function extractAddresses(wallet) {
-  if (!wallet || !wallet.accounts) return null;
+  if (!wallet?.accounts) return null;
   const evmAccount = wallet.accounts.find(a => a.chainId.startsWith('eip155:'));
   const solAccount = wallet.accounts.find(a => a.chainId.startsWith('solana:'));
   if (!evmAccount || !solAccount) return null;
@@ -112,35 +94,17 @@ function extractAddresses(wallet) {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Passphrase
-// ---------------------------------------------------------------------------
-
-function resolveOwsPassphrase() {
-  return process.env.OWS_PASSPHRASE || null;
-}
-
-// ---------------------------------------------------------------------------
-// EVM Payment (EIP-712 typed data → EIP-3009)
-// ---------------------------------------------------------------------------
-
-async function buildOwsEvmPayment(requirement, sdk, walletName, evmAddress, passphrase, url) {
-  const typedData = buildEIP712TypedData({ fromAddress: evmAddress, requirement });
-
-  const signResult = sdk.signTypedData(
-    walletName,
-    'evm',
-    JSON.stringify(typedData),
-    passphrase,
-  );
+async function buildOwsEvmPayment({ requirement, sdk, walletName, address, passphrase, url }) {
+  const typedData = buildEIP712TypedData({ fromAddress: address, requirement });
 
   // OWS returns 65-byte hex (r + s + v) where v = 27 + recoveryId
+  const signResult = sdk.signTypedData(walletName, 'evm', JSON.stringify(typedData), passphrase);
   const signature = signResult.signature.startsWith('0x')
     ? signResult.signature
     : '0x' + signResult.signature;
 
   const authorization = {
-    from: evmAddress,
+    from: address,
     to: requirement.payTo,
     value: (requirement.amount || requirement.maxAmountRequired).toString(),
     validAfter: typedData.message.validAfter.toString(),
@@ -156,61 +120,38 @@ async function buildOwsEvmPayment(requirement, sdk, walletName, evmAddress, pass
   });
 }
 
-// ---------------------------------------------------------------------------
-// Solana Payment (SPL TransferChecked)
-// ---------------------------------------------------------------------------
-
-async function buildOwsSvmPayment(requirement, sdk, walletName, solAddress, passphrase, url) {
+async function buildOwsSvmPayment({ requirement, sdk, walletName, address, passphrase, url }) {
   const rpcUrl = getSolanaRpcUrl(requirement.network);
   const recentBlockhash = await fetchRecentBlockhash(rpcUrl);
+  const { txBase64 } = buildUnsignedSvmTransaction(requirement, address, recentBlockhash);
 
-  const { txBase64 } = buildUnsignedSvmTransaction(
-    requirement,
-    solAddress,
-    recentBlockhash,
-  );
-
-  // OWS signTransaction accepts the full tx bytes (it internally calls extract_signable_bytes
-  // to strip the header + signature slots and signs only the message portion).
-  const txHex = Buffer.from(txBase64, 'base64').toString('hex');
-
-  const signResult = sdk.signTransaction(
-    walletName,
-    'solana',
-    txHex,
-    passphrase,
-  );
-
-  // Place OWS signature at slot 1 (client slot) in the transaction.
-  // Tx layout: [1 byte compact-u16(2)] [64 bytes facilitator slot 0] [64 bytes client slot 1] [message...]
+  // OWS signTransaction accepts full tx bytes — it internally calls extract_signable_bytes
+  // to strip the header + signature slots and signs only the message portion.
   const txBytes = Buffer.from(txBase64, 'base64');
+  const signResult = sdk.signTransaction(walletName, 'solana', txBytes.toString('hex'), passphrase);
+
+  // Place signature at slot 1 (client). Slot 0 (facilitator) stays zeros.
+  // Layout: [compact-u16(2)] [64B slot 0] [64B slot 1] [message...]
   const rawSigHex = signResult.signature.startsWith('0x')
     ? signResult.signature.slice(2)
     : signResult.signature;
   const sigBytes = Buffer.from(rawSigHex, 'hex');
-  sigBytes.copy(txBytes, 1 + 64); // slot 1 starts at offset 65
+  if (sigBytes.length !== 64) throw new Error(`Expected 64-byte ed25519 signature, got ${sigBytes.length}`);
+  sigBytes.copy(txBytes, 1 + 64);
 
   const payload = {
     x402Version: 2,
     payload: { transaction: txBytes.toString('base64') },
     accepted: requirement,
-    resource: { url },
+    resource: { url, description: '', mimeType: '' },
   };
 
   return Buffer.from(JSON.stringify(payload)).toString('base64');
 }
 
-// ---------------------------------------------------------------------------
-// Main Generator
-// ---------------------------------------------------------------------------
-
 /**
  * Generate payment signatures using OWS wallets, in priority order (EVM first, then Solana).
  * Same async-generator contract as createPaymentSignatures() in x402.js.
- *
- * @param {Response} response - The 402 HTTP response
- * @param {string} url - The original request URL
- * @yields {{ signature: string, network: string }}
  */
 export async function* createOwsPaymentSignatures(response, url) {
   const requirements = parsePaymentRequirements(response);
@@ -220,15 +161,10 @@ export async function* createOwsPaymentSignatures(response, url) {
   if (!sdk) return;
 
   const wallet = findOwsWallet(sdk);
-  if (!wallet) {
-    if (process.env.DEBUG) console.error('[x402] OWS: No OWS wallet found with EVM + Solana accounts');
-    return;
-  }
+  if (!wallet) return;
 
-  const passphrase = resolveOwsPassphrase();
-  if (process.env.DEBUG) console.error(`[x402] OWS: Using wallet "${wallet.name}" (EVM: ${wallet.evmAddress}, passphrase: ${passphrase ? 'set' : 'not set'})`);
+  const passphrase = process.env.OWS_PASSPHRASE || null;
 
-  // Rank: EVM first (gasless for client), then Solana
   const ranked = [
     ...requirements.filter(r => isEvmNetwork(r.network)),
     ...requirements.filter(r => isSvmNetwork(r.network)),
@@ -237,17 +173,14 @@ export async function* createOwsPaymentSignatures(response, url) {
   for (const req of ranked) {
     try {
       let header;
+      const opts = { requirement: req, sdk, walletName: wallet.name, passphrase, url };
       if (isEvmNetwork(req.network)) {
-        header = await buildOwsEvmPayment(req, sdk, wallet.name, wallet.evmAddress, passphrase, url);
+        header = await buildOwsEvmPayment({ ...opts, address: wallet.evmAddress });
       } else if (isSvmNetwork(req.network)) {
-        header = await buildOwsSvmPayment(req, sdk, wallet.name, wallet.solanaAddress, passphrase, url);
+        header = await buildOwsSvmPayment({ ...opts, address: wallet.solanaAddress });
       }
-      if (header) {
-        if (process.env.DEBUG) console.error(`[x402] OWS: Signed successfully for ${req.network}, submitting payment...`);
-        yield { signature: header, network: req.network };
-      }
-    } catch (err) {
-      if (process.env.DEBUG) console.error(`[x402] OWS: Signing failed for ${req.network}: ${err.message}`);
+      if (header) yield { signature: header, network: req.network };
+    } catch {
       continue;
     }
   }
