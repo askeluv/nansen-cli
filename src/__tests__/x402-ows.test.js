@@ -2,7 +2,7 @@
  * Tests for OWS (Open Wallet Standard) x402 payment provider.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock the OWS SDK loader — we never want to load the real native addon in tests
 const mockSdk = {
