@@ -46,14 +46,14 @@ export function loadOwsSdk() {
     try {
       const require = createRequire(basePath);
       _sdkCache = require('@open-wallet-standard/core');
-      if (process.env.DEBUG) console.error(`[ows] Loaded SDK from ${basePath}`);
+      if (process.env.DEBUG) console.error(`[x402] OWS: Loaded SDK from ${basePath}`);
       return _sdkCache;
     } catch {
       continue;
     }
   }
 
-  if (process.env.DEBUG) console.error('[ows] SDK not found in global node_modules');
+  if (process.env.DEBUG) console.error('[x402] OWS: SDK not found in global node_modules');
   _sdkCache = null;
   return null;
 }
@@ -82,7 +82,7 @@ export function findOwsWallet(sdk) {
       const wallet = sdk.getWallet(envWallet);
       return extractAddresses(wallet);
     } catch {
-      if (process.env.DEBUG) console.error(`[ows] Wallet "${envWallet}" not found`);
+      if (process.env.DEBUG) console.error(`[x402] OWS: Wallet "${envWallet}" not found`);
       return null;
     }
   }
@@ -170,6 +170,8 @@ async function buildOwsSvmPayment(requirement, sdk, walletName, solAddress, pass
     recentBlockhash,
   );
 
+  // OWS signTransaction accepts the full tx bytes (it internally calls extract_signable_bytes
+  // to strip the header + signature slots and signs only the message portion).
   const txHex = Buffer.from(txBase64, 'base64').toString('hex');
 
   const signResult = sdk.signTransaction(
@@ -182,7 +184,10 @@ async function buildOwsSvmPayment(requirement, sdk, walletName, solAddress, pass
   // Place OWS signature at slot 1 (client slot) in the transaction.
   // Tx layout: [1 byte compact-u16(2)] [64 bytes facilitator slot 0] [64 bytes client slot 1] [message...]
   const txBytes = Buffer.from(txBase64, 'base64');
-  const sigBytes = Buffer.from(signResult.signature, 'hex');
+  const rawSigHex = signResult.signature.startsWith('0x')
+    ? signResult.signature.slice(2)
+    : signResult.signature;
+  const sigBytes = Buffer.from(rawSigHex, 'hex');
   sigBytes.copy(txBytes, 1 + 64); // slot 1 starts at offset 65
 
   const payload = {
@@ -215,9 +220,13 @@ export async function* createOwsPaymentSignatures(response, url) {
   if (!sdk) return;
 
   const wallet = findOwsWallet(sdk);
-  if (!wallet) return;
+  if (!wallet) {
+    if (process.env.DEBUG) console.error('[x402] OWS: No OWS wallet found with EVM + Solana accounts');
+    return;
+  }
 
   const passphrase = resolveOwsPassphrase();
+  if (process.env.DEBUG) console.error(`[x402] OWS: Using wallet "${wallet.name}" (EVM: ${wallet.evmAddress}, passphrase: ${passphrase ? 'set' : 'not set'})`);
 
   // Rank: EVM first (gasless for client), then Solana
   const ranked = [
@@ -233,9 +242,12 @@ export async function* createOwsPaymentSignatures(response, url) {
       } else if (isSvmNetwork(req.network)) {
         header = await buildOwsSvmPayment(req, sdk, wallet.name, wallet.solanaAddress, passphrase, url);
       }
-      if (header) yield { signature: header, network: req.network };
+      if (header) {
+        if (process.env.DEBUG) console.error(`[x402] OWS: Signed successfully for ${req.network}, submitting payment...`);
+        yield { signature: header, network: req.network };
+      }
     } catch (err) {
-      if (process.env.DEBUG) console.error(`[ows] Signing failed for ${req.network}: ${err.message}`);
+      if (process.env.DEBUG) console.error(`[x402] OWS: Signing failed for ${req.network}: ${err.message}`);
       continue;
     }
   }

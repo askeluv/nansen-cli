@@ -84,15 +84,6 @@ function makeSvmRequirement() {
   };
 }
 
-function make402Response(requirements) {
-  const encoded = btoa(JSON.stringify({ accepts: requirements }));
-  return {
-    headers: new Map([['payment-required', encoded]]),
-    status: 402,
-  };
-}
-
-// Adapt Map-based headers to work with parsePaymentRequirements (expects .get())
 function make402ResponseWithHeaders(requirements) {
   const encoded = Buffer.from(JSON.stringify({ accepts: requirements })).toString('base64');
   const headers = {
