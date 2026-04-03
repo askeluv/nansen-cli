@@ -604,7 +604,16 @@ export class NansenAPI {
                   if (result !== null) return result;
                   // This payment option was rejected, try next
                 }
-              } catch { /* local wallet unavailable, try WalletConnect */ }
+              } catch { /* local wallet unavailable, try OWS */ }
+
+              // 1.5. Try OWS wallet (Open Wallet Standard)
+              try {
+                const { createOwsPaymentSignatures } = await import('./x402-ows.js');
+                for await (const { signature, network } of createOwsPaymentSignatures(response, url)) {
+                  const result = await this._x402Retry(signature, 'OWS wallet', network, url, body, options);
+                  if (result !== null) return result;
+                }
+              } catch { /* OWS unavailable, try WalletConnect */ }
 
               // 2. Fall back to WalletConnect (walletconnect-x402.js)
               {
