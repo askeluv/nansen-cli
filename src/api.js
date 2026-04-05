@@ -69,12 +69,17 @@ export const ErrorCode = {
  *
  * runCLI outputs CommandError.message as plain text (not JSON-formatted like
  * NansenError), then fires trackCommandFailed before exiting.
+ *
+ * When `data` is provided, runCLI outputs JSON.stringify(data) instead of the
+ * plain message — this preserves structured JSON output for errors that agents
+ * parse (e.g. PASSWORD_REQUIRED, API_KEY_REQUIRED).
  */
 export class CommandError extends Error {
-  constructor(message, code = 'COMMAND_ERROR') {
+  constructor(message, code = 'COMMAND_ERROR', data = null) {
     super(message);
     this.name = 'CommandError';
     this.code = code;
+    this.data = data;
   }
 }
 

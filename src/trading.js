@@ -1241,7 +1241,7 @@ EXAMPLES:
 
         const allQuotes = quoteData.response.quotes || [];
         if (!allQuotes.length) {
-          throw new CommandError('No quote data found', 'NO_QUOTES');
+          throw new CommandError('❌ No quote data found', 'NO_QUOTES');
         }
 
         // --quote-index pins a specific quote (no fallback)
@@ -1252,7 +1252,7 @@ EXAMPLES:
         // Check if any quote in range has transaction data before prompting for password
         const hasAnyTransaction = allQuotes.slice(startIndex, endIndex).some(q => q?.transaction);
         if (!hasAnyTransaction) {
-          throw new CommandError('No quotes contain transaction data.\nEnsure userWalletAddress was provided when fetching the quote.', 'NO_TRANSACTION');
+          throw new CommandError('❌ No quotes contain transaction data.\n  Ensure userWalletAddress was provided when fetching the quote.', 'NO_TRANSACTION');
         }
 
         // Determine if this is a WalletConnect or Privy-signed quote
@@ -1273,7 +1273,14 @@ EXAMPLES:
           if (walletConfig.passwordHash) {
             password = resolveTradePassword();
             if (!password) {
-              throw new CommandError('Wallet is encrypted and no password was found.\nSet NANSEN_WALLET_PASSWORD environment variable\nOr run: nansen wallet create (password is saved to OS keychain automatically)', 'PASSWORD_REQUIRED');
+              throw new CommandError('Wallet is encrypted and no password was found.', 'PASSWORD_REQUIRED', {
+                error: 'PASSWORD_REQUIRED',
+                message: 'Wallet is encrypted and no password was found.',
+                resolution: [
+                  'Set NANSEN_WALLET_PASSWORD environment variable',
+                  'Or run: nansen wallet create (password is saved to OS keychain automatically)',
+                ],
+              });
             }
           }
 
@@ -1662,7 +1669,7 @@ EXAMPLES:
                     lastQuoteError = `${quoteName} reverted on-chain`;
                     continue;
                   }
-                  throw new CommandError(`Transaction was broadcast but REVERTED on-chain.\nTx Hash: ${wcResult.txHash}\nExplorer: ${chainConfig.explorer}${wcResult.txHash}\nError: ${receiptErr.message}`, 'TX_REVERTED');
+                  throw new CommandError(`\n  ⚠ Transaction was broadcast but REVERTED on-chain!\n    Tx Hash:   ${wcResult.txHash}\n    Explorer:  ${chainConfig.explorer}${wcResult.txHash}\n    Error:     ${receiptErr.message}`, 'TX_REVERTED');
                 }
 
                 log(`\n  ✓ Transaction successful!`);
@@ -1852,7 +1859,7 @@ EXAMPLES:
                     lastQuoteError = `${quoteName} reverted on-chain`;
                     continue;
                   }
-                  throw new CommandError(`Transaction was broadcast but REVERTED on-chain.\nTx Hash: ${result.txHash}\nExplorer: ${explorerUrl}\nError: ${receiptErr.message}\nThe trading API reported success, but the contract execution failed.\nThis can happen due to: stale quotes, insufficient gas, or liquidity changes.`, 'TX_REVERTED');
+                  throw new CommandError(`\n  ⚠ Transaction was broadcast but REVERTED on-chain!\n    Tx Hash:   ${result.txHash}\n    Explorer:  ${explorerUrl}\n    Error:     ${receiptErr.message}\n\n  The trading API reported success, but the contract execution failed.\n  This can happen due to: stale quotes, insufficient gas, or liquidity changes.`, 'TX_REVERTED');
                 }
               }
 
@@ -1907,7 +1914,7 @@ EXAMPLES:
         }
 
         // All quotes exhausted
-        throw new CommandError(`All quotes failed. Last error: ${lastQuoteError || 'unknown'}`, 'ALL_QUOTES_FAILED');
+        throw new CommandError(`\n❌ All quotes failed. Last error: ${lastQuoteError || 'unknown'}\n`, 'ALL_QUOTES_FAILED');
 
       } catch (err) {
         if (err instanceof CommandError) throw err;

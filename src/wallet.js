@@ -600,7 +600,7 @@ export function buildWalletCommands(deps = {}) {
             log('');
             return;
           } catch (err) {
-            throw new CommandError(err.message, 'PRIVY_ERROR');
+            throw new CommandError(`❌ ${err.message}`, 'PRIVY_ERROR');
           }
         }
         // All other subcommands fall through to unified handlers below
@@ -611,8 +611,8 @@ export function buildWalletCommands(deps = {}) {
       const handlers = {
         'create': async () => {
           // Privy wallets are handled above — if we reach here with provider=privy,
-          // the privy path already failed and called exit(). Guard against environments
-          // where exit() does not terminate (agent frameworks, test harnesses).
+          // the privy path already threw CommandError. Guard against environments
+          // where throw does not propagate (agent frameworks, test harnesses).
           if (isPrivy) return;
 
           const name = options.name || args[1] || 'default';
@@ -627,19 +627,22 @@ export function buildWalletCommands(deps = {}) {
 
             // Step 2: If --human flag, allow interactive prompt (requires TTY)
             if (!password && flags.human && !process.stdin.isTTY && !deps.promptFn) {
-              throw new CommandError('--human requires an interactive terminal. Set NANSEN_WALLET_PASSWORD env var instead.', 'NOT_A_TTY');
+              throw new CommandError('--human requires an interactive terminal. Set NANSEN_WALLET_PASSWORD env var instead.', 'NOT_A_TTY', {
+                error: 'NOT_A_TTY',
+                message: '--human requires an interactive terminal. Set NANSEN_WALLET_PASSWORD env var instead.',
+              });
             }
             if (!password && flags.human && (process.stdin.isTTY || deps.promptFn)) {
               password = await promptPassword('Enter wallet password: ', deps);
               if (password && password.length < 12) {
-                throw new CommandError('Password must be at least 12 characters', 'INVALID_INPUT');
+                throw new CommandError('❌ Password must be at least 12 characters', 'INVALID_INPUT');
               }
               if (password) {
                 const config = getWalletConfig();
                 if (!config.passwordHash) {
                   const confirm = await promptPassword('Confirm password: ', deps);
                   if (password !== confirm) {
-                    throw new CommandError('Passwords do not match', 'INVALID_INPUT');
+                    throw new CommandError('❌ Passwords do not match', 'INVALID_INPUT');
                   }
                 }
               }
@@ -647,11 +650,16 @@ export function buildWalletCommands(deps = {}) {
 
             // Step 3: No password available — return structured error for agents
             if (!password) {
-              throw new CommandError('A wallet password is required. Ask the user to provide one.\nRe-run with: NANSEN_WALLET_PASSWORD=<password> nansen wallet create\nPassword must be at least 12 characters. After creation, the password is saved to the OS keychain automatically — future operations will not require it.', 'PASSWORD_REQUIRED');
+              throw new CommandError('A wallet password is required. Ask the user to provide one.', 'PASSWORD_REQUIRED', {
+                error: 'PASSWORD_REQUIRED',
+                message: 'A wallet password is required. Ask the user to provide one.',
+                instructions: 'Re-run with: NANSEN_WALLET_PASSWORD=<password> nansen wallet create',
+                note: 'Password must be at least 12 characters. After creation, the password is saved to the OS keychain automatically — future operations will not require it.',
+              });
             }
 
             if (password.length < 12) {
-              throw new CommandError('Password must be at least 12 characters', 'INVALID_INPUT');
+              throw new CommandError('❌ Password must be at least 12 characters', 'INVALID_INPUT');
             }
           }
 
@@ -659,7 +667,7 @@ export function buildWalletCommands(deps = {}) {
           if (password !== null) {
             const config = getWalletConfig();
             if (config.passwordHash && !verifyPassword(password, config)) {
-              throw new CommandError('Incorrect password — does not match existing wallets.', 'INCORRECT_PASSWORD');
+              throw new CommandError('❌ Incorrect password — does not match existing wallets.', 'INCORRECT_PASSWORD');
             }
           }
 
@@ -704,7 +712,7 @@ export function buildWalletCommands(deps = {}) {
             log('');
             return;
           } catch (err) {
-            throw new CommandError(err.message, 'CREATE_FAILED');
+            throw new CommandError(`❌ ${err.message}`, 'CREATE_FAILED');
           }
         },
 
@@ -740,7 +748,7 @@ export function buildWalletCommands(deps = {}) {
             log(`    Created: ${result.createdAt}\n`);
             return;
           } catch (err) {
-            throw new CommandError(err.message, 'SHOW_FAILED');
+            throw new CommandError(`❌ ${err.message}`, 'SHOW_FAILED');
           }
         },
 
@@ -767,7 +775,7 @@ export function buildWalletCommands(deps = {}) {
             log('');
             return;
           } catch (err) {
-            throw new CommandError(err.message, 'EXPORT_FAILED');
+            throw new CommandError(`❌ ${err.message}`, 'EXPORT_FAILED');
           }
         },
 
@@ -781,7 +789,7 @@ export function buildWalletCommands(deps = {}) {
             log(`✓ Default wallet set to "${result.defaultWallet}"`);
             return;
           } catch (err) {
-            throw new CommandError(err.message, 'DEFAULT_FAILED');
+            throw new CommandError(`❌ ${err.message}`, 'DEFAULT_FAILED');
           }
         },
 
@@ -820,7 +828,7 @@ export function buildWalletCommands(deps = {}) {
             }
             return;
           } catch (err) {
-            throw new CommandError(err.message, 'DELETE_FAILED');
+            throw new CommandError(`❌ ${err.message}`, 'DELETE_FAILED');
           }
         },
 
