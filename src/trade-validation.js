@@ -116,9 +116,6 @@ const NATIVE_TOKEN_ADDRESSES = {
 const NATIVE_SYMBOLS = { solana: 'SOL', base: 'ETH' };
 
 const MIN_GAS_AMOUNTS = { solana: 0.01, base: 0.000024 };
-const GASLESS_MINIMUM_TRADE_USD = 10;
-const GASLESS_MINIMUM_TRADE_TOLERANCE = 0.99;
-
 const FEE_BUFFER = { solana: 0.005, base: 0.00004 };
 const HIGH_PERCENTAGE_THRESHOLD = 95;
 const AUTO_ADJUST_THRESHOLD_PERCENT = 2;
@@ -275,39 +272,27 @@ export async function resolvePercentAmount({ chain, from, walletAddress, percent
 
 /**
  * Validate that the wallet has enough native token for gas fees.
- * If the wallet is below the minimum but the trade's USD value qualifies
- * for gasless execution (>= $10 with 1% tolerance), allow it.
  *
- * Returns { isGasless, hasSufficientNative } or throws on validation failure.
- * Best-effort: if RPC fails or tradeUsdValue is unavailable, returns passing result.
+ * Returns { hasSufficientNative } or throws on validation failure.
+ * Best-effort: if RPC fails, returns passing result.
  */
-export async function validateGasBalance({ chain, walletAddress, tradeUsdValue }) {
+export async function validateGasBalance({ chain, walletAddress }) {
   const normalizedChain = chain.toLowerCase();
   const minGas = MIN_GAS_AMOUNTS[normalizedChain];
-  if (minGas === undefined) return { isGasless: false, hasSufficientNative: true };
-
-  // If no USD value available, skip check (best-effort).
-  const usdValue = parseFloat(tradeUsdValue);
-  if (!Number.isFinite(usdValue)) return { isGasless: false, hasSufficientNative: true };
+  if (minGas === undefined) return { hasSufficientNative: true };
 
   const balance = await fetchNativeBalance(normalizedChain, walletAddress);
 
   // RPC failure — proceed without validation.
-  if (balance === null) return { isGasless: false, hasSufficientNative: true };
+  if (balance === null) return { hasSufficientNative: true };
 
   if (balance >= minGas) {
-    return { isGasless: false, hasSufficientNative: true };
-  }
-
-  // Below minimum gas — check gasless eligibility.
-  const gaslessThreshold = GASLESS_MINIMUM_TRADE_USD * GASLESS_MINIMUM_TRADE_TOLERANCE;
-  if (usdValue >= gaslessThreshold) {
-    return { isGasless: true, hasSufficientNative: false };
+    return { hasSufficientNative: true };
   }
 
   const symbol = NATIVE_SYMBOLS[normalizedChain] || 'native token';
   throw new Error(
-    `Insufficient ${symbol} for gas fees. Wallet has ${balance} ${symbol} but needs at least ${minGas} ${symbol}. Either fund the wallet or make a trade of $${GASLESS_MINIMUM_TRADE_USD}+ to qualify for gasless execution.`
+    `Insufficient ${symbol} for gas fees. Wallet has ${balance} ${symbol} but needs at least ${minGas} ${symbol}. Fund the wallet before trading.`
   );
 }
 

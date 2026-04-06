@@ -1211,14 +1211,9 @@ EXAMPLES:
         log('');
         response.quotes.forEach((q, i) => log(formatQuote(q, i)));
 
-        // Gas balance validation — after quote returns, check that the wallet
-        // has enough native token for gas, or qualifies for gasless execution.
+        // Gas balance validation — check that the wallet has enough native token for gas.
         try {
-          const tradeUsdValue = response.quotes[0]?.inUsdValue;
-          const { isGasless } = await validateGasBalance({ chain, walletAddress, tradeUsdValue });
-          if (isGasless) {
-            log('  Note: Trade qualifies for gasless execution.');
-          }
+          await validateGasBalance({ chain, walletAddress });
         } catch (gasErr) {
           log(`Error: ${gasErr.message}`);
           exit(1);
