@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.26.1
+
+### Patch Changes
+
+- [#392](https://github.com/nansen-ai/nansen-cli/pull/392) [`025993d`](https://github.com/nansen-ai/nansen-cli/commit/025993df798ddb406340511e0dada1f9a962be56) Thanks [@TimNooren](https://github.com/TimNooren)! - Add gas balance validation: rejects trades when the wallet lacks sufficient native token for gas fees.
+
 ## 1.26.0
 
 ### Minor Changes
