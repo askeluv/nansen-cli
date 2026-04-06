@@ -247,6 +247,14 @@ function getWalletFile(name) {
   return path.join(getWalletsDir(), `${name}.json`);
 }
 
+function requireWalletFile(name) {
+  const walletFile = getWalletFile(name);
+  if (!fs.existsSync(walletFile)) {
+    throw new Error(`Wallet "${name}" not found`);
+  }
+  return walletFile;
+}
+
 /**
  * Verify the global password against stored hash.
  */
@@ -466,10 +474,7 @@ export function createWallet(name, password) {
  * Show wallet details (addresses only, no keys).
  */
 export function showWallet(name) {
-  const walletFile = getWalletFile(name);
-  if (!fs.existsSync(walletFile)) {
-    throw new Error(`Wallet "${name}" not found`);
-  }
+  const walletFile = requireWalletFile(name);
 
   const data = JSON.parse(fs.readFileSync(walletFile, 'utf8'));
   const config = getWalletConfig();
@@ -495,10 +500,7 @@ export function showWallet(name) {
  * Export private keys for a wallet (requires password).
  */
 export function exportWallet(name, password) {
-  const walletFile = getWalletFile(name);
-  if (!fs.existsSync(walletFile)) {
-    throw new Error(`Wallet "${name}" not found`);
-  }
+  const walletFile = requireWalletFile(name);
 
   const data = JSON.parse(fs.readFileSync(walletFile, 'utf8'));
   if (data.provider && data.provider !== 'local') {
@@ -527,10 +529,7 @@ export function exportWallet(name, password) {
  * Set the default wallet.
  */
 export function setDefaultWallet(name) {
-  const walletFile = getWalletFile(name);
-  if (!fs.existsSync(walletFile)) {
-    throw new Error(`Wallet "${name}" not found`);
-  }
+  requireWalletFile(name);
 
   const config = getWalletConfig();
   config.defaultWallet = name;
@@ -543,10 +542,7 @@ export function setDefaultWallet(name) {
  * Delete a wallet.
  */
 export async function deleteWallet(name, password) {
-  const walletFile = getWalletFile(name);
-  if (!fs.existsSync(walletFile)) {
-    throw new Error(`Wallet "${name}" not found`);
-  }
+  const walletFile = requireWalletFile(name);
 
   const data = JSON.parse(fs.readFileSync(walletFile, 'utf8'));
   const config = getWalletConfig();
