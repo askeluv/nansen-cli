@@ -923,23 +923,18 @@ describe('quote handler gas validation integration', () => {
     });
 
     const { buildTradingCommands } = await import('../trading.js');
-    const logs = [];
-    let exitCode = null;
     const commands = buildTradingCommands({
-      log: (msg) => logs.push(msg),
-      exit: (code) => { exitCode = code; },
+      log: () => {},
+      exit: () => {},
     });
 
-    await commands.quote([], null, {}, {
+    await expect(commands.quote([], null, {}, {
       chain: 'solana',
       from: 'SOL',
       to: 'USDC',
       amount: '1',
       'amount-unit': 'token',
       wallet: 'test-wallet',
-    });
-
-    expect(exitCode).toBe(1);
-    expect(logs.some(l => /Insufficient SOL for gas/.test(l))).toBe(true);
+    })).rejects.toThrow(/Insufficient SOL for gas/);
   });
 });

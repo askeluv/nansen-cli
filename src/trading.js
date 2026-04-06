@@ -1192,9 +1192,7 @@ EXAMPLES:
         try {
           await validateGasBalance({ chain, walletAddress });
         } catch (gasErr) {
-          log(`Error: ${gasErr.message}`);
-          exit(1);
-          return;
+          throw new CommandError(`Error: ${gasErr.message}`, 'INSUFFICIENT_GAS');
         }
 
         const signerType = isWalletConnect ? 'walletconnect' : walletProvider;
