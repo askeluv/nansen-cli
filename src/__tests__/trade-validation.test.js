@@ -908,3 +908,103 @@ describe('quote handler balance validation integration', () => {
     expect(logs.some(l => /No SOL balance in wallet/.test(l))).toBe(true);
   });
 });
+
+describe('quote handler gas validation integration', () => {
+  let originalFetch;
+  let originalHome;
+  let tempDir;
+
+  beforeEach(() => {
+    originalFetch = global.fetch;
+    originalHome = process.env.HOME;
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nansen-gas-'));
+    process.env.HOME = tempDir;
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    process.env.HOME = originalHome;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('rejects trade when wallet has no gas and trade is below gasless threshold', async () => {
+    const { createWallet } = await import('../wallet.js');
+    createWallet('test-wallet', 'testpassword123');
+
+    // Mock fetch to handle multiple calls in sequence:
+    // 1. resolveTokenAddress (SOL) — not needed, KNOWN_ADDRESSES handles it
+    // 2. resolveTokenAddress (USDC) — not needed, KNOWN_ADDRESSES handles it
+    // 3. resolveTokenDecimals — not needed, KNOWN_DECIMALS handles it
+    // 4. validateBalance: fetchNativeBalance (getBalance) — returns 1 SOL
+    // 5. getQuote API call — returns a quote with low USD value
+    // 6. validateGasBalance: fetchNativeBalance (getBalance) — returns 0 SOL (below min gas)
+    let getBalanceCallCount = 0;
+    global.fetch = vi.fn().mockImplementation((url, opts) => {
+      const body = opts?.body ? JSON.parse(opts.body) : null;
+
+      // RPC calls (getBalance)
+      if (body?.method === 'getBalance') {
+        getBalanceCallCount++;
+        if (getBalanceCallCount === 1) {
+          // validateBalance check — wallet has 1 SOL (1e9 lamports)
+          return Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve({ jsonrpc: '2.0', id: 1, result: { value: 1_000_000_000 } }),
+          });
+        }
+        // validateGasBalance check — wallet has 0 SOL
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ jsonrpc: '2.0', id: 1, result: { value: 0 } }),
+        });
+      }
+
+      // Quote API call — getQuote() uses res.text() not res.json()
+      if (typeof url === 'string' && url.includes('/quote')) {
+        const quoteBody = JSON.stringify({
+          success: true,
+          quotes: [{
+            aggregator: 'test',
+            inAmount: '1000000000',
+            outAmount: '5000000',
+            inputMint: 'So11111111111111111111111111111111111111112',
+            outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+            inUsdValue: '5.00',
+            outUsdValue: '5.00',
+          }],
+        });
+        return Promise.resolve({
+          ok: true,
+          text: () => Promise.resolve(quoteBody),
+          json: () => Promise.resolve(JSON.parse(quoteBody)),
+        });
+      }
+
+      // Default: pass through
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({}),
+      });
+    });
+
+    const { buildTradingCommands } = await import('../trading.js');
+    const logs = [];
+    let exitCode = null;
+    const commands = buildTradingCommands({
+      log: (msg) => logs.push(msg),
+      exit: (code) => { exitCode = code; },
+    });
+
+    await commands.quote([], null, {}, {
+      chain: 'solana',
+      from: 'SOL',
+      to: 'USDC',
+      amount: '1',
+      'amount-unit': 'token',
+      wallet: 'test-wallet',
+    });
+
+    expect(exitCode).toBe(1);
+    expect(logs.some(l => /Insufficient SOL for gas/.test(l))).toBe(true);
+  });
+});
