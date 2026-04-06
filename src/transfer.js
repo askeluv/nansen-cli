@@ -21,6 +21,16 @@ const ATA_PROGRAM = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
 // Alias: buildEvmTransaction uses 'evm' as a generic fallback
 const CHAIN_IDS = { ...EVM_CHAIN_IDS, evm: 1 };
 
+// ============= Address Derivation =============
+
+function deriveEvmAddress(privateKeyHex) {
+  const privBuf = Buffer.from(privateKeyHex, 'hex');
+  const ecdh = crypto.createECDH('secp256k1');
+  ecdh.setPrivateKey(privBuf);
+  const pubKey = ecdh.getPublicKey(null, 'uncompressed');
+  return '0x' + keccak256(pubKey.subarray(1)).subarray(12).toString('hex');
+}
+
 // ============= Address Validation =============
 
 function validateEvmAddress(address) {
@@ -106,12 +116,9 @@ async function buildEvmTransaction({ to, amount, token, privateKey, chain, max =
   const rpcUrl = CHAIN_RPCS[chain] || CHAIN_RPCS.evm;
   const chainId = CHAIN_IDS[chain] || 1;
 
-  // Derive address
+  // Derive address and buffer for signing
   const privBuf = Buffer.from(privateKey, 'hex');
-  const ecdh = crypto.createECDH('secp256k1');
-  ecdh.setPrivateKey(privBuf);
-  const pubKey = ecdh.getPublicKey(null, 'uncompressed');
-  const from = '0x' + keccak256(pubKey.subarray(1)).subarray(12).toString('hex');
+  const from = deriveEvmAddress(privateKey);
 
   // Nonce
   const nonceHex = await rpcCall(rpcUrl, 'eth_getTransactionCount', [from, 'latest']);
@@ -735,11 +742,7 @@ export async function sendTokens({ to, amount, chain, token = null, wallet = nul
 
     if (max && token) {
       // Max ERC-20: full token balance
-      const privBuf = Buffer.from(walletData.evm.privateKey, 'hex');
-      const ecdh = crypto.createECDH('secp256k1');
-      ecdh.setPrivateKey(privBuf);
-      const pubKey = ecdh.getPublicKey(null, 'uncompressed');
-      const from = '0x' + keccak256(pubKey.subarray(1)).subarray(12).toString('hex');
+      const from = deriveEvmAddress(walletData.evm.privateKey);
       const balResult = await rpcCall(rpcUrl, 'eth_call', [{
         to: token, data: '0x70a08231' + from.slice(2).padStart(64, '0'),
       }, 'latest']);
