@@ -1103,6 +1103,45 @@
         }
       }
     },
+    "subscribe": {
+      "description": "Subscription management — plans, promo codes, create/cancel/status",
+      "subcommands": {
+        "plans": {
+          "description": "List available API plans",
+          "returns": ["name", "price", "currency", "interval", "priceId"]
+        },
+        "promo-code": {
+          "description": "Validate a promo/coupon code. Usage: nansen subscribe promo-code <code>",
+          "returns": ["code", "percentOff", "amountOff", "currency", "minimumAmount", "firstTimeTransaction", "appliesToPlanIds"]
+        },
+        "create": {
+          "description": "Create a new subscription",
+          "options": {
+            "price-id": {
+              "required": true,
+              "description": "Plan price ID (from nansen subscribe plans)"
+            },
+            "promo-code": {
+              "description": "Promotion/coupon code"
+            },
+            "provider": {
+              "default": "stripe",
+              "description": "Payment provider: stripe, coinbase, or moonpay"
+            },
+            "payment-method": {
+              "description": "Stripe payment method ID (stripe only)"
+            }
+          }
+        },
+        "cancel": {
+          "description": "Cancel active recurring subscription"
+        },
+        "status": {
+          "description": "Show active subscription(s)",
+          "returns": ["id", "status", "provider"]
+        }
+      }
+    },
     "trade": {
       "description": "DEX trading commands",
       "subcommands": {

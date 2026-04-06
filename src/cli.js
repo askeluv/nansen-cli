@@ -8,6 +8,7 @@ import { buildWalletCommands } from './wallet.js';
 import { buildTradingCommands } from './trading.js';
 import { buildLimitOrderCommands } from './limit-order.js';
 import { formatAlertsTable, buildAlertsCommands } from './commands/alerts.js';
+import { buildSubscribeCommands, formatPlansTable, formatSubscriptionsTable, formatPromoCode } from './commands/subscribe.js';
 import { buildAgentCommands } from './commands/agent.js';
 import { buildResearchCommands, RESEARCH_HISTORICAL_SUBCOMMANDS } from './commands/research.js';
 import { resolveAddress, isEnsName } from './ens.js';
@@ -705,6 +706,7 @@ COMMANDS:
   wallet      create, list, show, export, default, delete, forget-password
   agent       Ask the Nansen AI research agent (fast/expert modes)
   alerts      list, create, update, toggle, delete
+  subscribe   plans, promo-code, create, cancel, status
   web         search, fetch
   account     Show API key status, plan, and remaining credits
   login       Save API key (--api-key <key>, --human, or NANSEN_API_KEY env var)
@@ -1704,7 +1706,7 @@ export async function runCLI(rawArgs, deps = {}) {
     return '';
   };
 
-  const commands = { ...buildCommands(deps), ...buildWalletCommands(deps), ...buildTradingCommands(deps), ...buildAlertsCommands(deps), ...buildAgentCommands(deps), ...commandOverrides };
+  const commands = { ...buildCommands(deps), ...buildWalletCommands(deps), ...buildTradingCommands(deps), ...buildAlertsCommands(deps), ...buildSubscribeCommands(deps), ...buildAgentCommands(deps), ...commandOverrides };
 
   if (flags.version || flags.v) {
     output(VERSION);
@@ -1756,7 +1758,7 @@ export async function runCLI(rawArgs, deps = {}) {
       }
       // First try subcommand help
       // Skip for 'trade'/'alerts' — their handlers show their own rich usage
-      if (command && subcommand && command !== 'trade' && command !== 'alerts' && command !== 'agent') {
+      if (command && subcommand && command !== 'trade' && command !== 'alerts' && command !== 'subscribe' && command !== 'agent') {
         const subHelp = generateSubcommandHelp(command, subcommand);
         if (subHelp) {
           output(deprecationNote(command) + subHelp);
@@ -1766,7 +1768,7 @@ export async function runCLI(rawArgs, deps = {}) {
       }
       // Then try command-level help (list subcommands)
       // Skip for 'trade'/'alerts' — let the handler show its own usage
-      const cmdSchemaLookup = command !== 'trade' && command !== 'alerts' && command !== 'agent' && (SCHEMA.commands[command] || SCHEMA.commands.research.subcommands[command]);
+      const cmdSchemaLookup = command !== 'trade' && command !== 'alerts' && command !== 'subscribe' && command !== 'agent' && (SCHEMA.commands[command] || SCHEMA.commands.research.subcommands[command]);
       if (command && cmdSchemaLookup) {
         const cmdSchema = cmdSchemaLookup;
         const lines = [`${command} — ${cmdSchema.description}`];
@@ -1879,6 +1881,22 @@ export async function runCLI(rawArgs, deps = {}) {
       output(formatAlertsTable(result));
       await trackCommandSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, flags: usedFlags, chain });
       return { type: 'success', data: result };
+    }
+
+    // Subscribe table formatting
+    if (command === 'subscribe' && table) {
+      if (subcommand === 'plans') {
+        output(formatPlansTable(Array.isArray(result) ? result : result?.plans ?? result?.data ?? []));
+        return { type: 'success', data: result };
+      }
+      if (subcommand === 'status') {
+        output(formatSubscriptionsTable(Array.isArray(result) ? result : result?.subscriptions ?? result?.data ?? []));
+        return { type: 'success', data: result };
+      }
+      if (subcommand === 'promo-code') {
+        output(formatPromoCode(result));
+        return { type: 'success', data: result };
+      }
     }
 
     // Output in requested format

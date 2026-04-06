@@ -386,6 +386,9 @@ function loadConfig() {
     config.baseUrl = process.env.NANSEN_BASE_URL;
   }
 
+  // Nansen app backend (subscription endpoints)
+  config.appBaseUrl = process.env.NANSEN_APP_URL || 'https://app.nansen.ai';
+
   return config;
 }
 
@@ -459,6 +462,7 @@ export class NansenAPI {
   constructor(apiKey = config.apiKey, baseUrl = config.baseUrl, options = {}) {
     this.apiKey = apiKey || null;
     this.baseUrl = baseUrl;
+    this.appBaseUrl = options.appBaseUrl || config.appBaseUrl;
     this.retryOptions = { ...DEFAULT_RETRY_OPTIONS, ...options.retry };
     this.cacheOptions = {
       enabled: options.cache?.enabled ?? false,
@@ -1557,6 +1561,57 @@ export class NansenAPI {
 
   async alertsDelete(alertId) {
     return this.request(`/api/v1/smart-alert/${encodeURIComponent(alertId)}`, {}, { method: 'DELETE' });
+  }
+
+  // ============= Subscription Endpoints =============
+
+  /**
+   * Make a request to the Nansen app backend (app.nansen.ai).
+   * Reuses apiKey auth but targets appBaseUrl instead of baseUrl.
+   */
+  async appRequest(endpoint, body = {}, options = {}) {
+    const savedBaseUrl = this.baseUrl;
+    this.baseUrl = this.appBaseUrl;
+    try {
+      return await this.request(endpoint, body, options);
+    } finally {
+      this.baseUrl = savedBaseUrl;
+    }
+  }
+
+  async getApiPlans() {
+    return this.appRequest('/plans/api', {}, { method: 'GET' });
+  }
+
+  async validatePromoCode(code) {
+    return this.appRequest(`/promo-code/${encodeURIComponent(code)}`, {}, { method: 'GET' });
+  }
+
+  async createStripeSubscription({ priceId, promotionCode, paymentMethodId }) {
+    const body = { priceId };
+    if (promotionCode) body.promotionCode = promotionCode;
+    if (paymentMethodId) body.paymentMethodId = paymentMethodId;
+    return this.appRequest('/subscription/stripe', body);
+  }
+
+  async createCoinbaseSubscription({ priceId, promotionCode }) {
+    const body = { priceId };
+    if (promotionCode) body.promotionCode = promotionCode;
+    return this.appRequest('/subscription/coinbase', body);
+  }
+
+  async createMoonpaySubscription({ priceId, promotionCode }) {
+    const body = { priceId };
+    if (promotionCode) body.promotionCode = promotionCode;
+    return this.appRequest('/subscription/moonpay', body);
+  }
+
+  async getActiveSubscriptions() {
+    return this.appRequest('/subscription/recurring', {}, { method: 'GET' });
+  }
+
+  async cancelSubscription() {
+    return this.appRequest('/subscription/recurring', {}, { method: 'DELETE' });
   }
 }
 
