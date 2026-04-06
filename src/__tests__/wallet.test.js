@@ -620,7 +620,6 @@ describe('Privy wallet create does not emit PASSWORD_REQUIRED', () => {
     const output = [];
     const cmds = buildWalletCommands({
       log: (m) => output.push(m),
-      exit: () => {},
     });
 
     const err = await cmds.wallet(['create'], null, {}, { provider: 'privy' }).catch(e => e);

@@ -336,8 +336,8 @@ function resolveWalletPassword() {
  *
  * @param {object} config - wallet config (needs config.passwordHash)
  * @param {object} flags - CLI flags
- * @param {object} deps - { promptFn, log, exit }
- * @returns {{ password: string|null, error: string|null }}
+ * @param {object} deps - { promptFn, log }
+ * @returns {{ password: string|null, error: object|null }}
  */
 async function resolvePasswordForCommand(config, flags, deps) {
   if (!config.passwordHash) {
@@ -354,14 +354,14 @@ async function resolvePasswordForCommand(config, flags, deps) {
 
   return {
     password: null,
-    error: JSON.stringify({
+    error: {
       error: 'PASSWORD_REQUIRED',
       message: 'Wallet is encrypted and no password was found.',
       resolution: [
         'Set NANSEN_WALLET_PASSWORD environment variable',
         'Or re-run wallet create with the password (it will be persisted for future use)',
       ],
-    }),
+    },
   };
 }
 
@@ -581,7 +581,7 @@ export async function deleteWallet(name, password) {
  * Build wallet command handlers for integration into CLI.
  */
 export function buildWalletCommands(deps = {}) {
-  const { log = console.log, promptFn: _promptFn } = deps;
+  const { log = console.log } = deps;
 
   return {
     'wallet': async (args, apiInstance, flags, options) => {
@@ -761,7 +761,7 @@ export function buildWalletCommands(deps = {}) {
           const config = getWalletConfig();
           const { password, error } = await resolvePasswordForCommand(config, flags, deps);
           if (error) {
-            throw new CommandError(error, 'PASSWORD_REQUIRED');
+            throw new CommandError(error.message, 'PASSWORD_REQUIRED', error);
           }
           try {
             const result = exportWallet(name, password);
@@ -812,7 +812,7 @@ export function buildWalletCommands(deps = {}) {
             const config = getWalletConfig();
             const resolved = await resolvePasswordForCommand(config, flags, deps);
             if (resolved.error) {
-              throw new CommandError(resolved.error, 'PASSWORD_REQUIRED');
+              throw new CommandError(resolved.error.message, 'PASSWORD_REQUIRED', resolved.error);
             }
             password = resolved.password;
           }
@@ -874,7 +874,7 @@ export function buildWalletCommands(deps = {}) {
             const sendConfig = getWalletConfig();
             const resolved = await resolvePasswordForCommand(sendConfig, flags, deps);
             if (resolved.error) {
-              throw new CommandError(resolved.error, 'PASSWORD_REQUIRED');
+              throw new CommandError(resolved.error.message, 'PASSWORD_REQUIRED', resolved.error);
             }
             password = resolved.password;
           }

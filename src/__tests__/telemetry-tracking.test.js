@@ -113,7 +113,12 @@ describe('telemetry tracking for all first-level commands', () => {
   });
 
   it('login (with --api-key)', async () => {
+    const err = Object.assign(new Error('Unauthorized'), { code: 'UNAUTHORIZED' });
+    function FailingAPI() {
+      return { getAccount: vi.fn().mockRejectedValue(err) };
+    }
     await runCLI(['login', '--api-key', 'test-key'], baseDeps({
+      NansenAPIClass: FailingAPI,
       saveConfigFn: () => {},
       getConfigFileFn: () => '/tmp/fake-config.json',
     }));
