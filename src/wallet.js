@@ -938,7 +938,14 @@ export function buildWalletCommands(deps = {}) {
         'secure': async () => {
           const { password, source } = retrievePassword();
           if (!password) {
-            throw new CommandError('No wallet password found in any store.\nSet NANSEN_WALLET_PASSWORD and run: nansen wallet secure', 'NO_PASSWORD_FOUND');
+            throw new CommandError('No wallet password found in any store.', 'NO_PASSWORD_FOUND', {
+              error: 'NO_PASSWORD_FOUND',
+              message: 'No wallet password found in any store.',
+              resolution: [
+                'Set NANSEN_WALLET_PASSWORD and run: nansen wallet secure',
+                'This will store it in the OS keychain.',
+              ],
+            });
           }
 
           if (source === 'keychain') {
@@ -950,9 +957,18 @@ export function buildWalletCommands(deps = {}) {
           const walletConfig = getWalletConfig();
           if (walletConfig.passwordHash && !verifyPassword(password, walletConfig)) {
             const resolution = source === 'file'
-              ? 'The password in ~/.nansen/wallets/.credentials is incorrect.\nRun: nansen wallet forget-password  then re-run with the correct password: NANSEN_WALLET_PASSWORD=<pw> nansen wallet secure'
-              : 'Unset NANSEN_WALLET_PASSWORD if it is stale, then re-run: nansen wallet secure';
-            throw new CommandError(`Password from '${source}' does not match the wallet's stored hash.\n${resolution}`, 'INCORRECT_PASSWORD');
+              ? [
+                  'The password in ~/.nansen/wallets/.credentials is incorrect.',
+                  'Run: nansen wallet forget-password  then re-run with the correct password: NANSEN_WALLET_PASSWORD=<pw> nansen wallet secure',
+                ]
+              : [
+                  'Unset NANSEN_WALLET_PASSWORD if it is stale, then re-run: nansen wallet secure',
+                ];
+            throw new CommandError(`Password from '${source}' does not match the wallet's stored hash.`, 'INCORRECT_PASSWORD', {
+              error: 'INCORRECT_PASSWORD',
+              message: `Password from '${source}' does not match the wallet's stored hash.`,
+              resolution,
+            });
           }
 
           // Try to migrate to keychain
@@ -970,7 +986,14 @@ export function buildWalletCommands(deps = {}) {
             const msg = source === 'file'
               ? 'OS keychain is not available. Password remains in ~/.nansen/wallets/.credentials (insecure).'
               : 'OS keychain is not available. Password is only in the NANSEN_WALLET_PASSWORD env var (not persisted).';
-            throw new CommandError(`${msg}\nSet NANSEN_WALLET_PASSWORD in a secrets manager or system keyring.`, 'KEYCHAIN_UNAVAILABLE');
+            throw new CommandError(msg, 'KEYCHAIN_UNAVAILABLE', {
+              error: 'KEYCHAIN_UNAVAILABLE',
+              message: msg,
+              resolution: [
+                'Set NANSEN_WALLET_PASSWORD in a secrets manager or system keyring',
+                'Use a containerized secrets agent (e.g. Vault, 1Password CLI)',
+              ],
+            });
           }
         },
 
