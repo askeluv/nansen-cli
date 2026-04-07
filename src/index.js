@@ -14,4 +14,4 @@
 import { runCLI } from './cli.js';
 
 // Main entry point
-runCLI(process.argv.slice(2));
+await runCLI(process.argv.slice(2));
