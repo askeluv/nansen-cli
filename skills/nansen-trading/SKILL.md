@@ -33,7 +33,18 @@ nansen trade quote \
   --amount 1000000000
 ```
 
-Symbols resolve automatically: `SOL`, `ETH`, `USDC`, `USDT`, `WETH`. Raw addresses also work.
+Symbols resolve automatically: `SOL`, `ETH`, `USDC`, `USDT`, `WETH`. Raw addresses also work. Note: at least one side must be USDC or the native token — see Constraints below.
+
+## Constraints
+
+**Swap constraint:** At least one side of every swap must be **USDC** or the chain's **native token** (SOL on Solana, ETH on Base). Arbitrary token-to-token swaps (e.g. WETH→USDT, BONK→JUP) are rejected.
+
+- USDC (Solana): `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`
+- USDC (Base): `0x833589fcd6edb6e08f4c7c32d4f71b54bda02913`
+- Native SOL: `So11111111111111111111111111111111111111112`
+- Native ETH: `0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee`
+
+For cross-chain swaps, each token is checked against its own chain (from vs `--chain`, to vs `--to-chain`).
 
 ## Execute
 
