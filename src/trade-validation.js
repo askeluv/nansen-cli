@@ -61,6 +61,16 @@ export function validateQuoteInput({ chain, toChain, from, to, amount }) {
       );
     }
   }
+
+  // 5. At least one side must be USDC or the native token
+  const fromIsAnchor = isUsdcOrNative(from, normalizedChain);
+  const toIsAnchor = isUsdcOrNative(to, normalizedToChain);
+  if (!fromIsAnchor && !toIsAnchor) {
+    throw new Error(
+      `Invalid swap: at least one token must be USDC or the native token (${NATIVE_SYMBOLS[normalizedChain] ?? normalizedChain}). ` +
+      `Got: ${from} → ${to}.`
+    );
+  }
 }
 
 // Native token decimals per chain (for converting balance from base units)
@@ -112,6 +122,12 @@ const NATIVE_TOKEN_ADDRESSES = {
   base: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
 };
 
+// USDC contract addresses per chain.
+const USDC_ADDRESSES = {
+  solana: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+  base: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+};
+
 // Native token symbols for error messages.
 const NATIVE_SYMBOLS = { solana: 'SOL', base: 'ETH' };
 
@@ -119,6 +135,21 @@ const MIN_GAS_AMOUNTS = { solana: 0.01, base: 0.000024 };
 const FEE_BUFFER = { solana: 0.005, base: 0.00004 };
 const HIGH_PERCENTAGE_THRESHOLD = 95;
 const AUTO_ADJUST_THRESHOLD_PERCENT = 2;
+
+/**
+ * Check if an address is USDC or the native token for a chain (case-insensitive for EVM).
+ */
+function isUsdcOrNative(address, chain) {
+  const usdc = USDC_ADDRESSES[chain];
+  const native = NATIVE_TOKEN_ADDRESSES[chain];
+  if (!usdc && !native) return false;
+  if (chain === 'solana') {
+    return address === usdc || address === native;
+  }
+  // EVM: case-insensitive
+  const lower = address.toLowerCase();
+  return (usdc && lower === usdc.toLowerCase()) || (native && lower === native.toLowerCase());
+}
 
 /**
  * Check if an address is the native token for a chain (case-insensitive for EVM).

@@ -145,6 +145,69 @@ describe('validateQuoteInput', () => {
       })).not.toThrow();
     });
   });
+
+  describe('USDC/native anchor enforcement', () => {
+    const SOL = 'So11111111111111111111111111111111111111112';
+    const USDC_SOL = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+    const ETH = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+    const USDC_BASE = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
+    // Non-native, non-USDC tokens
+    const USDT_SOL = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
+    const BONK = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
+    const JUP = 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN';
+    const WETH = '0x4200000000000000000000000000000000000006';
+    const USDT_BASE = '0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2';
+
+    // Happy paths
+    it('allows SOL → USDT (native on from-side, Solana)', () => {
+      expect(() => validateQuoteInput({
+        chain: 'solana', from: SOL, to: USDT_SOL, amount: '1000000000',
+      })).not.toThrow();
+    });
+
+    it('allows USDT → SOL (native on to-side, Solana)', () => {
+      expect(() => validateQuoteInput({
+        chain: 'solana', from: USDT_SOL, to: SOL, amount: '1000000000',
+      })).not.toThrow();
+    });
+
+    it('allows SOL → USDC (native + USDC, Solana)', () => {
+      expect(() => validateQuoteInput({
+        chain: 'solana', from: SOL, to: USDC_SOL, amount: '1000000000',
+      })).not.toThrow();
+    });
+
+    it('allows USDC → WETH (USDC on from-side, Base)', () => {
+      expect(() => validateQuoteInput({
+        chain: 'base', from: USDC_BASE, to: WETH, amount: '1000000',
+      })).not.toThrow();
+    });
+
+    it('allows ETH → USDT (native on from-side, Base)', () => {
+      expect(() => validateQuoteInput({
+        chain: 'base', from: ETH, to: USDT_BASE, amount: '1000000000000000000',
+      })).not.toThrow();
+    });
+
+    it('allows cross-chain USDC → USDC (Base → Solana)', () => {
+      expect(() => validateQuoteInput({
+        chain: 'base', toChain: 'solana', from: USDC_BASE, to: USDC_SOL, amount: '1000000',
+      })).not.toThrow();
+    });
+
+    // Failure paths
+    it('rejects WETH → USDT on Base (neither side is native or USDC)', () => {
+      expect(() => validateQuoteInput({
+        chain: 'base', from: WETH, to: USDT_BASE, amount: '1000000000000000000',
+      })).toThrow(/USDC or the native token/);
+    });
+
+    it('rejects BONK → JUP on Solana (neither side is native or USDC)', () => {
+      expect(() => validateQuoteInput({
+        chain: 'solana', from: BONK, to: JUP, amount: '1000000000',
+      })).toThrow(/USDC or the native token/);
+    });
+  });
 });
 
 describe('fetchNativeBalance', () => {
