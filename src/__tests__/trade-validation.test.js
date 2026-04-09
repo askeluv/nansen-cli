@@ -207,6 +207,18 @@ describe('validateQuoteInput', () => {
         chain: 'solana', from: BONK, to: JUP, amount: '1000000000',
       })).toThrow(/USDC or the native token/);
     });
+
+    it('rejects cross-chain WETH → BONK (Base → Solana, neither anchor)', () => {
+      expect(() => validateQuoteInput({
+        chain: 'base', toChain: 'solana', from: WETH, to: BONK, amount: '1000000000000000000',
+      })).toThrow(/USDC or the native token/);
+    });
+
+    it('allows mixed-case USDC on Base (case-insensitive anchor recognition)', () => {
+      expect(() => validateQuoteInput({
+        chain: 'base', from: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', to: WETH, amount: '1000000',
+      })).not.toThrow();
+    });
   });
 });
 

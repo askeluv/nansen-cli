@@ -66,10 +66,10 @@ export function validateQuoteInput({ chain, toChain, from, to, amount }) {
   const fromIsAnchor = isUsdcOrNative(from, normalizedChain);
   const toIsAnchor = isUsdcOrNative(to, normalizedToChain);
   if (!fromIsAnchor && !toIsAnchor) {
-    throw new Error(
-      `Invalid swap: at least one token must be USDC or the native token (${NATIVE_SYMBOLS[normalizedChain] ?? normalizedChain}). ` +
-      `Got: ${from} → ${to}.`
-    );
+    const anchorDesc = normalizedChain === normalizedToChain
+      ? `USDC or the native token (${NATIVE_SYMBOLS[normalizedChain] ?? normalizedChain})`
+      : `USDC or the native token on either side (${NATIVE_SYMBOLS[normalizedChain] ?? normalizedChain} on ${normalizedChain}, ${NATIVE_SYMBOLS[normalizedToChain] ?? normalizedToChain} on ${normalizedToChain})`;
+    throw new Error(`Invalid swap: at least one token must be ${anchorDesc}. Got: ${from} → ${to}.`);
   }
 }
 
