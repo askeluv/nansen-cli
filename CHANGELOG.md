@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.27.0
+
+### Minor Changes
+
+- [#403](https://github.com/nansen-ai/nansen-cli/pull/403) [`fe53dbe`](https://github.com/nansen-ai/nansen-cli/commit/fe53dbe8cf743b970e145e7ad7a00470f16f28df) Thanks [@marius-reed](https://github.com/marius-reed)! - Add prediction market filtering (order_by, volume/liquidity/OI/trader/price/date filters, neg_risk, tags) and address-summary endpoint
+
+### Patch Changes
+
+- [#402](https://github.com/nansen-ai/nansen-cli/pull/402) [`cfd94ce`](https://github.com/nansen-ai/nansen-cli/commit/cfd94ce1e1880e36fb0c97d0ecfe37e614898006) Thanks [@TimNooren](https://github.com/TimNooren)! - Enforce USDC or native token on one side of every swap
+
 ## 1.26.1
 
 ### Patch Changes
