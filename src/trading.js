@@ -963,8 +963,7 @@ export function buildTradingCommands(deps = {}) {
       const swapMode = options['swap-mode'] || 'exactIn';
       const amountUnit = options['amount-unit'];
 
-      if (!chain || !from || !to || !amount) {
-        throw new CommandError(`
+      const quoteUsage = `
 Usage: nansen trade quote --chain <chain> --from <token> --to <token> --amount <baseUnits>
 
 PREREQUISITE:
@@ -994,7 +993,14 @@ EXAMPLES:
   nansen trade quote --chain base --from ETH --to USDC --amount 1000000000000000000
   nansen trade quote --chain base --to-chain solana --from USDC --to USDC --amount 1000000
   nansen trade quote --chain solana --to-chain base --from SOL --to ETH --amount 1000000000
-`, 'MISSING_ARGS');
+`;
+      if (flags.help || flags.h) {
+        log(quoteUsage);
+        return { type: 'command-help', command: 'trade', subcommand: 'quote' };
+      }
+
+      if (!chain || !from || !to || !amount) {
+        throw new CommandError(quoteUsage, 'MISSING_ARGS');
       }
 
       // Validate --amount-unit if provided
@@ -1228,8 +1234,7 @@ EXAMPLES:
       const walletName = options.wallet;
       const noSimulate = flags['no-simulate'];
 
-      if (!quoteId) {
-        throw new CommandError(`Usage: nansen trade execute --quote <quoteId> [options]
+      const executeUsage = `Usage: nansen trade execute --quote <quoteId> [options]
 
 OPTIONS:
   --quote <id>              Quote ID from 'nansen quote'
@@ -1237,7 +1242,14 @@ OPTIONS:
   --no-simulate             Skip pre-broadcast simulation
 
 EXAMPLES:
-  nansen trade execute --quote 1708900000000-abc123`, 'MISSING_ARGS');
+  nansen trade execute --quote 1708900000000-abc123`;
+      if (flags.help || flags.h) {
+        log(executeUsage);
+        return { type: 'command-help', command: 'trade', subcommand: 'execute' };
+      }
+
+      if (!quoteId) {
+        throw new CommandError(executeUsage, 'MISSING_ARGS');
       }
 
       try {
