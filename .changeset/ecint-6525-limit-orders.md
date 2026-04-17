@@ -1,5 +1,5 @@
 ---
-"nansen-cli": minor
+"nansen-cli": patch
 ---
 
-Add `trade limit-order` commands (create/list/delete) that record a price-target intent locally and auto-create a companion `common-token-transfer` smart alert so the wallet gets notified when the matching buy/sell fires on-chain. Includes the `nansen-limit-orders` skill.
+Add the `nansen-limit-orders` skill for limit-order workflows. The skill documents the supported `nansen-cli` path: use existing `trade quote/execute` commands for immediate swaps, keep any resting limit order on the external venue that supports it, and create a narrowly scoped `common-token-transfer` smart alert on the wallet as a best-effort settlement signal.

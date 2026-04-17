@@ -1485,16 +1485,12 @@ SUBCOMMANDS:
   quote          Get a swap quote (price, route, fees)
   execute        Sign and broadcast a quoted swap
   bridge-status  Check cross-chain bridge transaction status
-  limit-order    Create/list/delete limit orders with companion smart alerts
 
 USAGE:
   nansen trade quote --chain <chain> --from <token> --to <token> --amount <units> [--wallet <name>]
   nansen trade quote --chain <chain> --to-chain <chain> --from <token> --to <token> --amount <units>
   nansen trade execute --quote <quoteId> [--wallet <name>]
   nansen trade bridge-status --tx-hash <hash> --from-chain <chain> --to-chain <chain>
-  nansen trade limit-order create --chain <chain> --side <buy|sell> --token <symbol|addr> --target-price <usd> --amount <units> --telegram <chatId>
-  nansen trade limit-order list
-  nansen trade limit-order delete <orderId>
 
 EXAMPLES:
   nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000
@@ -1523,7 +1519,7 @@ CROSS-CHAIN NOTES (when using --to-chain):
       return;
     }
     if (!tradingCmds[sub]) {
-      throw new NansenError(`Unknown trade subcommand: ${sub}. Available: quote, execute, bridge-status, limit-order`, ErrorCode.UNKNOWN);
+      throw new NansenError(`Unknown trade subcommand: ${sub}. Available: quote, execute, bridge-status`, ErrorCode.UNKNOWN);
     }
     return tradingCmds[sub](args.slice(1), apiInstance, flags, options);
   };
