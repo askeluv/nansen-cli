@@ -2,4 +2,4 @@
 "nansen-cli": patch
 ---
 
-Add the `nansen-limit-orders` skill for limit-order workflows. The skill documents the supported `nansen-cli` path: use existing `trade quote/execute` commands for immediate swaps, keep any resting limit order on the external venue that supports it, and create a narrowly scoped `common-token-transfer` smart alert on the wallet as a best-effort settlement signal.
+Add the `nansen-limit-orders` skill. The skill teaches agents to use the native `nansen trade limit create|list|cancel|update` commands for Solana price-triggered orders, and documents the alert-based settlement-signal fallback (`common-token-transfer` smart alert on the settlement wallet) for chains without native limit-order support. Builds on the `trade limit` command surface added by #328.

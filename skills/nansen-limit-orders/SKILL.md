@@ -1,6 +1,6 @@
 ---
 name: nansen-limit-orders
-description: Set up limit-order workflows by pairing a wallet's external buy or sell order with a smart alert on that wallet. Use when a user wants a narrow, best-effort token-movement signal without implying that nansen-cli places native limit orders or has true order-status tracking.
+description: Guide users through native limit orders on Solana via `nansen trade limit create|list|cancel|update`, and the alert-based settlement-signal fallback for chains without native support. Use when a user wants a price-triggered buy or sell.
 metadata:
   openclaw:
     requires:
@@ -18,69 +18,110 @@ allowed-tools: Bash(nansen:*)
 
 # Limit Orders
 
-Use this skill when the user wants a limit-order workflow tied to a wallet plus
-a smart alert that may catch the token movement on the settlement wallet after execution.
+Use this skill when the user wants a price-triggered order. There are two
+distinct paths — pick the one that matches the user's chain:
 
-`nansen-cli` does **not** currently place resting/native limit orders. The
-real split today is:
-
-- `nansen trade quote/execute` handles immediate swaps only, and only on
-  `solana` and `base`, through `trading-api.nansen.ai`.
-- `nansen alerts ...` is separate and uses the smart-alert API.
-
-The supported workflow is:
-
-1. Place the resting limit order on the venue or product that actually supports it.
-2. Keep the same wallet as the settlement wallet.
-3. Create a companion `common-token-transfer` smart alert scoped to that wallet,
-   chain, and token.
-4. Treat the alert as a best-effort settlement signal. Whether it shows up as
-   `buy` or `sell` versus a generic transfer depends on how the venue settles
-   and how the alerting backend classifies the event.
-
-This is an approximation, not authoritative order tracking. Unlike a real
-limit-order backend, this workflow does **not** expose order-state polling,
-partial-fill progress, `triggeredAt`, `fillPercent`, remaining size, or a
-canonical filled/cancelled history.
+- **Solana → native limit orders.** `nansen trade limit create|list|cancel|update`
+  places real resting orders through the Nansen trading API. Use these for
+  anything on Solana.
+- **Other chains → alert-based approximation.** `nansen-cli` does not yet place
+  native limit orders on EVM chains. Place the resting order on the venue that
+  supports it (CEX, DEX limit-order product) and create a companion
+  `common-token-transfer` smart alert on the settlement wallet as a best-effort
+  fill signal.
 
 ## Prerequisites
 
-- A wallet in `nansen-cli` so you can resolve the monitored address:
-  `nansen wallet show <name>`
-- A token address or mint on the target chain. If the user only gives a symbol
-  or name, resolve it first with `nansen research search`.
-- A notification channel: Telegram chat ID, Slack/Discord webhook, or generic
-  webhook URL.
+- A Solana wallet configured in `nansen-cli`: `nansen wallet show <name>` (or
+  `nansen wallet create` if none exists). Local, Privy, and WalletConnect
+  wallets are all supported for `trade limit`.
+- The wallet must hold the sell token plus a small amount of SOL for fees.
+- For the alert fallback: a notification channel (Telegram chat ID, Slack or
+  Discord webhook, or generic webhook URL).
 - `NANSEN_API_KEY`. Smart alerts are internal-only; non-internal users get 404.
+- First-time `trade limit create` auto-registers a trading vault and caches a
+  JWT at `~/.nansen/limit-order-auth.json` for ~23h.
 
-## Quick Reference
+## Solana: Native Limit Orders
 
-```bash
-nansen wallet show <name>
-nansen research search "<token query>" --limit 5
-nansen alerts create --name <name> --type common-token-transfer \
-  --chains <chain> --events <buy|sell> --subject address:<wallet> \
-  --token <address:chain> --telegram <chatId>
-```
-
-## Workflow
+### Create
 
 ```bash
-nansen wallet show trading
-# -> capture the wallet address for the relevant chain
+# base units (default) — 1 SOL = 1000000000 lamports
+nansen trade limit create \
+  --from SOL --to USDC \
+  --amount 1000000000 \
+  --trigger-mint SOL --trigger-condition below --trigger-price 80
 
-nansen research search "PEPE" --limit 5
-# -> use the exact token address/mint on the intended chain
+# human-readable amount
+nansen trade limit create \
+  --from SOL --to USDC \
+  --amount 1.5 --amount-unit token \
+  --trigger-mint SOL --trigger-condition above --trigger-price 200 \
+  --slippage 0.03 \
+  --expires 7d
 ```
 
-If the user wants an immediate swap in the CLI first, the real command surface is:
+Required flags: `--from`, `--to`, `--amount`, `--trigger-mint`,
+`--trigger-condition` (`above` or `below`), `--trigger-price` (USD).
+
+Key options:
+
+- `--amount-unit token` to pass `--amount` in token units instead of base units.
+- `--slippage 0.03` (decimal, = 3%). Omit for auto.
+- `--expires` accepts `24h`, `7d`, `30d` (default), or an epoch-ms timestamp.
+- `--wallet <name>` or `--wallet walletconnect` to pick a non-default wallet.
+
+Constraints:
+
+- Minimum order value ~$10.
+- `--from` and `--to` must be valid Solana mint addresses or supported symbols
+  (SOL, USDC, USDT, etc.). Resolve unknown tokens with `nansen research search`.
+- Tokens with transfer-hook extensions (e.g. some pump.fun tokens) will be
+  rejected at create time — surface the error to the user as-is.
+
+### List
 
 ```bash
-nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000
-nansen trade execute --quote <quoteId>
+nansen trade limit list                    # active orders (default)
+nansen trade limit list --state past       # filled or cancelled
+nansen trade limit list --mint <mintAddr>  # filter by token
+nansen trade limit list --limit 50 --offset 0 --sort createdAt --dir desc
 ```
 
-After the order is placed on the external venue, create the companion alert.
+### Cancel
+
+```bash
+nansen trade limit cancel --order <orderId>
+```
+
+Cancelling submits a withdrawal transaction; surface the tx signature from the
+CLI output so the user can verify on Solscan.
+
+### Update
+
+```bash
+nansen trade limit update --order <orderId> --trigger-price 85
+nansen trade limit update --order <orderId> --slippage 0.01
+```
+
+Only `--trigger-price` and `--slippage` can be updated. To change size or the
+token pair, cancel and re-create.
+
+## Non-Solana Chains: Alert-Based Settlement Signal
+
+`nansen-cli` does not currently place native limit orders on EVM chains. The
+supported approximation is:
+
+1. Place the resting limit order on the venue or product that supports it (CEX,
+   DEX limit-order product, aggregator).
+2. Use the same wallet as the settlement wallet.
+3. Create a `common-token-transfer` smart alert scoped to wallet + chain +
+   token + side, so the matching on-chain fill triggers a notification.
+
+This is a best-effort settlement signal, not authoritative order tracking. It
+does **not** expose order-state polling, partial-fill progress, `triggeredAt`,
+`fillPercent`, remaining size, or canonical filled/cancelled history.
 
 ### Buy-Side Settlement Alert
 
@@ -99,54 +140,42 @@ nansen alerts create \
 
 ```bash
 nansen alerts create \
-  --name 'Settlement signal: sell BONK on trading wallet' \
+  --name 'Settlement signal: sell USDC on trading wallet' \
   --type common-token-transfer \
-  --chains solana \
+  --chains base \
   --events sell \
-  --subject address:YourSolanaWallet \
-  --token DezXAZ8z7PnrnRJjz3wXBoRgixCa6B8hLtz6PMuBsqvE:solana \
+  --subject address:0xYourWallet \
+  --token 0x833589fcd6edb6e08f4c7c32d4f71b54bda02913:base \
   --telegram 5238612255
 ```
 
-## Alert Guidance
+### Alert Hardening
 
-Start with the narrowest `common-token-transfer` shape:
+- `--usd-min <amount>` to suppress dust fills.
+- `--description '<limit price / venue / notes>'` so the alert records intent.
+- Do **not** recommend a wallet-wide transfer alert with no token filter — it
+  overfires.
+- Do **not** describe alert delivery as "order filled" or "triggered". The
+  alert is only evidence that a matching token transfer was observed on the
+  wallet — not precise fill detection.
+- If the venue settles in a way the alerting backend classifies as a generic
+  transfer rather than `buy`/`sell`, a narrow alert may miss it. Only widen to
+  `--events buy,receive` or `--events sell,send` if the user accepts broader
+  matching and the risk of unrelated matches.
 
-- `--chains <chain>`
-- `--events buy` for expected buys, `--events sell` for expected sells
-- `--subject address:<walletAddress>`
-- `--token <tokenAddress:chain>`
-- at least one notification channel
+## Optional: Belt-and-Braces on Solana
 
-Optional hardening:
-
-- Add `--usd-min <amount>` to suppress dust fills.
-- Add `--description '<limit price / venue / notes>'` so the alert records the
-  intended order context.
-
-Classification caveat:
-
-- If the venue settles the order in a way the alert backend classifies as a
-  generic transfer instead of `buy` or `sell`, the narrow alert may miss it.
-- Only widen to `--events buy,receive` or `--events sell,send` if the user
-  accepts broader matching. That can catch unrelated token movements on the
-  same wallet and is not precise fill detection.
-- Do **not** recommend a wallet-wide transfer alert without a token filter.
-  That is too broad and will overfire.
-- Do **not** describe alert delivery as "order filled", "triggered", or
-  "status changed" with certainty. The alert is only evidence that a matching
-  token transfer was observed on the wallet.
+For Solana native limit orders, a companion alert on the settlement wallet is
+optional but useful — it pings the user independently of the trading API, so
+they get a notification even if they aren't polling `trade limit list`. Pair
+with the same `common-token-transfer` alert shape shown above.
 
 ## Notes
 
-- This skill is about the alert wiring, not order placement. Do **not** tell
-  the user `nansen trade limit-order ...`; that command does not exist.
-- For immediate swaps, use the `nansen-trading` skill and `nansen trade
-  quote/execute`.
-- For webhook delivery, pair this with the `nansen-alerts-webhook-listener`
-  skill.
 - Chain aliases for alerts: Hyperliquid = `hyperevm`, BSC = `bnb`.
-- Use single quotes for names with `$` or special chars.
+- Use single quotes for names with `$` or special characters.
+- For immediate swaps (not price-triggered), use the `nansen-trading` skill.
+- For webhook delivery of alerts, pair with `nansen-alerts-webhook-listener`.
 
 ## Source
 
