@@ -16,6 +16,7 @@ import { retrievePassword } from './keychain.js';
 import { validateQuoteInput, validateBalance, resolvePercentAmount, validateGasBalance } from './trade-validation.js';
 import { CHAIN_RPCS } from './rpc-urls.js';
 import { packageVersion, CommandError } from './api.js';
+import { buildLimitOrdersCommands } from './commands/limit-orders.js';
 
 // ============= Constants =============
 
@@ -944,8 +945,10 @@ export function formatQuote(quote, index) {
  */
 export function buildTradingCommands(deps = {}) {
   const { log = console.log } = deps;
+  const limitOrderCmds = buildLimitOrdersCommands({ log });
 
   return {
+    ...limitOrderCmds,
     'quote': async (args, apiInstance, flags, options) => {
       const chain = options.chain || args[0];
       const toChainRaw = options['to-chain'];

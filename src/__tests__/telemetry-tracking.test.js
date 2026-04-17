@@ -172,6 +172,13 @@ describe('telemetry tracking for all first-level commands', () => {
     expect(trackFailed.mock.calls[0][0].command).toBe('trade quote');
   });
 
+  it('trade limit-order (help)', async () => {
+    await runCLI(['trade', 'limit-order'], baseDeps());
+    expect(wasTracked()).toBe(1);
+    expect(trackSucceeded).toHaveBeenCalledOnce();
+    expect(trackSucceeded.mock.calls[0][0].command).toBe('trade limit-order');
+  });
+
   // ── Error path ──
 
   it('unknown command triggers trackCommandFailed', async () => {
@@ -234,7 +241,7 @@ describe('telemetry tracking for all first-level commands', () => {
       'account', 'login', 'logout', 'schema', 'cache', 'changelog',
       'web',
       // wallet & trading
-      'wallet', 'trade', 'quote', 'execute', 'bridge-status',
+      'wallet', 'trade', 'quote', 'execute', 'bridge-status', 'limit-order',
       // help is a meta command, intentionally not tracked
       'help',
     ]);
