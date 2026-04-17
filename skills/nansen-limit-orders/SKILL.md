@@ -1,6 +1,6 @@
 ---
 name: nansen-limit-orders
-description: Set up limit-order workflows by pairing a wallet's external buy or sell order with a smart alert on that wallet. Use when a user wants a narrow, best-effort settlement signal without implying that nansen-cli places native limit orders.
+description: Set up limit-order workflows by pairing a wallet's external buy or sell order with a smart alert on that wallet. Use when a user wants a narrow, best-effort token-movement signal without implying that nansen-cli places native limit orders or has true order-status tracking.
 metadata:
   openclaw:
     requires:
@@ -19,7 +19,7 @@ allowed-tools: Bash(nansen:*)
 # Limit Orders
 
 Use this skill when the user wants a limit-order workflow tied to a wallet plus
-a smart alert after the order settles on-chain.
+a smart alert that may catch the token movement on the settlement wallet after execution.
 
 `nansen-cli` does **not** currently place resting/native limit orders. The
 real split today is:
@@ -37,6 +37,11 @@ The supported workflow is:
 4. Treat the alert as a best-effort settlement signal. Whether it shows up as
    `buy` or `sell` versus a generic transfer depends on how the venue settles
    and how the alerting backend classifies the event.
+
+This is an approximation, not authoritative order tracking. Unlike a real
+limit-order backend, this workflow does **not** expose order-state polling,
+partial-fill progress, `triggeredAt`, `fillPercent`, remaining size, or a
+canonical filled/cancelled history.
 
 ## Prerequisites
 
@@ -77,11 +82,11 @@ nansen trade execute --quote <quoteId>
 
 After the order is placed on the external venue, create the companion alert.
 
-### Buy Fill Alert
+### Buy-Side Settlement Alert
 
 ```bash
 nansen alerts create \
-  --name 'Fill: buy PEPE on trading wallet' \
+  --name 'Settlement signal: buy PEPE on trading wallet' \
   --type common-token-transfer \
   --chains ethereum \
   --events buy \
@@ -90,11 +95,11 @@ nansen alerts create \
   --telegram 5238612255
 ```
 
-### Sell Fill Alert
+### Sell-Side Settlement Alert
 
 ```bash
 nansen alerts create \
-  --name 'Fill: sell BONK on trading wallet' \
+  --name 'Settlement signal: sell BONK on trading wallet' \
   --type common-token-transfer \
   --chains solana \
   --events sell \
@@ -128,6 +133,9 @@ Classification caveat:
   same wallet and is not precise fill detection.
 - Do **not** recommend a wallet-wide transfer alert without a token filter.
   That is too broad and will overfire.
+- Do **not** describe alert delivery as "order filled", "triggered", or
+  "status changed" with certainty. The alert is only evidence that a matching
+  token transfer was observed on the wallet.
 
 ## Notes
 

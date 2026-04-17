@@ -19,10 +19,12 @@ describe('skills', () => {
     const content = fs.readFileSync(skillPath, 'utf8');
 
     expect(content).toContain('nansen-cli` does **not** currently place resting/native limit orders');
+    expect(content).toContain('not authoritative order tracking');
     expect(content).toContain('trading-api.nansen.ai');
     expect(content).toContain('nansen alerts create');
     expect(content).toContain('common-token-transfer');
     expect(content).toContain('Do **not** tell');
+    expect(content).toContain('Do **not** describe alert delivery as "order filled"');
     expect(content).toContain('that command does not exist');
     expect(content).toContain('not precise fill detection');
     expect(content).toContain('wallet-wide transfer alert');
