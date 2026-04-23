@@ -1167,6 +1167,11 @@ CROSS-CHAIN NOTES (when using --to-chain):
         };
         if (isCrossChain) {
           params.toChainIndex = toChainConfig.index;
+          // Disable Relay until CLI can track per-quote aggregator and pass it
+          // to getBridgeStatus(). Without this, a Relay-selected quote would be
+          // polled via LiFi's status API, returning wrong/not-found status and
+          // breaking `trade wait`. Remove once CLI sends aggregator to getBridgeStatus.
+          params.disabledAggregators = 'relay';
           if (toWallet) {
             params.toWalletAddress = toWallet;
             log(`  Destination wallet: ${toWallet}`);
