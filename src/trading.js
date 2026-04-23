@@ -211,13 +211,14 @@ export async function executeTransaction(params, { retries = 2, retryDelayMs = 1
  * @param {string} toChain - Destination chain name (e.g. 'solana')
  * @returns {Promise<object>} Bridge status
  */
-export async function getBridgeStatus(txHash, fromChain, toChain) {
+export async function getBridgeStatus(txHash, fromChain, toChain, aggregator = null) {
   const fromConfig = resolveChain(fromChain);
   const toConfig = resolveChain(toChain);
   const url = new URL('/bridge/status', TRADING_API_URL);
   url.searchParams.set('txHash', txHash);
   url.searchParams.set('fromChain', fromConfig.lifiChainId || fromConfig.index);
   url.searchParams.set('toChain', toConfig.lifiChainId || toConfig.index);
+  if (aggregator) url.searchParams.set('aggregator', aggregator);
 
   const res = await fetch(url.toString(), { headers: { 'Accept': 'application/json', 'User-Agent': CLIENT_USER_AGENT } });
   const text = await res.text();
@@ -250,12 +251,12 @@ export async function getBridgeStatus(txHash, fromChain, toChain) {
  * @param {Function} [opts.log=console.log] - Logger
  * @returns {Promise<object>} Final bridge status
  */
-export async function pollBridgeStatus(txHash, fromChain, toChain, { timeoutMs = 600000, pollMs = 10000, log = console.log } = {}) {
+export async function pollBridgeStatus(txHash, fromChain, toChain, { timeoutMs = 600000, pollMs = 10000, log = console.log, aggregator = null } = {}) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     let status;
     try {
-      status = await getBridgeStatus(txHash, fromChain, toChain);
+      status = await getBridgeStatus(txHash, fromChain, toChain, aggregator);
     } catch (err) {
       // Transient errors (502, 503, network failures) — retry after poll interval.
       log(`  Bridge: poll error (${err.status || err.code || 'unknown'}) — retrying...`);
@@ -298,9 +299,11 @@ export function saveQuote(quoteResponse, chain, signerType = 'local', privyWalle
   const hash = crypto.randomBytes(4).toString('hex');
   const quoteId = `${timestamp}-${hash}`;
 
+  const selectedAggregator = quoteResponse?.quotes?.[0]?.aggregator || null;
   const data = { quoteId, chain, timestamp, signerType, response: quoteResponse };
   if (toChain) data.toChain = toChain;
   if (privyWalletIds) data.privyWalletIds = privyWalletIds;
+  if (selectedAggregator) data.aggregator = selectedAggregator;
 
   fs.writeFileSync(path.join(dir, `${quoteId}.json`), JSON.stringify(data, null, 2), { mode: 0o600 });
   cleanupQuotes();
@@ -1167,10 +1170,8 @@ CROSS-CHAIN NOTES (when using --to-chain):
         };
         if (isCrossChain) {
           params.toChainIndex = toChainConfig.index;
-          // Opt out of Relay aggregator: CLI bypasses backend /execute so the
-          // Redis aggregator hint is never set, and /bridge/status defaults to
-          // LiFi — polling a Relay txHash there returns NOT_FOUND.
-          params.disabledAggregators = 'relay';
+          // No longer disabling Relay — CLI now tracks per-quote aggregator
+          // and passes it to getBridgeStatus() / pollBridgeStatus().
           if (toWallet) {
             params.toWalletAddress = toWallet;
             log(`  Destination wallet: ${toWallet}`);
@@ -1702,7 +1703,7 @@ EXAMPLES:
                 if (quoteData.toChain && quoteData.toChain !== quoteData.chain) {
                   log(`\n  Cross-chain bridge in progress (${chainConfig.name} → ${resolveChain(quoteData.toChain).name})...`);
                   try {
-                    const bridgeResult = await pollBridgeStatus(wcResult.txHash, quoteData.chain, quoteData.toChain, { log });
+                    const bridgeResult = await pollBridgeStatus(wcResult.txHash, quoteData.chain, quoteData.toChain, { log, aggregator: quoteData.aggregator || null });
                     log(`\n  ✓ Bridge completed!`);
                     if (bridgeResult.receiving?.txHash) {
                       const toChainConfig = resolveChain(quoteData.toChain);
@@ -1902,7 +1903,7 @@ EXAMPLES:
               if (quoteData.toChain && quoteData.toChain !== quoteData.chain) {
                 log(`\n  Cross-chain bridge in progress (${chainConfig.name} → ${resolveChain(quoteData.toChain).name})...`);
                 try {
-                  const bridgeResult = await pollBridgeStatus(txId, quoteData.chain, quoteData.toChain, { log });
+                  const bridgeResult = await pollBridgeStatus(txId, quoteData.chain, quoteData.toChain, { log, aggregator: quoteData.aggregator || null });
                   log(`\n  ✓ Bridge completed!`);
                   if (bridgeResult.receiving?.txHash) {
                     const toChainConfig = resolveChain(quoteData.toChain);
@@ -1959,13 +1960,16 @@ OPTIONS:
   --tx-hash <hash>          Source chain transaction hash
   --from-chain <chain>      Source chain (solana or base)
   --to-chain <chain>        Destination chain (solana or base)
+  --aggregator <name>       Bridge aggregator used (lifi or relay). Auto-detected if omitted.
 
 EXAMPLES:
-  nansen trade bridge-status --tx-hash 0xabc... --from-chain base --to-chain solana`, 'MISSING_ARGS');
+  nansen trade bridge-status --tx-hash 0xabc... --from-chain base --to-chain solana
+  nansen trade bridge-status --tx-hash 0xabc... --from-chain base --to-chain solana --aggregator relay`, 'MISSING_ARGS');
       }
 
       try {
-        const status = await getBridgeStatus(txHash, fromChain, toChain);
+        const aggregator = options['aggregator'] || null;
+        const status = await getBridgeStatus(txHash, fromChain, toChain, aggregator);
         log(`\nBridge Status: ${status.status || 'unknown'}`);
         if (status.substatus) log(`  Substatus:   ${status.substatus}`);
         if (status.substatusMessage) log(`  Message:     ${status.substatusMessage}`);
