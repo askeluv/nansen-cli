@@ -75,7 +75,7 @@ nansen research token who-bought-sold --token <addr> --chain solana
 
 ```bash
 nansen research token dex-trades --token <addr> --chain solana --limit 20
-nansen research token pnl --token <addr> --chain solana --sort total_pnl_usd:desc
+nansen research token pnl --token <addr> --chain solana --sort pnl_usd_total:desc
 nansen research token transfers --token <addr> --chain solana --enrich
 ```
 
@@ -100,7 +100,7 @@ nansen research token jup-dca --token <addr>
 | `--timeframe` | Screener or OHLCV interval |
 | `--smart-money` | Filter to SM wallets only (screener, holders) |
 | `--days` | Lookback period (default 30) |
-| `--sort` | Sort field:direction (e.g. `total_pnl_usd:desc`) |
+| `--sort` | Sort field:direction (e.g. `pnl_usd_total:desc`) |
 | `--enrich` | Add Nansen labels to transfer addresses |
 | `--fields` | Select specific fields |
 | `--table` | Human-readable table output |

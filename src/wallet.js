@@ -27,7 +27,6 @@ const SCRYPT_P = 1;
 const SCRYPT_KEYLEN = 32;
 const SALT_LEN = 16;
 const IV_LEN = 12;
-const _AUTH_TAG_LEN = 16;
 
 import { keccak256 } from './crypto.js';
 
@@ -364,16 +363,20 @@ export function listWallets() {
   const files = fs.readdirSync(getWalletsDir()).filter(f => f.endsWith('.json') && f !== 'config.json');
 
   const wallets = files.map(f => {
-    const data = JSON.parse(fs.readFileSync(path.join(getWalletsDir(), f), 'utf8'));
-    return {
-      name: data.name,
-      provider: data.provider || 'local',
-      evm: data.evm?.address || null,
-      solana: data.solana?.address || null,
-      createdAt: data.createdAt,
-      isDefault: data.name === config.defaultWallet,
-    };
-  });
+    try {
+      const data = JSON.parse(fs.readFileSync(path.join(getWalletsDir(), f), 'utf8'));
+      return {
+        name: data.name,
+        provider: data.provider || 'local',
+        evm: data.evm?.address || null,
+        solana: data.solana?.address || null,
+        createdAt: data.createdAt,
+        isDefault: data.name === config.defaultWallet,
+      };
+    } catch {
+      return null;
+    }
+  }).filter(Boolean);
 
   return { wallets, defaultWallet: config.defaultWallet };
 }
@@ -502,11 +505,11 @@ export function exportWallet(name, password) {
     name: data.name,
     evm: {
       address: data.evm?.address,
-      privateKey: data.evm ? decryptKey(data.evm.encrypted, password) : null,
+      privateKey: data.evm?.encrypted ? decryptKey(data.evm.encrypted, password) : null,
     },
     solana: {
       address: data.solana?.address,
-      privateKey: data.solana ? decryptKey(data.solana.encrypted, password) : null,
+      privateKey: data.solana?.encrypted ? decryptKey(data.solana.encrypted, password) : null,
     },
   };
 }

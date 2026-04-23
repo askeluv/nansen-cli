@@ -63,7 +63,7 @@ Run `nansen schema --pretty` for the full subcommand and field reference.
 
 **Reduce token burn with `--fields`:**
 ```bash
-nansen research smart-money netflow --chain solana --fields token_symbol,net_flow_usd --limit 10
+nansen research smart-money netflow --chain solana --fields token_symbol,net_flow_24h_usd --limit 10
 ```
 
 **Use `--stream` for large results** — outputs NDJSON instead of buffering a giant array.

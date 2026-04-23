@@ -826,11 +826,10 @@ describe('buildCommands', () => {
   });
 
   describe('smart-money command', () => {
-    it('should return help for unknown subcommand', async () => {
+    it('should throw for unknown subcommand', async () => {
       const mockApi = {};
-      const result = await commands['smart-money'](['unknown'], mockApi, {}, {});
-      expect(result.error).toContain('Unknown subcommand');
-      expect(result.available).toContain('netflow');
+      await expect(commands['smart-money'](['unknown'], mockApi, {}, {}))
+        .rejects.toThrow('Unknown subcommand: unknown');
     });
 
     it('should return help object for help subcommand', async () => {
@@ -868,9 +867,9 @@ describe('buildCommands', () => {
   });
 
   describe('profiler command', () => {
-    it('should return help for unknown subcommand', async () => {
-      const result = await commands['profiler'](['unknown'], {}, {}, {});
-      expect(result.error).toContain('Unknown subcommand');
+    it('should throw for unknown subcommand', async () => {
+      await expect(commands['profiler'](['unknown'], {}, {}, {}))
+        .rejects.toThrow('Unknown subcommand: unknown');
     });
 
     it('should call balance with address', async () => {
@@ -897,9 +896,9 @@ describe('buildCommands', () => {
   });
 
   describe('token command', () => {
-    it('should return help for unknown subcommand', async () => {
-      const result = await commands['token'](['unknown'], {}, {}, {});
-      expect(result.error).toContain('Unknown subcommand');
+    it('should throw for unknown subcommand', async () => {
+      await expect(commands['token'](['unknown'], {}, {}, {}))
+        .rejects.toThrow('Unknown subcommand: unknown');
     });
 
     it('should call screener with chains and timeframe', async () => {
@@ -1072,9 +1071,9 @@ describe('buildCommands', () => {
   });
 
   describe('portfolio command', () => {
-    it('should return help for unknown subcommand', async () => {
-      const result = await commands['portfolio'](['unknown'], {}, {}, {});
-      expect(result.error).toContain('Unknown subcommand');
+    it('should throw for unknown subcommand', async () => {
+      await expect(commands['portfolio'](['unknown'], {}, {}, {}))
+        .rejects.toThrow('Unknown subcommand: unknown');
     });
 
     it('should call defi-holdings with wallet', async () => {

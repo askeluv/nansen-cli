@@ -199,9 +199,11 @@ describe('CLI Smoke Tests', () => {
   });
 
   it('should handle unknown subcommand gracefully', () => {
-    const { stdout } = runCLI('smart-money unknown-subcommand');
-    
+    const { stdout, exitCode } = runCLI('smart-money unknown-subcommand');
+
+    expect(exitCode).toBe(1);
     const result = JSON.parse(stdout);
-    expect(result.data.error).toContain('Unknown subcommand');
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Unknown subcommand');
   });
 });

@@ -27,7 +27,7 @@ All commands: `nansen research profiler <sub> [options]`
 ```bash
 nansen research profiler balance --address <addr> --chain ethereum
 nansen research profiler labels --address <addr> --chain ethereum
-nansen research profiler search --query "Vitalik"
+nansen research search --query "Vitalik"
 ```
 
 ## PnL

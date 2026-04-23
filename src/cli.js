@@ -944,7 +944,7 @@ export function buildCommands(deps = {}) {
           : [options.labels];
       }
 
-      const days = options.days ? parseInt(options.days) : 30;
+      const days = options.days ? parseInt(options.days, 10) : 30;
 
       const handlers = {
         'netflow': () => apiInstance.smartMoneyNetflow({ chains, filters, orderBy, pagination }),
@@ -961,7 +961,7 @@ export function buildCommands(deps = {}) {
       };
 
       if (!handlers[subcommand]) {
-        return { error: `Unknown subcommand: ${subcommand}`, available: Object.keys(handlers) };
+        throw new NansenError(`Unknown subcommand: ${subcommand}. Available: ${Object.keys(handlers).filter(k => k !== 'help').join(', ')}`, ErrorCode.INVALID_PARAMS);
       }
 
       return handlers[subcommand]();
@@ -987,7 +987,7 @@ export function buildCommands(deps = {}) {
       const filters = options.filters || {};
       const orderBy = parseSort(options.sort, options['order-by']);
       const pagination = buildPagination(options);
-      const days = options.days ? parseInt(options.days) : 30;
+      const days = options.days ? parseInt(options.days, 10) : 30;
 
       const handlers = {
         'balance': () => apiInstance.addressBalance({ address, entityName, chain, filters, orderBy }),
@@ -1031,13 +1031,13 @@ export function buildCommands(deps = {}) {
             throw new NansenError('Batch is limited to 100 addresses', ErrorCode.INVALID_PARAMS);
           }
           const include = options.include ? options.include.split(',').map(s => s.trim()) : ['labels', 'balance'];
-          const delayMs = options.delay ? parseInt(options.delay) : 1000;
+          const delayMs = options.delay ? parseInt(options.delay, 10) : 1000;
           return batchProfile(apiInstance, { addresses, chain, include, delayMs });
         },
         'trace': () => {
-          const depth = options.depth ? Math.max(1, Math.min(parseInt(options.depth), 5)) : 2;
-          const width = options.width ? parseInt(options.width) : 10;
-          const delayMs = options.delay ? parseInt(options.delay) : 1000;
+          const depth = options.depth ? Math.max(1, Math.min(parseInt(options.depth, 10), 5)) : 2;
+          const width = options.width ? parseInt(options.width, 10) : 10;
+          const delayMs = options.delay ? parseInt(options.delay, 10) : 1000;
           return traceCounterparties(apiInstance, { address, chain, depth, width, days, delayMs });
         },
         'compare': () => {
@@ -1052,7 +1052,7 @@ export function buildCommands(deps = {}) {
       };
 
       if (!handlers[subcommand]) {
-        return { error: `Unknown subcommand: ${subcommand}`, available: Object.keys(handlers) };
+        throw new NansenError(`Unknown subcommand: ${subcommand}. Available: ${Object.keys(handlers).filter(k => k !== 'help').join(', ')}`, ErrorCode.INVALID_PARAMS);
       }
 
       const result = await handlers[subcommand]();
@@ -1073,7 +1073,7 @@ export function buildCommands(deps = {}) {
       const filters = options.filters || {};
       const orderBy = parseSort(options.sort, options['order-by']);
       const pagination = buildPagination(options);
-      const days = options.days ? parseInt(options.days) : 30;
+      const days = options.days ? parseInt(options.days, 10) : 30;
 
       // Convenience filter for smart money only
       const onlySmartMoney = options['smart-money'] || flags['smart-money'] || false;
@@ -1140,7 +1140,7 @@ export function buildCommands(deps = {}) {
       };
 
       if (!handlers[subcommand]) {
-        return { error: `Unknown subcommand: ${subcommand}`, available: Object.keys(handlers) };
+        throw new NansenError(`Unknown subcommand: ${subcommand}. Available: ${Object.keys(handlers).filter(k => k !== 'help').join(', ')}`, ErrorCode.INVALID_PARAMS);
       }
 
       let result = await handlers[subcommand]();
@@ -1190,7 +1190,7 @@ export function buildCommands(deps = {}) {
       };
 
       if (!handlers[subcommand]) {
-        return { error: `Unknown subcommand: ${subcommand}`, available: Object.keys(handlers) };
+        throw new NansenError(`Unknown subcommand: ${subcommand}. Available: ${Object.keys(handlers).filter(k => k !== 'help').join(', ')}`, ErrorCode.INVALID_PARAMS);
       }
 
       return handlers[subcommand]();
@@ -1201,7 +1201,7 @@ export function buildCommands(deps = {}) {
       const filters = options.filters || {};
       const orderBy = parseSort(options.sort, options['order-by']);
       const pagination = buildPagination(options);
-      const days = options.days ? parseInt(options.days) : 30;
+      const days = options.days ? parseInt(options.days, 10) : 30;
 
       const handlers = {
         'screener': () => apiInstance.perpScreener({ filters, orderBy, pagination, days }),
@@ -1214,7 +1214,7 @@ export function buildCommands(deps = {}) {
       };
 
       if (!handlers[subcommand]) {
-        return { error: `Unknown subcommand: ${subcommand}`, available: Object.keys(handlers) };
+        throw new NansenError(`Unknown subcommand: ${subcommand}. Available: ${Object.keys(handlers).filter(k => k !== 'help').join(', ')}`, ErrorCode.INVALID_PARAMS);
       }
 
       return handlers[subcommand]();
@@ -1244,7 +1244,7 @@ export function buildCommands(deps = {}) {
       };
 
       if (!handlers[subcommand]) {
-        return { error: `Unknown subcommand: ${subcommand}`, available: Object.keys(handlers) };
+        throw new NansenError(`Unknown subcommand: ${subcommand}. Available: ${Object.keys(handlers).filter(k => k !== 'help').join(', ')}`, ErrorCode.INVALID_PARAMS);
       }
 
       return handlers[subcommand]();
@@ -1347,7 +1347,7 @@ SYMBOLS:
 }
 
 // Categories that moved under 'research'
-export const DEPRECATED_TO_RESEARCH = new Set(['smart-money', 'profiler', 'token', 'search', 'perp', 'portfolio', 'points']);
+export const DEPRECATED_TO_RESEARCH = new Set(['smart-money', 'profiler', 'token', 'search', 'perp', 'portfolio', 'points', 'prediction-market']);
 // Subcommands that moved under 'trade'
 export const DEPRECATED_TO_TRADE = new Set(['quote', 'execute']);
 

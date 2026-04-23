@@ -647,7 +647,7 @@
                 },
                 "chain": {
                   "type": "string",
-                  "default": "ethereum"
+                  "default": "solana"
                 }
               },
               "returns": [
@@ -1920,6 +1920,8 @@
         },
         "export": { "description": "Export private keys (local only, requires password)" },
         "default": { "description": "Set default wallet (local only)" },
+        "secure": { "description": "Migrate wallet password to OS keychain for secure storage" },
+        "forget-password": { "description": "Remove saved wallet password from keychain and credentials file" },
         "help": { "description": "Show wallet help" }
       }
     }
@@ -1953,6 +1955,27 @@
         "csv"
       ],
       "description": "Output format (default: json)"
+    },
+    "stream": {
+      "type": "boolean",
+      "description": "Output results as newline-delimited JSON (NDJSON), one record per line"
+    },
+    "cache": {
+      "type": "boolean",
+      "description": "Enable response caching (default: true)"
+    },
+    "no-cache": {
+      "type": "boolean",
+      "description": "Disable response caching"
+    },
+    "cache-ttl": {
+      "type": "number",
+      "default": 300,
+      "description": "Cache TTL in seconds (default: 300)"
+    },
+    "enrich": {
+      "type": "boolean",
+      "description": "Enrich results with additional labels/metadata (slower, extra API calls)"
     },
     "x402-payment-signature": {
       "type": "string",
