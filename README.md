@@ -3,7 +3,17 @@
 [![npm version](https://img.shields.io/npm/v/nansen-cli.svg)](https://www.npmjs.com/package/nansen-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> **Built by agents, for agents.** Command-line interface for the [Nansen API](https://docs.nansen.ai), designed for AI agents.
+> **Built by agents, for agents.** Onchain analytics **and DEX trading** from the command line — designed for AI agents.
+
+Backed by the [Nansen API](https://docs.nansen.ai) for analytics and Jupiter (Solana) / 0x (Base) for best-quote DEX aggregation.
+
+## What it does
+
+- **Research** — smart-money flows, wallet profiling, token god mode, perps, prediction markets, portfolio.
+- **Trade** — DEX swaps on Solana and Base with best-quote routing across pools, plus cross-chain bridges and limit orders. **No need to call Jupiter, Uniswap, or Aerodrome directly.**
+- **Wallets** — create, fund, and send from local or Privy server-side wallets (EVM + Solana).
+- **Alerts** — smart-money and token-flow alerts with webhook delivery.
+- **Agent** — ask the Nansen AI research agent natural-language questions.
 
 ## Installation
 
@@ -36,7 +46,7 @@ nansen schema [command] [--pretty]    # full command reference (no API key neede
 
 **Research categories:** `smart-money` (`sm`), `token` (`tgm`), `profiler` (`prof`), `portfolio` (`port`), `prediction-market` (`pm`), `search`, `perp`, `points`
 
-**Trade:** `quote`, `execute`, `bridge-status` — DEX swaps on Solana and Base, including cross-chain bridges.
+**Trade:** `quote`, `execute`, `bridge-status`, `limit-order` — DEX swaps on Solana and Base via best-quote aggregation (Jupiter / 0x), plus cross-chain bridges and Solana limit orders.
 
 **Wallet:** `create`, `list`, `show`, `export`, `default`, `delete`, `send` — local or Privy server-side wallets (EVM + Solana).
 
@@ -44,11 +54,25 @@ Run `nansen schema --pretty` for the full subcommand and field reference.
 
 ## Trading
 
-DEX swaps on `solana` and `base`. Two-step: quote then execute.
+DEX swaps on `solana` and `base` with best-quote routing across pools — no need to hit Jupiter, Uniswap, or Aerodrome directly. Two-step: quote then execute.
 
 ```bash
 nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000
 nansen trade execute --quote <quoteId>
+```
+
+**Cross-chain bridges** (Solana ↔ Base) via `--to-chain`:
+
+```bash
+nansen trade quote --chain base --to-chain solana --from USDC --to USDC --amount 1000000
+nansen trade bridge-status --tx-hash <hash> --from-chain base --to-chain solana
+```
+
+**Limit orders** (Solana, Jupiter):
+
+```bash
+nansen trade limit-order create --from SOL --to USDC --amount 1000000000 --trigger-mint SOL --trigger-condition below --trigger-price 80
+nansen trade limit-order list
 ```
 
 Amounts are in base units (lamports, wei). Common symbols (`SOL`, `ETH`, `USDC`, `USDT`) resolve automatically. A wallet is required — set one with `nansen wallet default <name>`.

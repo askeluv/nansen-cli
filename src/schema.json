@@ -840,7 +840,7 @@
       }
     },
     "trade": {
-      "description": "DEX trading commands",
+      "description": "DEX trading: swap, execute, bridge, and limit-order on Solana and Base with best-quote routing (Jupiter / 0x aggregation)",
       "subcommands": {
         "quote": {
           "description": "Get a DEX swap quote (same-chain or cross-chain)",

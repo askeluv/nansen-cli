@@ -1,7 +1,7 @@
 {
   "name": "nansen-cli",
   "version": "1.28.0",
-  "description": "Command-line interface for Nansen API - designed for AI agents",
+  "description": "Onchain analytics and DEX trading CLI - smart money, swaps on Solana/Base via Jupiter/0x, designed for AI agents",
   "main": "src/index.js",
   "type": "module",
   "bin": {
@@ -43,7 +43,14 @@
     "onchain",
     "defi",
     "solana",
-    "ethereum"
+    "ethereum",
+    "dex",
+    "swap",
+    "trading",
+    "jupiter",
+    "aggregator",
+    "base",
+    "bridge"
   ],
   "author": "Nansen <dev@nansen.ai>",
   "license": "MIT",
