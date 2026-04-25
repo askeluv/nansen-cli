@@ -699,9 +699,9 @@ export const HELP = `Nansen CLI v${VERSION} — designed for AI agents.
 USAGE: nansen <command> [subcommand] [options]
 
 COMMANDS:
-  research    smart-money, profiler, token, search, perp, portfolio, points
-  trade       quote, execute
-  wallet      create, list, show, export, default, delete, forget-password
+  research    Onchain analytics: smart-money, profiler, token, search, perp, portfolio, points
+  trade       DEX swaps on Solana & Base via best-quote routing (Jupiter/0x): quote, execute, bridge-status, limit-order
+  wallet      create, list, show, export, default, delete, send, forget-password (local or Privy)
   agent       Ask the Nansen AI research agent (fast/expert modes)
   alerts      list, create, update, toggle, delete
   web         search, fetch
@@ -720,7 +720,9 @@ EXAMPLES:
   nansen research smart-money netflow --chain solana
   nansen research token screener --chain solana --timeframe 24h
   nansen research profiler balance --address 0x... --chain ethereum
-  nansen trade quote --chain base --from ETH --to USDC --amount 1000000000000000000
+  nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000  # DEX swap, best-quote routing
+  nansen trade execute --quote <quoteId>
+  nansen wallet create --name my-wallet
 
 DEPRECATED ALIASES (still work, will be removed in a future version):
   smart-money, profiler, token, search, perp, portfolio, points → use "nansen research <command>"

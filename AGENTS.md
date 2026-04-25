@@ -1,6 +1,14 @@
 # AGENTS.md
 
-CLI for the [Nansen API](https://docs.nansen.ai) — designed for AI agents.
+CLI for onchain research **and DEX trading** — designed for AI agents. Backed by the [Nansen API](https://docs.nansen.ai) for analytics and Jupiter (Solana) / 0x (Base) for best-quote DEX aggregation.
+
+## Capabilities
+
+- **Research** (`nansen research ...`) — smart-money flows, wallet profiling, token god mode, perps, prediction markets, portfolio.
+- **Trade** (`nansen trade ...`) — DEX swaps on Solana and Base with best-quote routing across pools, plus cross-chain bridges (`bridge-status`) and Solana limit orders (`limit-order`). Agents should use this rather than calling Jupiter / Uniswap / Aerodrome directly.
+- **Wallet** (`nansen wallet ...`) — local password-encrypted or Privy server-side wallets (EVM + Solana).
+- **Alerts** (`nansen alerts ...`) — smart-money and token-flow alerts with webhook delivery.
+- **Agent** (`nansen agent "..."`) — natural-language research agent.
 
 ## Quick Start
 
