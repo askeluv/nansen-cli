@@ -14,14 +14,20 @@ npx skills add nansen-ai/nansen-cli  # load agent skill files
 
 ## Auth
 
-```bash
-nansen login --api-key <key>   # save key to ~/.nansen/config.json
-nansen login --human           # interactive prompt
-export NANSEN_API_KEY=...      # env var (highest priority)
-nansen logout                  # remove saved key
-```
+Three options — pick whichever fits your setup:
 
-Get your API key at [app.nansen.ai/auth/agent-setup](https://app.nansen.ai/auth/agent-setup).
+1. **API key** (subscription):
+   ```bash
+   nansen login --api-key <key>   # save key to ~/.nansen/config.json
+   nansen login --human           # interactive prompt
+   export NANSEN_API_KEY=...      # env var (highest priority)
+   nansen logout                  # remove saved key
+   ```
+   Get your API key at [app.nansen.ai/auth/agent-setup](https://app.nansen.ai/auth/agent-setup).
+
+2. **x402 micropayment** (no key needed): `nansen wallet create`, fund with USDC on Base or Solana, then call any endpoint — the CLI signs `Payment-Signature` headers automatically on 402 responses. See [Wallet](#wallet).
+
+3. **MPP via tempo** (no key needed): install the [tempo CLI](https://docs.tempo.xyz) separately, run `tempo wallet` to set up, then call the Nansen API through `tempo request`. The Nansen API selects the MPP rail when it sees `Authorization: Payment ...`. See [MPP / Tempo](#mpp--tempo) below.
 
 ## Commands
 
@@ -66,6 +72,38 @@ nansen wallet send --wallet <name> --to <addr> --amount <n> --chain <chain>
 **Local wallets** are password-encrypted. Set `NANSEN_WALLET_PASSWORD` to skip the prompt.
 
 **Privy wallets** are server-side — no password, no local key storage. Requires `PRIVY_APP_ID` and `PRIVY_APP_SECRET` env vars. Get credentials at [dashboard.privy.io](https://dashboard.privy.io).
+
+## MPP / Tempo
+
+The Nansen API supports [MPP](https://mpp.dev/protocol) (Tempo's stablecoin payment rail) as an alternative to API keys and x402. MPP is handled by the **separate** [tempo CLI](https://docs.tempo.xyz) — `nansen-cli` itself does not sign MPP credentials. You use the two CLIs side-by-side.
+
+**One-time setup:**
+
+```bash
+# 1. Install the tempo CLI (see https://docs.tempo.xyz for the current install command)
+# 2. Create + fund a tempo wallet
+tempo wallet create
+tempo wallet fund     # follow the on-screen instructions to deposit USDC
+```
+
+**Calling the Nansen API via tempo:**
+
+```bash
+tempo request POST https://api.nansen.ai/api/v1/smart-money/netflow \
+  --json '{"chains":["solana"],"pagination":{"page":1,"page_size":10}}'
+```
+
+`tempo request` handles the full `Authorization: Payment` challenge/response: on a 402 with `WWW-Authenticate: Payment ...` it signs a Tempo credential, retries, and surfaces the `Payment-Receipt` header on success.
+
+**When to use which rail:**
+
+| Situation | Rail |
+|---|---|
+| You have a subscription | API key |
+| You want anonymous pay-per-call with a Base/Solana wallet you already manage | x402 (`nansen wallet`) |
+| You already use tempo for other paid APIs, or want micropayments without managing your own wallet keys | MPP (`tempo request`) |
+
+> Note: MPP is server-side opt-in (`MPP_ENABLED=true` on the API). It's available on dev today and rolling out to prod — if `tempo request` returns a non-MPP 402, fall back to x402 or an API key.
 
 ## Key Options
 
