@@ -72,7 +72,7 @@ Returns `paymentProtocols: ["x402", "mpp"]` (when MPP is enabled server-side) an
 | 402 challenge header | `Payment-Required: <base64>` | `WWW-Authenticate: Payment ...` |
 | Success header | _(none)_ | `Payment-Receipt: <base64>` |
 | Wallet | local, Privy, or WalletConnect — managed by `nansen-cli` | tempo-managed (separate CLI) |
-| Chains | Base USDC, Solana SPL USDC | Tempo's chain (mainnet `USDC` in prod, moderato `pathUSD` in dev) |
+| Chains | Base USDC, Solana SPL USDC, X Layer USDT0 | Tempo's chain (mainnet `USDC` in prod, moderato `pathUSD` in dev) |
 | nansen-cli code path | `src/x402.js` auto-signs on 402 | not handled — call via `tempo request` directly |
 
 ## Notes

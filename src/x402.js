@@ -188,16 +188,21 @@ export async function checkX402Balance(network) {
     }
 
     if (network.startsWith('eip155:')) {
-      // Base USDC balance check — RPC URL from shared registry so NANSEN_BASE_RPC override applies
-      const USDC_BASE = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+      // Per-network token + RPC. Both tokens are 6-decimals.
+      // Default to Base USDC if the network is unknown so existing wallets keep working.
+      const EVM_NETWORKS = {
+        'eip155:8453': { token: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', rpc: CHAIN_RPCS.base },   // Base USDC
+        'eip155:196':  { token: '0x779DED2B30f6f45db42e0aB1130fC1b2A0a37736', rpc: CHAIN_RPCS.xlayer }, // X Layer USDT0
+      };
+      const { token, rpc } = EVM_NETWORKS[network] || EVM_NETWORKS['eip155:8453'];
       const addr = walletInfo.evm.replace('0x', '').toLowerCase().padStart(64, '0');
-      const resp = await fetch(CHAIN_RPCS.base, {
+      const resp = await fetch(rpc, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           jsonrpc: '2.0', id: 1,
           method: 'eth_call',
-          params: [{ to: USDC_BASE, data: `0x70a08231${addr}` }, 'latest'],
+          params: [{ to: token, data: `0x70a08231${addr}` }, 'latest'],
         }),
       });
       const data = await resp.json();
