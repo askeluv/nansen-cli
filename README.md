@@ -80,9 +80,10 @@ The Nansen API supports [MPP](https://mpp.dev/protocol) (Tempo's stablecoin paym
 **One-time setup:**
 
 ```bash
-# 1. Install the tempo CLI (see https://docs.tempo.xyz for the current install command)
-# 2. Create + fund a tempo wallet
-tempo wallet create
+# 1. Install the tempo CLI
+curl -fsSL https://tempo.xyz/install | bash
+# 2. Log in + fund the tempo wallet
+tempo wallet login
 tempo wallet fund     # follow the on-screen instructions to deposit USDC
 ```
 

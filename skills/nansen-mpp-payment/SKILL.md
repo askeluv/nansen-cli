@@ -30,9 +30,10 @@ For API-key auth, see `nansen-wallet-manager`. For x402 micropayment with a loca
 ## One-time setup
 
 ```bash
-# 1. Install the tempo CLI (check https://docs.tempo.xyz for the current install command)
-# 2. Create a tempo wallet
-tempo wallet create
+# 1. Install the tempo CLI
+curl -fsSL https://tempo.xyz/install | bash
+# 2. Log in (creates / unlocks the tempo wallet)
+tempo wallet login
 # 3. Fund it with USDC on the chain tempo selects for your environment
 tempo wallet fund
 # 4. Confirm the wallet is ready
