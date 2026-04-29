@@ -1,6 +1,6 @@
 ---
 name: nansen-limit-orders
-description: Guide users through native limit orders on Solana via `nansen trade limit create|list|cancel|update`, and the alert-based settlement-signal fallback for chains without native support. Use when a user wants a price-triggered buy or sell.
+description: Guide users through native limit orders on Solana via `nansen trade limit-order create|list|cancel|update`, and the alert-based settlement-signal fallback for chains without native support. Use when a user wants a price-triggered buy or sell.
 metadata:
   openclaw:
     requires:
@@ -21,7 +21,7 @@ allowed-tools: Bash(nansen:*)
 Use this skill when the user wants a price-triggered order. There are two
 distinct paths — pick the one that matches the user's chain:
 
-- **Solana → native limit orders.** `nansen trade limit create|list|cancel|update`
+- **Solana → native limit orders.** `nansen trade limit-order create|list|cancel|update`
   places real resting orders through the Nansen trading API. Use these for
   anything on Solana.
 - **Other chains → alert-based approximation.** `nansen-cli` does not yet place
@@ -34,31 +34,31 @@ distinct paths — pick the one that matches the user's chain:
 
 - A Solana wallet configured in `nansen-cli`: `nansen wallet show <name>` (or
   `nansen wallet create` if none exists). Local, Privy, and WalletConnect
-  wallets are all supported for `trade limit`.
+  wallets are all supported for `trade limit-order`.
 - The wallet must hold the sell token plus a small amount of SOL for fees.
 - For the alert fallback: a notification channel (Telegram chat ID, Slack or
   Discord webhook, or generic webhook URL).
 - `NANSEN_API_KEY`. Smart alerts are internal-only; non-internal users get 404.
-- First-time `trade limit create` auto-registers a trading vault and caches a
-  JWT at `~/.nansen/limit-order-auth.json` for ~23h.
+- First-time `trade limit-order create` auto-registers a trading vault and
+  caches a JWT at `~/.nansen/limit-order-auth.json` for ~23h.
 
 ## Solana: Native Limit Orders
 
 ### Create
 
 ```bash
-# base units (default) — 1 SOL = 1000000000 lamports
-nansen trade limit create \
+# --amount is always in token units (e.g. 1 = 1 SOL, 80 = 80 USDC)
+nansen trade limit-order create \
   --from SOL --to USDC \
-  --amount 1000000000 \
+  --amount 1 \
   --trigger-mint SOL --trigger-condition below --trigger-price 80
 
-# human-readable amount
-nansen trade limit create \
+# with explicit slippage and expiry
+nansen trade limit-order create \
   --from SOL --to USDC \
-  --amount 1.5 --amount-unit token \
+  --amount 1.5 \
   --trigger-mint SOL --trigger-condition above --trigger-price 200 \
-  --slippage 0.03 \
+  --slippage-bps 300 \
   --expires 7d
 ```
 
@@ -67,32 +67,41 @@ Required flags: `--from`, `--to`, `--amount`, `--trigger-mint`,
 
 Key options:
 
-- `--amount-unit token` to pass `--amount` in token units instead of base units.
-- `--slippage 0.03` (decimal, = 3%). Omit for auto.
+- `--amount` is always in **token units** (human-readable). `1.5` means 1.5 SOL,
+  `80` means 80 USDC. There is no base-unit mode and no amount-unit override flag —
+  do not pass one.
+- `--slippage-bps <bps>` — basis points, integer 0–10000 (`300` = 3%, `100` = 1%).
+  Omit for auto.
 - `--expires` accepts `24h`, `7d`, `30d` (default), or an epoch-ms timestamp.
-- `--wallet <name>` or `--wallet walletconnect` to pick a non-default wallet.
+- `--wallet <name>` or `--wallet walletconnect` (alias `wc`) to pick a non-default
+  wallet.
 
-Constraints:
+Constraints (all enforced server-side — surface errors to the user as-is):
 
-- Minimum order value ~$10.
+- Minimum order value (~$10 last seen). Below this the API rejects the order.
 - `--from` and `--to` must be valid Solana mint addresses or supported symbols
   (SOL, USDC, USDT, etc.). Resolve unknown tokens with `nansen research search`.
-- Tokens with transfer-hook extensions (e.g. some pump.fun tokens) will be
-  rejected at create time — surface the error to the user as-is.
+- Tokens with transfer-hook extensions (e.g. some pump.fun tokens) are rejected
+  at create time.
 
 ### List
 
 ```bash
-nansen trade limit list                    # active orders (default)
-nansen trade limit list --state past       # filled or cancelled
-nansen trade limit list --mint <mintAddr>  # filter by token
-nansen trade limit list --limit 50 --offset 0 --sort createdAt --dir desc
+nansen trade limit-order list                    # default
+nansen trade limit-order list --state active     # only open
+nansen trade limit-order list --state past       # filled or cancelled
+nansen trade limit-order list --mint <mintAddr>  # filter by token
+nansen trade limit-order list --limit 50 --offset 0 --dir desc
 ```
+
+Options: `--state active|past`, `--mint <addr>`, `--limit <n>` (default 20),
+`--offset <n>`, `--sort <field>`, `--dir asc|desc` (default `desc`),
+`--wallet <name>`.
 
 ### Cancel
 
 ```bash
-nansen trade limit cancel --order <orderId>
+nansen trade limit-order cancel --order <orderId>
 ```
 
 Cancelling submits a withdrawal transaction; surface the tx signature from the
@@ -101,12 +110,14 @@ CLI output so the user can verify on Solscan.
 ### Update
 
 ```bash
-nansen trade limit update --order <orderId> --trigger-price 85
-nansen trade limit update --order <orderId> --slippage 0.01
+nansen trade limit-order update --order <orderId> --trigger-price 85
+nansen trade limit-order update --order <orderId> --slippage-bps 100
 ```
 
-Only `--trigger-price` and `--slippage` can be updated. To change size or the
-token pair, cancel and re-create.
+Only `--trigger-price` and `--slippage-bps` can be updated. To change size or
+the token pair, cancel and re-create. Auto slippage can only be set at creation
+time (by omitting `--slippage-bps` from `create`); `update` cannot revert a
+fixed slippage back to auto.
 
 ## Non-Solana Chains: Alert-Based Settlement Signal
 
@@ -167,8 +178,11 @@ nansen alerts create \
 
 For Solana native limit orders, a companion alert on the settlement wallet is
 optional but useful — it pings the user independently of the trading API, so
-they get a notification even if they aren't polling `trade limit list`. Pair
-with the same `common-token-transfer` alert shape shown above.
+they get a notification even if they aren't polling
+`trade limit-order list`. Some venues route fills through programs that the
+alerting backend may not classify as `buy`/`sell`, so this is still a
+best-effort signal, not authoritative fill detection. Pair with the same
+`common-token-transfer` alert shape shown above.
 
 ## Notes
 
