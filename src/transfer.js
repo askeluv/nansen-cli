@@ -12,7 +12,7 @@ import { CHAIN_RPCS } from './rpc-urls.js';
 
 // ============= Constants =============
 
-const PRIORITY_FEE_DEFAULTS = { base: 100000000n, ethereum: 1500000000n, evm: 1500000000n };
+const PRIORITY_FEE_DEFAULTS = { base: 100000000n, ethereum: 1500000000n, evm: 1500000000n, xlayer: 100000000n };
 
 const ERC20_TRANSFER_SELECTOR = 'a9059cbb'; // transfer(address,uint256)
 const SYSTEM_PROGRAM = '11111111111111111111111111111111'; // 32 zero bytes in base58

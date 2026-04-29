@@ -471,13 +471,14 @@ export class NansenAPI {
    * @param {string} url - Request URL
    * @param {object} body - Request body (will be cleaned)
    * @param {object} [options={}] - Request options (may include .headers)
+   * @param {string|null} [asset=null] - Asset used for payment (e.g. "USDC"), passed to checkX402Balance for post-payment balance check
    * @returns {Promise<object|null>} Parsed JSON on success, null if rejected
    *
    * TODO: full fix — extract the entire x402 provider dispatch from request() into
    * an attemptX402Payment() method so adding a new payment provider only requires
    * touching that one method, not hunting inside the retry loop.
    */
-  async _x402Retry(signature, walletLabel, network, url, body, options = {}) {
+  async _x402Retry(signature, walletLabel, network, url, body, options = {}, asset = null) {
     const paidResponse = await fetch(url, {
       method: 'POST',
       headers: {
@@ -498,9 +499,9 @@ export class NansenAPI {
     if (network) {
       try {
         const { checkX402Balance } = await import('./x402.js');
-        const balance = await checkX402Balance(network);
-        if (balance !== null && balance < 0.25) {
-          console.error(`[x402] Warning: USDC balance low ($${balance.toFixed(2)}). Fund your wallet to avoid interruptions.`);
+        const balance = await checkX402Balance(network, asset);
+        if (balance !== null && balance < 0.0001) {
+          console.error(`[x402] Warning: Stablecoin balance low ($${balance.toFixed(2)}). Fund your wallet to avoid interruptions.`);
         }
       } catch { /* balance check is best-effort */ }
     }
@@ -623,8 +624,8 @@ export class NansenAPI {
               // Default wallet is Privy: sign via Privy
               try {
                 const { createPrivyPaymentSignatures } = await import('./privy.js');
-                for await (const { signature, network } of createPrivyPaymentSignatures(response, url)) {
-                  const result = await this._x402Retry(signature, `Privy wallet ${defaultWalletName}`, network, url, body, options);
+                for await (const { signature, network, asset } of createPrivyPaymentSignatures(response, url)) {
+                  const result = await this._x402Retry(signature, `Privy wallet ${defaultWalletName}`, network, url, body, options, asset);
                   if (result !== null) return result;
                 }
               } catch (privyErr) {
@@ -635,8 +636,8 @@ export class NansenAPI {
               // 1. Try local wallet with fallback across payment networks
               try {
                 const { createPaymentSignatures } = await import('./x402.js');
-                for await (const { signature, network } of createPaymentSignatures(response, url)) {
-                  const result = await this._x402Retry(signature, `local wallet ${defaultWalletName}`, network, url, body, options);
+                for await (const { signature, network, asset } of createPaymentSignatures(response, url)) {
+                  const result = await this._x402Retry(signature, `local wallet ${defaultWalletName}`, network, url, body, options, asset);
                   if (result !== null) return result;
                   // This payment option was rejected, try next
                 }

@@ -1234,7 +1234,8 @@
     "sonic",
     "monad",
     "hyperevm",
-    "iotaevm"
+    "iotaevm",
+    "xlayer"
   ],
   "smartMoneyLabels": [
     "Fund",

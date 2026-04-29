@@ -97,6 +97,28 @@ describe('NansenAPI._x402Retry', () => {
     expect(requestInit.headers['Payment-Signature']).toBe('my-payment-sig');
   });
 
+  it('passes asset to checkX402Balance when provided', async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({ success: true }) });
+
+    // Mock checkX402Balance to verify it receives asset
+    const checkX402Balance = vi.fn().mockResolvedValue(0.10);
+    vi.doMock('../x402.js', () => ({ checkX402Balance }));
+
+    // Re-import to pick up the mock
+    const { NansenAPI: MockedAPI } = await import('../api.js');
+    const api = new MockedAPI('test-key', 'https://api.nansen.ai');
+    await api._x402Retry(
+      'test-sig', 'local wallet test', 'eip155:196',
+      'https://api.nansen.ai/test', {},
+      {}, '0x4ae46a509f6b1d9056937ba4500cb143933d2dc8',
+    );
+
+    expect(checkX402Balance).toHaveBeenCalledWith(
+      'eip155:196',
+      '0x4ae46a509f6b1d9056937ba4500cb143933d2dc8',
+    );
+  });
+
   it('propagates json() rejection when the paid response body is not valid JSON', async () => {
     // Regression for e918bdd: the explicit await ensures a parsing failure
     // surfaces as a clean rejection from _x402Retry rather than being lost.

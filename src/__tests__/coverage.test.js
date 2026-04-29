@@ -172,7 +172,7 @@ describe('Supported Chains Coverage', () => {
     'ethereum', 'solana', 'base', 'bnb', 'arbitrum',
     'polygon', 'optimism', 'avalanche', 'linea', 'scroll',
     'mantle', 'ronin', 'sei', 'plasma',
-    'sonic', 'monad', 'hyperevm', 'iotaevm'
+    'sonic', 'monad', 'hyperevm', 'iotaevm', 'xlayer'
   ];
 
   it('should document all supported chains', () => {

@@ -24,7 +24,7 @@ export function parsePaymentRequirements(response) {
   if (!header) return null;
 
   try {
-    const decoded = JSON.parse(atob(header));
+    const decoded = JSON.parse(Buffer.from(header, 'base64').toString('utf8'));
     // V2 format: { accepts: [...], ... }
     if (decoded.accepts && Array.isArray(decoded.accepts)) {
       return decoded.accepts;
@@ -130,7 +130,7 @@ export async function* createPaymentSignatures(response, url, options = {}) {
   for (const req of ranked) {
     try {
       const sig = await buildPaymentForRequirement(req, exported, url);
-      if (sig) yield { signature: sig, network: req.network };
+      if (sig) yield { signature: sig, network: req.network, asset: req.asset };
     } catch {
       // This payment option failed to build, try next
       continue;
@@ -155,16 +155,26 @@ export async function createPaymentSignature(response, url, options = {}) {
 }
 
 /**
- * Check USDC balance for x402 payment wallet.
- * Returns balance in USD (number) or null if check fails.
+ * Map EVM chainId to RPC URL for balance checks.
  */
-export async function checkX402Balance(network) {
+const CHAIN_ID_TO_RPC = {
+  8453: () => CHAIN_RPCS.base,
+  196:  () => CHAIN_RPCS.xlayer,
+};
+
+/**
+ * Check stablecoin balance for x402 payment wallet.
+ * Returns balance in USD (number) or null if check fails.
+ *
+ * @param {string} network - CAIP-2 network, e.g. "eip155:8453" or "solana:..."
+ * @param {string} [asset] - Token contract address. EVM only: falls back to Base USDC if omitted.
+ */
+export async function checkX402Balance(network, asset) {
   try {
     const { listWallets, exportWallet: _exportWallet } = await import('./wallet.js');
     const wallets = listWallets();
     if (!wallets.defaultWallet) return null;
 
-    // Find wallet addresses without needing password
     const walletInfo = wallets.wallets.find(w => w.name === wallets.defaultWallet);
     if (!walletInfo) return null;
 
@@ -188,16 +198,21 @@ export async function checkX402Balance(network) {
     }
 
     if (network.startsWith('eip155:')) {
-      // Base USDC balance check — RPC URL from shared registry so NANSEN_BASE_RPC override applies
+      const chainId = parseInt(network.split(':')[1], 10);
+      const rpcGetter = CHAIN_ID_TO_RPC[chainId];
+      if (!rpcGetter) return null;
+      const rpcUrl = rpcGetter();
+
       const USDC_BASE = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+      const tokenAddress = asset || USDC_BASE;
       const addr = walletInfo.evm.replace('0x', '').toLowerCase().padStart(64, '0');
-      const resp = await fetch(CHAIN_RPCS.base, {
+      const resp = await fetch(rpcUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           jsonrpc: '2.0', id: 1,
           method: 'eth_call',
-          params: [{ to: USDC_BASE, data: `0x70a08231${addr}` }, 'latest'],
+          params: [{ to: tokenAddress, data: `0x70a08231${addr}` }, 'latest'],
         }),
       });
       const data = await resp.json();

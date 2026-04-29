@@ -315,7 +315,7 @@ export async function* createPrivyPaymentSignatures(response, url) {
             accepted: requirement,
           });
 
-          yield { signature: header, network: requirement.network };
+          yield { signature: header, network: requirement.network, asset: requirement.asset };
         } catch (err) {
           console.error(`[x402] Privy EVM signing failed for ${requirement.network}: ${err.message}`);
           continue;
@@ -355,7 +355,7 @@ export async function* createPrivyPaymentSignatures(response, url) {
           }
 
           const header = Buffer.from(JSON.stringify(payload)).toString("base64");
-          yield { signature: header, network: requirement.network };
+          yield { signature: header, network: requirement.network, asset: requirement.asset };
         } catch (err) {
           console.error(`[x402] Privy Solana signing failed for ${requirement.network}: ${err.message}`);
           continue;
