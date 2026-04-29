@@ -1734,6 +1734,13 @@ describe('HELP', () => {
     expect(HELP).toContain('login');
     expect(HELP).toContain('logout');
   });
+
+  it('should surface trading capabilities in top-level help text', () => {
+    expect(HELP).toContain('DEX swaps/bridges');
+    expect(HELP).toContain('bridge-status');
+    expect(HELP).toContain('limit-order');
+    expect(HELP).toContain('nansen trade execute --quote <quoteId>');
+  });
 });
 
 describe('buildCommands', () => {

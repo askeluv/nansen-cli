@@ -694,13 +694,13 @@ export async function compareWallets(api, params = {}) {
 
 export const BANNER = '';
 
-export const HELP = `Nansen CLI v${VERSION} — designed for AI agents.
+export const HELP = `Nansen CLI v${VERSION} - analytics and DEX trading for AI agents.
 
 USAGE: nansen <command> [subcommand] [options]
 
 COMMANDS:
-  research    smart-money, profiler, token, search, perp, portfolio, points
-  trade       quote, execute
+  trade       DEX swaps/bridges: quote, execute, bridge-status, limit-order
+  research    analytics: smart-money, profiler, token, search, perp, portfolio, points
   wallet      create, list, show, export, default, delete, forget-password
   agent       Ask the Nansen AI research agent (fast/expert modes)
   alerts      list, create, update, toggle, delete
@@ -716,11 +716,19 @@ OPTIONS: --chain --limit --sort field:dir --fields a,b --days N --filters '{}'
 FORMAT:  --pretty --table --format csv --stream (NDJSON)
 RETRY:   --no-retry --retries N --cache --cache-ttl N
 
+TRADING:
+  nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000
+  nansen trade execute --quote <quoteId>
+  nansen trade bridge-status --tx-hash <hash> --from-chain base --to-chain solana
+  nansen trade limit-order create --from SOL --to USDC --amount 1000000000 --trigger-mint SOL --trigger-condition below --trigger-price 80
+  Supports Solana/Base DEX swaps, cross-chain bridges, and Solana limit orders.
+
 EXAMPLES:
+  nansen trade quote --chain base --from ETH --to USDC --amount 1000000000000000000
+  nansen trade quote --chain base --to-chain solana --from USDC --to USDC --amount 1000000
   nansen research smart-money netflow --chain solana
   nansen research token screener --chain solana --timeframe 24h
   nansen research profiler balance --address 0x... --chain ethereum
-  nansen trade quote --chain base --from ETH --to USDC --amount 1000000000000000000
 
 DEPRECATED ALIASES (still work, will be removed in a future version):
   smart-money, profiler, token, search, perp, portfolio, points → use "nansen research <command>"
