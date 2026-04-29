@@ -540,13 +540,36 @@ describe('x402 Payment', () => {
         accepted: MOCK_REQUIREMENT,
       });
 
-      const decoded = JSON.parse(atob(header));
+      const decoded = JSON.parse(Buffer.from(header, 'base64').toString('utf8'));
       expect(decoded.x402Version).toBe(2);
       expect(decoded.resource.url).toBe('https://api.example.com/test');
       expect(decoded.accepted.scheme).toBe('exact');
       expect(decoded.payload.signature).toBe('0xSig');
       expect(decoded.payload.authorization.from).toBe('0xA');
       expect(decoded.payload.authorization.to).toBe('0xB');
+    });
+
+    it('should preserve UTF-8 fields in accepted requirement metadata', () => {
+      const accepted = {
+        ...MOCK_REQUIREMENT,
+        network: 'eip155:196',
+        asset: '0x779Ded0c9e1022225f8E0630b35a9b54bE713736',
+        extra: {
+          ...MOCK_REQUIREMENT.extra,
+          name: 'USD₮0',
+          symbol: 'USDT0',
+        },
+      };
+      const header = buildPaymentSignatureHeader({
+        signature: '0xSig',
+        authorization: { from: '0xA', to: '0xB', value: '100', validAfter: 0, validBefore: 999, nonce: '0x123' },
+        resource: { url: 'https://api.example.com/test', description: 'Test', mimeType: '' },
+        accepted,
+      });
+
+      const decoded = JSON.parse(Buffer.from(header, 'base64').toString('utf8'));
+      expect(decoded.accepted.extra.name).toBe('USD₮0');
+      expect(decoded.accepted.asset).toBe('0x779Ded0c9e1022225f8E0630b35a9b54bE713736');
     });
   });
 });

@@ -498,9 +498,9 @@ export class NansenAPI {
     if (network) {
       try {
         const { checkX402Balance } = await import('./x402.js');
-        const balance = await checkX402Balance(network);
-        if (balance !== null && balance < 0.25) {
-          console.error(`[x402] Warning: USDC balance low ($${balance.toFixed(2)}). Fund your wallet to avoid interruptions.`);
+        const result = await checkX402Balance(network);
+        if (result !== null && result.balance < 0.25) {
+          console.error(`[x402] Warning: ${result.symbol} balance low ($${result.balance.toFixed(2)}). Fund your wallet to avoid interruptions.`);
         }
       } catch { /* balance check is best-effort */ }
     }
@@ -648,7 +648,7 @@ export class NansenAPI {
                 const paymentHeader = response.headers.get('payment-required');
                 if (paymentHeader) {
                   try {
-                    paymentRequirements = JSON.parse(atob(paymentHeader));
+                    paymentRequirements = JSON.parse(Buffer.from(paymentHeader, 'base64').toString('utf8'));
                   } catch {
                     data.paymentRequiredRaw = paymentHeader;
                   }
@@ -665,9 +665,10 @@ export class NansenAPI {
                     if (result !== null) return result;
                   } catch (x402Err) {
                     if (!this.apiKey) {
-                      message = 'No API key configured. Two ways to authenticate:\n' +
+                      message = 'No API key configured. Three ways to authenticate:\n' +
                         '  1. API key: nansen login --api-key <key> (get key at https://app.nansen.ai/auth/agent-setup)\n' +
-                        '  2. x402 micropayment: nansen wallet create + fund with USDC (no API key needed)';
+                        '  2. x402 micropayment: nansen wallet create + fund with USDC on Base/Solana or USDT0 on X Layer (no API key needed)\n' +
+                        '  3. MPP via tempo: install tempo CLI, run `tempo wallet login`, then call the API with `tempo request` (see skills/nansen-mpp-payment)';
                     } else {
                       message = `x402 auto-payment failed: ${x402Err.message}`;
                     }

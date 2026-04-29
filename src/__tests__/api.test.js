@@ -3041,6 +3041,54 @@ describe('NansenAPI', () => {
       vi.doUnmock('../walletconnect-x402.js');
     });
 
+    it('should decode UTF-8 payment requirements before WalletConnect signing', async () => {
+      if (LIVE_TEST) return;
+
+      const paymentReqs = {
+        accepts: [{
+          scheme: 'exact',
+          asset: '0x779Ded0c9e1022225f8E0630b35a9b54bE713736',
+          payTo: '0xRecipient',
+          amount: '10000',
+          network: 'eip155:196',
+          maxTimeoutSeconds: 120,
+          extra: { name: 'USD₮0', version: '1', symbol: 'USDT0', decimals: 6 },
+        }],
+      };
+      const paymentHeader = Buffer.from(JSON.stringify(paymentReqs), 'utf8').toString('base64');
+
+      const errorResponse = {
+        ok: false,
+        status: 402,
+        json: async () => ({ message: 'Payment required' }),
+        headers: { get: (h) => h === 'payment-required' ? paymentHeader : null },
+      };
+      const successData = { netflows: [{ token_symbol: 'TEST' }] };
+      const successResponse = {
+        ok: true,
+        json: async () => successData,
+        text: async () => JSON.stringify(successData),
+      };
+
+      mockFetch
+        .mockResolvedValueOnce(errorResponse)
+        .mockResolvedValueOnce(successResponse);
+
+      const mockHandleX402Payment = vi.fn().mockResolvedValue('mock-payment-sig');
+      vi.resetModules();
+      vi.doMock('../walletconnect-x402.js', () => ({ handleX402Payment: mockHandleX402Payment }));
+
+      const autoPayApi = new NansenAPI('test-key', 'https://api.nansen.ai');
+      const result = await autoPayApi.smartMoneyNetflow({});
+
+      expect(result.netflows).toBeDefined();
+      expect(mockHandleX402Payment).toHaveBeenCalledTimes(1);
+      expect(mockHandleX402Payment.mock.calls[0][0].accepts[0].extra.name).toBe('USD₮0');
+      expect(mockHandleX402Payment.mock.calls[0][0].accepts[0].asset).toBe('0x779Ded0c9e1022225f8E0630b35a9b54bE713736');
+
+      vi.doUnmock('../walletconnect-x402.js');
+    });
+
     it('should fall through when manual Payment-Signature header is set', async () => {
       if (LIVE_TEST) return;
 
