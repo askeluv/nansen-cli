@@ -160,6 +160,19 @@ const MOCK_RESPONSES = {
       { indicator_type: 'price-momentum', score: 'bullish', signal: 0.75, signal_percentile: 85.5, last_trigger_on: '2025-01-10' }
     ]
   },
+  topTokens: {
+    data: [
+      {
+        token_address: '0x7fc66500c84a76ad7e9c93437bfc5ac33e2ddae9',
+        token_symbol: 'AAVE',
+        chain: 'ethereum',
+        performance_score: 72.5,
+        risk_score: 35.2,
+        price_momentum_performance: 0.85,
+        liquidity_risk: 0.15
+      }
+    ]
+  },
   tokenOhlcv: {
     candles: [
       { timestamp: '2025-01-15T00:00:00Z', open: 1.5, high: 1.8, low: 1.4, close: 1.7, volume: 1000000 }
@@ -1080,6 +1093,38 @@ describe('NansenAPI', () => {
 
         expect(result.risk_indicators).toBeInstanceOf(Array);
         expect(result.reward_indicators).toBeInstanceOf(Array);
+      });
+    });
+
+    describe('topTokens', () => {
+      it('should fetch top tokens with correct endpoint and body', async () => {
+        setupMock(MOCK_RESPONSES.topTokens);
+        const result = await api.topTokens({ limit: 10 });
+        const body = expectFetchCalledWith('/api/v1/nansen-score/top-tokens');
+        if (body) {
+          expect(body.limit).toBe(10);
+          expect(body.market_cap_group).toBeUndefined();
+        }
+        expect(result.data).toBeInstanceOf(Array);
+      });
+
+      it('should pass marketCapGroup when provided', async () => {
+        setupMock(MOCK_RESPONSES.topTokens);
+        await api.topTokens({ marketCapGroup: 'largecap', limit: 5 });
+        const body = expectFetchCalledWith('/api/v1/nansen-score/top-tokens');
+        if (body) {
+          expect(body.market_cap_group).toBe('largecap');
+          expect(body.limit).toBe(5);
+        }
+      });
+
+      it('should default limit to 25', async () => {
+        setupMock(MOCK_RESPONSES.topTokens);
+        await api.topTokens({});
+        const body = expectFetchCalledWith('/api/v1/nansen-score/top-tokens');
+        if (body) {
+          expect(body.limit).toBe(25);
+        }
       });
     });
 

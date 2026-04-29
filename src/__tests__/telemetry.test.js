@@ -70,6 +70,23 @@ describe('telemetry', () => {
       const body = JSON.parse(fetchMock.mock.calls[0][1].body);
       expect(body.properties.chain).toBeUndefined();
     });
+
+    it('should map agent commands to path /agent', () => {
+      trackCommandSucceeded({
+        command: 'agent What is the trend score for ETH',
+        duration_ms: 100,
+      });
+
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body.path).toBe('/agent');
+    });
+
+    it('should map bare agent to /agent', () => {
+      trackCommandSucceeded({ command: 'agent', duration_ms: 10 });
+
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body.path).toBe('/agent');
+    });
   });
 
   describe('trackCommandFailed', () => {
@@ -89,6 +106,18 @@ describe('telemetry', () => {
       expect(body.path).toBe('/smart-money/netflow');
       expect(body.properties.error_code).toBe('UNAUTHORIZED');
       expect(body.properties.status).toBe(401);
+    });
+
+    it('should map failed agent commands to /agent', () => {
+      trackCommandFailed({
+        command: 'agent Explain SOL flows',
+        duration_ms: 200,
+        error_code: 'UNAUTHORIZED',
+        status: 401,
+      });
+
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body.path).toBe('/agent');
     });
   });
 

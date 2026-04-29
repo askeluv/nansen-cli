@@ -1203,6 +1203,13 @@ export class NansenAPI {
     });
   }
 
+  async topTokens(params = {}) {
+    const { marketCapGroup, limit = 25 } = params;
+    const body = { limit };
+    if (marketCapGroup) body.market_cap_group = marketCapGroup;
+    return this.request('/api/v1/nansen-score/top-tokens', body);
+  }
+
   // ============= Perp Endpoints =============
 
   async perpScreener(params = {}) {

@@ -158,9 +158,13 @@ function buildContext() {
 
 /**
  * Convert a command string like "smart-money netflow" to a path like "/smart-money/netflow".
+ * Agent ("agent …") always maps to "/agent" so prompts are not exploded into path segments.
  */
 function commandToPath(command) {
-  return '/' + command.replace(/\s+/g, '/');
+  if (typeof command === 'string' && /^agent(?:\s+|$)/.test(command.trimStart())) {
+    return '/agent';
+  }
+  return '/' + String(command).replace(/\s+/g, '/');
 }
 
 /**

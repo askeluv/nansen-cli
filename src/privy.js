@@ -125,6 +125,15 @@ export class PrivyClient {
     });
   }
 
+  async signSolanaMessage(walletId, messageBuffer) {
+    const messageBase64 = Buffer.from(messageBuffer).toString('base64');
+    return this._request("POST", `/wallets/${walletId}/rpc`, {
+      method: "signMessage",
+      chain_type: "solana",
+      params: { message: messageBase64, encoding: "base64" },
+    });
+  }
+
 }
 
 // ============= Helpers =============

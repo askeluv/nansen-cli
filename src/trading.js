@@ -1167,6 +1167,10 @@ CROSS-CHAIN NOTES (when using --to-chain):
         };
         if (isCrossChain) {
           params.toChainIndex = toChainConfig.index;
+          // Opt out of Relay aggregator: CLI bypasses backend /execute so the
+          // Redis aggregator hint is never set, and /bridge/status defaults to
+          // LiFi — polling a Relay txHash there returns NOT_FOUND.
+          params.disabledAggregators = 'relay';
           if (toWallet) {
             params.toWalletAddress = toWallet;
             log(`  Destination wallet: ${toWallet}`);

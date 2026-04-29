@@ -302,7 +302,7 @@ function modPowBig(base, exp, mod) {
   return result;
 }
 
-async function getTokenInfo(rpcUrl, mint) {
+export async function getTokenInfo(rpcUrl, mint) {
   // Get mint account to determine token program and decimals
   const info = await rpcCall(rpcUrl, 'getAccountInfo', [mint, { encoding: 'jsonParsed' }]);
   if (!info || !info.value) throw new Error(`Token mint ${mint} not found`);

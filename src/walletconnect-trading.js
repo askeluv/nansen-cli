@@ -9,6 +9,7 @@
  */
 
 import { wcExec } from './walletconnect-exec.js';
+import { base58Encode } from './wallet.js';
 
 const SOLANA_MAINNET_CHAIN = 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
 
@@ -152,4 +153,28 @@ export async function sendSolanaTransactionViaWalletConnect(txBase58, timeoutMs 
   if (result.transaction) return { signedTransaction: result.transaction };
 
   throw new Error('Unexpected response from walletconnect Solana sign');
+}
+
+/**
+ * Sign a Solana message via WalletConnect.
+ *
+ * Used for challenge-response authentication (e.g., Jupiter Limit Order V2).
+ * Returns the raw Ed25519 signature as base58.
+ *
+ * @param {Buffer} messageBuffer - Raw message bytes to sign
+ * @param {number} [timeoutMs=120000] - Timeout for user approval
+ * @returns {{ signature: string }} Base58-encoded signature
+ */
+export async function signSolanaMessageViaWalletConnect(messageBuffer, timeoutMs = 120000) {
+  const payload = {
+    message: base58Encode(messageBuffer),
+    chainId: SOLANA_MAINNET_CHAIN,
+  };
+
+  const output = await wcExec('walletconnect', ['sign-message', JSON.stringify(payload)], timeoutMs);
+  const result = parseWcJson(output);
+
+  if (result.signature) return { signature: result.signature };
+
+  throw new Error('Unexpected response from walletconnect sign-message');
 }

@@ -227,3 +227,4 @@ export function deleteCredentialsFile() {
 export function resolvePassword() {
   return retrievePassword().password;
 }
+
