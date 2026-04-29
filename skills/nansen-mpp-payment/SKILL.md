@@ -37,7 +37,7 @@ tempo wallet login
 # 3. Fund it with USDC on the chain tempo selects for your environment
 tempo wallet fund
 # 4. Confirm the wallet is ready
-tempo wallet
+tempo wallet whoami
 ```
 
 ## Calling the Nansen API
