@@ -27,8 +27,6 @@ Three options — pick whichever fits your setup:
 
 2. **x402 micropayment** (no key needed): `nansen wallet create`, fund with USDC on Base or Solana, or USDT0 on X Layer, then call any endpoint — the CLI signs `Payment-Signature` headers automatically on 402 responses. See [Wallet](#wallet).
 
-   > Note: X Layer USDT0 x402 payment support requires the OKX facilitator to be enabled on the server (see `x402_xlayer_wallet` / OKX env vars). If your API returns `invalid_exact_evm_signature` for X Layer, confirm the server is running a version that includes the OKX facilitator integration. Use Base USDC as a fallback.
-
 3. **MPP via tempo** (no key needed): install the [tempo CLI](https://docs.tempo.xyz) separately, run `tempo wallet` to set up, then call the Nansen API through `tempo request`. The Nansen API selects the MPP rail when it sees `Authorization: Payment ...`. See [MPP / Tempo](#mpp--tempo) below.
 
 ## Commands
@@ -104,7 +102,7 @@ tempo request POST https://api.nansen.ai/api/v1/smart-money/netflow \
 |---|---|
 | You have a subscription | API key |
 | You want anonymous pay-per-call with a Base/Solana wallet you already manage | x402 (`nansen wallet`) |
-| You hold USDT0 on X Layer and want to pay from there | x402 (`nansen wallet`) — fund with USDT0 on X Layer, or use Base USDC as an alternative |
+| You hold USDT0 on X Layer and want to pay from there | x402 (`nansen wallet`) |
 | You already use tempo for other paid APIs, or want micropayments without managing your own wallet keys | MPP (`tempo request`) |
 
 > Note: MPP is server-side opt-in (`MPP_ENABLED=true` on the API). It's available on dev today and rolling out to prod — if `tempo request` returns a non-MPP 402, fall back to x402 or an API key.
