@@ -1997,20 +1997,28 @@ EXAMPLES:
               chain,
               simulate: !noSimulate && !gasless,
             };
-            // The backend's /execute schema is strict:
-            //   - `requestId` is only accepted for Solana submissions (Jupiter/Relay-Solana)
-            //     and for the gasless Relay route — sending it on EVM signed broadcasts errors.
-            //   - `aggregator`, `gasless`, `steps` are only valid on the gasless route.
-            // The Solana branches above already assign `requestId` for non-gasless flows;
-            // for gasless EVM we pull it from quote metadata so Relay's solver can route.
+            // The backend's /execute schema is strict; sending fields it doesn't expect
+            // for the (chain × aggregator × gasless) combination causes 502s or
+            // "Unrecognized keys" rejections. The matrix we've validated against the
+            // live backend:
+            //   - EVM signed (any aggregator): no extra fields. requestId/aggregator
+            //     trigger schema errors.
+            //   - Solana signed (Jupiter/OKX): include requestId for Jupiter Ultra
+            //     intent resolution.
+            //   - Solana signed (Relay): omit requestId — backend tries to look it up
+            //     as a Jupiter intent and 502s.
+            //   - Gasless (EVM): aggregator + gasless + steps + requestId.
+            //   - Gasless (Solana): currently rejected by the backend ("Unrecognized
+            //     keys"); we still send the gasless envelope and let the backend
+            //     surface the error so users notice when support lands.
             if (gasless) {
               execParams.aggregator = 'relay';
               execParams.gasless = true;
               const gaslessRequestId = requestId || currentQuote.metadata?.requestId;
               if (gaslessRequestId) execParams.requestId = gaslessRequestId;
               if (currentQuote.metadata?.steps) execParams.steps = currentQuote.metadata.steps;
-            } else if (requestId) {
-              execParams.requestId = requestId; // Solana non-gasless (Jupiter / Relay-Solana)
+            } else if (requestId && !isRelay) {
+              execParams.requestId = requestId; // Solana Jupiter Ultra
             }
 
             const result = await executeTransaction(execParams);

@@ -2955,6 +2955,111 @@ describe('Relay aggregator: --aggregator override on bridge-status', () => {
   });
 });
 
+describe('Relay aggregator: Solana non-gasless omits requestId', () => {
+  it('non-gasless Solana Relay execute does NOT send requestId (backend 502s otherwise)', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const executeBodies = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
+        executeBodies.push(JSON.parse(opts.body));
+        return Promise.resolve({
+          ok: true,
+          text: () => Promise.resolve(JSON.stringify({ status: 'Success', signature: 'SolSig', chainType: 'solana', broadcaster: 'solana-rpc' })),
+        });
+      }
+      if (urlStr.includes('/bridge/status')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          text: () => Promise.resolve(JSON.stringify({ status: 'DONE', receiving: { status: 'DONE', txHash: 'destTx' } })),
+        });
+      }
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: 1, result: null })) });
+    }));
+
+    // Minimal Solana tx for signing
+    const sigCount = Buffer.from([0x01]);
+    const emptySig = Buffer.alloc(64);
+    const message = Buffer.from([0x01, 0x00, 0x01, 0x02, ...Buffer.alloc(32), ...Buffer.alloc(32), ...Buffer.alloc(32), 0x01, 0x01, 0x01, 0x00, 0x04, 0x02, 0x00, 0x00, 0x00]);
+    const txBase64 = Buffer.concat([sigCount, emptySig, message]).toString('base64');
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'relay',
+        inputMint: '11111111111111111111111111111111',
+        outputMint: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+        inAmount: '8300000',
+        outAmount: '278359729005750',
+        approvalAddress: '',
+        transaction: txBase64,
+        metadata: { requestId: 'relay-sol-req', isCrossChain: true, bridgeTool: 'relay' },
+      }],
+    }, 'solana', 'local', null, 'base');
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    try { await cmds.execute([], null, {}, { quote: quoteId }); } catch { /* bridge poll may fail, ok */ }
+
+    expect(executeBodies.length).toBeGreaterThanOrEqual(1);
+    // Critical: backend treats requestId as a Jupiter Ultra intent ID and 502s on
+    // Relay-Solana submissions. Must omit it on this code path.
+    expect(executeBodies[0].requestId).toBeUndefined();
+    expect(executeBodies[0].aggregator).toBeUndefined();
+    expect(executeBodies[0].gasless).toBeUndefined();
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+    vi.unstubAllGlobals();
+  });
+
+  it('non-gasless Solana Jupiter execute DOES send requestId (Jupiter Ultra intent)', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const executeBodies = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
+        executeBodies.push(JSON.parse(opts.body));
+        return Promise.resolve({
+          ok: true,
+          text: () => Promise.resolve(JSON.stringify({ status: 'Success', signature: 'SolSig', chainType: 'solana', broadcaster: 'jupiter' })),
+        });
+      }
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: 1, result: null })) });
+    }));
+
+    const sigCount = Buffer.from([0x01]);
+    const emptySig = Buffer.alloc(64);
+    const message = Buffer.from([0x01, 0x00, 0x01, 0x02, ...Buffer.alloc(32), ...Buffer.alloc(32), ...Buffer.alloc(32), 0x01, 0x01, 0x01, 0x00, 0x04, 0x02, 0x00, 0x00, 0x00]);
+    const txBase64 = Buffer.concat([sigCount, emptySig, message]).toString('base64');
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'jupiter',
+        inputMint: 'So11111111111111111111111111111111111111112',
+        outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+        inAmount: '1000000000', outAmount: '50000000',
+        transaction: txBase64,
+        metadata: { requestId: 'jupiter-ultra-req' },
+      }],
+    }, 'solana');
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    try { await cmds.execute([], null, {}, { quote: quoteId }); } catch { /* ok */ }
+
+    expect(executeBodies.length).toBeGreaterThanOrEqual(1);
+    expect(executeBodies[0].requestId).toBe('jupiter-ultra-req'); // Jupiter Ultra still needs it
+    expect(executeBodies[0].aggregator).toBeUndefined();
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+    vi.unstubAllGlobals();
+  });
+});
+
 describe('Relay aggregator: --aggregator filter on trade quote', () => {
   it('filters quote list to the requested aggregator', async () => {
     createWallet('default', 'testpass');
