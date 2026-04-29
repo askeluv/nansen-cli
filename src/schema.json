@@ -647,11 +647,7 @@
               "options": {
                 "market-cap": {
                   "description": "Filter by market cap group",
-                  "enum": [
-                    "lowcap",
-                    "midcap",
-                    "largecap"
-                  ]
+                  "enum": ["lowcap", "midcap", "largecap"]
                 },
                 "limit": {
                   "default": 25
@@ -745,12 +741,8 @@
               "endpoint": "/api/v1/prediction-market/market-screener",
               "description": "Get Prediction Market Screener",
               "options": {
-                "query": {
-                  "default": ""
-                },
-                "sort-by": {
-                  "description": "Deprecated: use --sort field:dir instead"
-                },
+                "query": { "default": "" },
+                "sort-by": { "description": "Deprecated: use --sort field:dir instead" },
                 "tags": {},
                 "min-liquidity": {},
                 "max-liquidity": {},
@@ -771,12 +763,8 @@
               "endpoint": "/api/v1/prediction-market/event-screener",
               "description": "Get Prediction Market Event Screener",
               "options": {
-                "query": {
-                  "default": ""
-                },
-                "sort-by": {
-                  "description": "Deprecated: use --sort field:dir instead"
-                },
+                "query": { "default": "" },
+                "sort-by": { "description": "Deprecated: use --sort field:dir instead" },
                 "tags": {},
                 "min-liquidity": {},
                 "max-liquidity": {},
@@ -853,7 +841,7 @@
       }
     },
     "alerts": {
-      "description": "Smart alert management \u2014 create, update, toggle, delete alerts",
+      "description": "Smart alert management — create, update, toggle, delete alerts",
       "subcommands": {
         "list": {
           "description": "List all alerts",
@@ -1004,7 +992,7 @@
             },
             "to-chain": {
               "type": "string",
-              "description": "Destination blockchain for cross-chain swap (solana or base). Omit for same-chain. At least one side must be USDC or a native token (ETH, SOL). Non-native to non-native is not supported \u2014 swap to USDC first, then bridge. Bridge providers (Li.Fi or Relay) are selected automatically based on best price. Sub-dollar swaps are supported via Relay."
+              "description": "Destination blockchain for cross-chain swap (solana or base). Omit for same-chain. At least one side must be USDC or a native token (ETH, SOL). Non-native to non-native is not supported — swap to USDC first, then bridge. Bridge providers (Li.Fi or Relay) are selected automatically based on best price. Sub-dollar swaps are supported via Relay."
             },
             "from": {
               "type": "string",
@@ -1027,7 +1015,7 @@
             },
             "wallet": {
               "type": "string",
-              "description": "Wallet name (or \"walletconnect\"/\"wc\" for WalletConnect, EVM only). A configured wallet is required \u2014 run `nansen wallet create` if you haven't set one up yet."
+              "description": "Wallet name (or \"walletconnect\"/\"wc\" for WalletConnect, EVM only). A configured wallet is required — run `nansen wallet create` if you haven't set one up yet."
             },
             "to-wallet": {
               "type": "string",
@@ -1080,7 +1068,7 @@
             },
             "aggregator": {
               "type": "string",
-              "description": "lifi or relay. Overrides auto-detection \u2014 use when polling from a different machine or after the 30-day local record TTL has expired."
+              "description": "lifi or relay. Overrides auto-detection — use when polling from a different machine or after the 30-day local record TTL has expired."
             }
           }
         },
@@ -1134,9 +1122,7 @@
                   "description": "Wallet name (or \"walletconnect\"/\"wc\")"
                 }
               },
-              "chains": [
-                "solana"
-              ],
+              "chains": ["solana"],
               "prerequisites": [
                 "A Solana wallet must be configured. Run: nansen wallet create"
               ]
@@ -1176,9 +1162,7 @@
                   "description": "Wallet name (or \"walletconnect\"/\"wc\")"
                 }
               },
-              "chains": [
-                "solana"
-              ]
+              "chains": ["solana"]
             },
             "cancel": {
               "description": "Cancel an open limit order",
@@ -1193,9 +1177,7 @@
                   "description": "Wallet name (or \"walletconnect\"/\"wc\")"
                 }
               },
-              "chains": [
-                "solana"
-              ]
+              "chains": ["solana"]
             },
             "update": {
               "description": "Update trigger price or slippage on an existing order",
@@ -1218,9 +1200,7 @@
                   "description": "Wallet name (or \"walletconnect\"/\"wc\")"
                 }
               },
-              "chains": [
-                "solana"
-              ]
+              "chains": ["solana"]
             }
           }
         }
@@ -1312,7 +1292,7 @@
       }
     },
     "agent": {
-      "description": "Nansen AI research agent \u2014 ask questions about wallets, tokens, and on-chain activity",
+      "description": "Nansen AI research agent — ask questions about wallets, tokens, and on-chain activity",
       "options": {
         "expert": {
           "type": "boolean",
