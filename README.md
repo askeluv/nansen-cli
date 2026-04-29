@@ -51,7 +51,16 @@ nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000
 nansen trade execute --quote <quoteId>
 ```
 
-Amounts are in base units (lamports, wei). Common symbols (`SOL`, `ETH`, `USDC`, `USDT`) resolve automatically. A wallet is required — set one with `nansen wallet default <name>`.
+Cross-chain swaps work the same way — add `--to-chain`. Bridge providers (Li.Fi or Relay) are selected automatically based on best price.
+
+```bash
+nansen trade quote --chain base --to-chain solana --from ETH --to SOL --amount 0.0003 --amount-unit token
+nansen trade execute --quote <quoteId>                # signed broadcast
+nansen trade execute --quote <quoteId> --gasless      # Relay-only: solver pays gas
+nansen trade bridge-status --tx-hash <hash> --from-chain base --to-chain solana
+```
+
+Amounts are in base units (lamports, wei) by default — use `--amount-unit token|usd|percent` for friendlier inputs. Common symbols (`SOL`, `ETH`, `USDC`, `USDT`) resolve automatically. A wallet is required — set one with `nansen wallet default <name>`.
 
 ## Wallet
 

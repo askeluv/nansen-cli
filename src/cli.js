@@ -1520,12 +1520,12 @@ SYMBOLS:
 
 CROSS-CHAIN NOTES (when using --to-chain):
   Supported combos:
-    native → native (ETH <-> SOL) — requires $5+ per trade
+    native → native (ETH <-> SOL)
     USDC → USDC (both directions)
     USDC → native (USDC → ETH or SOL)
     native → USDC (ETH/SOL → USDC)
     non-native → non-native — not supported (use USDC as intermediate)
-  Bridge provider: Li.Fi
+  Bridge providers: Li.Fi or Relay (selected automatically based on best price)
   Typical bridge time: 1-5 minutes`);
       return;
     }

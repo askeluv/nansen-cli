@@ -37,6 +37,10 @@ const WRAPPED_NATIVE_TOKENS = {
 // Wrapped-native addresses (WETH) are derived from WRAPPED_NATIVE_TOKENS
 // to avoid duplication — keep that map as the single source of truth.
 const EVM_NATIVE = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+// Relay returns the Solana System Program mint as the sentinel for native SOL.
+// Recognise it as native so approval/value validation behaves correctly when
+// cross-chain quotes route through Relay. (LiFi/Jupiter still use WSOL.)
+const NATIVE_SOL_SYSTEM_MINT = '11111111111111111111111111111111';
 const TOKEN_SYMBOLS = {
   solana: {
     SOL:  'So11111111111111111111111111111111111111112',
@@ -206,37 +210,60 @@ export async function executeTransaction(params, { retries = 2, retryDelayMs = 1
 
 /**
  * Check the status of a cross-chain bridge transaction.
+ * Retries on 502/503 (Cloudflare/upstream gateway hiccups) like executeTransaction.
  * @param {string} txHash - Source chain transaction hash
  * @param {string} fromChain - Source chain name (e.g. 'base')
  * @param {string} toChain - Destination chain name (e.g. 'solana')
+ * @param {object} [opts]
+ * @param {string} [opts.aggregator] - 'lifi' (default) or 'relay'. Relay txHashes
+ *   return NOT_FOUND when polled with the LiFi default, so this must be set.
+ * @param {number} [opts.retries=2] - Retry count for 502/503.
+ * @param {number} [opts.retryDelayMs=1500] - Delay between retries.
  * @returns {Promise<object>} Bridge status
  */
-export async function getBridgeStatus(txHash, fromChain, toChain) {
+export async function getBridgeStatus(txHash, fromChain, toChain, { aggregator, retries = 2, retryDelayMs = 1500 } = {}) {
   const fromConfig = resolveChain(fromChain);
   const toConfig = resolveChain(toChain);
   const url = new URL('/bridge/status', TRADING_API_URL);
   url.searchParams.set('txHash', txHash);
   url.searchParams.set('fromChain', fromConfig.lifiChainId || fromConfig.index);
   url.searchParams.set('toChain', toConfig.lifiChainId || toConfig.index);
+  if (aggregator) url.searchParams.set('aggregator', aggregator);
 
-  const res = await fetch(url.toString(), { headers: { 'Accept': 'application/json', 'User-Agent': CLIENT_USER_AGENT } });
-  const text = await res.text();
-  let body;
-  try {
-    body = JSON.parse(text);
-  } catch {
-    throw Object.assign(
-      new Error(`Bridge status API returned non-JSON response (status ${res.status}).`),
-      { code: 'BRIDGE_STATUS_ERROR', status: res.status, details: text.slice(0, 200) }
-    );
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (attempt > 0) await new Promise(r => setTimeout(r, retryDelayMs));
+
+    const res = await fetch(url.toString(), { headers: { 'Accept': 'application/json', 'User-Agent': CLIENT_USER_AGENT } });
+    const text = await res.text();
+    let body;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      // Non-JSON response (typically Cloudflare HTML on 502/503). Don't leak the
+      // HTML body to the user — surface a clean status hint and a retry tip.
+      const hint = res.status === 502 || res.status === 503
+        ? ' Upstream bridge service is temporarily unavailable. Retry in a moment, or check the source-chain explorer to confirm the tx landed.'
+        : '';
+      lastError = Object.assign(
+        new Error(`Bridge status API returned non-JSON response (status ${res.status}).${hint}`),
+        { code: 'BRIDGE_STATUS_ERROR', status: res.status }
+      );
+      if ((res.status === 502 || res.status === 503) && attempt < retries) continue;
+      throw lastError;
+    }
+    if (!res.ok) {
+      const isTransient = res.status === 502 || res.status === 503;
+      lastError = Object.assign(
+        new Error(body.message || `Bridge status check failed with status ${res.status}`),
+        { code: body.code || 'BRIDGE_STATUS_ERROR', status: res.status, details: body.details }
+      );
+      if (isTransient && attempt < retries) continue;
+      throw lastError;
+    }
+    return body;
   }
-  if (!res.ok) {
-    throw Object.assign(
-      new Error(body.message || `Bridge status check failed with status ${res.status}`),
-      { code: body.code || 'BRIDGE_STATUS_ERROR', status: res.status, details: body.details }
-    );
-  }
-  return body;
+  throw lastError;
 }
 
 /**
@@ -248,14 +275,15 @@ export async function getBridgeStatus(txHash, fromChain, toChain) {
  * @param {number} [opts.timeoutMs=600000] - Timeout (default 10 min)
  * @param {number} [opts.pollMs=10000] - Poll interval (default 10s)
  * @param {Function} [opts.log=console.log] - Logger
+ * @param {string} [opts.aggregator] - 'lifi' or 'relay'; forwarded to bridge-status query.
  * @returns {Promise<object>} Final bridge status
  */
-export async function pollBridgeStatus(txHash, fromChain, toChain, { timeoutMs = 600000, pollMs = 10000, log = console.log } = {}) {
+export async function pollBridgeStatus(txHash, fromChain, toChain, { timeoutMs = 600000, pollMs = 10000, log = console.log, aggregator } = {}) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     let status;
     try {
-      status = await getBridgeStatus(txHash, fromChain, toChain);
+      status = await getBridgeStatus(txHash, fromChain, toChain, { aggregator });
     } catch (err) {
       // Transient errors (502, 503, network failures) — retry after poll interval.
       log(`  Bridge: poll error (${err.status || err.code || 'unknown'}) — retrying...`);
@@ -266,7 +294,13 @@ export async function pollBridgeStatus(txHash, fromChain, toChain, { timeoutMs =
     const receiving = status.receiving?.status || 'pending';
     log(`  Bridge: ${sending} → ${receiving}`);
 
-    if (status.status === 'DONE' || status.receiving?.status === 'DONE') return status;
+    const isTerminal = status.status === 'DONE' || status.receiving?.status === 'DONE';
+    if (isTerminal) {
+      if (status.substatus === 'REFUNDED') {
+        log(`  Bridge: REFUNDED — funds returned on source chain`);
+      }
+      return status;
+    }
     if (status.status === 'FAILED') {
       throw Object.assign(
         new Error(`Bridge failed: ${status.substatusMessage || 'unknown error'}`),
@@ -280,6 +314,43 @@ export async function pollBridgeStatus(txHash, fromChain, toChain, { timeoutMs =
     new Error(`Bridge status polling timed out after ${timeoutMs / 1000}s. Check manually with: nansen trade bridge-status --tx-hash ${txHash} --from-chain ${fromChain} --to-chain ${toChain}`),
     { code: 'BRIDGE_TIMEOUT' }
   );
+}
+
+// Tx records keep aggregator metadata for `bridge-status`. They're not stale-able
+// the way quotes are (a finished tx doesn't expire), but cap them to bound disk use.
+const TX_RECORD_TTL_MS = 30 * 24 * 3600 * 1000; // 30 days
+
+/**
+ * Persist a tx → aggregator mapping for cross-chain swaps so `bridge-status`
+ * can pass the right `aggregator` query param without a new CLI flag.
+ * Lives next to saved quotes; uses a 30-day TTL (longer than quotes) so users
+ * can still resolve the aggregator hours/days after the swap.
+ */
+export function saveTxRecord(txHash, { aggregator, requestId, fromChain, toChain }) {
+  if (!txHash) return;
+  const dir = getQuotesDir();
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const data = { txHash, aggregator, requestId, fromChain, toChain, timestamp: Date.now() };
+  fs.writeFileSync(path.join(dir, `tx-${txHash}.json`), JSON.stringify(data, null, 2), { mode: 0o600 });
+}
+
+/**
+ * Load a previously saved tx record. Returns null if not found or older than 30 days.
+ */
+export function loadTxRecord(txHash) {
+  if (!txHash) return null;
+  const filePath = path.join(getQuotesDir(), `tx-${txHash}.json`);
+  if (!fs.existsSync(filePath)) return null;
+  try {
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    if (Date.now() - data.timestamp > TX_RECORD_TTL_MS) {
+      fs.unlinkSync(filePath);
+      return null;
+    }
+    return data;
+  } catch {
+    return null;
+  }
 }
 
 // ============= Quote Storage =============
@@ -324,7 +395,9 @@ export function loadQuote(quoteId) {
 }
 
 /**
- * Remove quotes older than 1 hour.
+ * Remove stale files from the quotes dir. Quote files use a 1-hour TTL because
+ * the price is stale; tx records use a 30-day TTL because a finalized tx hash
+ * is permanent and `bridge-status` needs the aggregator hint long after execute.
  */
 export function cleanupQuotes() {
   const dir = getQuotesDir();
@@ -332,9 +405,10 @@ export function cleanupQuotes() {
   const now = Date.now();
   for (const file of fs.readdirSync(dir)) {
     if (!file.endsWith('.json')) continue;
+    const ttl = file.startsWith('tx-') ? TX_RECORD_TTL_MS : 3600000;
     try {
       const data = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
-      if (now - data.timestamp > 3600000) fs.unlinkSync(path.join(dir, file));
+      if (now - data.timestamp > ttl) fs.unlinkSync(path.join(dir, file));
     } catch { /* ignore */ }
   }
 }
@@ -732,7 +806,11 @@ function resolveTradePassword() {
 }
 
 function isNativeToken(mintAddress) {
-  return /^0x[eE]{40}$/.test(mintAddress);
+  if (!mintAddress) return false;
+  if (mintAddress.startsWith('0x')) return /^0x[eE]{40}$/.test(mintAddress);
+  // Solana: WSOL mint (Jupiter/LiFi) and System Program (Relay) both denote native SOL.
+  return mintAddress === 'So11111111111111111111111111111111111111112'
+      || mintAddress === NATIVE_SOL_SYSTEM_MINT;
 }
 
 /**
@@ -767,6 +845,7 @@ export function getWrappedNativeFromWarning(tokenAddress, chain) {
 const KNOWN_DECIMALS = {
   // Solana
   'So11111111111111111111111111111111111111112': 9,   // SOL/WSOL
+  '11111111111111111111111111111111': 9,              // Native SOL (Relay system-mint sentinel)
   'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': 6, // USDC
   'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB': 6,  // USDT
   // Base (EVM) — lowercase for case-insensitive matching
@@ -912,12 +991,17 @@ export function formatQuote(quote, index) {
   }
   if (quote.tradingFeeInUsd) lines.push(`    Trading Fee:  $${quote.tradingFeeInUsd}`);
   if (quote.networkFeeInUsd) lines.push(`    Network Fee:  $${quote.networkFeeInUsd}`);
-  if (quote.approvalAddress && !isNativeToken(quote.inputMint)) lines.push(`    ⚠ Requires token approval to: ${quote.approvalAddress}`);
+  // Empty string is Relay's "no approval needed" sentinel — gate on truthy + non-empty.
+  if (quote.approvalAddress && quote.approvalAddress !== '' && !isNativeToken(quote.inputMint)) {
+    lines.push(`    ⚠ Requires token approval to: ${quote.approvalAddress}`);
+  }
   const meta = quote.metadata || {};
   if (meta.isCrossChain) {
     if (meta.bridgeTool) lines.push(`    Bridge:       ${meta.bridgeTool}`);
-    if (meta.executionDuration) {
-      const mins = Math.round(meta.executionDuration / 60);
+    // LiFi uses executionDuration; Relay uses estimatedTimeSeconds.
+    const durationSec = meta.executionDuration ?? meta.estimatedTimeSeconds;
+    if (durationSec) {
+      const mins = Math.round(durationSec / 60);
       lines.push(`    Est. Time:    ${mins < 1 ? '< 1 min' : `~${mins} min`}`);
     }
     if (meta.feeCosts?.length) {
@@ -962,6 +1046,13 @@ export function buildTradingCommands(deps = {}) {
       const maxAutoSlippage = options['max-auto-slippage'];
       const swapMode = options['swap-mode'] || 'exactIn';
       const amountUnit = options['amount-unit'];
+      const aggregatorFilter = options.aggregator;
+      if (aggregatorFilter && !['lifi', 'relay', 'jupiter', 'okx'].includes(aggregatorFilter)) {
+        throw new CommandError(
+          `Invalid --aggregator: "${aggregatorFilter}". Use one of: lifi, relay, jupiter, okx.`,
+          'INVALID_AGGREGATOR'
+        );
+      }
 
       if (!chain || !from || !to || !amount) {
         throw new CommandError(`
@@ -985,6 +1076,8 @@ OPTIONS:
   --auto-slippage           Enable auto slippage calculation
   --max-auto-slippage <pct> Max auto slippage when auto-slippage enabled
   --swap-mode <mode>        exactIn (default) or exactOut
+  --aggregator <name>       Force a specific aggregator (lifi, relay, jupiter, okx).
+                            Filters the quote list client-side; errors if none match.
 
 EXAMPLES:
   nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000
@@ -997,13 +1090,13 @@ EXAMPLES:
 
 CROSS-CHAIN NOTES (when using --to-chain):
   Supported combos:
-    native → native (ETH <-> SOL) — requires $5+ per trade
+    native → native (ETH <-> SOL)
     USDC → USDC (both directions)
     USDC → native (USDC → ETH or SOL)
     native → USDC (ETH/SOL → USDC)
     non-native → non-native — not supported (use USDC as intermediate)
-  Bridge provider: Li.Fi
-  Typical bridge time: 1-5 minutes
+  Bridge providers: Li.Fi or Relay (selected automatically based on best price)
+  Typical bridge time: seconds to a few minutes (Relay is usually faster)
 `, 'MISSING_ARGS');
       }
 
@@ -1167,10 +1260,8 @@ CROSS-CHAIN NOTES (when using --to-chain):
         };
         if (isCrossChain) {
           params.toChainIndex = toChainConfig.index;
-          // Opt out of Relay aggregator: CLI bypasses backend /execute so the
-          // Redis aggregator hint is never set, and /bridge/status defaults to
-          // LiFi — polling a Relay txHash there returns NOT_FOUND.
-          params.disabledAggregators = 'relay';
+          // Relay and LiFi are both first-class cross-chain aggregators; backend picks per quote.
+          // bridge-status auto-detects which aggregator produced a tx via the local tx record.
           if (toWallet) {
             params.toWalletAddress = toWallet;
             log(`  Destination wallet: ${toWallet}`);
@@ -1199,6 +1290,22 @@ CROSS-CHAIN NOTES (when using --to-chain):
           throw new CommandError(msg, 'NO_QUOTES');
         }
 
+        // Client-side filter: if --aggregator is passed, drop everything else.
+        // Done client-side because the backend's aggregator-selection knob
+        // (disabledAggregators) silently accepts unknown values, so a server
+        // filter would mask typos. This way we own the validation.
+        if (aggregatorFilter) {
+          const matching = response.quotes.filter(q => q.aggregator === aggregatorFilter);
+          if (!matching.length) {
+            const seen = [...new Set(response.quotes.map(q => q.aggregator))].join(', ') || 'none';
+            throw new CommandError(
+              `No quotes from aggregator "${aggregatorFilter}" for this pair. Backend returned: ${seen}.`,
+              'AGGREGATOR_NOT_AVAILABLE'
+            );
+          }
+          response.quotes = matching;
+        }
+
         log('');
         response.quotes.forEach((q, i) => log(formatQuote(q, i)));
 
@@ -1217,7 +1324,8 @@ CROSS-CHAIN NOTES (when using --to-chain):
           log(`  Pin #1:  nansen trade execute --quote ${quoteId} --quote-index 0`);
         }
 
-        if (response.quotes[0]?.approvalAddress && !isNativeToken(response.quotes[0]?.inputMint)) {
+        const firstQuote = response.quotes[0];
+        if (firstQuote?.approvalAddress && firstQuote.approvalAddress !== '' && !isNativeToken(firstQuote.inputMint)) {
           log(`\n  Warning: This token swap requires an ERC-20 approval step.`);
           log(`    The execute command will handle this automatically.`);
         }
@@ -1241,6 +1349,7 @@ CROSS-CHAIN NOTES (when using --to-chain):
       const quoteId = options.quote || options['quote-id'] || args[0];
       const walletName = options.wallet;
       const noSimulate = flags['no-simulate'];
+      const gasless = Boolean(flags.gasless);
 
       if (!quoteId) {
         throw new CommandError(`Usage: nansen trade execute --quote <quoteId> [options]
@@ -1249,6 +1358,7 @@ OPTIONS:
   --quote <id>              Quote ID from 'nansen quote'
   --wallet <name>           Wallet name (default: default wallet)
   --no-simulate             Skip pre-broadcast simulation
+  --gasless                 Relay-only: have Relay's solver pay gas (no WalletConnect)
 
 EXAMPLES:
   nansen trade execute --quote 1708900000000-abc123`, 'MISSING_ARGS');
@@ -1346,6 +1456,22 @@ EXAMPLES:
             continue;
           }
 
+          const isRelay = currentQuote.aggregator === 'relay';
+          if (gasless) {
+            if (!isRelay) {
+              throw new CommandError(
+                `--gasless is only supported for Relay quotes. Selected quote ${quoteName} is from "${currentQuote.aggregator}". Re-run with --quote-index to pin a Relay quote, or omit --gasless.`,
+                'GASLESS_UNSUPPORTED_AGGREGATOR'
+              );
+            }
+            if (isWalletConnect) {
+              throw new CommandError(
+                'Gasless swaps are not supported via WalletConnect (mobile wallets typically auto-broadcast, breaking the gasless flow). Use a local or Privy wallet.',
+                'GASLESS_UNSUPPORTED_WALLET'
+              );
+            }
+          }
+
           log(`\nExecuting trade on ${chainConfig.name}...`);
           if (endIndex - startIndex > 1) {
             log(`  Trying quote ${qi + 1}/${allQuotes.length} (${quoteName})...`);
@@ -1399,7 +1525,8 @@ EXAMPLES:
               }
 
               // Handle approval if needed
-              if (currentQuote.approvalAddress && !isNative) {
+              // Empty-string approvalAddress is Relay's "no approval needed" sentinel — skip.
+              if (currentQuote.approvalAddress && currentQuote.approvalAddress !== '' && !isNative) {
                 const inputAmount = BigInt(currentQuote.inputAmount || currentQuote.inAmount || '0');
                 const existingAllowance = await checkErc20Allowance(
                   chain, currentQuote.inputMint, walletAddress, currentQuote.approvalAddress
@@ -1449,7 +1576,7 @@ EXAMPLES:
               }
 
               // Pre-flight simulation
-              if (!noSimulate) {
+              if (!noSimulate && !gasless) {
                 const sim = await simulateEvmCall(chain, {
                   from: walletAddress,
                   to: currentQuote.transaction.to,
@@ -1587,7 +1714,8 @@ EXAMPLES:
               }
 
               // Handle approval via WalletConnect if needed
-              if (currentQuote.approvalAddress && !isNative) {
+              // Empty-string approvalAddress is Relay's "no approval needed" sentinel — skip.
+              if (currentQuote.approvalAddress && currentQuote.approvalAddress !== '' && !isNative) {
                 const inputAmount = BigInt(currentQuote.inputAmount || currentQuote.inAmount || '0');
                 const existingAllowance = await checkErc20Allowance(
                   chain, currentQuote.inputMint, wcAddress, currentQuote.approvalAddress
@@ -1635,7 +1763,7 @@ EXAMPLES:
               }
 
               // Pre-flight simulation
-              if (!noSimulate) {
+              if (!noSimulate && !gasless) {
                 const txData = currentQuote.transaction;
                 const sim = await simulateEvmCall(chain, {
                   from: wcAddress,
@@ -1700,13 +1828,24 @@ EXAMPLES:
 
                 // Cross-chain: poll bridge status after source tx success
                 if (quoteData.toChain && quoteData.toChain !== quoteData.chain) {
+                  saveTxRecord(wcResult.txHash, {
+                    aggregator: currentQuote.aggregator,
+                    requestId: currentQuote.metadata?.requestId,
+                    fromChain: quoteData.chain,
+                    toChain: quoteData.toChain,
+                  });
                   log(`\n  Cross-chain bridge in progress (${chainConfig.name} → ${resolveChain(quoteData.toChain).name})...`);
                   try {
-                    const bridgeResult = await pollBridgeStatus(wcResult.txHash, quoteData.chain, quoteData.toChain, { log });
-                    log(`\n  ✓ Bridge completed!`);
-                    if (bridgeResult.receiving?.txHash) {
-                      const toChainConfig = resolveChain(quoteData.toChain);
-                      log(`    Destination tx: ${toChainConfig.explorer}${bridgeResult.receiving.txHash}`);
+                    const bridgeResult = await pollBridgeStatus(wcResult.txHash, quoteData.chain, quoteData.toChain, { log, aggregator: currentQuote.aggregator });
+                    if (bridgeResult.substatus === 'REFUNDED') {
+                      log(`\n  ⚠ Bridge refunded — funds returned on source chain.`);
+                      if (bridgeResult.substatusMessage) log(`    Reason: ${bridgeResult.substatusMessage}`);
+                    } else {
+                      log(`\n  ✓ Bridge completed!`);
+                      if (bridgeResult.receiving?.txHash) {
+                        const toChainConfig = resolveChain(quoteData.toChain);
+                        log(`    Destination tx: ${toChainConfig.explorer}${bridgeResult.receiving.txHash}`);
+                      }
                     }
                   } catch (bridgeErr) {
                     log(`\n  Bridge status: ${bridgeErr.message}`);
@@ -1752,7 +1891,8 @@ EXAMPLES:
                 }
               }
 
-              if (currentQuote.approvalAddress && !isNative) {
+              // Empty-string approvalAddress is Relay's "no approval needed" sentinel — skip.
+              if (currentQuote.approvalAddress && currentQuote.approvalAddress !== '' && !isNative) {
                 // Check if sufficient allowance already exists
                 const inputAmount = BigInt(currentQuote.inputAmount || currentQuote.inAmount || currentQuote.transaction?.value || '0');
                 const existingAllowance = await checkErc20Allowance(
@@ -1808,7 +1948,7 @@ EXAMPLES:
               // Pre-flight simulation (EVM only) — catch logic reverts before spending gas
               // Runs AFTER approval so eth_call sees the current allowance state
               // Simulates WITHOUT gas limit to check swap logic; gas re-estimation is separate
-              if (!noSimulate) {
+              if (!noSimulate && !gasless) {
                 const txData = currentQuote.transaction;
                 const sim = await simulateEvmCall(chain, {
                   from: walletAddress,
@@ -1851,13 +1991,35 @@ EXAMPLES:
               );
             }
 
-            log('  Broadcasting...');
+            log(gasless ? '  Forwarding to Relay solver (gasless)...' : '  Broadcasting...');
             const execParams = {
               signedTransaction,
               chain,
-              simulate: !noSimulate,
+              simulate: !noSimulate && !gasless,
             };
-            if (requestId) execParams.requestId = requestId;
+            // The backend's /execute schema is strict; sending fields it doesn't expect
+            // for the (chain × aggregator × gasless) combination causes 502s or
+            // "Unrecognized keys" rejections. The matrix we've validated against the
+            // live backend:
+            //   - EVM signed (any aggregator): no extra fields. requestId/aggregator
+            //     trigger schema errors.
+            //   - Solana signed (Jupiter/OKX): include requestId for Jupiter Ultra
+            //     intent resolution.
+            //   - Solana signed (Relay): omit requestId — backend tries to look it up
+            //     as a Jupiter intent and 502s.
+            //   - Gasless (EVM): aggregator + gasless + steps + requestId.
+            //   - Gasless (Solana): currently rejected by the backend ("Unrecognized
+            //     keys"); we still send the gasless envelope and let the backend
+            //     surface the error so users notice when support lands.
+            if (gasless) {
+              execParams.aggregator = 'relay';
+              execParams.gasless = true;
+              const gaslessRequestId = requestId || currentQuote.metadata?.requestId;
+              if (gaslessRequestId) execParams.requestId = gaslessRequestId;
+              if (currentQuote.metadata?.steps) execParams.steps = currentQuote.metadata.steps;
+            } else if (requestId && !isRelay) {
+              execParams.requestId = requestId; // Solana Jupiter Ultra
+            }
 
             const result = await executeTransaction(execParams);
 
@@ -1900,13 +2062,27 @@ EXAMPLES:
 
               // Cross-chain: poll bridge status after source tx success
               if (quoteData.toChain && quoteData.toChain !== quoteData.chain) {
+                saveTxRecord(txId, {
+                  aggregator: currentQuote.aggregator,
+                  requestId: currentQuote.metadata?.requestId,
+                  fromChain: quoteData.chain,
+                  toChain: quoteData.toChain,
+                });
+                if (isRelay && currentQuote.metadata?.requestId) {
+                  log(`    Relay:       https://relay.link/transaction/${currentQuote.metadata.requestId}`);
+                }
                 log(`\n  Cross-chain bridge in progress (${chainConfig.name} → ${resolveChain(quoteData.toChain).name})...`);
                 try {
-                  const bridgeResult = await pollBridgeStatus(txId, quoteData.chain, quoteData.toChain, { log });
-                  log(`\n  ✓ Bridge completed!`);
-                  if (bridgeResult.receiving?.txHash) {
-                    const toChainConfig = resolveChain(quoteData.toChain);
-                    log(`    Destination tx: ${toChainConfig.explorer}${bridgeResult.receiving.txHash}`);
+                  const bridgeResult = await pollBridgeStatus(txId, quoteData.chain, quoteData.toChain, { log, aggregator: currentQuote.aggregator });
+                  if (bridgeResult.substatus === 'REFUNDED') {
+                    log(`\n  ⚠ Bridge refunded — funds returned on source chain.`);
+                    if (bridgeResult.substatusMessage) log(`    Reason: ${bridgeResult.substatusMessage}`);
+                  } else {
+                    log(`\n  ✓ Bridge completed!`);
+                    if (bridgeResult.receiving?.txHash) {
+                      const toChainConfig = resolveChain(quoteData.toChain);
+                      log(`    Destination tx: ${toChainConfig.explorer}${bridgeResult.receiving.txHash}`);
+                    }
                   }
                 } catch (bridgeErr) {
                   log(`\n  Bridge status: ${bridgeErr.message}`);
@@ -1950,8 +2126,13 @@ EXAMPLES:
       const fromChain = options['from-chain'] || args[1];
       const toChain = options['to-chain'] || args[2];
 
+      const aggregatorOverride = options.aggregator;
+      if (aggregatorOverride && aggregatorOverride !== 'lifi' && aggregatorOverride !== 'relay') {
+        throw new CommandError(`Invalid --aggregator: "${aggregatorOverride}". Use "lifi" or "relay".`, 'INVALID_AGGREGATOR');
+      }
+
       if (!txHash || !fromChain || !toChain) {
-        throw new CommandError(`Usage: nansen trade bridge-status --tx-hash <hash> --from-chain <chain> --to-chain <chain>
+        throw new CommandError(`Usage: nansen trade bridge-status --tx-hash <hash> --from-chain <chain> --to-chain <chain> [--aggregator <lifi|relay>]
 
 Check the status of a cross-chain bridge transaction.
 
@@ -1959,15 +2140,28 @@ OPTIONS:
   --tx-hash <hash>          Source chain transaction hash
   --from-chain <chain>      Source chain (solana or base)
   --to-chain <chain>        Destination chain (solana or base)
+  --aggregator <name>       lifi or relay. Overrides auto-detection from the
+                            local tx record. Use this when polling from a
+                            different machine or after the record has expired.
 
 EXAMPLES:
-  nansen trade bridge-status --tx-hash 0xabc... --from-chain base --to-chain solana`, 'MISSING_ARGS');
+  nansen trade bridge-status --tx-hash 0xabc... --from-chain base --to-chain solana
+  nansen trade bridge-status --tx-hash 0xabc... --from-chain base --to-chain solana --aggregator relay`, 'MISSING_ARGS');
       }
 
       try {
-        const status = await getBridgeStatus(txHash, fromChain, toChain);
+        // Resolution order: explicit --aggregator flag → local tx record → backend
+        // default (LiFi). The override matters when polling from a fresh machine
+        // or after the 30-day record TTL expires.
+        const txRecord = loadTxRecord(txHash);
+        const aggregator = aggregatorOverride || txRecord?.aggregator;
+        const status = await getBridgeStatus(txHash, fromChain, toChain, { aggregator });
         log(`\nBridge Status: ${status.status || 'unknown'}`);
-        if (status.substatus) log(`  Substatus:   ${status.substatus}`);
+        if (status.substatus === 'REFUNDED') {
+          log(`  ⚠ REFUNDED — funds returned on source chain`);
+        } else if (status.substatus) {
+          log(`  Substatus:   ${status.substatus}`);
+        }
         if (status.substatusMessage) log(`  Message:     ${status.substatusMessage}`);
         if (status.tool) log(`  Bridge:      ${status.tool}`);
         if (status.sending?.txHash) {
@@ -1982,7 +2176,15 @@ EXAMPLES:
           if (status.receiving.amount) log(`    Amount:    ${status.receiving.amount}`);
           if (status.receiving.txLink) log(`    Explorer:  ${status.receiving.txLink}`);
         }
-        if (status.lifiExplorerLink) log(`  Li.Fi:       ${status.lifiExplorerLink}`);
+        const explorerLink = status.lifiExplorerLink || status.relayExplorerLink || status.explorerLink;
+        if (explorerLink) log(`  Explorer:    ${explorerLink}`);
+        if (aggregator === 'relay' && txRecord?.requestId) {
+          log(`  Relay:       https://relay.link/transaction/${txRecord.requestId}`);
+        } else if (aggregator === 'relay') {
+          // No local record (cross-machine / expired). Surface the explorer
+          // by tx hash so users can still cross-reference manually.
+          log(`  Relay:       https://relay.link/transaction/${txHash}`);
+        }
         log('');
       } catch (err) {
         if (err instanceof CommandError) throw err;

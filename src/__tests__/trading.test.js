@@ -34,6 +34,8 @@ import {
   simulateEvmCall,
   getBridgeStatus,
   pollBridgeStatus,
+  saveTxRecord,
+  loadTxRecord,
 } from '../trading.js';
 import { keccak256, rlpEncode } from '../crypto.js';
 import { base58Decode } from '../transfer.js';
@@ -2377,5 +2379,820 @@ describe('resolveUsdPrice', () => {
     const { resolveUsdPrice } = await import('../trading.js');
     await expect(resolveUsdPrice(mockApi, 'So11111111111111111111111111111111111111112', 'solana'))
       .rejects.toThrow('Could not resolve USD price');
+  });
+});
+
+// ============= Relay aggregator =============
+
+describe('Relay aggregator: native SOL system mint', () => {
+  it('formatQuote does not crash on Solana system-mint inputMint', () => {
+    const output = formatQuote({
+      aggregator: 'relay',
+      inputMint: '11111111111111111111111111111111',
+      outputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+      inAmount: '1000000000',
+      outAmount: '180000000',
+      metadata: {
+        isCrossChain: true,
+        bridgeTool: 'relay',
+        estimatedTimeSeconds: 60,
+      },
+    });
+    expect(output).toContain('relay');
+    expect(output).toContain('11111111111');
+    expect(output).toContain('Bridge:       relay');
+    expect(output).toContain('Est. Time:    ~1 min');
+  });
+
+  it('formatQuote does NOT show approval warning for native SOL system mint', () => {
+    // Even if approvalAddress somehow leaks through, native SOL must skip the warning.
+    const output = formatQuote({
+      aggregator: 'relay',
+      inputMint: '11111111111111111111111111111111',
+      outputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+      inAmount: '1000000000',
+      outAmount: '180000000',
+      approvalAddress: '0xshouldNotBeShown',
+    });
+    expect(output).not.toContain('Requires token approval');
+  });
+});
+
+describe('Relay aggregator: empty approvalAddress', () => {
+  it('formatQuote skips approval line when approvalAddress is empty string', () => {
+    const output = formatQuote({
+      aggregator: 'relay',
+      inputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', // USDC
+      outputMint: '11111111111111111111111111111111',
+      inAmount: '10000000',
+      outAmount: '50000000',
+      approvalAddress: '', // Relay's "no approval needed" signal
+    });
+    expect(output).not.toContain('Requires token approval');
+  });
+
+  it('execute path skips allowance check + approval tx when approvalAddress is empty', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const fetchCalls = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const body = opts?.body ? (() => { try { return JSON.parse(opts.body); } catch { return {}; } })() : {};
+      fetchCalls.push({ url: urlStr, method: body.method, body });
+      // RPC: nonce + receipt
+      if (body.method === 'eth_getTransactionCount') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+      }
+      if (body.method === 'eth_call') {
+        // Should NOT be hit for empty approvalAddress (no allowance check); succeed in case simulation runs.
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' })) });
+      }
+      if (body.method === 'eth_getTransactionReceipt') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { status: '0x1', blockNumber: '0x100' } })) });
+      }
+      // Bridge status: return DONE so the post-execute polling exits quickly
+      if (urlStr.includes('/bridge/status')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          text: () => Promise.resolve(JSON.stringify({ status: 'DONE', receiving: { status: 'DONE', txHash: 'destTx' } })),
+        });
+      }
+      // Trading API /execute → success
+      if (urlStr.includes('trading-api')) {
+        return Promise.resolve({
+          ok: true,
+          text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: '0xRelayHash', chainType: 'evm', broadcaster: 'test' })),
+        });
+      }
+      return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'relay',
+        inputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', // USDC
+        outputMint: '11111111111111111111111111111111',
+        inAmount: '10000000',
+        outAmount: '50000000',
+        approvalAddress: '', // Relay says no approval needed
+        transaction: { to: '0xRelayRouter', data: '0xswap', value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
+        metadata: { requestId: 'relay-req-empty', isCrossChain: true, bridgeTool: 'relay' },
+      }],
+    }, 'base', 'local', null, 'solana');
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    try { await cmds.execute([], null, {}, { quote: quoteId }); } catch { /* may fail at bridge-poll, that's fine */ }
+
+    // No approval message
+    expect(logs.some(l => l.includes('Approval required'))).toBe(false);
+    expect(logs.some(l => l.includes('Approval confirmed'))).toBe(false);
+
+    // /execute was called exactly once (the swap), not twice (no approval tx)
+    const executeCalls = fetchCalls.filter(c => c.url.includes('trading-api') && c.url.endsWith('/execute'));
+    expect(executeCalls.length).toBe(1);
+
+    // No allowance check (eth_call with the allowance selector 0xdd62ed3e)
+    const allowanceCalls = fetchCalls.filter(c => c.method === 'eth_call'
+      && c.body?.params?.[0]?.data?.startsWith('0xdd62ed3e'));
+    expect(allowanceCalls.length).toBe(0);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+    vi.unstubAllGlobals();
+  });
+});
+
+describe('Relay aggregator: --gasless flag dispatch', () => {
+  it('forwards aggregator/gasless/steps/requestId to /execute when gasless flag is set', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const executeBodies = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
+        executeBodies.push(JSON.parse(opts.body));
+        return Promise.resolve({
+          ok: true,
+          text: () => Promise.resolve(JSON.stringify({ status: 'Success', signature: 'SolSig', chainType: 'solana', broadcaster: 'relay' })),
+        });
+      }
+      // Bridge status: return DONE so post-execute polling exits
+      if (urlStr.includes('/bridge/status')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          text: () => Promise.resolve(JSON.stringify({ status: 'DONE', receiving: { status: 'DONE', txHash: 'destTx' } })),
+        });
+      }
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: 1, result: null })) });
+    }));
+
+    // Minimal Solana tx so signSolanaTransaction succeeds
+    const sigCount = Buffer.from([0x01]);
+    const emptySig = Buffer.alloc(64);
+    const message = Buffer.from([0x01, 0x00, 0x01, 0x02, ...Buffer.alloc(32), ...Buffer.alloc(32), ...Buffer.alloc(32), 0x01, 0x01, 0x01, 0x00, 0x04, 0x02, 0x00, 0x00, 0x00]);
+    const txBase64 = Buffer.concat([sigCount, emptySig, message]).toString('base64');
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'relay',
+        inputMint: '11111111111111111111111111111111',
+        outputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+        inAmount: '1000000000',
+        outAmount: '180000000',
+        approvalAddress: '',
+        transaction: txBase64,
+        metadata: {
+          requestId: 'relay-req-gas',
+          isCrossChain: true,
+          bridgeTool: 'relay',
+          steps: [{ kind: 'transaction', items: [{ data: 'opaque-step-blob' }] }],
+        },
+      }],
+    }, 'solana', 'local', null, 'base');
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    try { await cmds.execute([], null, { gasless: true }, { quote: quoteId }); } catch { /* bridge polling may fail in test, that's fine */ }
+
+    expect(executeBodies.length).toBeGreaterThanOrEqual(1);
+    const body = executeBodies[0];
+    expect(body.aggregator).toBe('relay');
+    expect(body.gasless).toBe(true);
+    expect(body.requestId).toBe('relay-req-gas');
+    expect(body.steps).toEqual([{ kind: 'transaction', items: [{ data: 'opaque-step-blob' }] }]);
+    expect(body.simulate).toBe(false); // gasless skips simulation
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+    vi.unstubAllGlobals();
+  });
+
+  it('throws GASLESS_UNSUPPORTED_AGGREGATOR when --gasless is used on a LiFi quote', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'lifi',
+        inputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+        outputMint: '11111111111111111111111111111111',
+        inAmount: '10000000',
+        outAmount: '50000000',
+        approvalAddress: '0xLifiSpender',
+        transaction: { to: '0xLifiRouter', data: '0x1234', value: '0', gas: '300000' },
+        metadata: { isCrossChain: true, bridgeTool: 'across' },
+      }],
+    }, 'base', 'local', null, 'solana');
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    await expect(cmds.execute([], null, { gasless: true }, { quote: quoteId }))
+      .rejects.toThrow(/only supported for Relay quotes/);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+  });
+
+  it('throws GASLESS_UNSUPPORTED_WALLET when --gasless is used with WalletConnect', async () => {
+    vi.spyOn(wcTrading, 'getWalletConnectAddress').mockResolvedValue('0x742d35Cc6bF4F3f4e0e3a8DD7e37ff4e4Be4E4B4');
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'relay',
+        inputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+        outputMint: '11111111111111111111111111111111',
+        inAmount: '10000000',
+        outAmount: '50000000',
+        approvalAddress: '',
+        transaction: { to: '0xRelayRouter', data: '0xswap', value: '0', gas: '300000' },
+        metadata: { requestId: 'relay-req-wc', isCrossChain: true, bridgeTool: 'relay' },
+      }],
+    }, 'base', 'walletconnect', null, 'solana');
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    await expect(cmds.execute([], null, { gasless: true }, { quote: quoteId }))
+      .rejects.toThrow(/not supported via WalletConnect/);
+
+    vi.restoreAllMocks();
+  });
+});
+
+describe('Relay aggregator: bridge status', () => {
+  it('pollBridgeStatus appends aggregator query param when set', async () => {
+    const origFetch = global.fetch;
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ status: 'DONE', receiving: { status: 'DONE', txHash: '0xfinal' } }),
+    });
+
+    await pollBridgeStatus('0xabc', 'base', 'solana', { log: () => {}, aggregator: 'relay' });
+
+    const callUrl = new URL(global.fetch.mock.calls[0][0]);
+    expect(callUrl.searchParams.get('aggregator')).toBe('relay');
+    expect(callUrl.searchParams.get('txHash')).toBe('0xabc');
+
+    global.fetch = origFetch;
+  });
+
+  it('pollBridgeStatus returns DONE+REFUNDED status without throwing', async () => {
+    const origFetch = global.fetch;
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ status: 'DONE', substatus: 'REFUNDED', substatusMessage: 'Refunded due to slippage' }),
+    });
+
+    const logs = [];
+    const result = await pollBridgeStatus('0xabc', 'base', 'solana', { log: (m) => logs.push(m), aggregator: 'relay' });
+    expect(result.status).toBe('DONE');
+    expect(result.substatus).toBe('REFUNDED');
+    expect(logs.some(l => l.includes('REFUNDED'))).toBe(true);
+
+    global.fetch = origFetch;
+  });
+
+  it('bridge-status command shows REFUNDED warning instead of completed', async () => {
+    const origFetch = global.fetch;
+    // saveTxRecord first so the command picks up aggregator=relay
+    saveTxRecord('0xrelaytx', { aggregator: 'relay', requestId: 'relay-req-X', fromChain: 'base', toChain: 'solana' });
+
+    const fetchedUrls = [];
+    global.fetch = vi.fn().mockImplementation((url) => {
+      fetchedUrls.push(typeof url === 'string' ? url : url.toString());
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ status: 'DONE', substatus: 'REFUNDED', substatusMessage: 'Funds returned' }),
+      });
+    });
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    await cmds['bridge-status']([], null, {}, { 'tx-hash': '0xrelaytx', 'from-chain': 'base', 'to-chain': 'solana' });
+
+    expect(logs.some(l => l.includes('REFUNDED'))).toBe(true);
+    expect(logs.every(l => !l.includes('completed'))).toBe(true);
+
+    // Auto-detected aggregator forwarded as query param
+    expect(fetchedUrls[0]).toContain('aggregator=relay');
+    // Relay explorer link surfaced
+    expect(logs.some(l => l.includes('https://relay.link/transaction/relay-req-X'))).toBe(true);
+
+    global.fetch = origFetch;
+  });
+
+  it('bridge-status command omits aggregator query when no tx record exists', async () => {
+    const origFetch = global.fetch;
+    const fetchedUrls = [];
+    global.fetch = vi.fn().mockImplementation((url) => {
+      fetchedUrls.push(typeof url === 'string' ? url : url.toString());
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ status: 'DONE', tool: 'lifi' }),
+      });
+    });
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    await cmds['bridge-status']([], null, {}, { 'tx-hash': '0xunknowntx', 'from-chain': 'base', 'to-chain': 'solana' });
+
+    expect(fetchedUrls[0]).not.toContain('aggregator=');
+
+    global.fetch = origFetch;
+  });
+});
+
+describe('Relay aggregator: tx record persistence', () => {
+  it('saveTxRecord and loadTxRecord round-trip', () => {
+    saveTxRecord('0xroundtrip', { aggregator: 'relay', requestId: 'req-1', fromChain: 'base', toChain: 'solana' });
+    const record = loadTxRecord('0xroundtrip');
+    expect(record).toMatchObject({
+      txHash: '0xroundtrip',
+      aggregator: 'relay',
+      requestId: 'req-1',
+      fromChain: 'base',
+      toChain: 'solana',
+    });
+    expect(typeof record.timestamp).toBe('number');
+  });
+
+  it('loadTxRecord returns null for unknown tx hash', () => {
+    expect(loadTxRecord('0xnonexistent')).toBe(null);
+  });
+
+  it('loadTxRecord persists past the 1-hour quote TTL (uses 30-day TTL)', () => {
+    saveTxRecord('0xstillvalid', { aggregator: 'relay', requestId: 'req-2', fromChain: 'base', toChain: 'solana' });
+    // Age the record 2 hours — quote TTL would expire it; tx-record TTL must not.
+    const dir = path.join(process.env.HOME, '.nansen', 'quotes');
+    const filePath = path.join(dir, 'tx-0xstillvalid.json');
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    data.timestamp = Date.now() - (2 * 3600000);
+    fs.writeFileSync(filePath, JSON.stringify(data));
+    const record = loadTxRecord('0xstillvalid');
+    expect(record).not.toBeNull();
+    expect(record.aggregator).toBe('relay');
+  });
+
+  it('loadTxRecord returns null past the 30-day TTL', () => {
+    saveTxRecord('0xexpired', { aggregator: 'relay', requestId: 'req-2', fromChain: 'base', toChain: 'solana' });
+    const dir = path.join(process.env.HOME, '.nansen', 'quotes');
+    const filePath = path.join(dir, 'tx-0xexpired.json');
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    data.timestamp = Date.now() - (31 * 24 * 3600000);
+    fs.writeFileSync(filePath, JSON.stringify(data));
+    expect(loadTxRecord('0xexpired')).toBe(null);
+    expect(fs.existsSync(filePath)).toBe(false);
+  });
+
+  it('cleanupQuotes preserves tx records (30-day TTL) but sweeps stale quotes', async () => {
+    // A 2-hour-old tx record must survive a cleanup triggered by saveQuote.
+    saveTxRecord('0xpreserved', { aggregator: 'relay', requestId: 'req-3', fromChain: 'base', toChain: 'solana' });
+    const dir = path.join(process.env.HOME, '.nansen', 'quotes');
+    const filePath = path.join(dir, 'tx-0xpreserved.json');
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    data.timestamp = Date.now() - (2 * 3600000); // 2 hours old
+    fs.writeFileSync(filePath, JSON.stringify(data));
+
+    // saveQuote calls cleanupQuotes internally
+    saveQuote({ success: true, quotes: [{ aggregator: 'test' }] }, 'base');
+    expect(fs.existsSync(filePath)).toBe(true);
+    expect(loadTxRecord('0xpreserved')).not.toBeNull();
+  });
+});
+
+describe('Relay aggregator: EVM execute forwards requestId', () => {
+  it('non-gasless EVM Relay execute omits requestId/aggregator (backend rejects them on EVM)', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const executeBodies = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const body = opts?.body ? (() => { try { return JSON.parse(opts.body); } catch { return {}; } })() : {};
+      if (body.method === 'eth_getTransactionCount') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+      }
+      if (body.method === 'eth_call') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' })) });
+      }
+      if (body.method === 'eth_getTransactionReceipt') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { status: '0x1', blockNumber: '0x100' } })) });
+      }
+      if (urlStr.includes('/bridge/status')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          text: () => Promise.resolve(JSON.stringify({ status: 'DONE', receiving: { status: 'DONE', txHash: 'destTx' } })),
+        });
+      }
+      if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
+        executeBodies.push(JSON.parse(opts.body));
+        return Promise.resolve({
+          ok: true,
+          text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: '0xRelayHash', chainType: 'evm', broadcaster: 'test' })),
+        });
+      }
+      return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'relay',
+        inputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', // USDC
+        outputMint: '11111111111111111111111111111111',
+        inAmount: '10000000',
+        outAmount: '50000000',
+        approvalAddress: '', // skip approval
+        transaction: { to: '0xRelayRouter', data: '0xswap', value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
+        metadata: { requestId: 'relay-evm-req', isCrossChain: true, bridgeTool: 'relay' },
+      }],
+    }, 'base', 'local', null, 'solana');
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    try { await cmds.execute([], null, {}, { quote: quoteId }); } catch { /* may fail later, ok */ }
+
+    expect(executeBodies.length).toBeGreaterThanOrEqual(1);
+    // Non-gasless EVM Relay: the backend's /execute schema rejects both
+    // `aggregator` and `requestId` on EVM submissions (requestId is "Solana only").
+    // The signed tx itself contains the routing info; no aggregator hint needed.
+    expect(executeBodies[0].requestId).toBeUndefined();
+    expect(executeBodies[0].aggregator).toBeUndefined();
+    expect(executeBodies[0].gasless).toBeUndefined();
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+    vi.unstubAllGlobals();
+  });
+
+  it('gasless EVM Relay execute sends requestId + gasless + steps', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const executeBodies = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const body = opts?.body ? (() => { try { return JSON.parse(opts.body); } catch { return {}; } })() : {};
+      if (body.method === 'eth_getTransactionCount') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+      }
+      if (body.method === 'eth_call') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' })) });
+      }
+      if (body.method === 'eth_getTransactionReceipt') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { status: '0x1', blockNumber: '0x100' } })) });
+      }
+      if (urlStr.includes('/bridge/status')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          text: () => Promise.resolve(JSON.stringify({ status: 'DONE', receiving: { status: 'DONE', txHash: 'destTx' } })),
+        });
+      }
+      if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
+        executeBodies.push(JSON.parse(opts.body));
+        return Promise.resolve({
+          ok: true,
+          text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: '0xRelayHash', chainType: 'evm', broadcaster: 'relay' })),
+        });
+      }
+      return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'relay',
+        inputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+        outputMint: '11111111111111111111111111111111',
+        inAmount: '10000000',
+        outAmount: '50000000',
+        approvalAddress: '',
+        transaction: { to: '0xRelayRouter', data: '0xswap', value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
+        metadata: { requestId: 'relay-evm-gas-req', isCrossChain: true, bridgeTool: 'relay', steps: [{ kind: 'evm-tx' }] },
+      }],
+    }, 'base', 'local', null, 'solana');
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    try { await cmds.execute([], null, { gasless: true }, { quote: quoteId }); } catch { /* ok */ }
+
+    expect(executeBodies.length).toBeGreaterThanOrEqual(1);
+    expect(executeBodies[0].aggregator).toBe('relay');
+    expect(executeBodies[0].gasless).toBe(true);
+    expect(executeBodies[0].requestId).toBe('relay-evm-gas-req');
+    expect(executeBodies[0].steps).toEqual([{ kind: 'evm-tx' }]);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+    vi.unstubAllGlobals();
+  });
+});
+
+describe('Relay aggregator: --aggregator override on bridge-status', () => {
+  it('uses --aggregator flag when no tx record exists', async () => {
+    const origFetch = global.fetch;
+    const fetchedUrls = [];
+    global.fetch = vi.fn().mockImplementation((url) => {
+      fetchedUrls.push(typeof url === 'string' ? url : url.toString());
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ status: 'PENDING' }),
+      });
+    });
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    await cmds['bridge-status']([], null, {}, {
+      'tx-hash': '0xfreshmachine',
+      'from-chain': 'base',
+      'to-chain': 'solana',
+      aggregator: 'relay',
+    });
+
+    expect(fetchedUrls[0]).toContain('aggregator=relay');
+    global.fetch = origFetch;
+  });
+
+  it('--aggregator flag overrides a stale tx record', async () => {
+    const origFetch = global.fetch;
+    saveTxRecord('0xstaletx', { aggregator: 'lifi', fromChain: 'base', toChain: 'solana' });
+
+    const fetchedUrls = [];
+    global.fetch = vi.fn().mockImplementation((url) => {
+      fetchedUrls.push(typeof url === 'string' ? url : url.toString());
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ status: 'PENDING' }),
+      });
+    });
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    await cmds['bridge-status']([], null, {}, {
+      'tx-hash': '0xstaletx',
+      'from-chain': 'base',
+      'to-chain': 'solana',
+      aggregator: 'relay',
+    });
+
+    expect(fetchedUrls[0]).toContain('aggregator=relay');
+    expect(fetchedUrls[0]).not.toContain('aggregator=lifi');
+    global.fetch = origFetch;
+  });
+
+  it('rejects invalid --aggregator values', async () => {
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    await expect(cmds['bridge-status']([], null, {}, {
+      'tx-hash': '0xabc',
+      'from-chain': 'base',
+      'to-chain': 'solana',
+      aggregator: 'jupiter',
+    })).rejects.toThrow(/Invalid --aggregator/);
+  });
+});
+
+describe('Relay aggregator: Solana non-gasless omits requestId', () => {
+  it('non-gasless Solana Relay execute does NOT send requestId (backend 502s otherwise)', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const executeBodies = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
+        executeBodies.push(JSON.parse(opts.body));
+        return Promise.resolve({
+          ok: true,
+          text: () => Promise.resolve(JSON.stringify({ status: 'Success', signature: 'SolSig', chainType: 'solana', broadcaster: 'solana-rpc' })),
+        });
+      }
+      if (urlStr.includes('/bridge/status')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          text: () => Promise.resolve(JSON.stringify({ status: 'DONE', receiving: { status: 'DONE', txHash: 'destTx' } })),
+        });
+      }
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: 1, result: null })) });
+    }));
+
+    // Minimal Solana tx for signing
+    const sigCount = Buffer.from([0x01]);
+    const emptySig = Buffer.alloc(64);
+    const message = Buffer.from([0x01, 0x00, 0x01, 0x02, ...Buffer.alloc(32), ...Buffer.alloc(32), ...Buffer.alloc(32), 0x01, 0x01, 0x01, 0x00, 0x04, 0x02, 0x00, 0x00, 0x00]);
+    const txBase64 = Buffer.concat([sigCount, emptySig, message]).toString('base64');
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'relay',
+        inputMint: '11111111111111111111111111111111',
+        outputMint: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+        inAmount: '8300000',
+        outAmount: '278359729005750',
+        approvalAddress: '',
+        transaction: txBase64,
+        metadata: { requestId: 'relay-sol-req', isCrossChain: true, bridgeTool: 'relay' },
+      }],
+    }, 'solana', 'local', null, 'base');
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    try { await cmds.execute([], null, {}, { quote: quoteId }); } catch { /* bridge poll may fail, ok */ }
+
+    expect(executeBodies.length).toBeGreaterThanOrEqual(1);
+    // Critical: backend treats requestId as a Jupiter Ultra intent ID and 502s on
+    // Relay-Solana submissions. Must omit it on this code path.
+    expect(executeBodies[0].requestId).toBeUndefined();
+    expect(executeBodies[0].aggregator).toBeUndefined();
+    expect(executeBodies[0].gasless).toBeUndefined();
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+    vi.unstubAllGlobals();
+  });
+
+  it('non-gasless Solana Jupiter execute DOES send requestId (Jupiter Ultra intent)', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const executeBodies = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
+        executeBodies.push(JSON.parse(opts.body));
+        return Promise.resolve({
+          ok: true,
+          text: () => Promise.resolve(JSON.stringify({ status: 'Success', signature: 'SolSig', chainType: 'solana', broadcaster: 'jupiter' })),
+        });
+      }
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: 1, result: null })) });
+    }));
+
+    const sigCount = Buffer.from([0x01]);
+    const emptySig = Buffer.alloc(64);
+    const message = Buffer.from([0x01, 0x00, 0x01, 0x02, ...Buffer.alloc(32), ...Buffer.alloc(32), ...Buffer.alloc(32), 0x01, 0x01, 0x01, 0x00, 0x04, 0x02, 0x00, 0x00, 0x00]);
+    const txBase64 = Buffer.concat([sigCount, emptySig, message]).toString('base64');
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'jupiter',
+        inputMint: 'So11111111111111111111111111111111111111112',
+        outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+        inAmount: '1000000000', outAmount: '50000000',
+        transaction: txBase64,
+        metadata: { requestId: 'jupiter-ultra-req' },
+      }],
+    }, 'solana');
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    try { await cmds.execute([], null, {}, { quote: quoteId }); } catch { /* ok */ }
+
+    expect(executeBodies.length).toBeGreaterThanOrEqual(1);
+    expect(executeBodies[0].requestId).toBe('jupiter-ultra-req'); // Jupiter Ultra still needs it
+    expect(executeBodies[0].aggregator).toBeUndefined();
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+    vi.unstubAllGlobals();
+  });
+});
+
+describe('Relay aggregator: --aggregator filter on trade quote', () => {
+  it('filters quote list to the requested aggregator', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const origFetch = global.fetch;
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => JSON.stringify({
+        success: true,
+        quotes: [
+          { aggregator: 'lifi', inputMint: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', outputMint: '11111111111111111111111111111111', inAmount: '1000', outAmount: '500', transaction: { to: '0xa', data: '0x', value: '1000' } },
+          { aggregator: 'relay', inputMint: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', outputMint: '11111111111111111111111111111111', inAmount: '1000', outAmount: '550', transaction: { to: '0xb', data: '0x', value: '1000' } },
+        ],
+      }),
+    });
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    await cmds.quote([], null, {}, {
+      chain: 'base',
+      'to-chain': 'solana',
+      from: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+      to: 'SOL',
+      amount: '1000',
+      aggregator: 'relay',
+    });
+
+    // Output must include relay quote and not the lifi one
+    expect(logs.some(l => l.includes('(relay)'))).toBe(true);
+    expect(logs.some(l => l.includes('(lifi)'))).toBe(false);
+
+    global.fetch = origFetch;
+    delete process.env.NANSEN_WALLET_PASSWORD;
+  });
+
+  it('errors when no quote from the requested aggregator is available', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const origFetch = global.fetch;
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => JSON.stringify({
+        success: true,
+        quotes: [
+          { aggregator: 'lifi', inputMint: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', outputMint: '11111111111111111111111111111111', inAmount: '1000', outAmount: '500', transaction: { to: '0xa', data: '0x', value: '1000' } },
+        ],
+      }),
+    });
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    await expect(cmds.quote([], null, {}, {
+      chain: 'base',
+      'to-chain': 'solana',
+      from: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+      to: 'SOL',
+      amount: '1000',
+      aggregator: 'relay',
+    })).rejects.toThrow(/No quotes from aggregator "relay"/);
+
+    global.fetch = origFetch;
+    delete process.env.NANSEN_WALLET_PASSWORD;
+  });
+
+  it('rejects unknown --aggregator values on quote', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    await expect(cmds.quote([], null, {}, {
+      chain: 'base',
+      'to-chain': 'solana',
+      from: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+      to: 'SOL',
+      amount: '1000',
+      aggregator: 'pancake',
+    })).rejects.toThrow(/Invalid --aggregator/);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+  });
+});
+
+describe('Relay aggregator: bridge-status 502 handling', () => {
+  it('retries on 502 then returns the eventual JSON body', async () => {
+    const origFetch = global.fetch;
+    let calls = 0;
+    global.fetch = vi.fn().mockImplementation(() => {
+      calls += 1;
+      if (calls < 3) {
+        return Promise.resolve({
+          ok: false,
+          status: 502,
+          text: async () => '<!DOCTYPE html><html>502 Bad Gateway from Cloudflare</html>',
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ status: 'PENDING' }),
+      });
+    });
+
+    const result = await getBridgeStatus('0xabc', 'base', 'solana', { retryDelayMs: 5 });
+    expect(result.status).toBe('PENDING');
+    expect(calls).toBe(3); // 2 failed + 1 success
+
+    global.fetch = origFetch;
+  });
+
+  it('throws clean message without leaking HTML when 502 persists', async () => {
+    const origFetch = global.fetch;
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 502,
+      text: async () => '<!DOCTYPE html><html><body>Cloudflare error 1101 details: foo bar baz</body></html>',
+    });
+
+    let caught;
+    try {
+      await getBridgeStatus('0xabc', 'base', 'solana', { retries: 1, retryDelayMs: 5 });
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeDefined();
+    expect(caught.message).not.toContain('<!DOCTYPE');
+    expect(caught.message).not.toContain('<html>');
+    expect(caught.message).toContain('502');
+    expect(caught.message).toContain('temporarily unavailable');
+    // No `details` field at all on the non-JSON path — nothing to leak.
+    expect(caught.details).toBeUndefined();
+
+    global.fetch = origFetch;
   });
 });
