@@ -210,15 +210,18 @@ export async function executeTransaction(params, { retries = 2, retryDelayMs = 1
 
 /**
  * Check the status of a cross-chain bridge transaction.
+ * Retries on 502/503 (Cloudflare/upstream gateway hiccups) like executeTransaction.
  * @param {string} txHash - Source chain transaction hash
  * @param {string} fromChain - Source chain name (e.g. 'base')
  * @param {string} toChain - Destination chain name (e.g. 'solana')
  * @param {object} [opts]
  * @param {string} [opts.aggregator] - 'lifi' (default) or 'relay'. Relay txHashes
  *   return NOT_FOUND when polled with the LiFi default, so this must be set.
+ * @param {number} [opts.retries=2] - Retry count for 502/503.
+ * @param {number} [opts.retryDelayMs=1500] - Delay between retries.
  * @returns {Promise<object>} Bridge status
  */
-export async function getBridgeStatus(txHash, fromChain, toChain, { aggregator } = {}) {
+export async function getBridgeStatus(txHash, fromChain, toChain, { aggregator, retries = 2, retryDelayMs = 1500 } = {}) {
   const fromConfig = resolveChain(fromChain);
   const toConfig = resolveChain(toChain);
   const url = new URL('/bridge/status', TRADING_API_URL);
@@ -227,24 +230,40 @@ export async function getBridgeStatus(txHash, fromChain, toChain, { aggregator }
   url.searchParams.set('toChain', toConfig.lifiChainId || toConfig.index);
   if (aggregator) url.searchParams.set('aggregator', aggregator);
 
-  const res = await fetch(url.toString(), { headers: { 'Accept': 'application/json', 'User-Agent': CLIENT_USER_AGENT } });
-  const text = await res.text();
-  let body;
-  try {
-    body = JSON.parse(text);
-  } catch {
-    throw Object.assign(
-      new Error(`Bridge status API returned non-JSON response (status ${res.status}).`),
-      { code: 'BRIDGE_STATUS_ERROR', status: res.status, details: text.slice(0, 200) }
-    );
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (attempt > 0) await new Promise(r => setTimeout(r, retryDelayMs));
+
+    const res = await fetch(url.toString(), { headers: { 'Accept': 'application/json', 'User-Agent': CLIENT_USER_AGENT } });
+    const text = await res.text();
+    let body;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      // Non-JSON response (typically Cloudflare HTML on 502/503). Don't leak the
+      // HTML body to the user — surface a clean status hint and a retry tip.
+      const hint = res.status === 502 || res.status === 503
+        ? ' Upstream bridge service is temporarily unavailable. Retry in a moment, or check the source-chain explorer to confirm the tx landed.'
+        : '';
+      lastError = Object.assign(
+        new Error(`Bridge status API returned non-JSON response (status ${res.status}).${hint}`),
+        { code: 'BRIDGE_STATUS_ERROR', status: res.status }
+      );
+      if ((res.status === 502 || res.status === 503) && attempt < retries) continue;
+      throw lastError;
+    }
+    if (!res.ok) {
+      const isTransient = res.status === 502 || res.status === 503;
+      lastError = Object.assign(
+        new Error(body.message || `Bridge status check failed with status ${res.status}`),
+        { code: body.code || 'BRIDGE_STATUS_ERROR', status: res.status, details: body.details }
+      );
+      if (isTransient && attempt < retries) continue;
+      throw lastError;
+    }
+    return body;
   }
-  if (!res.ok) {
-    throw Object.assign(
-      new Error(body.message || `Bridge status check failed with status ${res.status}`),
-      { code: body.code || 'BRIDGE_STATUS_ERROR', status: res.status, details: body.details }
-    );
-  }
-  return body;
+  throw lastError;
 }
 
 /**
@@ -1027,6 +1046,13 @@ export function buildTradingCommands(deps = {}) {
       const maxAutoSlippage = options['max-auto-slippage'];
       const swapMode = options['swap-mode'] || 'exactIn';
       const amountUnit = options['amount-unit'];
+      const aggregatorFilter = options.aggregator;
+      if (aggregatorFilter && !['lifi', 'relay', 'jupiter', 'okx'].includes(aggregatorFilter)) {
+        throw new CommandError(
+          `Invalid --aggregator: "${aggregatorFilter}". Use one of: lifi, relay, jupiter, okx.`,
+          'INVALID_AGGREGATOR'
+        );
+      }
 
       if (!chain || !from || !to || !amount) {
         throw new CommandError(`
@@ -1050,6 +1076,8 @@ OPTIONS:
   --auto-slippage           Enable auto slippage calculation
   --max-auto-slippage <pct> Max auto slippage when auto-slippage enabled
   --swap-mode <mode>        exactIn (default) or exactOut
+  --aggregator <name>       Force a specific aggregator (lifi, relay, jupiter, okx).
+                            Filters the quote list client-side; errors if none match.
 
 EXAMPLES:
   nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000
@@ -1260,6 +1288,22 @@ CROSS-CHAIN NOTES (when using --to-chain):
             msg += '\n' + response.warnings.map(w => `  Warning: ${w}`).join('\n');
           }
           throw new CommandError(msg, 'NO_QUOTES');
+        }
+
+        // Client-side filter: if --aggregator is passed, drop everything else.
+        // Done client-side because the backend's aggregator-selection knob
+        // (disabledAggregators) silently accepts unknown values, so a server
+        // filter would mask typos. This way we own the validation.
+        if (aggregatorFilter) {
+          const matching = response.quotes.filter(q => q.aggregator === aggregatorFilter);
+          if (!matching.length) {
+            const seen = [...new Set(response.quotes.map(q => q.aggregator))].join(', ') || 'none';
+            throw new CommandError(
+              `No quotes from aggregator "${aggregatorFilter}" for this pair. Backend returned: ${seen}.`,
+              'AGGREGATOR_NOT_AVAILABLE'
+            );
+          }
+          response.quotes = matching;
         }
 
         log('');

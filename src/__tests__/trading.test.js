@@ -2954,3 +2954,140 @@ describe('Relay aggregator: --aggregator override on bridge-status', () => {
     })).rejects.toThrow(/Invalid --aggregator/);
   });
 });
+
+describe('Relay aggregator: --aggregator filter on trade quote', () => {
+  it('filters quote list to the requested aggregator', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const origFetch = global.fetch;
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => JSON.stringify({
+        success: true,
+        quotes: [
+          { aggregator: 'lifi', inputMint: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', outputMint: '11111111111111111111111111111111', inAmount: '1000', outAmount: '500', transaction: { to: '0xa', data: '0x', value: '1000' } },
+          { aggregator: 'relay', inputMint: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', outputMint: '11111111111111111111111111111111', inAmount: '1000', outAmount: '550', transaction: { to: '0xb', data: '0x', value: '1000' } },
+        ],
+      }),
+    });
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    await cmds.quote([], null, {}, {
+      chain: 'base',
+      'to-chain': 'solana',
+      from: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+      to: 'SOL',
+      amount: '1000',
+      aggregator: 'relay',
+    });
+
+    // Output must include relay quote and not the lifi one
+    expect(logs.some(l => l.includes('(relay)'))).toBe(true);
+    expect(logs.some(l => l.includes('(lifi)'))).toBe(false);
+
+    global.fetch = origFetch;
+    delete process.env.NANSEN_WALLET_PASSWORD;
+  });
+
+  it('errors when no quote from the requested aggregator is available', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const origFetch = global.fetch;
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => JSON.stringify({
+        success: true,
+        quotes: [
+          { aggregator: 'lifi', inputMint: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', outputMint: '11111111111111111111111111111111', inAmount: '1000', outAmount: '500', transaction: { to: '0xa', data: '0x', value: '1000' } },
+        ],
+      }),
+    });
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    await expect(cmds.quote([], null, {}, {
+      chain: 'base',
+      'to-chain': 'solana',
+      from: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+      to: 'SOL',
+      amount: '1000',
+      aggregator: 'relay',
+    })).rejects.toThrow(/No quotes from aggregator "relay"/);
+
+    global.fetch = origFetch;
+    delete process.env.NANSEN_WALLET_PASSWORD;
+  });
+
+  it('rejects unknown --aggregator values on quote', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    await expect(cmds.quote([], null, {}, {
+      chain: 'base',
+      'to-chain': 'solana',
+      from: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+      to: 'SOL',
+      amount: '1000',
+      aggregator: 'pancake',
+    })).rejects.toThrow(/Invalid --aggregator/);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+  });
+});
+
+describe('Relay aggregator: bridge-status 502 handling', () => {
+  it('retries on 502 then returns the eventual JSON body', async () => {
+    const origFetch = global.fetch;
+    let calls = 0;
+    global.fetch = vi.fn().mockImplementation(() => {
+      calls += 1;
+      if (calls < 3) {
+        return Promise.resolve({
+          ok: false,
+          status: 502,
+          text: async () => '<!DOCTYPE html><html>502 Bad Gateway from Cloudflare</html>',
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ status: 'PENDING' }),
+      });
+    });
+
+    const result = await getBridgeStatus('0xabc', 'base', 'solana', { retryDelayMs: 5 });
+    expect(result.status).toBe('PENDING');
+    expect(calls).toBe(3); // 2 failed + 1 success
+
+    global.fetch = origFetch;
+  });
+
+  it('throws clean message without leaking HTML when 502 persists', async () => {
+    const origFetch = global.fetch;
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 502,
+      text: async () => '<!DOCTYPE html><html><body>Cloudflare error 1101 details: foo bar baz</body></html>',
+    });
+
+    let caught;
+    try {
+      await getBridgeStatus('0xabc', 'base', 'solana', { retries: 1, retryDelayMs: 5 });
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeDefined();
+    expect(caught.message).not.toContain('<!DOCTYPE');
+    expect(caught.message).not.toContain('<html>');
+    expect(caught.message).toContain('502');
+    expect(caught.message).toContain('temporarily unavailable');
+    // No `details` field at all on the non-JSON path — nothing to leak.
+    expect(caught.details).toBeUndefined();
+
+    global.fetch = origFetch;
+  });
+});

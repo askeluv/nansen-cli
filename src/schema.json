@@ -880,6 +880,10 @@
             "to-wallet": {
               "type": "string",
               "description": "Destination wallet address for cross-chain swaps. Auto-derived from wallet if omitted."
+            },
+            "aggregator": {
+              "type": "string",
+              "description": "Force a specific aggregator: lifi, relay, jupiter, or okx. Filters the returned quote list client-side; errors if no quote from that aggregator was returned."
             }
           },
           "prerequisites": [
