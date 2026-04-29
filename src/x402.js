@@ -192,7 +192,7 @@ export async function checkX402Balance(network) {
       // Default to Base USDC if the network is unknown so existing wallets keep working.
       const EVM_NETWORKS = {
         'eip155:8453': { token: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', rpc: CHAIN_RPCS.base },   // Base USDC
-        'eip155:196':  { token: '0x779DED2B30f6f45db42e0aB1130fC1b2A0a37736', rpc: CHAIN_RPCS.xlayer }, // X Layer USDT0
+        'eip155:196':  { token: '0x779Ded0c9e1022225f8E0630b35a9b54bE713736', rpc: CHAIN_RPCS.xlayer }, // X Layer USDT0 (temporarily unavailable server-side)
       };
       const { token, rpc } = EVM_NETWORKS[network] || EVM_NETWORKS['eip155:8453'];
       const addr = walletInfo.evm.replace('0x', '').toLowerCase().padStart(64, '0');

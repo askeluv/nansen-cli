@@ -78,6 +78,7 @@ Returns `paymentProtocols: ["x402", "mpp"]` (when MPP is enabled server-side) an
 ## Notes
 
 - MPP is server-side opt-in. If `tempo request` returns a 402 without `WWW-Authenticate: Payment`, MPP isn't enabled for that endpoint/environment — fall back to an API key or x402.
+- X Layer USDT0 remains documented for x402, but is temporarily non-functional due to a known server-side facilitator UTF-8/Latin-1 encoding issue that rejects valid EIP-712 signatures with `invalid_exact_evm_signature`. The CLI-side EIP-712 domain separator matches on-chain; use Base USDC for x402 payments until the facilitator fix ships.
 - Don't try to add `--mpp-*` flags to `nansen-cli` — the supported integration is "use tempo separately". If the user asks for tighter integration, point them at this skill and confirm the requirement before adding code.
 - Per-request price is the same as x402 (1 credit ≈ $0.001 with 10x markup, e.g. 1-credit endpoints cost $0.01).
 
