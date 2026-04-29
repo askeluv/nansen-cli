@@ -2767,7 +2767,7 @@ describe('Relay aggregator: tx record persistence', () => {
 });
 
 describe('Relay aggregator: EVM execute forwards requestId', () => {
-  it('non-gasless EVM Relay execute sends requestId in /execute body', async () => {
+  it('non-gasless EVM Relay execute omits requestId/aggregator (backend rejects them on EVM)', async () => {
     createWallet('default', 'testpass');
     process.env.NANSEN_WALLET_PASSWORD = 'testpass';
 
@@ -2819,8 +2819,11 @@ describe('Relay aggregator: EVM execute forwards requestId', () => {
     try { await cmds.execute([], null, {}, { quote: quoteId }); } catch { /* may fail later, ok */ }
 
     expect(executeBodies.length).toBeGreaterThanOrEqual(1);
-    expect(executeBodies[0].aggregator).toBe('relay');
-    expect(executeBodies[0].requestId).toBe('relay-evm-req');
+    // Non-gasless EVM Relay: the backend's /execute schema rejects both
+    // `aggregator` and `requestId` on EVM submissions (requestId is "Solana only").
+    // The signed tx itself contains the routing info; no aggregator hint needed.
+    expect(executeBodies[0].requestId).toBeUndefined();
+    expect(executeBodies[0].aggregator).toBeUndefined();
     expect(executeBodies[0].gasless).toBeUndefined();
 
     delete process.env.NANSEN_WALLET_PASSWORD;

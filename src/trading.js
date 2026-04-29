@@ -1062,13 +1062,13 @@ EXAMPLES:
 
 CROSS-CHAIN NOTES (when using --to-chain):
   Supported combos:
-    native → native (ETH <-> SOL) — requires $5+ per trade
+    native → native (ETH <-> SOL)
     USDC → USDC (both directions)
     USDC → native (USDC → ETH or SOL)
     native → USDC (ETH/SOL → USDC)
     non-native → non-native — not supported (use USDC as intermediate)
-  Bridge provider: Li.Fi
-  Typical bridge time: 1-5 minutes
+  Bridge providers: Li.Fi or Relay (selected automatically based on best price)
+  Typical bridge time: seconds to a few minutes (Relay is usually faster)
 `, 'MISSING_ARGS');
       }
 
@@ -1953,15 +1953,20 @@ EXAMPLES:
               chain,
               simulate: !noSimulate && !gasless,
             };
-            // requestId is set on Solana branches above (Jupiter, Relay-Solana). For Relay-EVM
-            // quotes the Solana branches never run, so pull it from quote metadata directly —
-            // Relay's /execute requires requestId for both gasless and signed paths.
-            const effectiveRequestId = requestId || (isRelay ? currentQuote.metadata?.requestId : undefined);
-            if (effectiveRequestId) execParams.requestId = effectiveRequestId;
-            if (isRelay) execParams.aggregator = 'relay';
+            // The backend's /execute schema is strict:
+            //   - `requestId` is only accepted for Solana submissions (Jupiter/Relay-Solana)
+            //     and for the gasless Relay route — sending it on EVM signed broadcasts errors.
+            //   - `aggregator`, `gasless`, `steps` are only valid on the gasless route.
+            // The Solana branches above already assign `requestId` for non-gasless flows;
+            // for gasless EVM we pull it from quote metadata so Relay's solver can route.
             if (gasless) {
+              execParams.aggregator = 'relay';
               execParams.gasless = true;
+              const gaslessRequestId = requestId || currentQuote.metadata?.requestId;
+              if (gaslessRequestId) execParams.requestId = gaslessRequestId;
               if (currentQuote.metadata?.steps) execParams.steps = currentQuote.metadata.steps;
+            } else if (requestId) {
+              execParams.requestId = requestId; // Solana non-gasless (Jupiter / Relay-Solana)
             }
 
             const result = await executeTransaction(execParams);
