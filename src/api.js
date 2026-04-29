@@ -667,7 +667,7 @@ export class NansenAPI {
                     if (!this.apiKey) {
                       message = 'No API key configured. Three ways to authenticate:\n' +
                         '  1. API key: nansen login --api-key <key> (get key at https://app.nansen.ai/auth/agent-setup)\n' +
-                        '  2. x402 micropayment: nansen wallet create + fund with USDC on Base/Solana (USDT0 on X Layer is temporarily unavailable — server-side encoding issue) (no API key needed)\n' +
+                        '  2. x402 micropayment: nansen wallet create + fund with USDC on Base/Solana or USDT0 on X Layer (no API key needed)\n' +
                         '  3. MPP via tempo: install tempo CLI, run `tempo wallet`, then call the API with `tempo request` (see skills/nansen-mpp-payment)';
                     } else {
                       message = `x402 auto-payment failed: ${x402Err.message}`;
