@@ -297,10 +297,15 @@ export async function pollBridgeStatus(txHash, fromChain, toChain, { timeoutMs =
   );
 }
 
+// Tx records keep aggregator metadata for `bridge-status`. They're not stale-able
+// the way quotes are (a finished tx doesn't expire), but cap them to bound disk use.
+const TX_RECORD_TTL_MS = 30 * 24 * 3600 * 1000; // 30 days
+
 /**
  * Persist a tx → aggregator mapping for cross-chain swaps so `bridge-status`
  * can pass the right `aggregator` query param without a new CLI flag.
- * Lives next to saved quotes; cleaned up by the same 1-hour TTL sweep.
+ * Lives next to saved quotes; uses a 30-day TTL (longer than quotes) so users
+ * can still resolve the aggregator hours/days after the swap.
  */
 export function saveTxRecord(txHash, { aggregator, requestId, fromChain, toChain }) {
   if (!txHash) return;
@@ -311,7 +316,7 @@ export function saveTxRecord(txHash, { aggregator, requestId, fromChain, toChain
 }
 
 /**
- * Load a previously saved tx record. Returns null if not found or expired (1 hour).
+ * Load a previously saved tx record. Returns null if not found or older than 30 days.
  */
 export function loadTxRecord(txHash) {
   if (!txHash) return null;
@@ -319,7 +324,7 @@ export function loadTxRecord(txHash) {
   if (!fs.existsSync(filePath)) return null;
   try {
     const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    if (Date.now() - data.timestamp > 3600000) {
+    if (Date.now() - data.timestamp > TX_RECORD_TTL_MS) {
       fs.unlinkSync(filePath);
       return null;
     }
@@ -371,7 +376,9 @@ export function loadQuote(quoteId) {
 }
 
 /**
- * Remove quotes older than 1 hour.
+ * Remove stale files from the quotes dir. Quote files use a 1-hour TTL because
+ * the price is stale; tx records use a 30-day TTL because a finalized tx hash
+ * is permanent and `bridge-status` needs the aggregator hint long after execute.
  */
 export function cleanupQuotes() {
   const dir = getQuotesDir();
@@ -379,9 +386,10 @@ export function cleanupQuotes() {
   const now = Date.now();
   for (const file of fs.readdirSync(dir)) {
     if (!file.endsWith('.json')) continue;
+    const ttl = file.startsWith('tx-') ? TX_RECORD_TTL_MS : 3600000;
     try {
       const data = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
-      if (now - data.timestamp > 3600000) fs.unlinkSync(path.join(dir, file));
+      if (now - data.timestamp > ttl) fs.unlinkSync(path.join(dir, file));
     } catch { /* ignore */ }
   }
 }
@@ -1945,7 +1953,11 @@ EXAMPLES:
               chain,
               simulate: !noSimulate && !gasless,
             };
-            if (requestId) execParams.requestId = requestId;
+            // requestId is set on Solana branches above (Jupiter, Relay-Solana). For Relay-EVM
+            // quotes the Solana branches never run, so pull it from quote metadata directly —
+            // Relay's /execute requires requestId for both gasless and signed paths.
+            const effectiveRequestId = requestId || (isRelay ? currentQuote.metadata?.requestId : undefined);
+            if (effectiveRequestId) execParams.requestId = effectiveRequestId;
             if (isRelay) execParams.aggregator = 'relay';
             if (gasless) {
               execParams.gasless = true;
@@ -2057,8 +2069,13 @@ EXAMPLES:
       const fromChain = options['from-chain'] || args[1];
       const toChain = options['to-chain'] || args[2];
 
+      const aggregatorOverride = options.aggregator;
+      if (aggregatorOverride && aggregatorOverride !== 'lifi' && aggregatorOverride !== 'relay') {
+        throw new CommandError(`Invalid --aggregator: "${aggregatorOverride}". Use "lifi" or "relay".`, 'INVALID_AGGREGATOR');
+      }
+
       if (!txHash || !fromChain || !toChain) {
-        throw new CommandError(`Usage: nansen trade bridge-status --tx-hash <hash> --from-chain <chain> --to-chain <chain>
+        throw new CommandError(`Usage: nansen trade bridge-status --tx-hash <hash> --from-chain <chain> --to-chain <chain> [--aggregator <lifi|relay>]
 
 Check the status of a cross-chain bridge transaction.
 
@@ -2066,17 +2083,21 @@ OPTIONS:
   --tx-hash <hash>          Source chain transaction hash
   --from-chain <chain>      Source chain (solana or base)
   --to-chain <chain>        Destination chain (solana or base)
+  --aggregator <name>       lifi or relay. Overrides auto-detection from the
+                            local tx record. Use this when polling from a
+                            different machine or after the record has expired.
 
 EXAMPLES:
-  nansen trade bridge-status --tx-hash 0xabc... --from-chain base --to-chain solana`, 'MISSING_ARGS');
+  nansen trade bridge-status --tx-hash 0xabc... --from-chain base --to-chain solana
+  nansen trade bridge-status --tx-hash 0xabc... --from-chain base --to-chain solana --aggregator relay`, 'MISSING_ARGS');
       }
 
       try {
-        // Auto-detect aggregator from a tx record saved at execute time. Fall back
-        // to the backend default (LiFi) when no record exists — preserves backward
-        // compat for users polling LiFi txes from older versions of the CLI.
+        // Resolution order: explicit --aggregator flag → local tx record → backend
+        // default (LiFi). The override matters when polling from a fresh machine
+        // or after the 30-day record TTL expires.
         const txRecord = loadTxRecord(txHash);
-        const aggregator = txRecord?.aggregator;
+        const aggregator = aggregatorOverride || txRecord?.aggregator;
         const status = await getBridgeStatus(txHash, fromChain, toChain, { aggregator });
         log(`\nBridge Status: ${status.status || 'unknown'}`);
         if (status.substatus === 'REFUNDED') {
@@ -2102,6 +2123,10 @@ EXAMPLES:
         if (explorerLink) log(`  Explorer:    ${explorerLink}`);
         if (aggregator === 'relay' && txRecord?.requestId) {
           log(`  Relay:       https://relay.link/transaction/${txRecord.requestId}`);
+        } else if (aggregator === 'relay') {
+          // No local record (cross-machine / expired). Surface the explorer
+          // by tx hash so users can still cross-reference manually.
+          log(`  Relay:       https://relay.link/transaction/${txHash}`);
         }
         log('');
       } catch (err) {

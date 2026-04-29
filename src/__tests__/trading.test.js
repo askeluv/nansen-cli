@@ -2726,16 +2726,228 @@ describe('Relay aggregator: tx record persistence', () => {
     expect(loadTxRecord('0xnonexistent')).toBe(null);
   });
 
-  it('loadTxRecord returns null for expired record', () => {
+  it('loadTxRecord persists past the 1-hour quote TTL (uses 30-day TTL)', () => {
+    saveTxRecord('0xstillvalid', { aggregator: 'relay', requestId: 'req-2', fromChain: 'base', toChain: 'solana' });
+    // Age the record 2 hours — quote TTL would expire it; tx-record TTL must not.
+    const dir = path.join(process.env.HOME, '.nansen', 'quotes');
+    const filePath = path.join(dir, 'tx-0xstillvalid.json');
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    data.timestamp = Date.now() - (2 * 3600000);
+    fs.writeFileSync(filePath, JSON.stringify(data));
+    const record = loadTxRecord('0xstillvalid');
+    expect(record).not.toBeNull();
+    expect(record.aggregator).toBe('relay');
+  });
+
+  it('loadTxRecord returns null past the 30-day TTL', () => {
     saveTxRecord('0xexpired', { aggregator: 'relay', requestId: 'req-2', fromChain: 'base', toChain: 'solana' });
-    // Mutate the file to age it past the 1-hour TTL
     const dir = path.join(process.env.HOME, '.nansen', 'quotes');
     const filePath = path.join(dir, 'tx-0xexpired.json');
     const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    data.timestamp = Date.now() - (3600000 + 10000);
+    data.timestamp = Date.now() - (31 * 24 * 3600000);
     fs.writeFileSync(filePath, JSON.stringify(data));
     expect(loadTxRecord('0xexpired')).toBe(null);
-    // File is removed after expiry
     expect(fs.existsSync(filePath)).toBe(false);
+  });
+
+  it('cleanupQuotes preserves tx records (30-day TTL) but sweeps stale quotes', async () => {
+    // A 2-hour-old tx record must survive a cleanup triggered by saveQuote.
+    saveTxRecord('0xpreserved', { aggregator: 'relay', requestId: 'req-3', fromChain: 'base', toChain: 'solana' });
+    const dir = path.join(process.env.HOME, '.nansen', 'quotes');
+    const filePath = path.join(dir, 'tx-0xpreserved.json');
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    data.timestamp = Date.now() - (2 * 3600000); // 2 hours old
+    fs.writeFileSync(filePath, JSON.stringify(data));
+
+    // saveQuote calls cleanupQuotes internally
+    saveQuote({ success: true, quotes: [{ aggregator: 'test' }] }, 'base');
+    expect(fs.existsSync(filePath)).toBe(true);
+    expect(loadTxRecord('0xpreserved')).not.toBeNull();
+  });
+});
+
+describe('Relay aggregator: EVM execute forwards requestId', () => {
+  it('non-gasless EVM Relay execute sends requestId in /execute body', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const executeBodies = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const body = opts?.body ? (() => { try { return JSON.parse(opts.body); } catch { return {}; } })() : {};
+      if (body.method === 'eth_getTransactionCount') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+      }
+      if (body.method === 'eth_call') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' })) });
+      }
+      if (body.method === 'eth_getTransactionReceipt') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { status: '0x1', blockNumber: '0x100' } })) });
+      }
+      if (urlStr.includes('/bridge/status')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          text: () => Promise.resolve(JSON.stringify({ status: 'DONE', receiving: { status: 'DONE', txHash: 'destTx' } })),
+        });
+      }
+      if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
+        executeBodies.push(JSON.parse(opts.body));
+        return Promise.resolve({
+          ok: true,
+          text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: '0xRelayHash', chainType: 'evm', broadcaster: 'test' })),
+        });
+      }
+      return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'relay',
+        inputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', // USDC
+        outputMint: '11111111111111111111111111111111',
+        inAmount: '10000000',
+        outAmount: '50000000',
+        approvalAddress: '', // skip approval
+        transaction: { to: '0xRelayRouter', data: '0xswap', value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
+        metadata: { requestId: 'relay-evm-req', isCrossChain: true, bridgeTool: 'relay' },
+      }],
+    }, 'base', 'local', null, 'solana');
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    try { await cmds.execute([], null, {}, { quote: quoteId }); } catch { /* may fail later, ok */ }
+
+    expect(executeBodies.length).toBeGreaterThanOrEqual(1);
+    expect(executeBodies[0].aggregator).toBe('relay');
+    expect(executeBodies[0].requestId).toBe('relay-evm-req');
+    expect(executeBodies[0].gasless).toBeUndefined();
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+    vi.unstubAllGlobals();
+  });
+
+  it('gasless EVM Relay execute sends requestId + gasless + steps', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const executeBodies = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const body = opts?.body ? (() => { try { return JSON.parse(opts.body); } catch { return {}; } })() : {};
+      if (body.method === 'eth_getTransactionCount') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+      }
+      if (body.method === 'eth_call') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' })) });
+      }
+      if (body.method === 'eth_getTransactionReceipt') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { status: '0x1', blockNumber: '0x100' } })) });
+      }
+      if (urlStr.includes('/bridge/status')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          text: () => Promise.resolve(JSON.stringify({ status: 'DONE', receiving: { status: 'DONE', txHash: 'destTx' } })),
+        });
+      }
+      if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
+        executeBodies.push(JSON.parse(opts.body));
+        return Promise.resolve({
+          ok: true,
+          text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: '0xRelayHash', chainType: 'evm', broadcaster: 'relay' })),
+        });
+      }
+      return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'relay',
+        inputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+        outputMint: '11111111111111111111111111111111',
+        inAmount: '10000000',
+        outAmount: '50000000',
+        approvalAddress: '',
+        transaction: { to: '0xRelayRouter', data: '0xswap', value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
+        metadata: { requestId: 'relay-evm-gas-req', isCrossChain: true, bridgeTool: 'relay', steps: [{ kind: 'evm-tx' }] },
+      }],
+    }, 'base', 'local', null, 'solana');
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    try { await cmds.execute([], null, { gasless: true }, { quote: quoteId }); } catch { /* ok */ }
+
+    expect(executeBodies.length).toBeGreaterThanOrEqual(1);
+    expect(executeBodies[0].aggregator).toBe('relay');
+    expect(executeBodies[0].gasless).toBe(true);
+    expect(executeBodies[0].requestId).toBe('relay-evm-gas-req');
+    expect(executeBodies[0].steps).toEqual([{ kind: 'evm-tx' }]);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+    vi.unstubAllGlobals();
+  });
+});
+
+describe('Relay aggregator: --aggregator override on bridge-status', () => {
+  it('uses --aggregator flag when no tx record exists', async () => {
+    const origFetch = global.fetch;
+    const fetchedUrls = [];
+    global.fetch = vi.fn().mockImplementation((url) => {
+      fetchedUrls.push(typeof url === 'string' ? url : url.toString());
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ status: 'PENDING' }),
+      });
+    });
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    await cmds['bridge-status']([], null, {}, {
+      'tx-hash': '0xfreshmachine',
+      'from-chain': 'base',
+      'to-chain': 'solana',
+      aggregator: 'relay',
+    });
+
+    expect(fetchedUrls[0]).toContain('aggregator=relay');
+    global.fetch = origFetch;
+  });
+
+  it('--aggregator flag overrides a stale tx record', async () => {
+    const origFetch = global.fetch;
+    saveTxRecord('0xstaletx', { aggregator: 'lifi', fromChain: 'base', toChain: 'solana' });
+
+    const fetchedUrls = [];
+    global.fetch = vi.fn().mockImplementation((url) => {
+      fetchedUrls.push(typeof url === 'string' ? url : url.toString());
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ status: 'PENDING' }),
+      });
+    });
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    await cmds['bridge-status']([], null, {}, {
+      'tx-hash': '0xstaletx',
+      'from-chain': 'base',
+      'to-chain': 'solana',
+      aggregator: 'relay',
+    });
+
+    expect(fetchedUrls[0]).toContain('aggregator=relay');
+    expect(fetchedUrls[0]).not.toContain('aggregator=lifi');
+    global.fetch = origFetch;
+  });
+
+  it('rejects invalid --aggregator values', async () => {
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    await expect(cmds['bridge-status']([], null, {}, {
+      'tx-hash': '0xabc',
+      'from-chain': 'base',
+      'to-chain': 'solana',
+      aggregator: 'jupiter',
+    })).rejects.toThrow(/Invalid --aggregator/);
   });
 });

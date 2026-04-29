@@ -905,7 +905,7 @@
           }
         },
         "bridge-status": {
-          "description": "Check cross-chain bridge transaction status. Aggregator (Li.Fi or Relay) is auto-detected from the local tx record saved at execute time; falls back to Li.Fi if no record exists.",
+          "description": "Check cross-chain bridge transaction status. Aggregator (Li.Fi or Relay) is auto-detected from a local tx record saved at execute time (kept 30 days); pass --aggregator to override when polling from a different machine.",
           "options": {
             "tx-hash": {
               "type": "string",
@@ -921,6 +921,10 @@
               "type": "string",
               "required": true,
               "description": "Destination chain (solana or base)"
+            },
+            "aggregator": {
+              "type": "string",
+              "description": "lifi or relay. Overrides auto-detection — use when polling from a different machine or after the 30-day local record TTL has expired."
             }
           }
         },
