@@ -115,3 +115,28 @@ describe('checkX402Balance — EVM per-network lookup', () => {
     expect(result).toBeNull();
   });
 });
+
+describe('parsePaymentRequirements — UTF-8 decode', () => {
+  // Regression: atob() returns a Latin-1 binary string, which corrupts
+  // multi-byte UTF-8 chars like ₮ (0xE2 0x82 0xAE) in extra.name = 'USD₮0'.
+  // The corrupted name then signs the wrong EIP-712 domain and the server
+  // rejects with invalid_exact_evm_signature.
+  it('preserves UTF-8 chars in payment requirement fields (e.g. USD₮0)', async () => {
+    const { parsePaymentRequirements } = await import('../x402.js');
+    const requirements = {
+      accepts: [{
+        scheme: 'exact',
+        network: 'eip155:196',
+        asset: '0x779Ded0c9e1022225f8E0630b35a9b54bE713736',
+        extra: { name: 'USD₮0', version: '1' },
+      }],
+    };
+    const header = Buffer.from(JSON.stringify(requirements), 'utf8').toString('base64');
+    const response = { headers: { get: (k) => k === 'payment-required' ? header : null } };
+
+    const parsed = parsePaymentRequirements(response);
+
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].extra.name).toBe('USD₮0');
+  });
+});

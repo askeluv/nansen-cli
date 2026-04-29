@@ -648,7 +648,7 @@ export class NansenAPI {
                 const paymentHeader = response.headers.get('payment-required');
                 if (paymentHeader) {
                   try {
-                    paymentRequirements = JSON.parse(atob(paymentHeader));
+                    paymentRequirements = JSON.parse(Buffer.from(paymentHeader, 'base64').toString('utf8'));
                   } catch {
                     data.paymentRequiredRaw = paymentHeader;
                   }

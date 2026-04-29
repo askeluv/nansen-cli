@@ -24,7 +24,9 @@ export function parsePaymentRequirements(response) {
   if (!header) return null;
 
   try {
-    const decoded = JSON.parse(atob(header));
+    // UTF-8 decode (not atob → Latin-1) — server sends UTF-8 bytes
+    // for fields like extra.name = 'USD₮0'.
+    const decoded = JSON.parse(Buffer.from(header, 'base64').toString('utf8'));
     // V2 format: { accepts: [...], ... }
     if (decoded.accepts && Array.isArray(decoded.accepts)) {
       return decoded.accepts;
