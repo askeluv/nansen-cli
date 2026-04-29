@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.30.0
+
+### Minor Changes
+
+- [#422](https://github.com/nansen-ai/nansen-cli/pull/422) [`10da2f0`](https://github.com/nansen-ai/nansen-cli/commit/10da2f03284a501d94c433f543b9f1866005d3fc) Thanks [@gulshngill](https://github.com/gulshngill)! - Add x402 support for paying with USDT0 on X Layer alongside Base USDC and Solana SPL USDC. The CLI auto-signs the payment using whatever the API advertises in the 402 `accepts` list — no client-side allowlist, since `src/x402-evm.js` already reads `extra.name`, `extra.version`, and `asset` generically. New `NANSEN_XLAYER_RPC` env var overrides the default X Layer RPC, and `checkX402Balance()` now picks the right token + RPC based on the requirement's `network` field.
+
+### Patch Changes
+
+- [#422](https://github.com/nansen-ai/nansen-cli/pull/422) [`dc9d1c1`](https://github.com/nansen-ai/nansen-cli/commit/dc9d1c1d740128a8667e79a7a4afb3ff31ed1cc5) Thanks [@gulshngill](https://github.com/gulshngill)! - Document MPP (Tempo) as a third paid-access rail alongside API key and x402. Adds a `nansen-mpp-payment` skill, a README section explaining when to reach for the separate `tempo` CLI, and updates the no-API-key 402 error to mention tempo as a third option.
+
+- [#422](https://github.com/nansen-ai/nansen-cli/pull/422) [`93e6a6d`](https://github.com/nansen-ai/nansen-cli/commit/93e6a6d6655380d311739e5f814dda2876b0206a) Thanks [@gulshngill](https://github.com/gulshngill)! - Fix x402 low-balance warning to use the actual stablecoin symbol (USDC or USDT0) returned by `checkX402Balance()` instead of hardcoding "USDC".
+
+- [#422](https://github.com/nansen-ai/nansen-cli/pull/422) [`8f9397f`](https://github.com/nansen-ai/nansen-cli/commit/8f9397f2e1940a7a501cd450eae58a3b243b4782) Thanks [@gulshngill](https://github.com/gulshngill)! - Fix x402 payment header decoding and WalletConnect payment payload encoding to use UTF-8 instead of Latin-1. Previously the `Payment-Required` header was decoded with `atob()`, which corrupted multi-byte UTF-8 chars in fields like `extra.name = 'USD₮0'`. The corrupted name then signed the wrong EIP-712 domain and the server rejected with `invalid_exact_evm_signature`. X Layer USDT0 payments now sign correctly; Base USDC was unaffected because `'USD Coin'` is pure ASCII.
+
 ## 1.29.0
 
 ### Minor Changes
