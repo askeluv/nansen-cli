@@ -236,7 +236,14 @@ export async function getBridgeStatus(txHash, fromChain, toChain, { aggregator, 
   for (let attempt = 0; attempt <= retries; attempt++) {
     if (attempt > 0) await new Promise(r => setTimeout(r, retryDelayMs));
 
-    const res = await fetch(url.toString(), { headers: { 'Accept': 'application/json', 'User-Agent': CLIENT_USER_AGENT } });
+    const res = await fetch(url.toString(), {
+      headers: {
+        'Accept': 'application/json',
+        'User-Agent': CLIENT_USER_AGENT,
+        'X-Client-Type': 'nansen-cli',
+        ...telemetryHeaders(),
+      },
+    });
     const text = await res.text();
     let body;
     try {
