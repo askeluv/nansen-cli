@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.29.0
+
+### Minor Changes
+
+- [#423](https://github.com/nansen-ai/nansen-cli/pull/423) [`d10aa57`](https://github.com/nansen-ai/nansen-cli/commit/d10aa575c31f7702241ad114276fa5234f2bdf59) Thanks [@imhta](https://github.com/imhta)! - Add Relay aggregator support for Base↔Solana cross-chain swaps. Users now see Relay quotes alongside Li.Fi in `nansen trade quote --to-chain ...`, can execute them through `trade execute`, and optionally use Relay's gasless path with `--gasless` (local/Privy wallets only — not WalletConnect). `trade bridge-status` auto-detects which aggregator produced a tx (via a local tx record) and polls the right backend.
+
 ## 1.28.0
 
 ### Minor Changes
