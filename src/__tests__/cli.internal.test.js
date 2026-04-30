@@ -1742,6 +1742,7 @@ describe('HELP', () => {
     expect(HELP).toContain('nansen trade execute --quote <quoteId>');
     expect(HELP).toContain('nansen trade limit-order create');
     expect(HELP).toContain('nansen trade limit-order create --from SOL --to USDC --amount 1.5 --trigger-mint SOL --trigger-condition below --trigger-price 80');
+    expect(HELP.indexOf('trade')).toBeLessThan(HELP.indexOf('research'));
   });
 });
 

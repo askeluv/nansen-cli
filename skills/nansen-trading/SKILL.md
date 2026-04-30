@@ -92,11 +92,15 @@ nansen trade limit-order create \
   --amount 1.5 \
   --trigger-mint SOL \
   --trigger-condition below \
-  --trigger-price 80
+  --trigger-price 80 \
+  --slippage-bps 300
 
 nansen trade limit-order list
 nansen trade limit-order cancel --order <order-id>
+nansen trade limit-order update --order <order-id> --trigger-price 85
 ```
+
+`--slippage-bps` is basis points (`300` = 3%, `100` = 1%); omit for auto.
 
 ## Agent pattern
 

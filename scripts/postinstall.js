@@ -163,7 +163,7 @@ async function main() {
     log();
     log(`Tip: Run '${CYAN}npx skills add ${SKILL_REPO}${RESET}' to install the Nansen AI coding skill.`);
     log(`Tip: Run '${CYAN}nansen login --api-key <key>${RESET}' to authenticate.`);
-    log(`Tip: Trade with '${CYAN}nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000${RESET}' then '${CYAN}nansen trade execute --quote <id>${RESET}'.`);
+    log(`Tip: To trade, first create a wallet with '${CYAN}nansen wallet create${RESET}', then quote with '${CYAN}nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000${RESET}' and execute with '${CYAN}nansen trade execute --quote <id>${RESET}'.`);
     return;
   }
 
