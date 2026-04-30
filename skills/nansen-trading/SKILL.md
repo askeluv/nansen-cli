@@ -89,7 +89,7 @@ Create and manage Solana limit orders:
 nansen trade limit-order create \
   --from SOL \
   --to USDC \
-  --amount 1000000000 \
+  --amount 1.5 \
   --trigger-mint SOL \
   --trigger-condition below \
   --trigger-price 80

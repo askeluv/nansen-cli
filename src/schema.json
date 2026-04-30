@@ -951,7 +951,7 @@
                 "amount": {
                   "type": "string",
                   "required": true,
-                  "description": "Amount in base units (e.g. lamports)"
+                  "description": "Amount in token units (e.g. 1.5 = 1.5 SOL)"
                 },
                 "trigger-price": {
                   "type": "number",

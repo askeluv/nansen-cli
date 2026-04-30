@@ -720,7 +720,7 @@ TRADING:
   nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000
   nansen trade execute --quote <quoteId>
   nansen trade bridge-status --tx-hash <hash> --from-chain base --to-chain solana
-  nansen trade limit-order create --from SOL --to USDC --amount 1000000000 --trigger-mint SOL --trigger-condition below --trigger-price 80
+  nansen trade limit-order create --from SOL --to USDC --amount 1.5 --trigger-mint SOL --trigger-condition below --trigger-price 80
   Supports Solana/Base DEX swaps, cross-chain bridges, and Solana limit orders.
 
 EXAMPLES:
@@ -1515,7 +1515,7 @@ EXAMPLES:
   nansen trade quote --chain base --to-chain solana --from USDC --to USDC --amount 1000000
   nansen trade execute --quote 1708900000000-abc123
   nansen trade bridge-status --tx-hash 0xabc... --from-chain base --to-chain solana
-  nansen trade limit-order create --from SOL --to USDC --amount 1000000000 --trigger-mint SOL --trigger-condition below --trigger-price 80
+  nansen trade limit-order create --from SOL --to USDC --amount 1.5 --trigger-mint SOL --trigger-condition below --trigger-price 80
   nansen trade limit-order list
 
 WALLET:
