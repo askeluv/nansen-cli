@@ -42,6 +42,13 @@ distinct paths — pick the one that matches the user's chain:
 - First-time `trade limit-order create` auto-registers a trading vault and
   caches a JWT at `~/.nansen/limit-order-auth.json` for ~23h.
 
+> **Two mechanisms, not one.** The limit order itself is **price-triggered** —
+> it executes when the market price crosses the target. A companion smart
+> alert is a **settlement confirmation** — it fires after the trade settles
+> on-chain (i.e. when the bought token actually arrives in the wallet). They
+> are independent: the order handles the trigger, the alert tells the user the
+> fill landed.
+
 ## Solana: Native Limit Orders
 
 ### Create
@@ -125,10 +132,20 @@ fixed slippage back to auto.
 supported approximation is:
 
 1. Place the resting limit order on the venue or product that supports it (CEX,
-   DEX limit-order product, aggregator).
+   DEX limit-order product, aggregator). **The venue handles the price
+   trigger.**
 2. Use the same wallet as the settlement wallet.
 3. Create a `common-token-transfer` smart alert scoped to wallet + chain +
-   token + side, so the matching on-chain fill triggers a notification.
+   token + side. The alert fires **after** the trade settles — i.e. once the
+   bought/sold token actually moves on-chain — as a fill-detected signal.
+
+How the two mechanisms compose:
+
+1. **Price hits target → the venue's limit order executes.** This is the
+   trigger. `nansen-cli` is not involved.
+2. **Token arrives in the wallet → the smart alert pings.** This is the
+   settlement confirmation. The alert never sees the price trigger; it only
+   sees the resulting transfer.
 
 This is a best-effort settlement signal, not authoritative order tracking. It
 does **not** expose order-state polling, partial-fill progress, `triggeredAt`,
@@ -176,13 +193,35 @@ nansen alerts create \
 
 ## Optional: Belt-and-Braces on Solana
 
-For Solana native limit orders, a companion alert on the settlement wallet is
-optional but useful — it pings the user independently of the trading API, so
-they get a notification even if they aren't polling
-`trade limit-order list`. Some venues route fills through programs that the
-alerting backend may not classify as `buy`/`sell`, so this is still a
-best-effort signal, not authoritative fill detection. Pair with the same
-`common-token-transfer` alert shape shown above.
+For Solana native limit orders, a companion `common-token-transfer` alert on
+the settlement wallet is optional but useful. **It is a settlement
+confirmation, not a price trigger.** The limit order itself handles the price
+trigger; the alert fires when the bought token actually arrives in the wallet
+(or, for sells, when the sold token leaves) — proof the on-chain fill landed,
+delivered via Telegram/webhook independently of `trade limit-order list`
+polling.
+
+Some venues route fills through programs that the alerting backend may not
+classify as `buy`/`sell`, so this is still a best-effort settlement signal,
+not authoritative fill detection. Pair with the same `common-token-transfer`
+alert shape shown above.
+
+## What to Tell the User
+
+When suggesting a companion alert, be explicit that two different mechanisms
+are at work — users routinely conflate them:
+
+- The **limit order** is the price trigger. It executes when the market price
+  crosses the target.
+- The **smart alert** is the settlement confirmation. It pings after the trade
+  settles on-chain.
+
+Suggested phrasing: _"When your order fills and the token arrives in your
+wallet, you'll get a Telegram ping. The price trigger is handled by the limit
+order itself — the alert just confirms the fill landed."_
+
+Avoid wording that implies the alert "triggers" the order or that the alert
+itself watches price. It does neither.
 
 ## Notes
 
