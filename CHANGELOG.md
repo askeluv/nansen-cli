@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.30.1
+
+### Patch Changes
+
+- [#411](https://github.com/nansen-ai/nansen-cli/pull/411) [`26cd863`](https://github.com/nansen-ai/nansen-cli/commit/26cd863de0604f2d50750ff6742c46772f0b661e) Thanks [@gulshngill](https://github.com/gulshngill)! - Add the `nansen-limit-orders` skill. The skill teaches agents to use the native `nansen trade limit-order create|list|cancel|update` commands for Solana price-triggered orders, and documents the alert-based settlement-signal fallback (`common-token-transfer` smart alert on the settlement wallet) for chains without native limit-order support. Builds on the `trade limit-order` command surface added by #328.
+
+- [#429](https://github.com/nansen-ai/nansen-cli/pull/429) [`511e795`](https://github.com/nansen-ai/nansen-cli/commit/511e7959d735d38e1ee44d2aa29ce19df55b9336) Thanks [@gulshngill](https://github.com/gulshngill)! - Improve discovery of `nansen trade` in package metadata, help output, install tips, and agent-facing docs.
+
 ## 1.30.0
 
 ### Minor Changes
