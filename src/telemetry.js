@@ -61,10 +61,12 @@ const TELEMETRY_ID_FILE = path.join(
  */
 let _anonymousId;
 export function getAnonymousId() {
-  if (_anonymousId === undefined) {
+  if (!_anonymousId) {
     try {
-      _anonymousId = fs.readFileSync(TELEMETRY_ID_FILE, 'utf8').trim();
-    } catch {
+      const stored = fs.readFileSync(TELEMETRY_ID_FILE, 'utf8').trim();
+      if (stored) _anonymousId = stored;
+    } catch { /* missing or unreadable → generate below */ }
+    if (!_anonymousId) {
       _anonymousId = crypto.randomUUID();
       try {
         fs.mkdirSync(path.dirname(TELEMETRY_ID_FILE), { recursive: true });
@@ -194,6 +196,7 @@ export function trackCommandSucceeded({
     timestamp: new Date().toISOString(),
     path: commandToPath(command),
     properties: {
+      source: `nansen-cli/${cliVersion}`,
       latency: duration_ms / 1000,
       from_cache,
       flags,
@@ -232,6 +235,7 @@ export function trackCommandFailed({
     timestamp: new Date().toISOString(),
     path: commandToPath(command),
     properties: {
+      source: `nansen-cli/${cliVersion}`,
       latency: duration_ms / 1000,
       error_code,
       status,

@@ -15,7 +15,7 @@ import { getWalletConnectAddress, sendTransactionViaWalletConnect, sendSolanaTra
 import { retrievePassword } from './keychain.js';
 import { validateQuoteInput, validateBalance, resolvePercentAmount, validateGasBalance } from './trade-validation.js';
 import { CHAIN_RPCS } from './rpc-urls.js';
-import { packageVersion, CommandError } from './api.js';
+import { packageVersion, CommandError, telemetryHeaders } from './api.js';
 
 // ============= Constants =============
 
@@ -121,7 +121,7 @@ export async function getQuote(params) {
     }
   }
 
-  const headers = { 'Accept': 'application/json', 'User-Agent': CLIENT_USER_AGENT };
+  const headers = { 'Accept': 'application/json', 'User-Agent': CLIENT_USER_AGENT, 'X-Client-Type': 'nansen-cli', ...telemetryHeaders() };
 
   const res = await fetch(url.toString(), { headers });
 
@@ -160,6 +160,8 @@ export async function executeTransaction(params, { retries = 2, retryDelayMs = 1
     'Content-Type': 'application/json',
     'Accept': 'application/json',
     'User-Agent': CLIENT_USER_AGENT,
+    'X-Client-Type': 'nansen-cli',
+    ...telemetryHeaders(),
   };
   let lastError;
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -234,7 +236,14 @@ export async function getBridgeStatus(txHash, fromChain, toChain, { aggregator, 
   for (let attempt = 0; attempt <= retries; attempt++) {
     if (attempt > 0) await new Promise(r => setTimeout(r, retryDelayMs));
 
-    const res = await fetch(url.toString(), { headers: { 'Accept': 'application/json', 'User-Agent': CLIENT_USER_AGENT } });
+    const res = await fetch(url.toString(), {
+      headers: {
+        'Accept': 'application/json',
+        'User-Agent': CLIENT_USER_AGENT,
+        'X-Client-Type': 'nansen-cli',
+        ...telemetryHeaders(),
+      },
+    });
     const text = await res.text();
     let body;
     try {

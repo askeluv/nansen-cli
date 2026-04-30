@@ -11,7 +11,7 @@ import path from 'path';
 import { base58Encode, exportWallet, getWalletConfig, showWallet } from './wallet.js';
 import { signEd25519, base58Decode, parseAmount, getTokenInfo } from './transfer.js';
 import { signSolanaTransaction, resolveTokenAddress } from './trading.js';
-import { validateTokenAddress } from './api.js';
+import { validateTokenAddress, telemetryHeaders, packageVersion } from './api.js';
 import { getWalletConnectAddress, sendSolanaTransactionViaWalletConnect, signSolanaMessageViaWalletConnect } from './walletconnect-trading.js';
 import { retrievePassword } from './keychain.js';
 import { CHAIN_RPCS } from './rpc-urls.js';
@@ -88,8 +88,11 @@ async function loFetch(method, endpoint, { token, body, query } = {}) {
   }
 
   const headers = {
-    'Accept': 'application/json',
     'Content-Type': 'application/json',
+    'Accept': 'application/json',
+    'User-Agent': `nansen-cli/${packageVersion}`,
+    'X-Client-Type': 'nansen-cli',
+    ...telemetryHeaders(),
   };
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;

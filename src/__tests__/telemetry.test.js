@@ -162,6 +162,27 @@ describe('telemetry', () => {
       vi.restoreAllMocks();
     });
 
+    it('should generate a new UUID when file is empty', async () => {
+      const writeCalls = [];
+      const origRead = fs.readFileSync;
+      vi.spyOn(fs, 'readFileSync').mockImplementation((p, ...args) => {
+        if (typeof p === 'string' && p.includes('telemetry-id')) return '   \n';
+        return origRead(p, ...args);
+      });
+      vi.spyOn(fs, 'mkdirSync').mockImplementation(() => {});
+      vi.spyOn(fs, 'writeFileSync').mockImplementation((p, data) => {
+        writeCalls.push({ path: p, data });
+      });
+
+      ({ getAnonymousId } = await freshImport());
+      const id = getAnonymousId();
+      expect(id).toMatch(/^[0-9a-f-]{36}$/);
+      expect(writeCalls.length).toBe(1);
+      expect(writeCalls[0].data).toBe(id);
+
+      vi.restoreAllMocks();
+    });
+
     it('should read existing ID from file', async () => {
       const existingId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
       const origRead = fs.readFileSync;
