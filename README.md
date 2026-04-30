@@ -3,7 +3,9 @@
 [![npm version](https://img.shields.io/npm/v/nansen-cli.svg)](https://www.npmjs.com/package/nansen-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> **Built by agents, for agents.** Command-line interface for the [Nansen API](https://docs.nansen.ai), designed for AI agents.
+> **Built by agents, for agents.** Command-line interface for the [Nansen API](https://docs.nansen.ai), designed for AI agents to research on-chain data, manage wallets, and trade through `nansen trade`.
+
+Use it for both analytics and execution: `nansen research ...` returns structured on-chain data, while `nansen trade quote` / `nansen trade execute` handle DEX swaps on Solana and Base, including cross-chain bridges.
 
 ## Installation
 
@@ -35,14 +37,15 @@ Three options — pick whichever fits your setup:
 nansen research <category> <subcommand> [options]
 nansen agent "<question>"             # AI research agent (200 credits, Pro)
 nansen agent "<question>" --expert    # deeper analysis (750 credits, Pro)
-nansen trade <subcommand> [options]
+nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000
+nansen trade execute --quote <quoteId>
 nansen wallet <subcommand> [options]
 nansen schema [command] [--pretty]    # full command reference (no API key needed)
 ```
 
 **Research categories:** `smart-money` (`sm`), `token` (`tgm`), `profiler` (`prof`), `portfolio` (`port`), `prediction-market` (`pm`), `search`, `perp`, `points`
 
-**Trade:** `quote`, `execute`, `bridge-status`, `limit-order` — DEX swaps on Solana and Base (including cross-chain bridges), plus native limit orders on Solana.
+**Trade:** `quote`, `execute`, `bridge-status`, `limit-order` — DEX swaps on Solana and Base, cross-chain bridges, and Solana limit orders.
 
 **Wallet:** `create`, `list`, `show`, `export`, `default`, `delete`, `send` — local or Privy server-side wallets (EVM + Solana).
 

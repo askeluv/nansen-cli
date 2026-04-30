@@ -104,7 +104,7 @@ async function installSkill() {
   }
 
   log(`The Nansen skill lets AI coding agents (Cursor, Claude Code, etc.) query`);
-  log(`on-chain data, track smart money, and analyze tokens on your behalf.`);
+  log(`on-chain data, track smart money, analyze tokens, and use nansen trade.`);
   const answer = await prompt(`  Install Nansen skill for your AI coding agent? [Y/n] `);
 
   if (/^n/i.test(answer)) {
@@ -133,6 +133,7 @@ async function testQuery() {
 
   if (/^n/i.test(answer)) {
     log(`Skipped. You're all set! Try: ${CYAN}nansen research smart-money netflow --chain solana${RESET}`);
+    log(`For trading: ${CYAN}nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000${RESET}`);
     return;
   }
 
@@ -162,6 +163,7 @@ async function main() {
     log();
     log(`Tip: Run '${CYAN}npx skills add ${SKILL_REPO}${RESET}' to install the Nansen AI coding skill.`);
     log(`Tip: Run '${CYAN}nansen login --api-key <key>${RESET}' to authenticate.`);
+    log(`Tip: To trade, first create a wallet with '${CYAN}nansen wallet create${RESET}', then quote with '${CYAN}nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000${RESET}' and execute with '${CYAN}nansen trade execute --quote <id>${RESET}'.`);
     return;
   }
 

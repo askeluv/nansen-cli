@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Nansen CLI - Command-line interface for Nansen API
+ * Nansen CLI - Command-line interface for Nansen API analytics and DEX trading
  * Designed for AI agents.
  *
  * Usage: nansen <command> [options]
