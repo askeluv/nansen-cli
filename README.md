@@ -42,7 +42,7 @@ nansen schema [command] [--pretty]    # full command reference (no API key neede
 
 **Research categories:** `smart-money` (`sm`), `token` (`tgm`), `profiler` (`prof`), `portfolio` (`port`), `prediction-market` (`pm`), `search`, `perp`, `points`
 
-**Trade:** `quote`, `execute`, `bridge-status` — DEX swaps on Solana and Base, including cross-chain bridges.
+**Trade:** `quote`, `execute`, `bridge-status`, `limit-order` — DEX swaps on Solana and Base (including cross-chain bridges), plus native limit orders on Solana.
 
 **Wallet:** `create`, `list`, `show`, `export`, `default`, `delete`, `send` — local or Privy server-side wallets (EVM + Solana).
 
@@ -67,6 +67,28 @@ nansen trade bridge-status --tx-hash <hash> --from-chain base --to-chain solana
 ```
 
 Amounts are in base units (lamports, wei) by default — use `--amount-unit token|usd|percent` for friendlier inputs. Common symbols (`SOL`, `ETH`, `USDC`, `USDT`) resolve automatically. A wallet is required — set one with `nansen wallet default <name>`.
+
+## Limit Orders
+
+Native price-triggered orders on **Solana**. Four subcommands:
+
+```bash
+nansen trade limit-order create \
+  --from SOL --to USDC \
+  --amount 1.5 \
+  --trigger-mint SOL --trigger-condition below --trigger-price 80 \
+  --slippage-bps 300 --expires 7d
+
+nansen trade limit-order list                    # all orders
+nansen trade limit-order list --state active     # only open
+nansen trade limit-order list --state past       # filled or cancelled
+nansen trade limit-order cancel --order <orderId>
+nansen trade limit-order update --order <orderId> --trigger-price 85
+```
+
+`--amount` is in token units (`1.5` = 1.5 SOL). `--slippage-bps` is basis points (`300` = 3%, `100` = 1%); omit for auto. Minimum order value ~$10 (server-enforced). Local, Privy, and WalletConnect wallets all work.
+
+For EVM chains, there's no native limit-order surface — pair an external venue's resting order with a `common-token-transfer` smart alert on the settlement wallet as a best-effort fill signal. See the `nansen-limit-orders` skill for details.
 
 ## Wallet
 
