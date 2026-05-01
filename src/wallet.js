@@ -798,8 +798,13 @@ export function buildWalletCommands(deps = {}) {
           // Check if this is a Privy wallet (no password needed)
           let isPrivy = false;
           try {
-            const walletFile = path.join(getWalletsDir(), `${name}.json`);
-            const data = JSON.parse(fs.readFileSync(walletFile, 'utf8'));
+            const base = path.resolve(getWalletsDir());
+            const target = path.resolve(base, `${name}.json`);
+            const rel = path.relative(base, target);
+            if (rel.startsWith('..') || path.isAbsolute(rel)) {
+              throw new Error('Invalid path');
+            }
+            const data = JSON.parse(fs.readFileSync(target, 'utf8'));
             if (data.provider === 'privy') isPrivy = true;
           } catch { /* file might not exist, deleteWallet will throw */ }
 
@@ -856,8 +861,13 @@ export function buildWalletCommands(deps = {}) {
             try {
               const walletName = options.wallet || getWalletConfig().defaultWallet;
               if (walletName) {
-                const walletFile = path.join(getWalletsDir(), `${walletName}.json`);
-                const data = JSON.parse(fs.readFileSync(walletFile, 'utf8'));
+                const base = path.resolve(getWalletsDir());
+                const target = path.resolve(base, `${walletName}.json`);
+                const relative = path.relative(base, target);
+                if (relative.startsWith('..') || path.isAbsolute(relative)) {
+                  throw new Error('Invalid wallet name');
+                }
+                const data = JSON.parse(fs.readFileSync(target, 'utf8'));
                 if (data.provider === 'privy') isPrivyWallet = true;
               }
             } catch { /* ignore */ }

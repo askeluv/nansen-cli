@@ -348,7 +348,11 @@ export function saveTxRecord(txHash, { aggregator, requestId, fromChain, toChain
  */
 export function loadTxRecord(txHash) {
   if (!txHash) return null;
-  const filePath = path.join(getQuotesDir(), `tx-${txHash}.json`);
+  const base = path.resolve(getQuotesDir());
+  const target = path.resolve(base, `tx-${txHash}.json`);
+  const relative = path.relative(base, target);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
+  const filePath = target;
   if (!fs.existsSync(filePath)) return null;
   try {
     const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));

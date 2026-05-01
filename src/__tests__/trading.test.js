@@ -2766,6 +2766,52 @@ describe('Relay aggregator: tx record persistence', () => {
   });
 });
 
+describe('Path traversal security: loadTxRecord', () => {
+  it('rejects path traversal with ../ sequences', () => {
+    // Attempt to traverse up and read a file outside the quotes directory
+    const result = loadTxRecord('../../../etc/passwd');
+    expect(result).toBe(null);
+  });
+
+  it('rejects path traversal with encoded ../ sequences', () => {
+    // URL-encoded path traversal attempt
+    const result = loadTxRecord('..%2F..%2F..%2Fetc%2Fpasswd');
+    expect(result).toBe(null);
+  });
+
+  it('rejects absolute paths', () => {
+    // Attempt to use an absolute path
+    const result = loadTxRecord('/etc/passwd');
+    expect(result).toBe(null);
+  });
+
+  it('rejects Windows-style absolute paths', () => {
+    // Windows absolute path attempt
+    const result = loadTxRecord('C:\\Windows\\System32\\config\\SAM');
+    expect(result).toBe(null);
+  });
+
+  it('rejects path traversal with mixed separators', () => {
+    // Mixed path separators attempt
+    const result = loadTxRecord('../.\\../etc/passwd');
+    expect(result).toBe(null);
+  });
+
+  it('rejects null byte injection', () => {
+    // Null byte injection attempt (common path traversal technique)
+    const result = loadTxRecord('../../etc/passwd\x00.json');
+    expect(result).toBe(null);
+  });
+
+  it('allows legitimate tx hash without path traversal', () => {
+    // Save a legitimate record first
+    saveTxRecord('0xlegitimate123', { aggregator: 'relay', requestId: 'req-safe', fromChain: 'base', toChain: 'solana' });
+    const record = loadTxRecord('0xlegitimate123');
+    expect(record).not.toBe(null);
+    expect(record.txHash).toBe('0xlegitimate123');
+  });
+});
+
 describe('Relay aggregator: EVM execute forwards requestId', () => {
   it('non-gasless EVM Relay execute omits requestId/aggregator (backend rejects them on EVM)', async () => {
     createWallet('default', 'testpass');
