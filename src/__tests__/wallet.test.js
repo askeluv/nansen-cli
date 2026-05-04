@@ -676,9 +676,8 @@ describe('Path traversal security: wallet delete command', () => {
     });
 
     // Attempt path traversal in wallet name - should fail
-    const result = await cmds.wallet(['delete'], null, {}, { name: '../../../etc/passwd' }).catch(e => {
+    await cmds.wallet(['delete'], null, {}, { name: '../../../etc/passwd' }).catch(e => {
       errors.push(e);
-      return e;
     });
     
     // Should fail - either caught error or wallet not found
@@ -697,9 +696,8 @@ describe('Path traversal security: wallet delete command', () => {
     });
 
     // Attempt absolute path - should fail
-    const result = await cmds.wallet(['delete'], null, {}, { name: '/etc/passwd' }).catch(e => {
+    await cmds.wallet(['delete'], null, {}, { name: '/etc/passwd' }).catch(e => {
       errors.push(e);
-      return e;
     });
     
     // Should fail - either caught error or wallet not found
