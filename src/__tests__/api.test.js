@@ -160,6 +160,19 @@ const MOCK_RESPONSES = {
       { indicator_type: 'price-momentum', score: 'bullish', signal: 0.75, signal_percentile: 85.5, last_trigger_on: '2025-01-10' }
     ]
   },
+  topTokens: {
+    data: [
+      {
+        token_address: '0x7fc66500c84a76ad7e9c93437bfc5ac33e2ddae9',
+        token_symbol: 'AAVE',
+        chain: 'ethereum',
+        performance_score: 72.5,
+        risk_score: 35.2,
+        price_momentum_performance: 0.85,
+        liquidity_risk: 0.15
+      }
+    ]
+  },
   tokenOhlcv: {
     candles: [
       { timestamp: '2025-01-15T00:00:00Z', open: 1.5, high: 1.8, low: 1.4, close: 1.7, volume: 1000000 }
@@ -1080,6 +1093,38 @@ describe('NansenAPI', () => {
 
         expect(result.risk_indicators).toBeInstanceOf(Array);
         expect(result.reward_indicators).toBeInstanceOf(Array);
+      });
+    });
+
+    describe('topTokens', () => {
+      it('should fetch top tokens with correct endpoint and body', async () => {
+        setupMock(MOCK_RESPONSES.topTokens);
+        const result = await api.topTokens({ limit: 10 });
+        const body = expectFetchCalledWith('/api/v1/nansen-score/top-tokens');
+        if (body) {
+          expect(body.limit).toBe(10);
+          expect(body.market_cap_group).toBeUndefined();
+        }
+        expect(result.data).toBeInstanceOf(Array);
+      });
+
+      it('should pass marketCapGroup when provided', async () => {
+        setupMock(MOCK_RESPONSES.topTokens);
+        await api.topTokens({ marketCapGroup: 'largecap', limit: 5 });
+        const body = expectFetchCalledWith('/api/v1/nansen-score/top-tokens');
+        if (body) {
+          expect(body.market_cap_group).toBe('largecap');
+          expect(body.limit).toBe(5);
+        }
+      });
+
+      it('should default limit to 25', async () => {
+        setupMock(MOCK_RESPONSES.topTokens);
+        await api.topTokens({});
+        const body = expectFetchCalledWith('/api/v1/nansen-score/top-tokens');
+        if (body) {
+          expect(body.limit).toBe(25);
+        }
       });
     });
 
@@ -2992,6 +3037,54 @@ describe('NansenAPI', () => {
       expect(mockFetch).toHaveBeenCalledTimes(2);
       const retryCall = mockFetch.mock.calls[1];
       expect(retryCall[1].headers['Payment-Signature']).toBe('mock-payment-sig');
+
+      vi.doUnmock('../walletconnect-x402.js');
+    });
+
+    it('should decode UTF-8 payment requirements before WalletConnect signing', async () => {
+      if (LIVE_TEST) return;
+
+      const paymentReqs = {
+        accepts: [{
+          scheme: 'exact',
+          asset: '0x779Ded0c9e1022225f8E0630b35a9b54bE713736',
+          payTo: '0xRecipient',
+          amount: '10000',
+          network: 'eip155:196',
+          maxTimeoutSeconds: 120,
+          extra: { name: 'USD₮0', version: '1', symbol: 'USDT0', decimals: 6 },
+        }],
+      };
+      const paymentHeader = Buffer.from(JSON.stringify(paymentReqs), 'utf8').toString('base64');
+
+      const errorResponse = {
+        ok: false,
+        status: 402,
+        json: async () => ({ message: 'Payment required' }),
+        headers: { get: (h) => h === 'payment-required' ? paymentHeader : null },
+      };
+      const successData = { netflows: [{ token_symbol: 'TEST' }] };
+      const successResponse = {
+        ok: true,
+        json: async () => successData,
+        text: async () => JSON.stringify(successData),
+      };
+
+      mockFetch
+        .mockResolvedValueOnce(errorResponse)
+        .mockResolvedValueOnce(successResponse);
+
+      const mockHandleX402Payment = vi.fn().mockResolvedValue('mock-payment-sig');
+      vi.resetModules();
+      vi.doMock('../walletconnect-x402.js', () => ({ handleX402Payment: mockHandleX402Payment }));
+
+      const autoPayApi = new NansenAPI('test-key', 'https://api.nansen.ai');
+      const result = await autoPayApi.smartMoneyNetflow({});
+
+      expect(result.netflows).toBeDefined();
+      expect(mockHandleX402Payment).toHaveBeenCalledTimes(1);
+      expect(mockHandleX402Payment.mock.calls[0][0].accepts[0].extra.name).toBe('USD₮0');
+      expect(mockHandleX402Payment.mock.calls[0][0].accepts[0].asset).toBe('0x779Ded0c9e1022225f8E0630b35a9b54bE713736');
 
       vi.doUnmock('../walletconnect-x402.js');
     });

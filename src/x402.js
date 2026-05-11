@@ -24,7 +24,9 @@ export function parsePaymentRequirements(response) {
   if (!header) return null;
 
   try {
-    const decoded = JSON.parse(atob(header));
+    // UTF-8 decode (not atob → Latin-1) — server sends UTF-8 bytes
+    // for fields like extra.name = 'USD₮0'.
+    const decoded = JSON.parse(Buffer.from(header, 'base64').toString('utf8'));
     // V2 format: { accepts: [...], ... }
     if (decoded.accepts && Array.isArray(decoded.accepts)) {
       return decoded.accepts;
@@ -155,8 +157,8 @@ export async function createPaymentSignature(response, url, options = {}) {
 }
 
 /**
- * Check USDC balance for x402 payment wallet.
- * Returns balance in USD (number) or null if check fails.
+ * Check stablecoin balance for x402 payment wallet on the given network.
+ * Returns `{ balance, symbol }` (USD amount + token symbol) or null if check fails.
  */
 export async function checkX402Balance(network) {
   try {
@@ -183,25 +185,32 @@ export async function checkX402Balance(network) {
       });
       const data = await resp.json();
       const accounts = data.result?.value || [];
-      if (accounts.length === 0) return 0;
-      return parseFloat(accounts[0].account.data.parsed.info.tokenAmount.uiAmountString || '0');
+      const balance = accounts.length === 0
+        ? 0
+        : parseFloat(accounts[0].account.data.parsed.info.tokenAmount.uiAmountString || '0');
+      return { balance, symbol: 'USDC' };
     }
 
     if (network.startsWith('eip155:')) {
-      // Base USDC balance check — RPC URL from shared registry so NANSEN_BASE_RPC override applies
-      const USDC_BASE = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+      // Per-network token + RPC. Both tokens are 6-decimals.
+      // Default to Base USDC if the network is unknown so existing wallets keep working.
+      const EVM_NETWORKS = {
+        'eip155:8453': { token: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', rpc: CHAIN_RPCS.base,   symbol: 'USDC'  }, // Base USDC
+        'eip155:196':  { token: '0x779Ded0c9e1022225f8E0630b35a9b54bE713736', rpc: CHAIN_RPCS.xlayer, symbol: 'USDT0' }, // X Layer USDT0
+      };
+      const { token, rpc, symbol } = EVM_NETWORKS[network] || EVM_NETWORKS['eip155:8453'];
       const addr = walletInfo.evm.replace('0x', '').toLowerCase().padStart(64, '0');
-      const resp = await fetch(CHAIN_RPCS.base, {
+      const resp = await fetch(rpc, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           jsonrpc: '2.0', id: 1,
           method: 'eth_call',
-          params: [{ to: USDC_BASE, data: `0x70a08231${addr}` }, 'latest'],
+          params: [{ to: token, data: `0x70a08231${addr}` }, 'latest'],
         }),
       });
       const data = await resp.json();
-      return parseInt(data.result, 16) / 1e6;
+      return { balance: parseInt(data.result, 16) / 1e6, symbol };
     }
 
     return null;

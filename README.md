@@ -3,7 +3,9 @@
 [![npm version](https://img.shields.io/npm/v/nansen-cli.svg)](https://www.npmjs.com/package/nansen-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> **Built by agents, for agents.** Command-line interface for the [Nansen API](https://docs.nansen.ai), designed for AI agents.
+> **Built by agents, for agents.** Command-line interface for the [Nansen API](https://docs.nansen.ai), designed for AI agents to research on-chain data, manage wallets, and trade through `nansen trade`.
+
+Use it for both analytics and execution: `nansen research ...` returns structured on-chain data, while `nansen trade quote` / `nansen trade execute` handle DEX swaps on Solana and Base, including cross-chain bridges.
 
 ## Installation
 
@@ -14,14 +16,20 @@ npx skills add nansen-ai/nansen-cli  # load agent skill files
 
 ## Auth
 
-```bash
-nansen login --api-key <key>   # save key to ~/.nansen/config.json
-nansen login --human           # interactive prompt
-export NANSEN_API_KEY=...      # env var (highest priority)
-nansen logout                  # remove saved key
-```
+Three options — pick whichever fits your setup:
 
-Get your API key at [app.nansen.ai/auth/agent-setup](https://app.nansen.ai/auth/agent-setup).
+1. **API key** (subscription):
+   ```bash
+   nansen login --api-key <key>   # save key to ~/.nansen/config.json
+   nansen login --human           # interactive prompt
+   export NANSEN_API_KEY=...      # env var (highest priority)
+   nansen logout                  # remove saved key
+   ```
+   Get your API key at [app.nansen.ai/auth/agent-setup](https://app.nansen.ai/auth/agent-setup).
+
+2. **x402 micropayment** (no key needed): `nansen wallet create`, fund with USDC on Base or Solana, or USDT0 on X Layer, then call any endpoint — the CLI signs `Payment-Signature` headers automatically on 402 responses. See [Wallet](#wallet).
+
+3. **MPP via tempo** (no key needed): install the [tempo CLI](https://docs.tempo.xyz) separately, run `tempo wallet login` to set up, then call the Nansen API through `tempo request`. The Nansen API selects the MPP rail when it sees `Authorization: Payment ...`. See [MPP / Tempo](#mpp--tempo) below.
 
 ## Commands
 
@@ -29,14 +37,15 @@ Get your API key at [app.nansen.ai/auth/agent-setup](https://app.nansen.ai/auth/
 nansen research <category> <subcommand> [options]
 nansen agent "<question>"             # AI research agent (200 credits, Pro)
 nansen agent "<question>" --expert    # deeper analysis (750 credits, Pro)
-nansen trade <subcommand> [options]
+nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000
+nansen trade execute --quote <quoteId>
 nansen wallet <subcommand> [options]
 nansen schema [command] [--pretty]    # full command reference (no API key needed)
 ```
 
 **Research categories:** `smart-money` (`sm`), `token` (`tgm`), `profiler` (`prof`), `portfolio` (`port`), `prediction-market` (`pm`), `search`, `perp`, `points`
 
-**Trade:** `quote`, `execute`, `bridge-status` — DEX swaps on Solana and Base, including cross-chain bridges.
+**Trade:** `quote`, `execute`, `bridge-status`, `limit-order` — DEX swaps on Solana and Base, cross-chain bridges, and Solana limit orders.
 
 **Wallet:** `create`, `list`, `show`, `export`, `default`, `delete`, `send` — local or Privy server-side wallets (EVM + Solana).
 
@@ -51,7 +60,38 @@ nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000
 nansen trade execute --quote <quoteId>
 ```
 
-Amounts are in base units (lamports, wei). Common symbols (`SOL`, `ETH`, `USDC`, `USDT`) resolve automatically. A wallet is required — set one with `nansen wallet default <name>`.
+Cross-chain swaps work the same way — add `--to-chain`. Bridge providers (Li.Fi or Relay) are selected automatically based on best price.
+
+```bash
+nansen trade quote --chain base --to-chain solana --from ETH --to SOL --amount 0.0003 --amount-unit token
+nansen trade execute --quote <quoteId>                # signed broadcast
+nansen trade execute --quote <quoteId> --gasless      # Relay-only: solver pays gas
+nansen trade bridge-status --tx-hash <hash> --from-chain base --to-chain solana
+```
+
+Amounts are in base units (lamports, wei) by default — use `--amount-unit token|usd|percent` for friendlier inputs. Common symbols (`SOL`, `ETH`, `USDC`, `USDT`) resolve automatically. A wallet is required — set one with `nansen wallet default <name>`.
+
+## Limit Orders
+
+Native price-triggered orders on **Solana**. Four subcommands:
+
+```bash
+nansen trade limit-order create \
+  --from SOL --to USDC \
+  --amount 1.5 \
+  --trigger-mint SOL --trigger-condition below --trigger-price 80 \
+  --slippage-bps 300 --expires 7d
+
+nansen trade limit-order list                    # all orders
+nansen trade limit-order list --state active     # only open
+nansen trade limit-order list --state past       # filled or cancelled
+nansen trade limit-order cancel --order <orderId>
+nansen trade limit-order update --order <orderId> --trigger-price 85
+```
+
+`--amount` is in token units (`1.5` = 1.5 SOL). `--slippage-bps` is basis points (`300` = 3%, `100` = 1%); omit for auto. Minimum order value ~$10 (server-enforced). Local, Privy, and WalletConnect wallets all work.
+
+For EVM chains, there's no native limit-order surface — pair an external venue's resting order with a `common-token-transfer` smart alert on the settlement wallet as a best-effort fill signal. See the `nansen-limit-orders` skill for details.
 
 ## Wallet
 
@@ -66,6 +106,40 @@ nansen wallet send --wallet <name> --to <addr> --amount <n> --chain <chain>
 **Local wallets** are password-encrypted. Set `NANSEN_WALLET_PASSWORD` to skip the prompt.
 
 **Privy wallets** are server-side — no password, no local key storage. Requires `PRIVY_APP_ID` and `PRIVY_APP_SECRET` env vars. Get credentials at [dashboard.privy.io](https://dashboard.privy.io).
+
+## MPP / Tempo
+
+The Nansen API supports [MPP](https://mpp.dev/protocol) (Tempo's stablecoin payment rail) as an alternative to API keys and x402. MPP is handled by the **separate** [tempo CLI](https://docs.tempo.xyz) — `nansen-cli` itself does not sign MPP credentials. You use the two CLIs side-by-side.
+
+**One-time setup:**
+
+```bash
+# 1. Install the tempo CLI
+curl -fsSL https://tempo.xyz/install | bash
+# 2. Log in + fund the tempo wallet
+tempo wallet login
+tempo wallet fund     # follow the on-screen instructions to deposit USDC
+```
+
+**Calling the Nansen API via tempo:**
+
+```bash
+tempo request POST https://api.nansen.ai/api/v1/smart-money/netflow \
+  --json '{"chains":["solana"],"pagination":{"page":1,"page_size":10}}'
+```
+
+`tempo request` handles the full `Authorization: Payment` challenge/response: on a 402 with `WWW-Authenticate: Payment ...` it signs a Tempo credential, retries, and surfaces the `Payment-Receipt` header on success.
+
+**When to use which rail:**
+
+| Situation | Rail |
+|---|---|
+| You have a subscription | API key |
+| You want anonymous pay-per-call with a Base/Solana wallet you already manage | x402 (`nansen wallet`) |
+| You hold USDT0 on X Layer and want to pay from there | x402 (`nansen wallet`) |
+| You already use tempo for other paid APIs, or want micropayments without managing your own wallet keys | MPP (`tempo request`) |
+
+> Note: MPP is server-side opt-in (`MPP_ENABLED=true` on the API). It's available on dev today and rolling out to prod — if `tempo request` returns a non-MPP 402, fall back to x402 or an API key.
 
 ## Key Options
 

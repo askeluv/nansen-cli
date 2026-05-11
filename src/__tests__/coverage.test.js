@@ -46,6 +46,7 @@ const DOCUMENTED_ENDPOINTS = {
     { name: 'perp-trades', method: 'tokenPerpTrades', endpoint: '/api/v1/tgm/perp-trades' },
     { name: 'perp-positions', method: 'tokenPerpPositions', endpoint: '/api/v1/tgm/perp-positions' },
     { name: 'perp-pnl-leaderboard', method: 'tokenPerpPnlLeaderboard', endpoint: '/api/v1/tgm/perp-pnl-leaderboard' },
+    { name: 'top-tokens', method: 'topTokens', endpoint: '/api/v1/nansen-score/top-tokens' },
   ],
   composite: [
     { name: 'batch-profile', fn: batchProfile, endpoint: 'composite' },

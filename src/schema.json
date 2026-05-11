@@ -500,6 +500,19 @@
                   "default": true
                 }
               }
+            },
+            "top-tokens": {
+              "endpoint": "/api/v1/nansen-score/top-tokens",
+              "description": "Top tokens ranked by Nansen Score (public endpoint, any authenticated API key)",
+              "options": {
+                "market-cap": {
+                  "description": "Filter by market cap group",
+                  "enum": ["lowcap", "midcap", "largecap"]
+                },
+                "limit": {
+                  "default": 25
+                }
+              }
             }
           },
           "description": "Token God Mode - deep analytics for any token"
@@ -839,7 +852,7 @@
             },
             "to-chain": {
               "type": "string",
-              "description": "Destination blockchain for cross-chain swap (solana or base). Omit for same-chain. At least one side must be USDC or a native token (ETH, SOL). Non-native to non-native is not supported — swap to USDC first, then bridge. Minimum ~$5 per cross-chain trade (Li.Fi bridge)."
+              "description": "Destination blockchain for cross-chain swap (solana or base). Omit for same-chain. At least one side must be USDC or a native token (ETH, SOL). Non-native to non-native is not supported — swap to USDC first, then bridge. Bridge providers (Li.Fi or Relay) are selected automatically based on best price. Sub-dollar swaps are supported via Relay."
             },
             "from": {
               "type": "string",
@@ -867,6 +880,10 @@
             "to-wallet": {
               "type": "string",
               "description": "Destination wallet address for cross-chain swaps. Auto-derived from wallet if omitted."
+            },
+            "aggregator": {
+              "type": "string",
+              "description": "Force a specific aggregator: lifi, relay, jupiter, or okx. Filters the returned quote list client-side; errors if no quote from that aggregator was returned."
             }
           },
           "prerequisites": [
@@ -884,11 +901,15 @@
             "wallet": {
               "type": "string",
               "description": "Wallet name, or \"walletconnect\"/\"wc\" for WalletConnect (EVM only)"
+            },
+            "gasless": {
+              "type": "boolean",
+              "description": "Relay-only: have Relay's solver pay gas + broadcast (user signs only). Requires the selected quote's aggregator to be \"relay\". Not supported via WalletConnect."
             }
           }
         },
         "bridge-status": {
-          "description": "Check cross-chain bridge transaction status",
+          "description": "Check cross-chain bridge transaction status. Aggregator (Li.Fi or Relay) is auto-detected from a local tx record saved at execute time (kept 30 days); pass --aggregator to override when polling from a different machine.",
           "options": {
             "tx-hash": {
               "type": "string",
@@ -904,6 +925,10 @@
               "type": "string",
               "required": true,
               "description": "Destination chain (solana or base)"
+            },
+            "aggregator": {
+              "type": "string",
+              "description": "lifi or relay. Overrides auto-detection — use when polling from a different machine or after the 30-day local record TTL has expired."
             }
           }
         },
@@ -926,7 +951,7 @@
                 "amount": {
                   "type": "string",
                   "required": true,
-                  "description": "Amount in base units (e.g. lamports)"
+                  "description": "Amount in token units (e.g. 1.5 = 1.5 SOL)"
                 },
                 "trigger-price": {
                   "type": "number",

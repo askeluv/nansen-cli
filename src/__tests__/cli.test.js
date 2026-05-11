@@ -116,6 +116,7 @@ describe('CLI Smoke Tests', () => {
     const { stdout } = runCLI('research token help');
     expect(stdout).toContain('screener');
     expect(stdout).toContain('ohlcv');
+    expect(stdout).toContain('top-tokens');
   });
 
   it('should route research prediction-market commands', () => {

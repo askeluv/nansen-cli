@@ -1,7 +1,7 @@
 {
   "name": "nansen-cli",
-  "version": "1.27.1",
-  "description": "Command-line interface for Nansen API - designed for AI agents",
+  "version": "1.30.1",
+  "description": "AI-agent CLI for Nansen API analytics, DEX swaps, and cross-chain trading",
   "main": "src/index.js",
   "type": "module",
   "bin": {
@@ -42,6 +42,9 @@
     "smart-money",
     "onchain",
     "defi",
+    "trading",
+    "dex",
+    "swaps",
     "solana",
     "ethereum"
   ],

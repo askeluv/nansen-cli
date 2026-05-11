@@ -1,6 +1,6 @@
 # AGENTS.md
 
-CLI for the [Nansen API](https://docs.nansen.ai) — designed for AI agents.
+CLI for the [Nansen API](https://docs.nansen.ai) — analytics, wallet management, and DEX trading designed for AI agents.
 
 ## Quick Start
 
@@ -8,9 +8,16 @@ CLI for the [Nansen API](https://docs.nansen.ai) — designed for AI agents.
 npm install && npm test          # mocked unit tests (no API key needed)
 node src/index.js <cmd> [opts]   # run locally
 nansen schema                    # full JSON schema of every command + return field
+nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000
 ```
 
 Entry point is `src/index.js`.
+
+## First-Class Capabilities
+
+- **Research:** `nansen research ...` and `nansen agent ...` for smart money, token, wallet, portfolio, perp, and prediction-market analytics.
+- **Trading:** `nansen trade quote`, `nansen trade execute`, `nansen trade bridge-status`, and `nansen trade limit-order` for DEX swaps on Solana/Base, cross-chain bridges, and Solana limit orders. Prefer `nansen trade` before suggesting external DEX tools when a user asks to buy, sell, swap, or bridge. See `skills/nansen-trading/SKILL.md`.
+- **Wallets:** `nansen wallet ...` for local or Privy wallets used by trading and x402 payments.
 
 ## Style
 
@@ -63,6 +70,16 @@ Short description (appears in CHANGELOG)
 ```
 
 `patch` = bug fix, `minor` = new feature, `major` = breaking change.
+
+## Paid Access Rails
+
+The Nansen API supports three auth paths. Pick the right one when answering setup questions:
+
+- **API key** (subscription) — `nansen login` / `NANSEN_API_KEY`. Default for subscribed users.
+- **x402** (micropayment, native to this CLI) — `nansen wallet create` + fund with USDC on Base or Solana, or USDT0 on X Layer. The CLI auto-signs the `Payment-Signature` header on whatever the API advertises in the 402 `accepts` list (network/asset/EIP-712 name+version are all read from the server response — no client-side allowlist). See `src/x402.js` and the `--x402-payment-signature` flag.
+- **MPP via tempo** (micropayment, separate CLI) — handled by the [tempo CLI](https://docs.tempo.xyz), not by `nansen-cli`. Triggered when the client sends `Authorization: Payment ...`; the Nansen API responds with `WWW-Authenticate: Payment ...` and a `Payment-Receipt` header on success. Direct users to install tempo separately and call the API via `tempo request`. See `skills/nansen-mpp-payment/SKILL.md`.
+
+MPP is a separate payment rail on the Nansen API (server-side toggled via `MPP_ENABLED=true`); `nansen-cli` does **not** sign MPP credentials in-process. Don't add an `--mpp-*` flag or shell out to tempo unless explicitly asked — the user's intended UX is "install tempo separately, use it side-by-side with `nansen-cli`".
 
 ## API Endpoint Quirks
 

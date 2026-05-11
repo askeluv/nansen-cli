@@ -694,13 +694,13 @@ export async function compareWallets(api, params = {}) {
 
 export const BANNER = '';
 
-export const HELP = `Nansen CLI v${VERSION} — designed for AI agents.
+export const HELP = `Nansen CLI v${VERSION} - analytics and DEX trading for AI agents.
 
 USAGE: nansen <command> [subcommand] [options]
 
 COMMANDS:
-  research    smart-money, profiler, token, search, perp, portfolio, points
-  trade       quote, execute
+  trade       DEX swaps/bridges: quote, execute, bridge-status, limit-order
+  research    analytics: smart-money, profiler, token, search, perp, portfolio, points
   wallet      create, list, show, export, default, delete, forget-password
   agent       Ask the Nansen AI research agent (fast/expert modes)
   alerts      list, create, update, toggle, delete
@@ -716,11 +716,19 @@ OPTIONS: --chain --limit --sort field:dir --fields a,b --days N --filters '{}'
 FORMAT:  --pretty --table --format csv --stream (NDJSON)
 RETRY:   --no-retry --retries N --cache --cache-ttl N
 
+TRADING:
+  nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000
+  nansen trade execute --quote <quoteId>
+  nansen trade bridge-status --tx-hash <hash> --from-chain base --to-chain solana
+  nansen trade limit-order create --from SOL --to USDC --amount 1.5 --trigger-mint SOL --trigger-condition below --trigger-price 80
+  Supports Solana/Base DEX swaps, cross-chain bridges, and Solana limit orders.
+
 EXAMPLES:
+  nansen trade quote --chain base --from ETH --to USDC --amount 1000000000000000000
+  nansen trade quote --chain base --to-chain solana --from USDC --to USDC --amount 1000000
   nansen research smart-money netflow --chain solana
   nansen research token screener --chain solana --timeframe 24h
   nansen research profiler balance --address 0x... --chain ethereum
-  nansen trade quote --chain base --from ETH --to USDC --amount 1000000000000000000
 
 DEPRECATED ALIASES (still work, will be removed in a future version):
   smart-money, profiler, token, search, perp, portfolio, points → use "nansen research <command>"
@@ -1277,8 +1285,13 @@ export function buildCommands(deps = {}) {
           const withLabels = resolveBooleanOption(options, flags, 'premium-labels');
           return apiInstance.tokenPerpPnlLeaderboard({ tokenSymbol, filters, orderBy, pagination, days, withLabels });
         },
+        'top-tokens': () => {
+          const marketCapGroup = options['market-cap'] || options['market-cap-group'];
+          const limit = options.limit ? parseInt(options.limit) : undefined;
+          return apiInstance.topTokens({ marketCapGroup, limit });
+        },
         'help': () => ({
-          commands: ['info', 'ohlcv', 'screener', 'holders', 'flows', 'dex-trades', 'pnl', 'who-bought-sold', 'flow-intelligence', 'transfers', 'jup-dca', 'perp-trades', 'perp-positions', 'perp-pnl-leaderboard'],
+          commands: ['info', 'ohlcv', 'screener', 'holders', 'flows', 'dex-trades', 'pnl', 'who-bought-sold', 'flow-intelligence', 'transfers', 'jup-dca', 'perp-trades', 'perp-positions', 'perp-pnl-leaderboard', 'top-tokens'],
           description: 'Token God Mode endpoints',
           example: 'nansen token screener --chain solana --timeframe 24h --smart-money --include-stablecoins false'
         })
@@ -1502,7 +1515,7 @@ EXAMPLES:
   nansen trade quote --chain base --to-chain solana --from USDC --to USDC --amount 1000000
   nansen trade execute --quote 1708900000000-abc123
   nansen trade bridge-status --tx-hash 0xabc... --from-chain base --to-chain solana
-  nansen trade limit-order create --from SOL --to USDC --amount 1000000000 --trigger-mint SOL --trigger-condition below --trigger-price 80
+  nansen trade limit-order create --from SOL --to USDC --amount 1.5 --trigger-mint SOL --trigger-condition below --trigger-price 80
   nansen trade limit-order list
 
 WALLET:
@@ -1515,12 +1528,12 @@ SYMBOLS:
 
 CROSS-CHAIN NOTES (when using --to-chain):
   Supported combos:
-    native → native (ETH <-> SOL) — requires $5+ per trade
+    native → native (ETH <-> SOL)
     USDC → USDC (both directions)
     USDC → native (USDC → ETH or SOL)
     native → USDC (ETH/SOL → USDC)
     non-native → non-native — not supported (use USDC as intermediate)
-  Bridge provider: Li.Fi
+  Bridge providers: Li.Fi or Relay (selected automatically based on best price)
   Typical bridge time: 1-5 minutes`);
       return;
     }

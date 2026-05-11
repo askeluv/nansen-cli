@@ -113,7 +113,7 @@ export function buildPaymentSignatureHeader({ signature, authorization, resource
       authorization,
     },
   };
-  return btoa(JSON.stringify(paymentPayload));
+  return Buffer.from(JSON.stringify(paymentPayload), 'utf8').toString('base64');
 }
 
 /**

@@ -1734,6 +1734,16 @@ describe('HELP', () => {
     expect(HELP).toContain('login');
     expect(HELP).toContain('logout');
   });
+
+  it('should surface trading capabilities in top-level help text', () => {
+    expect(HELP).toContain('DEX swaps/bridges');
+    expect(HELP).toContain('bridge-status');
+    expect(HELP).toContain('limit-order');
+    expect(HELP).toContain('nansen trade execute --quote <quoteId>');
+    expect(HELP).toContain('nansen trade limit-order create');
+    expect(HELP).toContain('nansen trade limit-order create --from SOL --to USDC --amount 1.5 --trigger-mint SOL --trigger-condition below --trigger-price 80');
+    expect(HELP.indexOf('trade')).toBeLessThan(HELP.indexOf('research'));
+  });
 });
 
 describe('buildCommands', () => {

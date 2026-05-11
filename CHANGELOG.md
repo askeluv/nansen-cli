@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.30.1
+
+### Patch Changes
+
+- [#411](https://github.com/nansen-ai/nansen-cli/pull/411) [`26cd863`](https://github.com/nansen-ai/nansen-cli/commit/26cd863de0604f2d50750ff6742c46772f0b661e) Thanks [@gulshngill](https://github.com/gulshngill)! - Add the `nansen-limit-orders` skill. The skill teaches agents to use the native `nansen trade limit-order create|list|cancel|update` commands for Solana price-triggered orders, and documents the alert-based settlement-signal fallback (`common-token-transfer` smart alert on the settlement wallet) for chains without native limit-order support. Builds on the `trade limit-order` command surface added by #328.
+
+- [#429](https://github.com/nansen-ai/nansen-cli/pull/429) [`511e795`](https://github.com/nansen-ai/nansen-cli/commit/511e7959d735d38e1ee44d2aa29ce19df55b9336) Thanks [@gulshngill](https://github.com/gulshngill)! - Improve discovery of `nansen trade` in package metadata, help output, install tips, and agent-facing docs.
+
+## 1.30.0
+
+### Minor Changes
+
+- [#422](https://github.com/nansen-ai/nansen-cli/pull/422) [`10da2f0`](https://github.com/nansen-ai/nansen-cli/commit/10da2f03284a501d94c433f543b9f1866005d3fc) Thanks [@gulshngill](https://github.com/gulshngill)! - Add x402 support for paying with USDT0 on X Layer alongside Base USDC and Solana SPL USDC. The CLI auto-signs the payment using whatever the API advertises in the 402 `accepts` list — no client-side allowlist, since `src/x402-evm.js` already reads `extra.name`, `extra.version`, and `asset` generically. New `NANSEN_XLAYER_RPC` env var overrides the default X Layer RPC, and `checkX402Balance()` now picks the right token + RPC based on the requirement's `network` field.
+
+### Patch Changes
+
+- [#422](https://github.com/nansen-ai/nansen-cli/pull/422) [`dc9d1c1`](https://github.com/nansen-ai/nansen-cli/commit/dc9d1c1d740128a8667e79a7a4afb3ff31ed1cc5) Thanks [@gulshngill](https://github.com/gulshngill)! - Document MPP (Tempo) as a third paid-access rail alongside API key and x402. Adds a `nansen-mpp-payment` skill, a README section explaining when to reach for the separate `tempo` CLI, and updates the no-API-key 402 error to mention tempo as a third option.
+
+- [#422](https://github.com/nansen-ai/nansen-cli/pull/422) [`93e6a6d`](https://github.com/nansen-ai/nansen-cli/commit/93e6a6d6655380d311739e5f814dda2876b0206a) Thanks [@gulshngill](https://github.com/gulshngill)! - Fix x402 low-balance warning to use the actual stablecoin symbol (USDC or USDT0) returned by `checkX402Balance()` instead of hardcoding "USDC".
+
+- [#422](https://github.com/nansen-ai/nansen-cli/pull/422) [`8f9397f`](https://github.com/nansen-ai/nansen-cli/commit/8f9397f2e1940a7a501cd450eae58a3b243b4782) Thanks [@gulshngill](https://github.com/gulshngill)! - Fix x402 payment header decoding and WalletConnect payment payload encoding to use UTF-8 instead of Latin-1. Previously the `Payment-Required` header was decoded with `atob()`, which corrupted multi-byte UTF-8 chars in fields like `extra.name = 'USD₮0'`. The corrupted name then signed the wrong EIP-712 domain and the server rejected with `invalid_exact_evm_signature`. X Layer USDT0 payments now sign correctly; Base USDC was unaffected because `'USD Coin'` is pure ASCII.
+
+## 1.29.0
+
+### Minor Changes
+
+- [#423](https://github.com/nansen-ai/nansen-cli/pull/423) [`d10aa57`](https://github.com/nansen-ai/nansen-cli/commit/d10aa575c31f7702241ad114276fa5234f2bdf59) Thanks [@imhta](https://github.com/imhta)! - Add Relay aggregator support for Base↔Solana cross-chain swaps. Users now see Relay quotes alongside Li.Fi in `nansen trade quote --to-chain ...`, can execute them through `trade execute`, and optionally use Relay's gasless path with `--gasless` (local/Privy wallets only — not WalletConnect). `trade bridge-status` auto-detects which aggregator produced a tx (via a local tx record) and polls the right backend.
+
+## 1.28.0
+
+### Minor Changes
+
+- [#417](https://github.com/nansen-ai/nansen-cli/pull/417) [`ae6079f`](https://github.com/nansen-ai/nansen-cli/commit/ae6079f12d06d11fe357237b84387fcaffcfd387) Thanks [@0xlaveen](https://github.com/0xlaveen)! - Add `trade limit-order` commands (create, list, cancel, update) for Jupiter Limit Order V2 on Solana. Supports local, Privy, and WalletConnect wallets.
+
+- [#413](https://github.com/nansen-ai/nansen-cli/pull/413) [`94bd349`](https://github.com/nansen-ai/nansen-cli/commit/94bd349bdf9a0a3f3389975144281306eea0e4ca) Thanks [@jake-kennis](https://github.com/jake-kennis)! - Add `top-tokens` subcommand to discover top-scoring tokens by Nansen Score. Calls the public endpoint (`/api/v1/nansen-score/top-tokens`) with optional `--market-cap` filter.
+
 ## 1.27.1
 
 ### Patch Changes
