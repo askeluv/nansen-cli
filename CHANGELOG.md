@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.30.2
+
+### Patch Changes
+
+- [#431](https://github.com/nansen-ai/nansen-cli/pull/431) [`c2c033b`](https://github.com/nansen-ai/nansen-cli/commit/c2c033b86f9dab59df9497ce971ef6f267ee3669) Thanks [@MarcLlopart](https://github.com/MarcLlopart)! - Pass backend quoteId in execute requests for BI correlation
+
 ## 1.30.1
 
 ### Patch Changes
