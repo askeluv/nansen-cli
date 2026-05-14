@@ -2766,6 +2766,36 @@ describe('Relay aggregator: tx record persistence', () => {
   });
 });
 
+describe('Path traversal protection', () => {
+  it('loadTxRecord rejects ../ traversal', () => {
+    expect(loadTxRecord('../../../etc/passwd')).toBe(null);
+  });
+
+  it('loadTxRecord rejects absolute paths', () => {
+    expect(loadTxRecord('/etc/passwd')).toBe(null);
+  });
+
+  it('loadTxRecord allows legitimate tx hash', () => {
+    saveTxRecord('0xlegit', { aggregator: 'relay', requestId: 'r1', fromChain: 'base', toChain: 'solana' });
+    const record = loadTxRecord('0xlegit');
+    expect(record).not.toBe(null);
+    expect(record.txHash).toBe('0xlegit');
+  });
+
+  it('saveTxRecord ignores traversal attempt', () => {
+    saveTxRecord('../../../etc/evil', { aggregator: 'relay', requestId: 'r2', fromChain: 'base', toChain: 'solana' });
+    expect(loadTxRecord('../../../etc/evil')).toBe(null);
+  });
+
+  it('loadQuote rejects ../ traversal', () => {
+    expect(() => loadQuote('../../../etc/passwd')).toThrow('not found');
+  });
+
+  it('loadQuote rejects absolute paths', () => {
+    expect(() => loadQuote('/etc/passwd')).toThrow('not found');
+  });
+});
+
 describe('Relay aggregator: EVM execute forwards requestId', () => {
   it('non-gasless EVM Relay execute omits requestId/aggregator (backend rejects them on EVM)', async () => {
     createWallet('default', 'testpass');
