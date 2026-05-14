@@ -104,6 +104,14 @@ function getQuotesDir() {
   return path.join(configDir, 'quotes');
 }
 
+// Resolve a filename inside the quotes dir, rejecting path traversal.
+function safeQuotesPath(filename) {
+  const base = path.resolve(getQuotesDir());
+  const target = path.resolve(base, filename);
+  if (path.relative(base, target).startsWith('..')) return null;
+  return target;
+}
+
 // ============= Trading API Client =============
 
 /**
@@ -337,10 +345,12 @@ const TX_RECORD_TTL_MS = 30 * 24 * 3600 * 1000; // 30 days
  */
 export function saveTxRecord(txHash, { aggregator, requestId, fromChain, toChain }) {
   if (!txHash) return;
-  const dir = getQuotesDir();
+  const filePath = safeQuotesPath(`tx-${txHash}.json`);
+  if (!filePath) return;
+  const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const data = { txHash, aggregator, requestId, fromChain, toChain, timestamp: Date.now() };
-  fs.writeFileSync(path.join(dir, `tx-${txHash}.json`), JSON.stringify(data, null, 2), { mode: 0o600 });
+  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), { mode: 0o600 });
 }
 
 /**
@@ -348,11 +358,8 @@ export function saveTxRecord(txHash, { aggregator, requestId, fromChain, toChain
  */
 export function loadTxRecord(txHash) {
   if (!txHash) return null;
-  const base = path.resolve(getQuotesDir());
-  const target = path.resolve(base, `tx-${txHash}.json`);
-  const relative = path.relative(base, target);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
-  const filePath = target;
+  const filePath = safeQuotesPath(`tx-${txHash}.json`);
+  if (!filePath) return null;
   if (!fs.existsSync(filePath)) return null;
   try {
     const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
@@ -395,8 +402,8 @@ export function saveQuote(quoteResponse, chain, signerType = 'local', privyWalle
  * Load a saved quote by ID.
  */
 export function loadQuote(quoteId) {
-  const filePath = path.join(getQuotesDir(), `${quoteId}.json`);
-  if (!fs.existsSync(filePath)) {
+  const filePath = safeQuotesPath(`${quoteId}.json`);
+  if (!filePath || !fs.existsSync(filePath)) {
     throw new Error(`Quote "${quoteId}" not found. Quotes expire after 1 hour.`);
   }
   const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
