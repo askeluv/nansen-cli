@@ -336,6 +336,22 @@ export function validateTokenAddress(tokenAddress, chain = 'solana') {
   return validateAddress(tokenAddress, chain);
 }
 
+/**
+ * Throw if address is present but invalid.
+ */
+function requireValidAddress(address, chain) {
+  const v = validateAddress(address, chain);
+  if (!v.valid) throw new NansenError(v.error, v.code);
+}
+
+/**
+ * Throw if token address is present but invalid.
+ */
+function requireValidToken(tokenAddress, chain) {
+  const v = validateTokenAddress(tokenAddress, chain);
+  if (!v.valid) throw new NansenError(v.error, v.code);
+}
+
 function loadConfig() {
   // Base config from files, then env vars override individual fields
   let config = null;
@@ -791,10 +807,7 @@ export class NansenAPI {
 
   async addressBalance(params = {}) {
     const { address, entityName, chain = 'all', hideSpamToken = true, filters = {}, orderBy } = params;
-    if (address) {
-      const validation = validateAddress(address, chain);
-      if (!validation.valid) throw new NansenError(validation.error, validation.code);
-    }
+    if (address) requireValidAddress(address, chain);
     return this.request('/api/v1/profiler/address/current-balance', {
       address,
       entity_name: entityName,
@@ -807,10 +820,7 @@ export class NansenAPI {
 
   async addressLabels(params = {}) {
     const { address, chain = 'ethereum', pagination = { page: 1, per_page: 100 } } = params;
-    if (address) {
-      const validation = validateAddress(address, chain);
-      if (!validation.valid) throw new NansenError(validation.error, validation.code);
-    }
+    if (address) requireValidAddress(address, chain);
     return this.request('/api/beta/profiler/address/labels', {
       parameters: { address, chain },
       pagination
@@ -819,10 +829,7 @@ export class NansenAPI {
 
   async addressTransactions(params = {}) {
     const { address, chain = 'ethereum', filters = {}, orderBy, pagination, days = 30, date } = params;
-    if (address) {
-      const validation = validateAddress(address, chain);
-      if (!validation.valid) throw new NansenError(validation.error, validation.code);
-    }
+    if (address) requireValidAddress(address, chain);
     const dateRange = date || buildDateRange(days);
     return this.request('/api/v1/profiler/address/transactions', {
       address,
@@ -836,10 +843,7 @@ export class NansenAPI {
 
   async addressPnl(params = {}) {
     const { address, chain = 'ethereum', date, days = 30, filters = {}, orderBy, pagination } = params;
-    if (address) {
-      const validation = validateAddress(address, chain);
-      if (!validation.valid) throw new NansenError(validation.error, validation.code);
-    }
+    if (address) requireValidAddress(address, chain);
     const dateRange = date || buildDateRange(days);
     return this.request('/api/v1/profiler/address/pnl', {
       address,
@@ -899,10 +903,7 @@ export class NansenAPI {
 
   async addressHistoricalBalances(params = {}) {
     const { address, chain = 'ethereum', filters = {}, orderBy, pagination, days = 30 } = params;
-    if (address) {
-      const validation = validateAddress(address, chain);
-      if (!validation.valid) throw new NansenError(validation.error, validation.code);
-    }
+    if (address) requireValidAddress(address, chain);
     return this.request('/api/v1/profiler/address/historical-balances', {
       address,
       chain,
@@ -915,10 +916,7 @@ export class NansenAPI {
 
   async addressRelatedWallets(params = {}) {
     const { address, chain = 'ethereum', orderBy, pagination } = params;
-    if (address) {
-      const validation = validateAddress(address, chain);
-      if (!validation.valid) throw new NansenError(validation.error, validation.code);
-    }
+    if (address) requireValidAddress(address, chain);
     return this.request('/api/v1/profiler/address/related-wallets', {
       address,
       chain,
@@ -929,10 +927,7 @@ export class NansenAPI {
 
   async addressCounterparties(params = {}) {
     const { address, chain = 'ethereum', filters = {}, orderBy, pagination, days = 30 } = params;
-    if (address) {
-      const validation = validateAddress(address, chain);
-      if (!validation.valid) throw new NansenError(validation.error, validation.code);
-    }
+    if (address) requireValidAddress(address, chain);
     return this.request('/api/v1/profiler/address/counterparties', {
       address,
       chain,
@@ -947,10 +942,7 @@ export class NansenAPI {
     // Note: pnl-summary endpoint is non-paginated (returns aggregate stats, not a list).
     // Pagination param intentionally omitted from this request.
     const { address, chain = 'ethereum', orderBy, days = 30 } = params;
-    if (address) {
-      const validation = validateAddress(address, chain);
-      if (!validation.valid) throw new NansenError(validation.error, validation.code);
-    }
+    if (address) requireValidAddress(address, chain);
     return this.request('/api/v1/profiler/address/pnl-summary', {
       address,
       chain,
@@ -996,10 +988,7 @@ export class NansenAPI {
 
   async tokenHolders(params = {}) {
     const { tokenAddress, chain = 'solana', labelType = 'all_holders', filters = {}, orderBy, pagination, withLabels } = params;
-    if (tokenAddress) {
-      const validation = validateTokenAddress(tokenAddress, chain);
-      if (!validation.valid) throw new NansenError(validation.error, validation.code);
-    }
+    if (tokenAddress) requireValidToken(tokenAddress, chain);
     const body = {
       token_address: tokenAddress,
       chain,
@@ -1014,10 +1003,7 @@ export class NansenAPI {
 
   async tokenFlows(params = {}) {
     const { tokenAddress, chain = 'solana', label, filters = {}, orderBy, pagination, days = 30, date } = params;
-    if (tokenAddress) {
-      const validation = validateTokenAddress(tokenAddress, chain);
-      if (!validation.valid) throw new NansenError(validation.error, validation.code);
-    }
+    if (tokenAddress) requireValidToken(tokenAddress, chain);
     const dateRange = date || buildDateRange(days);
     return this.request('/api/v1/tgm/flows', {
       token_address: tokenAddress,
@@ -1032,10 +1018,7 @@ export class NansenAPI {
 
   async tokenDexTrades(params = {}) {
     const { tokenAddress, chain = 'solana', onlySmartMoney = false, filters = {}, orderBy, pagination, days = 7 } = params;
-    if (tokenAddress) {
-      const validation = validateTokenAddress(tokenAddress, chain);
-      if (!validation.valid) throw new NansenError(validation.error, validation.code);
-    }
+    if (tokenAddress) requireValidToken(tokenAddress, chain);
     // Apply smart money filter via filters object
     if (onlySmartMoney) {
       filters.include_smart_money_labels = filters.include_smart_money_labels || 
@@ -1054,10 +1037,7 @@ export class NansenAPI {
 
   async tokenPnlLeaderboard(params = {}) {
     const { tokenAddress, chain = 'solana', filters = {}, orderBy, pagination, days = 30, withLabels } = params;
-    if (tokenAddress) {
-      const validation = validateTokenAddress(tokenAddress, chain);
-      if (!validation.valid) throw new NansenError(validation.error, validation.code);
-    }
+    if (tokenAddress) requireValidToken(tokenAddress, chain);
     const body = {
       token_address: tokenAddress,
       chain,
@@ -1072,10 +1052,7 @@ export class NansenAPI {
 
   async tokenWhoBoughtSold(params = {}) {
     const { tokenAddress, chain = 'solana', buyOrSell = 'BUY', filters = {}, orderBy, pagination, days = 30, date } = params;
-    if (tokenAddress) {
-      const validation = validateTokenAddress(tokenAddress, chain);
-      if (!validation.valid) throw new NansenError(validation.error, validation.code);
-    }
+    if (tokenAddress) requireValidToken(tokenAddress, chain);
     const dateRange = date || buildDateRange(days);
     return this.request('/api/v1/tgm/who-bought-sold', {
       token_address: tokenAddress,
@@ -1090,10 +1067,7 @@ export class NansenAPI {
 
   async tokenFlowIntelligence(params = {}) {
     const { tokenAddress, chain = 'solana', timeframe = '1d' } = params;
-    if (tokenAddress) {
-      const validation = validateTokenAddress(tokenAddress, chain);
-      if (!validation.valid) throw new NansenError(validation.error, validation.code);
-    }
+    if (tokenAddress) requireValidToken(tokenAddress, chain);
     return this.request('/api/v1/tgm/flow-intelligence', {
       token_address: tokenAddress,
       chain,
@@ -1103,10 +1077,7 @@ export class NansenAPI {
 
   async tokenTransfers(params = {}) {
     const { tokenAddress, chain = 'solana', filters = {}, orderBy, pagination, days = 7 } = params;
-    if (tokenAddress) {
-      const validation = validateTokenAddress(tokenAddress, chain);
-      if (!validation.valid) throw new NansenError(validation.error, validation.code);
-    }
+    if (tokenAddress) requireValidToken(tokenAddress, chain);
     return this.request('/api/v1/tgm/transfers', {
       token_address: tokenAddress,
       chain,
@@ -1120,10 +1091,7 @@ export class NansenAPI {
   async tokenJupDca(params = {}) {
     const { tokenAddress, filters = {}, orderBy, pagination } = params;
     // JUP DCA is Solana-only
-    if (tokenAddress) {
-      const validation = validateTokenAddress(tokenAddress, 'solana');
-      if (!validation.valid) throw new NansenError(validation.error, validation.code);
-    }
+    if (tokenAddress) requireValidToken(tokenAddress, 'solana');
     return this.request('/api/v1/tgm/jup-dca', {
       token_address: tokenAddress,
       filters,
@@ -1168,10 +1136,7 @@ export class NansenAPI {
 
   async tokenIndicators(params = {}) {
     const { tokenAddress, chain = 'ethereum' } = params;
-    if (tokenAddress) {
-      const validation = validateTokenAddress(tokenAddress, chain);
-      if (!validation.valid) throw new NansenError(validation.error, validation.code);
-    }
+    if (tokenAddress) requireValidToken(tokenAddress, chain);
     return this.request('/api/v1/tgm/indicators', {
       token_address: tokenAddress,
       chain
@@ -1180,10 +1145,7 @@ export class NansenAPI {
 
   async tokenOhlcv(params = {}) {
     const { tokenAddress, chain = 'solana', timeframe } = params;
-    if (tokenAddress) {
-      const validation = validateTokenAddress(tokenAddress, chain);
-      if (!validation.valid) throw new NansenError(validation.error, validation.code);
-    }
+    if (tokenAddress) requireValidToken(tokenAddress, chain);
     return this.request('/api/v1/tgm/token-ohlcv', {
       token_address: tokenAddress,
       chain,
@@ -1193,10 +1155,7 @@ export class NansenAPI {
 
   async tokenInformation(params = {}) {
     const { tokenAddress, chain = 'solana', timeframe = '1d' } = params;
-    if (tokenAddress) {
-      const validation = validateTokenAddress(tokenAddress, chain);
-      if (!validation.valid) throw new NansenError(validation.error, validation.code);
-    }
+    if (tokenAddress) requireValidToken(tokenAddress, chain);
     return this.request('/api/v1/tgm/token-information', {
       token_address: tokenAddress,
       chain,
@@ -1279,8 +1238,7 @@ export class NansenAPI {
   async pmTradesByAddress(params = {}) {
     const { address, orderBy, pagination } = params;
     // Polymarket runs exclusively on Polygon
-    const validation = validateAddress(address, 'polygon');
-    if (!validation.valid) throw new NansenError(validation.error, validation.code);
+    requireValidAddress(address, 'polygon');
     return this.request('/api/v1/prediction-market/trades-by-address', {
       address,
       order_by: orderBy,
@@ -1351,8 +1309,7 @@ export class NansenAPI {
   async pmPnlByAddress(params = {}) {
     const { address, orderBy, pagination } = params;
     // Polymarket runs exclusively on Polygon
-    const validation = validateAddress(address, 'polygon');
-    if (!validation.valid) throw new NansenError(validation.error, validation.code);
+    requireValidAddress(address, 'polygon');
     return this.request('/api/v1/prediction-market/pnl-by-address', {
       address,
       order_by: orderBy,
