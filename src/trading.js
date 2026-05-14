@@ -2006,6 +2006,11 @@ EXAMPLES:
               chain,
               simulate: !noSimulate && !gasless,
             };
+
+            // Include backend quoteId if available for better BI tracking
+            if (currentQuote.metadata?.quoteId) {
+              execParams.quoteId = currentQuote.metadata.quoteId;
+            }
             // The backend's /execute schema is strict; sending fields it doesn't expect
             // for the (chain × aggregator × gasless) combination causes 502s or
             // "Unrecognized keys" rejections. The matrix we've validated against the
