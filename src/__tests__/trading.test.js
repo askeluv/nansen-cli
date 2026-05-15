@@ -2539,6 +2539,7 @@ describe('Relay aggregator: --gasless flag dispatch', () => {
 
     const quoteId = saveQuote({
       success: true,
+      metadata: { quoteId: 'backend-relay-quote-id' },
       quotes: [{
         aggregator: 'relay',
         inputMint: '11111111111111111111111111111111',
@@ -2567,6 +2568,7 @@ describe('Relay aggregator: --gasless flag dispatch', () => {
     expect(body.requestId).toBe('relay-req-gas');
     expect(body.steps).toEqual([{ kind: 'transaction', items: [{ data: 'opaque-step-blob' }] }]);
     expect(body.simulate).toBe(false); // gasless skips simulation
+    expect(body.quoteId).toBe('backend-relay-quote-id');
 
     delete process.env.NANSEN_WALLET_PASSWORD;
     vi.unstubAllGlobals();
@@ -2833,6 +2835,7 @@ describe('Relay aggregator: EVM execute forwards requestId', () => {
 
     const quoteId = saveQuote({
       success: true,
+      metadata: { quoteId: 'backend-relay-quote-id' },
       quotes: [{
         aggregator: 'relay',
         inputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', // USDC
@@ -2855,6 +2858,7 @@ describe('Relay aggregator: EVM execute forwards requestId', () => {
     expect(executeBodies[0].requestId).toBeUndefined();
     expect(executeBodies[0].aggregator).toBeUndefined();
     expect(executeBodies[0].gasless).toBeUndefined();
+    expect(executeBodies[0].quoteId).toBe('backend-relay-quote-id');
 
     delete process.env.NANSEN_WALLET_PASSWORD;
     vi.unstubAllGlobals();
@@ -3068,13 +3072,14 @@ describe('Relay aggregator: Solana non-gasless omits requestId', () => {
 
     const quoteId = saveQuote({
       success: true,
+      metadata: { quoteId: 'backend-jupiter-quote-id' },
       quotes: [{
         aggregator: 'jupiter',
         inputMint: 'So11111111111111111111111111111111111111112',
         outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
         inAmount: '1000000000', outAmount: '50000000',
         transaction: txBase64,
-        metadata: { requestId: 'jupiter-ultra-req' },
+        metadata: { requestId: 'jupiter-ultra-req', quoteId: 'aggregator-jupiter-quote-id' },
       }],
     }, 'solana');
 
@@ -3084,6 +3089,51 @@ describe('Relay aggregator: Solana non-gasless omits requestId', () => {
     expect(executeBodies.length).toBeGreaterThanOrEqual(1);
     expect(executeBodies[0].requestId).toBe('jupiter-ultra-req'); // Jupiter Ultra still needs it
     expect(executeBodies[0].aggregator).toBeUndefined();
+    expect(executeBodies[0].quoteId).toBe('backend-jupiter-quote-id');
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+    vi.unstubAllGlobals();
+  });
+
+  it('falls back to aggregator metadata quoteId when saved response metadata is missing', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const executeBodies = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
+        executeBodies.push(JSON.parse(opts.body));
+        return Promise.resolve({
+          ok: true,
+          text: () => Promise.resolve(JSON.stringify({ status: 'Success', signature: 'SolSig', chainType: 'solana', broadcaster: 'jupiter' })),
+        });
+      }
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: 1, result: null })) });
+    }));
+
+    const sigCount = Buffer.from([0x01]);
+    const emptySig = Buffer.alloc(64);
+    const message = Buffer.from([0x01, 0x00, 0x01, 0x02, ...Buffer.alloc(32), ...Buffer.alloc(32), ...Buffer.alloc(32), 0x01, 0x01, 0x01, 0x00, 0x04, 0x02, 0x00, 0x00, 0x00]);
+    const txBase64 = Buffer.concat([sigCount, emptySig, message]).toString('base64');
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'jupiter',
+        inputMint: 'So11111111111111111111111111111111111111112',
+        outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+        inAmount: '1000000000', outAmount: '50000000',
+        transaction: txBase64,
+        metadata: { requestId: 'jupiter-ultra-req', quoteId: 'aggregator-jupiter-quote-id' },
+      }],
+    }, 'solana');
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    try { await cmds.execute([], null, {}, { quote: quoteId }); } catch { /* ok */ }
+
+    expect(executeBodies.length).toBeGreaterThanOrEqual(1);
+    expect(executeBodies[0].quoteId).toBe('aggregator-jupiter-quote-id');
 
     delete process.env.NANSEN_WALLET_PASSWORD;
     vi.unstubAllGlobals();
