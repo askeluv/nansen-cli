@@ -1363,6 +1363,149 @@ export class NansenAPI {
     });
   }
 
+  // ============= Research (Historical) Endpoints =============
+  // Historical/point-in-time analytics: labels and metrics are resolved at the
+  // requested date rather than current state. Useful for backtesting and historical
+  // research. Some endpoints use a { from, to } date range; others use a single
+  // as_of_date snapshot; the token-screener uses timeframe_days + optional to_date.
+
+  async researchDexTrades(params = {}) {
+    const { tokenAddress, chain = 'solana', fromDate, toDate, filters = {}, orderBy, pagination } = params;
+    if (tokenAddress) requireValidToken(tokenAddress, chain);
+    return this.request('/api/v1beta1/tgm/historical-dex-trades', {
+      token_address: tokenAddress,
+      chain,
+      date_range: { from: fromDate, to: toDate },
+      filters,
+      order_by: orderBy,
+      pagination,
+    });
+  }
+
+  async researchPnlLeaderboard(params = {}) {
+    const { tokenAddress, chain = 'solana', fromDate, toDate, filters = {}, orderBy, pagination } = params;
+    if (tokenAddress) requireValidToken(tokenAddress, chain);
+    return this.request('/api/v1beta1/tgm/historical-pnl-leaderboard', {
+      token_address: tokenAddress,
+      chain,
+      date_range: { from: fromDate, to: toDate },
+      filters,
+      order_by: orderBy,
+      pagination,
+    });
+  }
+
+  async researchTokenFlowSummary(params = {}) {
+    // API does not support pagination on this endpoint.
+    const { tokenAddress, chain = 'solana', fromDate, toDate, filters = {}, orderBy } = params;
+    if (tokenAddress) requireValidToken(tokenAddress, chain);
+    return this.request('/api/v1beta1/tgm/historical-token-flow-summary', {
+      token_address: tokenAddress,
+      chain,
+      date_range: { from: fromDate, to: toDate },
+      filters,
+      order_by: orderBy,
+    });
+  }
+
+  async researchTokenQuantScores(params = {}) {
+    const { tokenAddress, chain = 'solana', asOfDate, filters = {}, orderBy, pagination } = params;
+    if (tokenAddress) requireValidToken(tokenAddress, chain);
+    return this.request('/api/v1beta1/tgm/historical-token-quant-scores', {
+      token_address: tokenAddress,
+      chain,
+      as_of_date: asOfDate,
+      filters,
+      order_by: orderBy,
+      pagination,
+    });
+  }
+
+  async researchTopHolders(params = {}) {
+    const { tokenAddress, chain = 'solana', asOfDate, filters = {}, orderBy, pagination } = params;
+    if (tokenAddress) requireValidToken(tokenAddress, chain);
+    return this.request('/api/v1beta1/tgm/historical-top-holders', {
+      token_address: tokenAddress,
+      chain,
+      as_of_date: asOfDate,
+      filters,
+      order_by: orderBy,
+      pagination,
+    });
+  }
+
+  async researchWhoBoughtSold(params = {}) {
+    const { tokenAddress, chain = 'solana', fromDate, toDate, buyOrSell = 'BUY', filters = {}, orderBy, pagination } = params;
+    if (tokenAddress) requireValidToken(tokenAddress, chain);
+    return this.request('/api/v1beta1/tgm/historical-who-bought-sold', {
+      token_address: tokenAddress,
+      chain,
+      buy_or_sell: buyOrSell,
+      date_range: { from: fromDate, to: toDate },
+      filters,
+      order_by: orderBy,
+      pagination,
+    });
+  }
+
+  async researchSmartMoneyBalances(params = {}) {
+    // API does not support order_by on this endpoint.
+    const { chains = ['solana'], asOfDate, filters = {}, pagination } = params;
+    return this.request('/api/v1beta1/smart-money/historical-token-balances', {
+      chains,
+      as_of_date: asOfDate,
+      filters,
+      pagination,
+    });
+  }
+
+  async researchTokenScreener(params = {}) {
+    const { chains = ['solana'], timeframeDays, toDate, filters = {}, orderBy, pagination } = params;
+    return this.request('/api/v1beta1/token-screener/historical', {
+      chains,
+      timeframe_days: timeframeDays,
+      to_date: toDate,
+      filters,
+      order_by: orderBy,
+      pagination,
+    });
+  }
+
+  async researchWalletBalances(params = {}) {
+    const { address, chain = 'ethereum', asOfDate, filters = {}, orderBy, pagination } = params;
+    if (address) requireValidAddress(address, chain);
+    return this.request('/api/v1beta1/profiler/address/historical-token-balances', {
+      address,
+      chain,
+      as_of_date: asOfDate,
+      filters,
+      order_by: orderBy,
+      pagination,
+    });
+  }
+
+  async researchTxLookup(params = {}) {
+    const { txHash, chain = 'ethereum', asOfDate } = params;
+    return this.request('/api/v1beta1/profiler/historical-transaction-lookup', {
+      transaction_hash: txHash,
+      chain,
+      as_of_date: asOfDate,
+    });
+  }
+
+  async researchWalletTransactions(params = {}) {
+    const { address, chain = 'ethereum', asOfDate, filters = {}, orderBy, pagination } = params;
+    if (address) requireValidAddress(address, chain);
+    return this.request('/api/v1beta1/profiler/address/historical-transactions', {
+      address,
+      chain,
+      as_of_date: asOfDate,
+      filters,
+      order_by: orderBy,
+      pagination,
+    });
+  }
+
   // ============= Smart Alert Endpoints =============
 
   async alertsList(params = {}) {

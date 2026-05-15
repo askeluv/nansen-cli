@@ -9,6 +9,7 @@ import { buildTradingCommands } from './trading.js';
 import { buildLimitOrderCommands } from './limit-order.js';
 import { formatAlertsTable, buildAlertsCommands } from './commands/alerts.js';
 import { buildAgentCommands } from './commands/agent.js';
+import { buildResearchCommands, RESEARCH_HISTORICAL_SUBCOMMANDS } from './commands/research.js';
 import { resolveAddress, isEnsName } from './ens.js';
 import fs from 'fs';
 import { getUpdateNotification, getUpgradeNotice, scheduleUpdateCheck } from './update-check.js';
@@ -1471,19 +1472,25 @@ export function buildCommands(deps = {}) {
   // 'research' delegates to the category handlers defined above
   const RESEARCH_CATEGORIES = new Set(['smart-money', 'profiler', 'token', 'search', 'perp', 'portfolio', 'points', 'prediction-market']);
 
+  const researchHistorical = buildResearchCommands(deps).research;
+
   cmds['research'] = async (args, apiInstance, flags, options) => {
     const rawCategory = args[0];
     if (!rawCategory || rawCategory === 'help') {
       return {
         categories: [...RESEARCH_CATEGORIES],
+        historical: [...RESEARCH_HISTORICAL_SUBCOMMANDS],
         aliases: RESEARCH_CATEGORY_ALIASES,
         description: 'Research and analytics commands',
         example: 'nansen research smart-money netflow --chain solana'
       };
     }
+    if (RESEARCH_HISTORICAL_SUBCOMMANDS.has(rawCategory)) {
+      return researchHistorical(args, apiInstance, flags, options);
+    }
     const category = RESEARCH_CATEGORY_ALIASES[rawCategory] || rawCategory;
     if (!RESEARCH_CATEGORIES.has(category)) {
-      throw new NansenError(`Unknown research category: ${rawCategory}. Available: ${[...RESEARCH_CATEGORIES].join(', ')}`, ErrorCode.UNKNOWN);
+      throw new NansenError(`Unknown research category: ${rawCategory}. Available: ${[...RESEARCH_CATEGORIES, ...RESEARCH_HISTORICAL_SUBCOMMANDS].join(', ')}`, ErrorCode.UNKNOWN);
     }
     return cmds[category](args.slice(1), apiInstance, flags, options);
   };
@@ -1712,6 +1719,19 @@ export async function runCLI(rawArgs, deps = {}) {
           if (catSchema.subcommands) {
             lines.push('Subcommands: ' + Object.keys(catSchema.subcommands).join(', '));
             lines.push(`Use: nansen research ${category} <subcommand> --help`);
+          } else if (catSchema.options) {
+            // Leaf historical subcommand: render options + example
+            const params = Object.entries(catSchema.options).map(([name, opt]) => {
+              const parts = [`--${name}`];
+              if (opt.required) parts[0] += '*';
+              if (opt.default !== undefined) parts.push(`(${opt.default})`);
+              return parts.join(' ');
+            });
+            lines.push(`Params (* required): ${params.join(', ')}`);
+            if (catSchema.endpoint) {
+              const cost = getCostForEndpoint(catSchema.endpoint);
+              if (cost) lines.push(`Cost: ${cost.free} credit${cost.free === 1 ? '' : 's'} (Free tier) / ${cost.pro} credit${cost.pro === 1 ? '' : 's'} (Pro tier)`);
+            }
           }
           output(lines.join('\n'));
           notify();
