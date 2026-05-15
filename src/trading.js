@@ -159,6 +159,7 @@ export async function getQuote(params) {
  * @param {object} params
  * @param {string} params.signedTransaction - Base64 (Solana) or 0x hex (EVM)
  * @param {string} [params.chain] - Target chain name
+ * @param {string} [params.quoteId] - Backend quote ID for BI correlation
  * @param {string} [params.requestId] - Optional Jupiter request ID (Solana only)
  * @param {boolean} [params.simulate] - Run pre-broadcast simulation
  * @returns {Promise<object>} Execution result
@@ -2018,16 +2019,19 @@ EXAMPLES:
               simulate: !noSimulate && !gasless,
             };
 
-            // Include backend quoteId if available for better BI tracking
-            if (currentQuote.metadata?.quoteId) {
-              execParams.quoteId = currentQuote.metadata.quoteId;
+            // Prefer the backend quote id saved from /quote; per-aggregator ids can
+            // appear on individual quote metadata and are only a fallback.
+            const backendQuoteId =
+              quoteData.response?.metadata?.quoteId ?? currentQuote.metadata?.quoteId;
+            if (backendQuoteId) {
+              execParams.quoteId = backendQuoteId;
             }
             // The backend's /execute schema is strict; sending fields it doesn't expect
             // for the (chain × aggregator × gasless) combination causes 502s or
             // "Unrecognized keys" rejections. The matrix we've validated against the
             // live backend:
-            //   - EVM signed (any aggregator): no extra fields. requestId/aggregator
-            //     trigger schema errors.
+            //   - EVM signed (any aggregator): no aggregator/requestId fields.
+            //     Those trigger schema errors.
             //   - Solana signed (Jupiter/OKX): include requestId for Jupiter Ultra
             //     intent resolution.
             //   - Solana signed (Relay): omit requestId — backend tries to look it up
