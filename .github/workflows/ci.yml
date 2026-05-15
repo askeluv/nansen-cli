@@ -90,6 +90,8 @@ jobs:
   sync-clawhub:
     needs: publish
     if: needs.publish.outputs.published == 'true'
+    permissions:
+      contents: read
     uses: ./.github/workflows/sync-clawhub.yml
     secrets:
       CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}

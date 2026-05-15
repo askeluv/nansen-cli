@@ -1,7 +1,10 @@
 name: Sync Skills to ClawHub
 
 on:
-  workflow_call: # called from ci.yml publish job after successful npm publish
+  workflow_call:
+    secrets:
+      CLAWHUB_TOKEN:
+        required: true
   workflow_dispatch: # manual trigger if ever needed
 
 jobs:
