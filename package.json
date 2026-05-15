@@ -66,6 +66,7 @@
     "@changesets/cli": "^2.29.4",
     "@eslint/js": "^10.0.1",
     "@vitest/coverage-v8": "^4.0.18",
+    "clawhub": "^0.9.0",
     "eslint": "^10.0.2",
     "globals": "^17.4.0",
     "vitest": "^4.0.18"
