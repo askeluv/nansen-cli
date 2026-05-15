@@ -697,6 +697,110 @@
               "description": "Points leaderboard"
             }
           }
+        },
+        "historical-dex-trades": {
+          "endpoint": "/api/v1beta1/tgm/historical-dex-trades",
+          "description": "Historical DEX trades for a token at a point in time",
+          "options": {
+            "token-address": { "required": true, "description": "Token address" },
+            "from-date": { "required": true, "description": "Start of date range (YYYY-MM-DD)" },
+            "to-date": { "required": true, "description": "End of date range (YYYY-MM-DD)" },
+            "chain": { "default": "solana", "description": "Chain" }
+          }
+        },
+        "historical-pnl-leaderboard": {
+          "endpoint": "/api/v1beta1/tgm/historical-pnl-leaderboard",
+          "description": "Historical PnL leaderboard for a token",
+          "options": {
+            "token-address": { "required": true, "description": "Token address" },
+            "from-date": { "required": true, "description": "Start of date range (YYYY-MM-DD)" },
+            "to-date": { "required": true, "description": "End of date range (YYYY-MM-DD)" },
+            "chain": { "default": "solana", "description": "Chain" }
+          }
+        },
+        "historical-token-flow-summary": {
+          "endpoint": "/api/v1beta1/tgm/historical-token-flow-summary",
+          "description": "Historical token flow summary (no pagination)",
+          "options": {
+            "token-address": { "required": true, "description": "Token address" },
+            "from-date": { "required": true, "description": "Start of date range (YYYY-MM-DD)" },
+            "to-date": { "required": true, "description": "End of date range (YYYY-MM-DD)" },
+            "chain": { "default": "solana", "description": "Chain" }
+          }
+        },
+        "historical-token-quant-scores": {
+          "endpoint": "/api/v1beta1/tgm/historical-token-quant-scores",
+          "description": "Historical token quantitative scores at a snapshot date",
+          "options": {
+            "token-address": { "required": true, "description": "Token address" },
+            "as-of-date": { "required": true, "description": "Snapshot date (YYYY-MM-DD)" },
+            "chain": { "default": "solana", "description": "Chain" }
+          }
+        },
+        "historical-top-holders": {
+          "endpoint": "/api/v1beta1/tgm/historical-top-holders",
+          "description": "Historical top holders of a token at a snapshot date",
+          "options": {
+            "token-address": { "required": true, "description": "Token address" },
+            "as-of-date": { "required": true, "description": "Snapshot date (YYYY-MM-DD)" },
+            "chain": { "default": "solana", "description": "Chain" }
+          }
+        },
+        "historical-who-bought-sold": {
+          "endpoint": "/api/v1beta1/tgm/historical-who-bought-sold",
+          "description": "Historical buyers/sellers of a token",
+          "options": {
+            "token-address": { "required": true, "description": "Token address" },
+            "from-date": { "required": true, "description": "Start of date range (YYYY-MM-DD)" },
+            "to-date": { "required": true, "description": "End of date range (YYYY-MM-DD)" },
+            "buy-or-sell": { "default": "BUY", "description": "BUY or SELL" },
+            "chain": { "default": "solana", "description": "Chain" }
+          }
+        },
+        "historical-smart-money-balances": {
+          "endpoint": "/api/v1beta1/smart-money/historical-token-balances",
+          "description": "Historical smart money token balances at a snapshot date (no order_by)",
+          "options": {
+            "as-of-date": { "required": true, "description": "Snapshot date (YYYY-MM-DD)" },
+            "chains": { "default": "solana", "description": "Comma-separated chains" }
+          }
+        },
+        "historical-token-screener": {
+          "endpoint": "/api/v1beta1/token-screener/historical",
+          "description": "Historical token screener over a trailing window",
+          "options": {
+            "timeframe-days": { "required": true, "type": "number", "description": "Trailing window size in days" },
+            "to-date": { "description": "Optional end date for the window (YYYY-MM-DD)" },
+            "chains": { "default": "solana", "description": "Comma-separated chains" }
+          }
+        },
+        "historical-wallet-balances": {
+          "endpoint": "/api/v1beta1/profiler/address/historical-token-balances",
+          "description": "Historical token balances for a wallet at a snapshot date",
+          "options": {
+            "address": { "required": true, "description": "Wallet address" },
+            "as-of-date": { "required": true, "description": "Snapshot date (YYYY-MM-DD)" },
+            "chain": { "default": "ethereum", "description": "Chain" }
+          }
+        },
+        "historical-tx-lookup": {
+          "endpoint": "/api/v1beta1/profiler/historical-transaction-lookup",
+          "description": "Lookup a historical transaction by hash",
+          "options": {
+            "transaction-hash": { "required": true, "description": "Transaction hash (0x-prefixed, 66 chars)" },
+            "as-of-date": { "required": true, "description": "Reference date for label and pricing resolution (YYYY-MM-DD)" },
+            "block-timestamp": { "description": "Block timestamp (YYYY-MM-DD HH:MM:SS) — skips slow hash-resolution step if provided" },
+            "chain": { "default": "ethereum", "description": "Chain (ethereum, bnb, base)" }
+          }
+        },
+        "historical-wallet-transactions": {
+          "endpoint": "/api/v1beta1/profiler/address/historical-transactions",
+          "description": "Historical transactions for a wallet at a snapshot date",
+          "options": {
+            "address": { "required": true, "description": "Wallet address" },
+            "as-of-date": { "required": true, "description": "Snapshot date (YYYY-MM-DD)" },
+            "chain": { "default": "ethereum", "description": "Chain" }
+          }
         }
       }
     },
