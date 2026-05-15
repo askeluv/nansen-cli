@@ -145,7 +145,9 @@ USAGE:
   'historical-tx-lookup': `nansen research historical-tx-lookup — Lookup a historical transaction by hash
 
 USAGE:
-  nansen research historical-tx-lookup --transaction-hash <hash> --as-of-date <YYYY-MM-DD> [--chain <chain>]`,
+  nansen research historical-tx-lookup --transaction-hash <hash> --as-of-date <YYYY-MM-DD> [--chain <chain>] [--block-timestamp "YYYY-MM-DD HH:MM:SS"]
+
+NOTE: Providing --block-timestamp skips a slow hash-resolution step and returns results much faster.`,
   'historical-wallet-transactions': `nansen research historical-wallet-transactions — Historical transactions for a wallet
 
 USAGE:
@@ -277,6 +279,7 @@ export function buildResearchCommands(deps = {}) {
           txHash: options['transaction-hash'],
           chain: options.chain,
           asOfDate,
+          blockTimestamp: options['block-timestamp'],
         });
       }
 

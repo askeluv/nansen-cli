@@ -787,10 +787,10 @@
           "endpoint": "/api/v1beta1/profiler/historical-transaction-lookup",
           "description": "Lookup a historical transaction by hash",
           "options": {
-            "tx-hash": { "required": true, "description": "Transaction hash" },
-            "from-date": { "required": true, "description": "Start of date range (YYYY-MM-DD)" },
-            "to-date": { "required": true, "description": "End of date range (YYYY-MM-DD)" },
-            "chain": { "default": "ethereum", "description": "Chain" }
+            "transaction-hash": { "required": true, "description": "Transaction hash (0x-prefixed, 66 chars)" },
+            "as-of-date": { "required": true, "description": "Reference date for label and pricing resolution (YYYY-MM-DD)" },
+            "block-timestamp": { "description": "Block timestamp (YYYY-MM-DD HH:MM:SS) — skips slow hash-resolution step if provided" },
+            "chain": { "default": "ethereum", "description": "Chain (ethereum, bnb, base)" }
           }
         },
         "historical-wallet-transactions": {

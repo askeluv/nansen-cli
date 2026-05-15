@@ -1485,12 +1485,14 @@ export class NansenAPI {
   }
 
   async researchTxLookup(params = {}) {
-    const { txHash, chain = 'ethereum', asOfDate } = params;
-    return this.request('/api/v1beta1/profiler/historical-transaction-lookup', {
+    const { txHash, chain = 'ethereum', asOfDate, blockTimestamp } = params;
+    const body = {
       transaction_hash: txHash,
       chain,
       as_of_date: asOfDate,
-    });
+    };
+    if (blockTimestamp) body.block_timestamp = blockTimestamp;
+    return this.request('/api/v1beta1/profiler/historical-transaction-lookup', body);
   }
 
   async researchWalletTransactions(params = {}) {
