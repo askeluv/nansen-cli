@@ -3875,6 +3875,161 @@ describe('profiler batch address parsing', () => {
   });
 });
 
+// =================== profiler batch --file path traversal security ===================
+
+describe('profiler batch --file path traversal security', () => {
+  it('should reject path traversal with .. in file path', async () => {
+    const commands = buildCommands({});
+    await expect(
+      commands['profiler'](['batch'], {}, {}, {
+        file: '../../../etc/passwd',
+        chain: 'ethereum',
+        delay: '0'
+      })
+    ).rejects.toThrow('Invalid file path');
+  });
+
+  it('should reject path traversal with ../ in file path', async () => {
+    const commands = buildCommands({});
+    await expect(
+      commands['profiler'](['batch'], {}, {}, {
+        file: '../../sensitive/data.json',
+        chain: 'ethereum',
+        delay: '0'
+      })
+    ).rejects.toThrow('Invalid file path');
+  });
+
+  it('should reject path traversal with multiple .. sequences', async () => {
+    const commands = buildCommands({});
+    await expect(
+      commands['profiler'](['batch'], {}, {}, {
+        file: 'data/../../../etc/passwd',
+        chain: 'ethereum',
+        delay: '0'
+      })
+    ).rejects.toThrow('Invalid file path');
+  });
+
+  it('should reject absolute paths on Unix-like systems', async () => {
+    const commands = buildCommands({});
+    await expect(
+      commands['profiler'](['batch'], {}, {}, {
+        file: '/etc/passwd',
+        chain: 'ethereum',
+        delay: '0'
+      })
+    ).rejects.toThrow('Invalid file path');
+  });
+
+  it('should reject absolute paths with drive letters', async () => {
+    const commands = buildCommands({});
+    // On Windows, path.isAbsolute will detect this; on Unix, it won't but the file won't exist anyway
+    // The security check is platform-aware via path.isAbsolute
+    const windowsPath = 'C:\\Windows\\System32\\config\\SAM';
+    
+    // Only test if path.isAbsolute recognizes it as absolute (i.e., on Windows)
+    if (_path.isAbsolute(windowsPath)) {
+      await expect(
+        commands['profiler'](['batch'], {}, {}, {
+          file: windowsPath,
+          chain: 'ethereum',
+          delay: '0'
+        })
+      ).rejects.toThrow('Invalid file path');
+    } else {
+      // On Unix, this path is not recognized as absolute, so skip this specific test
+      // The Unix absolute path test above covers the security check on Unix systems
+      expect(true).toBe(true);
+    }
+  });
+
+  it('should accept valid relative file path without traversal', async () => {
+    const mockApi = {
+      addressLabels: vi.fn().mockResolvedValue({ labels: [] }),
+      addressBalance: vi.fn().mockResolvedValue({ balances: [] }),
+    };
+    const commands = buildCommands({});
+    
+    // Use a simple filename without path traversal
+    const testFile = 'test-addresses.json';
+    fs.writeFileSync(testFile, JSON.stringify(['0x0000000000000000000000000000000000000001']));
+    
+    try {
+      const result = await commands['profiler'](['batch'], mockApi, {}, {
+        file: testFile,
+        chain: 'ethereum',
+        delay: '0'
+      });
+
+      expect(result.total).toBe(1);
+      expect(mockApi.addressLabels).toHaveBeenCalledTimes(1);
+    } finally {
+      // Clean up
+      if (fs.existsSync(testFile)) {
+        fs.unlinkSync(testFile);
+      }
+    }
+  });
+
+  it('should read JSON array from file correctly', async () => {
+    const mockApi = {
+      addressLabels: vi.fn().mockResolvedValue({ labels: ['Fund'] }),
+      addressBalance: vi.fn().mockResolvedValue({ balances: [] }),
+    };
+    const commands = buildCommands({});
+    
+    const testFile = 'test-batch-addresses.json';
+    fs.writeFileSync(testFile, JSON.stringify([
+      '0x0000000000000000000000000000000000000001',
+      '0x0000000000000000000000000000000000000002'
+    ]));
+    
+    try {
+      const result = await commands['profiler'](['batch'], mockApi, {}, {
+        file: testFile,
+        chain: 'ethereum',
+        delay: '0'
+      });
+
+      expect(result.total).toBe(2);
+      expect(result.results).toHaveLength(2);
+    } finally {
+      // Clean up
+      if (fs.existsSync(testFile)) {
+        fs.unlinkSync(testFile);
+      }
+    }
+  });
+
+  it('should read newline-separated addresses from file when not valid JSON', async () => {
+    const mockApi = {
+      addressLabels: vi.fn().mockResolvedValue({ labels: [] }),
+      addressBalance: vi.fn().mockResolvedValue({ balances: [] }),
+    };
+    const commands = buildCommands({});
+    
+    const testFile = 'test-addresses.txt';
+    fs.writeFileSync(testFile, '0x0000000000000000000000000000000000000001\n0x0000000000000000000000000000000000000002\n');
+    
+    try {
+      const result = await commands['profiler'](['batch'], mockApi, {}, {
+        file: testFile,
+        chain: 'ethereum',
+        delay: '0'
+      });
+
+      expect(result.total).toBe(2);
+    } finally {
+      // Clean up
+      if (fs.existsSync(testFile)) {
+        fs.unlinkSync(testFile);
+      }
+    }
+  });
+});
+
+
 // =================== profiler compare address parsing ===================
 
 describe('profiler compare address parsing', () => {

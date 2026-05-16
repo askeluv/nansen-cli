@@ -15,6 +15,7 @@ import { buildMcpCommands } from './commands/mcp.js';
 import { buildResearchCommands, RESEARCH_HISTORICAL_SUBCOMMANDS } from './commands/research.js';
 import { resolveAddress, isEnsName } from './ens.js';
 import fs from 'fs';
+import path from 'path';
 import { getUpdateNotification, getUpgradeNotice, scheduleUpdateCheck } from './update-check.js';
 import { getAuthStatus, runDoctorChecks, runConnectivityChecks, formatDoctorReport } from './doctor.js';
 import { refreshCostMapIfStale, getCostForEndpoint, creditsCharged } from './cost-cache.js';
@@ -1291,6 +1292,9 @@ export function buildCommands(deps = {}) {
           if (options.addresses) {
             addresses = parseAddressList(options.addresses);
           } else if (options.file) {
+            if (options.file.includes('..') || path.isAbsolute(options.file)) {
+              throw new NansenError('Invalid file path', ErrorCode.INVALID_PARAMS);
+            }
             const content = fs.readFileSync(options.file, 'utf8');
             try {
               const parsed = JSON.parse(content);
