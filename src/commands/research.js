@@ -137,7 +137,7 @@ NOTE: This endpoint does not support order_by.`,
   'historical-token-screener': `nansen research historical-token-screener — Historical token screener
 
 USAGE:
-  nansen research historical-token-screener --timeframe-days <n> [--to-date <YYYY-MM-DD>] [--chains c1,c2]`,
+  nansen research historical-token-screener --timeframe-days <n> --to-date <YYYY-MM-DD> [--chains c1,c2]`,
   'historical-wallet-balances': `nansen research historical-wallet-balances — Historical token balances for a wallet
 
 USAGE:
@@ -249,7 +249,7 @@ export function buildResearchCommands(deps = {}) {
 
       if (sub === 'historical-token-screener') {
         const timeframeDays = parseTimeframeDays(options['timeframe-days']);
-        requireOptions({ 'timeframe-days': timeframeDays }, ['timeframe-days']);
+        requireOptions({ 'timeframe-days': timeframeDays, 'to-date': options['to-date'] }, ['timeframe-days', 'to-date']);
         return apiInstance.researchTokenScreener({
           chains: parseChains(options),
           timeframeDays,

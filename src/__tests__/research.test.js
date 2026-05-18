@@ -368,17 +368,6 @@ describe('buildResearchCommands handler', () => {
     }));
   });
 
-  it('dispatches historical-token-screener without --to-date', async () => {
-    mockApi = makeMockApi();
-    await cmds.research(['historical-token-screener'], mockApi, {}, {
-      'timeframe-days': '30', chains: 'solana',
-    });
-    expect(mockApi.researchTokenScreener).toHaveBeenCalledWith(expect.objectContaining({
-      timeframeDays: 30,
-      toDate: undefined,
-    }));
-  });
-
   it('dispatches historical-wallet-balances with --as-of-date', async () => {
     mockApi = makeMockApi();
     await cmds.research(['historical-wallet-balances'], mockApi, {}, {

@@ -770,7 +770,7 @@
           "description": "Historical token screener over a trailing window",
           "options": {
             "timeframe-days": { "required": true, "type": "number", "description": "Trailing window size in days" },
-            "to-date": { "description": "Optional end date for the window (YYYY-MM-DD)" },
+            "to-date": { "required": true, "description": "End date for the window (YYYY-MM-DD)" },
             "chains": { "default": "solana", "description": "Comma-separated chains" }
           }
         },
