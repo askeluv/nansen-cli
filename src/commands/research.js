@@ -196,11 +196,16 @@ export function buildResearchCommands(deps = {}) {
           chain: options.chain,
           fromDate, toDate, filters, orderBy, pagination,
         }),
-        'historical-token-flow-summary': () => apiInstance.researchTokenFlowSummary({
-          tokenAddress: options['token-address'] || options.token,
-          chain: options.chain,
-          fromDate, toDate, filters, orderBy,
-        }),
+        'historical-token-flow-summary': () => {
+          if (pagination) {
+            process.stderr.write('⚠️  warning: --page/--limit is ignored by historical-token-flow-summary (endpoint does not support pagination)\n');
+          }
+          return apiInstance.researchTokenFlowSummary({
+            tokenAddress: options['token-address'] || options.token,
+            chain: options.chain,
+            fromDate, toDate, filters, orderBy,
+          });
+        },
         'historical-who-bought-sold': () => apiInstance.researchWhoBoughtSold({
           tokenAddress: options['token-address'] || options.token,
           chain: options.chain,
@@ -240,6 +245,9 @@ export function buildResearchCommands(deps = {}) {
       }
 
       if (sub === 'historical-smart-money-balances') {
+        if (options.sort || options['order-by']) {
+          process.stderr.write('⚠️  warning: --sort is ignored by historical-smart-money-balances (endpoint does not support order_by)\n');
+        }
         requireOptions({ 'as-of-date': asOfDate }, ['as-of-date']);
         return apiInstance.researchSmartMoneyBalances({
           chains: parseChains(options),

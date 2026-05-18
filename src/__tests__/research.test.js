@@ -315,6 +315,20 @@ describe('buildResearchCommands handler', () => {
     expect(mockApi.researchTokenFlowSummary).toHaveBeenCalled();
   });
 
+  it('warns to stderr when --page/--limit is passed to historical-token-flow-summary', async () => {
+    mockApi = makeMockApi();
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => {});
+    try {
+      await cmds.research(['historical-token-flow-summary'], mockApi, {}, {
+        'token-address': TOKENS.solana, 'from-date': FROM, 'to-date': TO, page: 2, limit: 5,
+      });
+      const warned = stderrSpy.mock.calls.some(([msg]) => msg.includes('--page/--limit') && msg.includes('historical-token-flow-summary'));
+      expect(warned).toBe(true);
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+
   it('dispatches historical-token-quant-scores with --as-of-date', async () => {
     mockApi = makeMockApi();
     await cmds.research(['historical-token-quant-scores'], mockApi, {}, {
@@ -354,6 +368,20 @@ describe('buildResearchCommands handler', () => {
       chains: ['solana', 'ethereum'],
       asOfDate: AS_OF,
     }));
+  });
+
+  it('warns to stderr when --sort is passed to historical-smart-money-balances', async () => {
+    mockApi = makeMockApi();
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => {});
+    try {
+      await cmds.research(['historical-smart-money-balances'], mockApi, {}, {
+        'as-of-date': AS_OF, sort: 'value_usd:desc',
+      });
+      const warned = stderrSpy.mock.calls.some(([msg]) => msg.includes('--sort') && msg.includes('historical-smart-money-balances'));
+      expect(warned).toBe(true);
+    } finally {
+      stderrSpy.mockRestore();
+    }
   });
 
   it('dispatches historical-token-screener with --timeframe-days and --to-date', async () => {
