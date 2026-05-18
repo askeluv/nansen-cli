@@ -249,7 +249,7 @@ export function buildResearchCommands(deps = {}) {
 
       if (sub === 'historical-token-screener') {
         const timeframeDays = parseTimeframeDays(options['timeframe-days']);
-        requireOptions({ 'timeframe-days': timeframeDays, 'to-date': options['to-date'] }, ['timeframe-days', 'to-date']);
+        requireOptions({ 'timeframe-days': timeframeDays }, ['timeframe-days']);
         return apiInstance.researchTokenScreener({
           chains: parseChains(options),
           timeframeDays,
