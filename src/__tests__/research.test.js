@@ -425,4 +425,18 @@ describe('buildResearchCommands handler', () => {
     await expect(cmds.research(['historical-token-screener'], mockApi, {}, { chains: 'solana' }))
       .rejects.toThrow(/timeframe-days/);
   });
+
+  it('rejects --page/--limit on historical-token-flow-summary', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['historical-token-flow-summary'], mockApi, {}, {
+      'token-address': TOKENS.solana, 'from-date': FROM, 'to-date': TO, page: 2, limit: 5,
+    })).rejects.toThrow(/does not support/);
+  });
+
+  it('rejects --sort on historical-smart-money-balances', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['historical-smart-money-balances'], mockApi, {}, {
+      'as-of-date': AS_OF, sort: 'value_usd:desc',
+    })).rejects.toThrow(/does not support/);
+  });
 });
