@@ -137,7 +137,7 @@ NOTE: This endpoint does not support order_by.`,
   'historical-token-screener': `nansen research historical-token-screener — Historical token screener
 
 USAGE:
-  nansen research historical-token-screener --timeframe-days <n> --to-date <YYYY-MM-DD> [--chains c1,c2]`,
+  nansen research historical-token-screener --timeframe-days <n> [--to-date <YYYY-MM-DD>] [--chains c1,c2]`,
   'historical-wallet-balances': `nansen research historical-wallet-balances — Historical token balances for a wallet
 
 USAGE:
