@@ -95,8 +95,8 @@ COMMON OPTIONS:
   --to-date <YYYY-MM-DD>     End of date range (for range-based subcommands)
   --as-of-date <YYYY-MM-DD>  Snapshot date (for as-of-date subcommands)
   --chain <chain>            Chain (default: solana for tokens, ethereum for wallets)
-  --page <n> --limit <n>     Pagination
-  --sort <field[:asc|desc]>  Sort order (default DESC)
+  --page <n> --limit <n>     Pagination (not supported by historical-token-flow-summary)
+  --sort <field[:asc|desc]>  Sort order (not supported by historical-smart-money-balances)
   --filters '<json>'         Filters as JSON object
 
 Run: nansen research <subcommand> --help`;
@@ -214,6 +214,12 @@ export function buildResearchCommands(deps = {}) {
           { 'token-address': options['token-address'] || options.token, 'from-date': fromDate, 'to-date': toDate },
           ['token-address', 'from-date', 'to-date'],
         );
+        if (sub === 'historical-token-flow-summary' && (options.page || options.limit)) {
+          throw new NansenError(
+            'historical-token-flow-summary does not support --page or --limit (endpoint returns a single aggregated row)',
+            ErrorCode.INVALID_PARAMS,
+          );
+        }
         return rangeTokenHandlers[sub]();
       }
 
@@ -240,6 +246,12 @@ export function buildResearchCommands(deps = {}) {
       }
 
       if (sub === 'historical-smart-money-balances') {
+        if (options.sort || options['order-by']) {
+          throw new NansenError(
+            'historical-smart-money-balances does not support --sort or --order-by (endpoint does not support ordering)',
+            ErrorCode.INVALID_PARAMS,
+          );
+        }
         requireOptions({ 'as-of-date': asOfDate }, ['as-of-date']);
         return apiInstance.researchSmartMoneyBalances({
           chains: parseChains(options),
