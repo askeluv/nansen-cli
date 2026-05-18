@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.31.0
+
+### Minor Changes
+
+- [#437](https://github.com/nansen-ai/nansen-cli/pull/437) [`5ec7bd3`](https://github.com/nansen-ai/nansen-cli/commit/5ec7bd33f173cd712f9f592599e32b2a0d28fe0f) Thanks [@gulshngill](https://github.com/gulshngill)! - Add `nansen research` command with 11 subcommands for historical/point-in-time analytics: dex-trades, pnl-leaderboard, token-flow-summary, token-quant-scores, top-holders, who-bought-sold, smart-money-balances, token-screener, wallet-balances, tx-lookup, wallet-transactions. Labels and metrics resolve at the requested date rather than current state — useful for backtesting and historical research.
+
+### Patch Changes
+
+- [#440](https://github.com/nansen-ai/nansen-cli/pull/440) [`701dad4`](https://github.com/nansen-ai/nansen-cli/commit/701dad49f54323cf2b455376b1af3b012e2e0b71) Thanks [@kome12](https://github.com/kome12)! - Fix `research historical-token-screener` schema to mark `--to-date` as required (matching CLI and API behavior)
+
+- [#442](https://github.com/nansen-ai/nansen-cli/pull/442) [`6edbb68`](https://github.com/nansen-ai/nansen-cli/commit/6edbb686b52e00b8725470a3f4409ff15f2ccb95) Thanks [@kome12](https://github.com/kome12)! - `research historical-token-flow-summary` now errors immediately when `--page` or `--limit` are passed (the endpoint returns a single aggregated row and does not support pagination). `research historical-smart-money-balances` now errors when `--sort` or `--order-by` are passed (the endpoint does not support ordering). Previously both flags were silently dropped.
+
 ## 1.30.2
 
 ### Patch Changes
