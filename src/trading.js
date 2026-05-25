@@ -1331,8 +1331,10 @@ CROSS-CHAIN NOTES (when using --to-chain):
         response.quotes.forEach((q, i) => log(formatQuote(q, i)));
 
         // Gas balance validation — check that the wallet has enough native token for gas.
+        // High-value trades (>= $10) can use gasless/solver-paid routes and bypass this check.
         try {
-          await validateGasBalance({ chain, walletAddress });
+          const tradeValueUsd = response.quotes[0]?.inUsdValue;
+          await validateGasBalance({ chain, walletAddress, tradeValueUsd });
         } catch (gasErr) {
           throw new CommandError(`Error: ${gasErr.message}`, 'INSUFFICIENT_GAS');
         }
