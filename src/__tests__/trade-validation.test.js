@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { validateQuoteInput, fetchNativeBalance, fetchTokenBalance, validateBalance, resolvePercentAmount, validateGasBalance } from '../trade-validation.js';
+import { validateQuoteInput, fetchNativeBalance, fetchTokenBalance, validateBalance, resolvePercentAmount, validateGasBalance, GASLESS_MIN_TRADE_USD } from '../trade-validation.js';
 
 describe('validateQuoteInput', () => {
   const validSolana = {
@@ -872,6 +872,57 @@ describe('validateGasBalance', () => {
 
     const result = await validateGasBalance({ chain: 'solana', walletAddress: 'SomeWallet1111111111111111111111111111111111' });
     expect(result.hasSufficientNative).toBe(true);
+  });
+
+  it('bypasses gas check when trade value is >= GASLESS_MIN_TRADE_USD (gasless eligible)', async () => {
+    // fetch should NOT be called — the check is skipped before any RPC
+    global.fetch = vi.fn();
+
+    const result = await validateGasBalance({
+      chain: 'solana',
+      walletAddress: 'SomeWallet1111111111111111111111111111111111',
+      tradeValueUsd: String(GASLESS_MIN_TRADE_USD),
+    });
+    expect(result.hasSufficientNative).toBe(true);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('bypasses gas check when trade value is well above $10', async () => {
+    global.fetch = vi.fn();
+
+    const result = await validateGasBalance({
+      chain: 'base',
+      walletAddress: '0x742d35Cc6bF4F3f4e0e3a8DD7e37ff4e4Be4E4B4',
+      tradeValueUsd: '500',
+    });
+    expect(result.hasSufficientNative).toBe(true);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('still validates gas for trades below GASLESS_MIN_TRADE_USD', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ jsonrpc: '2.0', id: 1, result: { value: 0 } }),
+    });
+
+    await expect(validateGasBalance({
+      chain: 'solana',
+      walletAddress: 'SomeWallet1111111111111111111111111111111111',
+      tradeValueUsd: String(GASLESS_MIN_TRADE_USD - 0.01),
+    })).rejects.toThrow(/Insufficient SOL for gas/);
+  });
+
+  it('error message includes gasless suggestion when gas is low', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ jsonrpc: '2.0', id: 1, result: { value: 0 } }),
+    });
+
+    await expect(validateGasBalance({
+      chain: 'solana',
+      walletAddress: 'SomeWallet1111111111111111111111111111111111',
+      tradeValueUsd: '5.00',
+    })).rejects.toThrow(new RegExp(`\\$${GASLESS_MIN_TRADE_USD}\\+`));
   });
 });
 

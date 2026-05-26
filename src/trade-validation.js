@@ -136,6 +136,10 @@ const FEE_BUFFER = { solana: 0.005, base: 0.00004 };
 const HIGH_PERCENTAGE_THRESHOLD = 95;
 const AUTO_ADJUST_THRESHOLD_PERCENT = 2;
 
+// Trades at or above this USD value can use gasless/solver-paid routes (e.g. Relay),
+// so the native gas pre-check is skipped for them.
+export const GASLESS_MIN_TRADE_USD = 10;
+
 /**
  * Check if an address is USDC or the native token for a chain (case-insensitive for EVM).
  */
@@ -306,11 +310,18 @@ export async function resolvePercentAmount({ chain, from, walletAddress, percent
  *
  * Returns { hasSufficientNative } or throws on validation failure.
  * Best-effort: if RPC fails, returns passing result.
+ *
+ * Gasless bypass: trades >= $10 USD can use solver-paid options (e.g. Relay),
+ * so the gas check is skipped in that case.
  */
-export async function validateGasBalance({ chain, walletAddress }) {
+export async function validateGasBalance({ chain, walletAddress, tradeValueUsd }) {
   const normalizedChain = chain.toLowerCase();
   const minGas = MIN_GAS_AMOUNTS[normalizedChain];
   if (minGas === undefined) return { hasSufficientNative: true };
+
+  // High-value trades can use gasless/solver-paid routes — skip the check.
+  const tradeUsd = parseFloat(tradeValueUsd) || 0;
+  if (tradeUsd >= GASLESS_MIN_TRADE_USD) return { hasSufficientNative: true };
 
   const balance = await fetchNativeBalance(normalizedChain, walletAddress);
 
@@ -323,7 +334,7 @@ export async function validateGasBalance({ chain, walletAddress }) {
 
   const symbol = NATIVE_SYMBOLS[normalizedChain] || 'native token';
   throw new Error(
-    `Insufficient ${symbol} for gas fees. Wallet has ${balance} ${symbol} but needs at least ${minGas} ${symbol}. Fund the wallet before trading.`
+    `Insufficient ${symbol} for gas fees. Wallet has ${balance} ${symbol} but needs at least ${minGas} ${symbol}. Either fund the wallet with ${symbol} or trade a value of $${GASLESS_MIN_TRADE_USD}+ to use gasless options.`
   );
 }
 
