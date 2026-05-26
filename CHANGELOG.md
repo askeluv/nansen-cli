@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.31.1
+
+### Patch Changes
+
+- [#443](https://github.com/nansen-ai/nansen-cli/pull/443) [`0ee84db`](https://github.com/nansen-ai/nansen-cli/commit/0ee84db6cdab06054c6ae79c6d871bae0b4f3edb) Thanks [@araa47](https://github.com/araa47)! - Skip native gas pre-check for trades >= $10 USD, where gasless/solver-paid routes (e.g. Relay) are viable. When gas is insufficient on smaller trades, the error now also suggests increasing the trade value as an alternative to topping up gas.
+
 ## 1.31.0
 
 ### Minor Changes
