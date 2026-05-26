@@ -2220,6 +2220,57 @@ describe('runCLI', () => {
     expect(result.type).toBe('help');
   });
 
+  it('should show command-group help with one command per line', async () => {
+    const result = await runCLI(['research', '--help'], mockDeps());
+    const output = outputs.join('\n');
+    const lines = output.split('\n');
+
+    expect(result).toEqual({ type: 'command-help', command: 'research' });
+    expect(lines.slice(0, 5)).toEqual([
+      'USAGE: nansen research <command> [options]',
+      '',
+      'Research and analytics commands',
+      '',
+      'COMMANDS:'
+    ]);
+    expect(lines).toContain('  portfolio');
+    expect(lines).toContain('  smart-money');
+    expect(lines).toContain('  profiler');
+
+    const commandStart = lines.indexOf('COMMANDS:') + 1;
+    const footerIndex = lines.findIndex((line) => line.startsWith("Run 'nansen research"));
+    const commandLines = lines.slice(commandStart, footerIndex - 1);
+    expect(commandLines.length).toBeGreaterThan(0);
+    expect(commandLines.every((line) => /^  [a-z0-9-]+$/.test(line))).toBe(true);
+    expect(output).toContain("Run 'nansen research <command> --help' for more information on a command.");
+    expect(output).not.toContain('Subcommands:');
+    expect(output).not.toContain(', smart-money');
+  });
+
+  it('should show nested command-group help with one command per line', async () => {
+    const result = await runCLI(['research', 'smart-money', '--help'], mockDeps());
+    const output = outputs.join('\n');
+
+    expect(result).toEqual({ type: 'command-help', command: 'research smart-money' });
+    expect(output).toContain('USAGE: nansen research smart-money <command> [options]');
+    expect(output).toContain('COMMANDS:\n  netflow\n  dex-trades');
+    expect(output).toContain("Run 'nansen research smart-money <command> --help' for more information on a command.");
+    expect(output).not.toContain('Subcommands: netflow, dex-trades');
+  });
+
+  it('should show leaf subcommand help with sectioned formatting', async () => {
+    const result = await runCLI(['research', 'portfolio', 'defi', '--help'], mockDeps());
+    const output = outputs.join('\n');
+
+    expect(result).toEqual({ type: 'subcommand-help', command: 'portfolio', subcommand: 'defi' });
+    expect(output).toContain('USAGE: nansen research portfolio defi [options]');
+    expect(output).toContain('DeFi holdings across protocols');
+    expect(output).toContain('OPTIONS (* required):\n  --wallet*');
+    expect(output).toContain('Cost: 10 credits (Free tier) / 1 credit (Pro tier)');
+    expect(output).toContain('EXAMPLE:\n  nansen research portfolio defi --wallet <val>');
+    expect(output).not.toContain('Params (* required):');
+  });
+
   it('should error on unknown command', async () => {
     const result = await runCLI(['unknown-cmd'], mockDeps());
     expect(result.type).toBe('error');

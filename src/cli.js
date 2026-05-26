@@ -1599,6 +1599,20 @@ export const RESEARCH_CATEGORY_ALIASES = {
   'pm': 'prediction-market'
 };
 
+function generateCommandGroupHelp(commandPath, cmdSchema) {
+  const lines = [`USAGE: nansen ${commandPath} <command> [options]`];
+
+  if (cmdSchema.description) lines.push('', cmdSchema.description);
+
+  lines.push('', 'COMMANDS:');
+  for (const name of Object.keys(cmdSchema.subcommands)) {
+    lines.push(`  ${name}`);
+  }
+
+  lines.push('', `Run 'nansen ${commandPath} <command> --help' for more information on a command.`);
+  return lines.join('\n');
+}
+
 // Generate help text for a specific subcommand using SCHEMA
 export function generateSubcommandHelp(command, subcommand, prefix = null) {
   const cmdSchema = SCHEMA.commands[command] || SCHEMA.commands.research.subcommands[command];
@@ -1607,8 +1621,21 @@ export function generateSubcommandHelp(command, subcommand, prefix = null) {
   const subSchema = cmdSchema.subcommands?.[subcommand];
   if (!subSchema) return null;
 
-  const lines = [];
-  lines.push(`${command} ${subcommand} — ${subSchema.description || 'No description'}`);
+  const cmdPrefix = prefix || (DEPRECATED_TO_RESEARCH.has(command) ? `research ${command}` : command);
+  const chain = subSchema.options?.chain?.default || 'solana';
+  let example = `nansen ${cmdPrefix} ${subcommand}`;
+  if (subSchema.options) {
+    for (const [name, opt] of Object.entries(subSchema.options)) {
+      if (opt.required) example += ` --${name} <val>`;
+    }
+  }
+  if (subSchema.options?.chain && !subSchema.options.chain.required) {
+    example += ` --chain ${chain}`;
+  }
+
+  const lines = [`USAGE: nansen ${cmdPrefix} ${subcommand} [options]`];
+
+  if (subSchema.description) lines.push('', subSchema.description);
 
   if (subSchema.options) {
     const params = Object.entries(subSchema.options).map(([name, opt]) => {
@@ -1618,31 +1645,18 @@ export function generateSubcommandHelp(command, subcommand, prefix = null) {
       if (opt.enum) parts.push(`[${opt.enum.join('|')}]`);
       return parts.join(' ');
     });
-    lines.push(`Params (* required): ${params.join(', ')}`);
+    lines.push('', 'OPTIONS (* required):', ...params.map((param) => `  ${param}`));
   }
 
   if (subSchema.endpoint) {
     const cost = getCostForEndpoint(subSchema.endpoint);
-    if (cost) lines.push(`Cost: ${cost.free} credit${cost.free === 1 ? '' : 's'} (Free tier) / ${cost.pro} credit${cost.pro === 1 ? '' : 's'} (Pro tier)`);
+    if (cost) lines.push('', `Cost: ${cost.free} credit${cost.free === 1 ? '' : 's'} (Free tier) / ${cost.pro} credit${cost.pro === 1 ? '' : 's'} (Pro tier)`);
   }
 
   if (subSchema.returns?.length) {
-    lines.push(`Returns: ${subSchema.returns.join(', ')}`);
+    lines.push('', 'RETURNS:', ...subSchema.returns.map((field) => `  ${field}`));
   }
-
-  const exampleValues = { address: '0x...', token: '0x...', query: '"term"', symbol: 'BTC', date: '2024-01-01' };
-  const chain = subSchema.options?.chain?.default || 'solana';
-  const cmdPrefix = prefix || (DEPRECATED_TO_RESEARCH.has(command) ? `research ${command}` : command);
-  let example = `nansen ${cmdPrefix} ${subcommand}`;
-  if (subSchema.options) {
-    for (const [name, opt] of Object.entries(subSchema.options)) {
-      if (opt.required) example += ` --${name} ${exampleValues[name] || '<val>'}`;
-    }
-  }
-  if (subSchema.options?.chain && !subSchema.options.chain.required) {
-    example += ` --chain ${chain}`;
-  }
-  lines.push(`Example: ${example}`);
+  lines.push('', 'EXAMPLE:', `  ${example}`);
 
   return lines.join('\n');
 }
@@ -1715,11 +1729,14 @@ export async function runCLI(rawArgs, deps = {}) {
         const researchCat = SCHEMA.commands.research.subcommands[category];
         if (researchCat) {
           const catSchema = researchCat;
-          const lines = [`research ${category} — ${catSchema.description}`];
           if (catSchema.subcommands) {
-            lines.push('Subcommands: ' + Object.keys(catSchema.subcommands).join(', '));
-            lines.push(`Use: nansen research ${category} <subcommand> --help`);
-          } else if (catSchema.options) {
+            output(generateCommandGroupHelp(`research ${category}`, catSchema));
+            notify();
+            return { type: 'command-help', command: `research ${category}` };
+          }
+
+          const lines = [`research ${category} — ${catSchema.description}`];
+          if (catSchema.options) {
             // Leaf historical subcommand: render options + example
             const params = Object.entries(catSchema.options).map(([name, opt]) => {
               const parts = [`--${name}`];
@@ -1753,11 +1770,12 @@ export async function runCLI(rawArgs, deps = {}) {
       const cmdSchemaLookup = command !== 'trade' && command !== 'alerts' && command !== 'agent' && (SCHEMA.commands[command] || SCHEMA.commands.research.subcommands[command]);
       if (command && cmdSchemaLookup) {
         const cmdSchema = cmdSchemaLookup;
-        const lines = [`${command} — ${cmdSchema.description}`];
         if (cmdSchema.subcommands) {
-          lines.push('Subcommands: ' + Object.keys(cmdSchema.subcommands).join(', '));
-          lines.push(`Use: nansen ${command} <subcommand> --help`);
+          output(deprecationNote(command) + generateCommandGroupHelp(command, cmdSchema));
+          notify();
+          return { type: 'command-help', command };
         }
+        const lines = [`${command} — ${cmdSchema.description}`];
         if (cmdSchema.options) {
           const params = Object.entries(cmdSchema.options).map(([name, opt]) => {
             const parts = [`--${name}`];
