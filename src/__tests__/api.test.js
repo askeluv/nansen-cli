@@ -140,9 +140,16 @@ const MOCK_RESPONSES = {
     win_rate: 0.65
   },
   addressPerpPositions: {
-    positions: [
-      { token: 'BTC', side: 'long', size_usd: 50000 }
-    ]
+    data: {
+      data: {
+        asset_positions: [
+          {
+            position: { coin: 'BTC', szi: '0.00031', entryPx: '72830.0', positionValue: '22.58', unrealizedPnl: '-0.02', leverage: { type: 'cross', value: 2 }, liquidationPx: null },
+            position_type: 'cross',
+          },
+        ],
+      },
+    },
   },
   addressPerpTrades: {
     trades: [
@@ -1032,10 +1039,10 @@ describe('NansenAPI', () => {
         const body = expectFetchCalledWith('/api/v1/profiler/perp-positions');
         expect(body.address).toBe(TEST_DATA.ethereum.address);
         
-        expect(result.positions).toBeInstanceOf(Array);
-        expect(result.positions[0]).toHaveProperty('token', 'BTC');
-        expect(result.positions[0]).toHaveProperty('side', 'long');
-        expect(result.positions[0]).toHaveProperty('size_usd', 50000);
+        expect(result.data.data).toBeInstanceOf(Array);
+        expect(result.data.data[0]).toHaveProperty('coin', 'BTC');
+        expect(result.data.data[0]).toHaveProperty('position_type', 'cross');
+        expect(result.data.data[0]).toHaveProperty('szi', '0.00031');
       });
     });
 
