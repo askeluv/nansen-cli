@@ -1074,7 +1074,7 @@ export function buildCommands(deps = {}) {
       const subcommand = args[0] || 'help';
       const chain = options.chain || 'solana';
       const chains = options.chains || [chain];
-      const filters = options.filters || {};
+      const filters = options.filters || options.filter || {};
       const orderBy = parseSort(options.sort, options['order-by']);
       const pagination = buildPagination(options);
 
@@ -1365,21 +1365,24 @@ export function buildCommands(deps = {}) {
 
     'perp': async (args, apiInstance, flags, options) => {
       const subcommand = args[0] || 'help';
-      const filters = options.filters || {};
+      const filters = options.filters || options.filter || {};
       const orderBy = parseSort(options.sort, options['order-by']);
       const pagination = buildPagination(options);
       const days = options.days ? parseInt(options.days) : 30;
 
-      if (Object.keys(filters).length > 0) {
-        throw new NansenError(
-          'perp screener and leaderboard do not support --filter (Hyperliquid-only endpoints return the full market)',
-          ErrorCode.INVALID_PARAMS,
-        );
-      }
+      const rejectFilter = () => {
+        if (Object.keys(filters).length > 0) {
+          throw new NansenError(
+            'perp screener and leaderboard do not support --filter (Hyperliquid-only endpoints return the full market)',
+            ErrorCode.INVALID_PARAMS,
+          );
+        }
+      };
 
       const handlers = {
-        'screener': () => apiInstance.perpScreener({ filters, orderBy, pagination, days }),
+        'screener': () => { rejectFilter(); return apiInstance.perpScreener({ filters, orderBy, pagination, days }); },
         'leaderboard': () => {
+          rejectFilter();
           const withLabels = resolveBooleanOption(options, flags, 'premium-labels');
           return apiInstance.perpLeaderboard({ filters, orderBy, pagination, days, withLabels });
         },

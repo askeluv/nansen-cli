@@ -141,14 +141,12 @@ const MOCK_RESPONSES = {
   },
   addressPerpPositions: {
     data: {
-      data: {
-        asset_positions: [
-          {
-            position: { coin: 'BTC', szi: '0.00031', entryPx: '72830.0', positionValue: '22.58', unrealizedPnl: '-0.02', leverage: { type: 'cross', value: 2 }, liquidationPx: null },
-            position_type: 'cross',
-          },
-        ],
-      },
+      asset_positions: [
+        {
+          position: { coin: 'BTC', szi: '0.00031', entryPx: '72830.0', positionValue: '22.58', unrealizedPnl: '-0.02', leverage: { type: 'cross', value: 2 }, liquidationPx: null },
+          position_type: 'cross',
+        },
+      ],
     },
   },
   addressPerpTrades: {
@@ -1039,10 +1037,10 @@ describe('NansenAPI', () => {
         const body = expectFetchCalledWith('/api/v1/profiler/perp-positions');
         expect(body.address).toBe(TEST_DATA.ethereum.address);
         
-        expect(result.data.data).toBeInstanceOf(Array);
-        expect(result.data.data[0]).toHaveProperty('coin', 'BTC');
-        expect(result.data.data[0]).toHaveProperty('position_type', 'cross');
-        expect(result.data.data[0]).toHaveProperty('szi', '0.00031');
+        expect(result.data).toBeInstanceOf(Array);
+        expect(result.data[0]).toHaveProperty('coin', 'BTC');
+        expect(result.data[0]).toHaveProperty('position_type', 'cross');
+        expect(result.data[0]).toHaveProperty('szi', '0.00031');
       });
     });
 

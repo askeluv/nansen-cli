@@ -962,8 +962,8 @@ export class NansenAPI {
     });
     // The API returns {asset_positions: [{position: {...}, position_type}]} — flatten
     // to a standard array so the table formatter renders one row per position.
-    if (result?.data?.data?.asset_positions) {
-      result.data.data = result.data.data.asset_positions.map(p => ({
+    if (result?.data?.asset_positions) {
+      result.data = result.data.asset_positions.map(p => ({
         ...p.position,
         position_type: p.position_type,
       }));
