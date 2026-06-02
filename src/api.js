@@ -973,6 +973,20 @@ export class NansenAPI {
     });
   }
 
+  async addressDexTrades(params = {}) {
+    const { address, chain = 'ethereum', filters = {}, orderBy, pagination, days = 30, date } = params;
+    if (address) requireValidAddress(address, chain);
+    const dateRange = date || buildDateRange(days);
+    return this.request('/api/v1/profiler/dex-trades', {
+      address,
+      chain,
+      date: dateRange,
+      filters,
+      order_by: orderBy,
+      pagination
+    });
+  }
+
   // ============= Token God Mode Endpoints =============
 
   async tokenScreener(params = {}) {
