@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.32.0
+
+### Minor Changes
+
+- [#451](https://github.com/nansen-ai/nansen-cli/pull/451) [`73600d9`](https://github.com/nansen-ai/nansen-cli/commit/73600d9cd13248a265332ec0728c602b16f44868) Thanks [@kome12](https://github.com/kome12)! - Add `nansen research profiler dex-trades` command for DEX trade history
+
 ## 1.31.1
 
 ### Patch Changes
