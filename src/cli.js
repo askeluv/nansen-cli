@@ -1148,6 +1148,10 @@ export function buildCommands(deps = {}) {
         'pnl-summary': () => apiInstance.addressPnlSummary({ address, chain, orderBy, pagination, days }),
         'perp-positions': () => apiInstance.addressPerpPositions({ address, filters, orderBy, pagination }),
         'perp-trades': () => apiInstance.addressPerpTrades({ address, filters, orderBy, pagination, days }),
+        'dex-trades': () => {
+          const date = parseDateOption(options.date, days);
+          return apiInstance.addressDexTrades({ address, chain, filters, orderBy, pagination, days, date });
+        },
         'batch': () => {
           let addresses = [];
           if (options.addresses) {
@@ -1186,7 +1190,7 @@ export function buildCommands(deps = {}) {
           return compareWallets(apiInstance, { addresses: addrs, chain, days });
         },
         'help': () => ({
-          commands: ['balance', 'labels', 'transactions', 'pnl', 'search', 'historical-balances', 'related-wallets', 'counterparties', 'pnl-summary', 'perp-positions', 'perp-trades', 'batch', 'trace', 'compare'],
+          commands: ['balance', 'labels', 'transactions', 'pnl', 'search', 'historical-balances', 'related-wallets', 'counterparties', 'pnl-summary', 'perp-positions', 'perp-trades', 'dex-trades', 'batch', 'trace', 'compare'],
           description: 'Wallet profiling endpoints',
           example: 'nansen research profiler compare --addresses "0xABC...,0xDEF..." --chain ethereum'
         })

@@ -203,6 +203,21 @@
                 }
               }
             },
+            "dex-trades": {
+              "endpoint": "/api/v1/profiler/dex-trades",
+              "description": "DEX trade history for a wallet",
+              "options": {
+                "address": {
+                  "required": true
+                },
+                "chain": {
+                  "default": "ethereum"
+                },
+                "days": {
+                  "default": 30
+                }
+              }
+            },
             "search": {
               "endpoint": "/api/v1/search/entity-name",
               "description": "Search for entities by name",

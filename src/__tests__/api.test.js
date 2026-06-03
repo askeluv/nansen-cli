@@ -149,6 +149,33 @@ const MOCK_RESPONSES = {
       { token: 'ETH', side: 'short', pnl_usd: 5000 }
     ]
   },
+  addressDexTrades: {
+    data: [
+      {
+        chain: 'ethereum',
+        block_timestamp: '2024-01-15T10:30:00',
+        transaction_hash: '0xabc123',
+        trader_address: '0x28c6c06298d514db089934071355e5743bf21d60',
+        trader_address_label: 'Smart Trader',
+        token_bought_address: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+        token_sold_address: '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',
+        token_bought_amount: 1000.0,
+        token_sold_amount: 1.5,
+        token_bought_symbol: 'USDC',
+        token_sold_symbol: 'ETH',
+        token_bought_age_days: 365,
+        token_sold_age_days: 730,
+        token_bought_market_cap: 50000000000.0,
+        token_sold_market_cap: 200000000000.0,
+        token_bought_fdv: 55000000000.0,
+        token_sold_fdv: 220000000000.0,
+        trade_value_usd: 3000.0
+      }
+    ],
+    page: 1,
+    per_page: 100,
+    total: 1
+  },
   tokenIndicators: {
     token_address: '0x7fc66500c84a76ad7e9c93437bfc5ac33e2ddae9',
     chain: 'ethereum',
@@ -1058,17 +1085,105 @@ describe('NansenAPI', () => {
 
       it('should calculate correct date range for custom days', async () => {
         setupMock(MOCK_RESPONSES.addressPerpTrades);
-        
+
         await api.addressPerpTrades({
           address: TEST_DATA.ethereum.address,
           days: 7
         });
-        
+
         const body = expectFetchCalledWith('/api/v1/profiler/perp-trades');
         const from = new Date(body.date.from);
         const to = new Date(body.date.to);
         const diffDays = Math.round((to - from) / (1000 * 60 * 60 * 24));
         expect(diffDays).toBe(7);
+      });
+    });
+
+    describe('addressDexTrades', () => {
+      it('should fetch dex trades with correct endpoint', async () => {
+        setupMock(MOCK_RESPONSES.addressDexTrades);
+
+        const result = await api.addressDexTrades({
+          address: TEST_DATA.ethereum.address,
+          chain: 'ethereum'
+        });
+
+        const body = expectFetchCalledWith('/api/v1/profiler/dex-trades');
+        expect(body.address).toBe(TEST_DATA.ethereum.address);
+        expect(body.chain).toBe('ethereum');
+
+        expect(result.data).toBeInstanceOf(Array);
+        expect(result.data[0]).toHaveProperty('token_bought_symbol', 'USDC');
+        expect(result.data[0]).toHaveProperty('trade_value_usd', 3000.0);
+      });
+
+      it('should pass orderBy to API', async () => {
+        setupMock(MOCK_RESPONSES.addressDexTrades);
+
+        await api.addressDexTrades({
+          address: TEST_DATA.ethereum.address,
+          chain: 'ethereum',
+          orderBy: [{ field: 'block_timestamp', direction: 'DESC' }]
+        });
+
+        const body = expectFetchCalledWith('/api/v1/profiler/dex-trades');
+        expect(body.order_by).toEqual([{ field: 'block_timestamp', direction: 'DESC' }]);
+      });
+
+      it('should include date range with default days', async () => {
+        setupMock(MOCK_RESPONSES.addressDexTrades);
+
+        await api.addressDexTrades({
+          address: TEST_DATA.ethereum.address,
+          chain: 'ethereum'
+        });
+
+        const body = expectFetchCalledWith('/api/v1/profiler/dex-trades');
+        expect(body.date).toBeDefined();
+        expect(body.date.from).toBeDefined();
+        expect(body.date.to).toBeDefined();
+      });
+
+      it('should calculate correct date range for custom days', async () => {
+        setupMock(MOCK_RESPONSES.addressDexTrades);
+
+        await api.addressDexTrades({
+          address: TEST_DATA.ethereum.address,
+          chain: 'ethereum',
+          days: 14
+        });
+
+        const body = expectFetchCalledWith('/api/v1/profiler/dex-trades');
+        const from = new Date(body.date.from);
+        const to = new Date(body.date.to);
+        const diffDays = Math.round((to - from) / (1000 * 60 * 60 * 24));
+        expect(diffDays).toBe(14);
+      });
+
+      it('should pass filters through', async () => {
+        setupMock(MOCK_RESPONSES.addressDexTrades);
+
+        await api.addressDexTrades({
+          address: TEST_DATA.ethereum.address,
+          chain: 'ethereum',
+          filters: { min_trade_value_usd: 1000 }
+        });
+
+        const body = expectFetchCalledWith('/api/v1/profiler/dex-trades');
+        expect(body.filters.min_trade_value_usd).toBe(1000);
+      });
+
+      it('should work with solana address', async () => {
+        setupMock(MOCK_RESPONSES.addressDexTrades);
+
+        await api.addressDexTrades({
+          address: TEST_DATA.solana.address,
+          chain: 'solana'
+        });
+
+        const body = expectFetchCalledWith('/api/v1/profiler/dex-trades');
+        expect(body.address).toBe(TEST_DATA.solana.address);
+        expect(body.chain).toBe('solana');
       });
     });
   });
