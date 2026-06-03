@@ -1123,11 +1123,11 @@ describe('NansenAPI', () => {
         await api.addressDexTrades({
           address: TEST_DATA.ethereum.address,
           chain: 'ethereum',
-          orderBy: [{ column: 'block_timestamp', order: 'desc' }]
+          orderBy: [{ field: 'block_timestamp', direction: 'DESC' }]
         });
 
         const body = expectFetchCalledWith('/api/v1/profiler/dex-trades');
-        expect(body.order_by).toEqual([{ column: 'block_timestamp', order: 'desc' }]);
+        expect(body.order_by).toEqual([{ field: 'block_timestamp', direction: 'DESC' }]);
       });
 
       it('should include date range with default days', async () => {
