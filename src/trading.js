@@ -80,7 +80,7 @@ export function resolveTokenAddress(symbolOrAddress, chainName) {
  * @returns {Promise<*>} Parsed result value
  * @throws {Error} If chain has no configured RPC or the RPC returns an error
  */
-async function evmRpcCall(chain, method, params = []) {
+export async function evmRpcCall(chain, method, params = []) {
   const rpcUrl = CHAIN_RPCS[chain];
   if (!rpcUrl) throw new Error(`No RPC URL configured for chain: ${chain}`);
   const res = await fetch(rpcUrl, {
@@ -99,13 +99,13 @@ async function evmRpcCall(chain, method, params = []) {
   return body.result;
 }
 
-function getQuotesDir() {
+export function getQuotesDir() {
   const configDir = path.join(process.env.HOME || process.env.USERPROFILE || '', '.nansen');
   return path.join(configDir, 'quotes');
 }
 
 // Resolve a filename inside the quotes dir, rejecting path traversal.
-function safeQuotesPath(filename) {
+export function safeQuotesPath(filename) {
   const base = path.resolve(getQuotesDir());
   const target = path.resolve(base, filename);
   if (path.relative(base, target).startsWith('..')) return null;
