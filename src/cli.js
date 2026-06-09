@@ -5,6 +5,7 @@
 
 import { NansenAPI, NansenError, CommandError, ErrorCode, saveConfig, deleteConfig, getConfigFile, clearCache, getCacheDir, validateAddress, normalizeAddress, sleep } from './api.js';
 import { buildWalletCommands } from './wallet.js';
+import { buildBridgeCommands } from './bridge.js';
 import { buildTradingCommands } from './trading.js';
 import { buildLimitOrderCommands } from './limit-order.js';
 import { formatAlertsTable, buildAlertsCommands } from './commands/alerts.js';
@@ -701,6 +702,7 @@ USAGE: nansen <command> [subcommand] [options]
 
 COMMANDS:
   trade       DEX swaps/bridges: quote, execute, bridge-status, limit-order
+  bridge      Hyperliquid bridge: quote, execute, status (EVM <-> HL)
   research    analytics: smart-money, profiler, token, search, perp, portfolio, points
   wallet      create, list, show, export, default, delete, forget-password
   agent       Ask the Nansen AI research agent (fast/expert modes)
@@ -724,6 +726,12 @@ TRADING:
   nansen trade limit-order create --from SOL --to USDC --amount 1.5 --trigger-mint SOL --trigger-condition below --trigger-price 80
   Supports Solana/Base DEX swaps, cross-chain bridges, and Solana limit orders.
 
+BRIDGE (Hyperliquid):
+  nansen bridge quote --from-chain base --to-chain hyperliquid --from-token USDC --amount 1000000
+  nansen bridge execute --quote <quoteId>
+  nansen bridge status --request-id <id>
+  Supports EVM chains (ethereum, base, arbitrum, polygon, bnb) <-> Hyperliquid.
+
 EXAMPLES:
   nansen trade quote --chain base --from ETH --to USDC --amount 1000000000000000000
   nansen trade quote --chain base --to-chain solana --from USDC --to USDC --amount 1000000
@@ -737,6 +745,7 @@ DEPRECATED ALIASES (still work, will be removed in a future version):
 
 Research chains: ethereum, solana, base, bnb, arbitrum, polygon, optimism, avalanche, linea, scroll, mantle, ronin, sei, plasma, sonic, monad, hyperevm, iotaevm
 Trade chains: solana, base
+Bridge chains: ethereum, base, arbitrum, polygon, bnb, hyperliquid
 Labels: Fund, Smart Trader, 30D/90D/180D Smart Trader, Smart HL Perps Trader
 
 Docs: https://docs.nansen.ai
@@ -1575,6 +1584,34 @@ USAGE:
       throw new NansenError(`Unknown trade subcommand: ${sub}. Available: quote, execute, bridge-status, limit-order`, ErrorCode.UNKNOWN);
     }
     return tradingCmds[sub](args.slice(1), apiInstance, flags, options);
+  };
+
+  // 'bridge' delegates to quote/execute/status from buildBridgeCommands
+  const bridgeCmds = buildBridgeCommands(deps);
+  cmds['bridge'] = async (args, apiInstance, flags, options) => {
+    const sub = args[0];
+    if (!sub || sub === 'help') {
+      log(`nansen bridge — Hyperliquid bridge commands (EVM <-> Hyperliquid via Relay)
+
+SUBCOMMANDS:
+  quote     Get a bridge quote
+  execute   Execute a bridge quote (sign + broadcast)
+  status    Check bridge transaction status
+
+USAGE:
+  nansen bridge quote --from-chain base --to-chain hyperliquid --from-token USDC --amount 1000000
+  nansen bridge execute --quote <quoteId>
+  nansen bridge status --request-id <id>
+
+SUPPORTED CHAINS:
+  EVM -> Hyperliquid: ethereum, base, arbitrum, polygon, bnb
+  Hyperliquid -> EVM: ethereum, base, arbitrum`);
+      return;
+    }
+    if (!bridgeCmds[sub]) {
+      throw new NansenError(`Unknown bridge subcommand: ${sub}. Available: quote, execute, status`, ErrorCode.UNKNOWN);
+    }
+    return bridgeCmds[sub](args.slice(1), apiInstance, flags, options);
   };
 
   return cmds;

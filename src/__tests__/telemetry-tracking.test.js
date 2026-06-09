@@ -165,6 +165,13 @@ describe('telemetry tracking for all first-level commands', () => {
     expect(trackSucceeded.mock.calls[0][0].command).toBe('wallet');
   });
 
+  it('bridge (help subcommand)', async () => {
+    await runCLI(['bridge'], baseDeps());
+    expect(wasTracked()).toBe(1);
+    expect(trackSucceeded).toHaveBeenCalledOnce();
+    expect(trackSucceeded.mock.calls[0][0].command).toBe('bridge');
+  });
+
   it('trade quote (missing args shows usage)', async () => {
     await runCLI(['trade', 'quote'], baseDeps());
     expect(wasTracked()).toBe(1);
@@ -233,8 +240,8 @@ describe('telemetry tracking for all first-level commands', () => {
       // operational
       'account', 'login', 'logout', 'schema', 'cache', 'changelog',
       'web',
-      // wallet & trading
-      'wallet', 'trade', 'quote', 'execute', 'bridge-status',
+      // wallet, trading & bridge
+      'wallet', 'trade', 'quote', 'execute', 'bridge-status', 'bridge',
       // help is a meta command, intentionally not tracked
       'help',
     ]);
