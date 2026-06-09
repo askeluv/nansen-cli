@@ -6,6 +6,7 @@
 import { NansenAPI, NansenError, CommandError, ErrorCode, saveConfig, deleteConfig, getConfigFile, clearCache, getCacheDir, validateAddress, normalizeAddress, sleep } from './api.js';
 import { buildWalletCommands } from './wallet.js';
 import { buildBridgeCommands } from './bridge.js';
+import { buildPerpCommands } from './perp.js';
 import { buildTradingCommands } from './trading.js';
 import { buildLimitOrderCommands } from './limit-order.js';
 import { formatAlertsTable, buildAlertsCommands } from './commands/alerts.js';
@@ -703,6 +704,7 @@ USAGE: nansen <command> [subcommand] [options]
 COMMANDS:
   trade       DEX swaps/bridges: quote, execute, bridge-status, limit-order
   bridge      Hyperliquid bridge: quote, execute, status (EVM <-> HL)
+  perp        Hyperliquid perps: order, cancel, close, leverage, positions
   research    analytics: smart-money, profiler, token, search, perp, portfolio, points
   wallet      create, list, show, export, default, delete, forget-password
   agent       Ask the Nansen AI research agent (fast/expert modes)
@@ -1614,11 +1616,43 @@ SUPPORTED CHAINS:
     return bridgeCmds[sub](args.slice(1), apiInstance, flags, options);
   };
 
+  // 'perp' delegates to buildPerpCommands
+  const perpCmds = buildPerpCommands(deps);
+  cmds['perp'] = async (args, apiInstance, flags, options) => {
+    const sub = args[0];
+    if (!sub || sub === 'help') {
+      log(`nansen perp — Hyperliquid perpetual trading
+
+SUBCOMMANDS:
+  order       Place a perp order (market/limit with optional TP/SL)
+  cancel      Cancel an open order
+  close       Close a position (reduce-only market order)
+  leverage    Set leverage and margin mode
+  positions   View open positions
+  orders      View open orders
+  account     View account state (balance, equity, margin)
+  meta        View available assets
+
+USAGE:
+  nansen perp order --coin BTC --side buy --size 0.001 --price 50000 --type limit
+  nansen perp cancel --coin BTC --oid 12345
+  nansen perp close --coin BTC --size 0.001 --price 100000 --side sell
+  nansen perp leverage --coin BTC --leverage 10 --margin-type cross
+  nansen perp positions
+  nansen perp account`);
+      return;
+    }
+    if (!perpCmds[sub]) {
+      throw new NansenError(`Unknown perp subcommand: ${sub}. Available: order, cancel, close, leverage, positions, orders, account, meta`, ErrorCode.UNKNOWN);
+    }
+    return perpCmds[sub](args.slice(1), apiInstance, flags, options);
+  };
+
   return cmds;
 }
 
 // Categories that moved under 'research'
-export const DEPRECATED_TO_RESEARCH = new Set(['smart-money', 'profiler', 'token', 'search', 'perp', 'portfolio', 'points']);
+export const DEPRECATED_TO_RESEARCH = new Set(['smart-money', 'profiler', 'token', 'search', 'portfolio', 'points']);
 // Subcommands that moved under 'trade'
 export const DEPRECATED_TO_TRADE = new Set(['quote', 'execute']);
 
