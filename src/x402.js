@@ -157,6 +157,17 @@ export async function createPaymentSignature(response, url, options = {}) {
 }
 
 /**
+ * x402 payment tokens per EVM network, matching the stablecoins the API
+ * advertises in 402 `accepts` entries. `decimals` matters: USDT on BNB Smart
+ * Chain uses 18 decimals, unlike the 6-decimal tokens on Base and X Layer.
+ */
+export const EVM_X402_TOKENS = {
+  'eip155:8453': { token: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', rpc: CHAIN_RPCS.base,   symbol: 'USDC',  decimals: 6  }, // Base USDC
+  'eip155:196':  { token: '0x779Ded0c9e1022225f8E0630b35a9b54bE713736', rpc: CHAIN_RPCS.xlayer, symbol: 'USDT0', decimals: 6  }, // X Layer USDT0
+  'eip155:56':   { token: '0x55d398326f99059fF775485246999027B3197955', rpc: CHAIN_RPCS.bsc,    symbol: 'USDT',  decimals: 18 }, // BSC USDT
+};
+
+/**
  * Check stablecoin balance for x402 payment wallet on the given network.
  * Returns `{ balance, symbol }` (USD amount + token symbol) or null if check fails.
  */
@@ -192,13 +203,9 @@ export async function checkX402Balance(network) {
     }
 
     if (network.startsWith('eip155:')) {
-      // Per-network token + RPC. Both tokens are 6-decimals.
       // Default to Base USDC if the network is unknown so existing wallets keep working.
-      const EVM_NETWORKS = {
-        'eip155:8453': { token: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', rpc: CHAIN_RPCS.base,   symbol: 'USDC'  }, // Base USDC
-        'eip155:196':  { token: '0x779Ded0c9e1022225f8E0630b35a9b54bE713736', rpc: CHAIN_RPCS.xlayer, symbol: 'USDT0' }, // X Layer USDT0
-      };
-      const { token, rpc, symbol } = EVM_NETWORKS[network] || EVM_NETWORKS['eip155:8453'];
+      const { token, rpc, symbol, decimals } =
+        EVM_X402_TOKENS[network] || EVM_X402_TOKENS['eip155:8453'];
       const addr = walletInfo.evm.replace('0x', '').toLowerCase().padStart(64, '0');
       const resp = await fetch(rpc, {
         method: 'POST',
@@ -210,7 +217,7 @@ export async function checkX402Balance(network) {
         }),
       });
       const data = await resp.json();
-      return { balance: parseInt(data.result, 16) / 1e6, symbol };
+      return { balance: parseInt(data.result, 16) / 10 ** decimals, symbol };
     }
 
     return null;
