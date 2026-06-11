@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.33.0
+
+### Minor Changes
+
+- [#457](https://github.com/nansen-ai/nansen-cli/pull/457) [`8149564`](https://github.com/nansen-ai/nansen-cli/commit/8149564f181dc7bfc9c66488ba2373df6f1aab5d) Thanks [@gulshngill](https://github.com/gulshngill)! - x402 on BNB Smart Chain: support all four stablecoins the API now advertises (U, USD1, USDT, USDC) and add Permit2 payment signing. Payments route on the 402's `extra.assetTransferMethod` — `eip3009` keeps the existing gasless flow (U, USD1), while `permit2-exact` (USDT, USDC on BSC) signs a Permit2 `PermitWitnessTransferFrom` against the spender contract advertised in the 402. Permit2 entries are skipped with an actionable message when the wallet hasn't made the one-time `approve(Permit2, …)` for the token. Post-payment balance warnings now check the exact token paid with (per-token decimals) instead of one hardcoded token per network.
+
 ## 1.32.1
 
 ### Patch Changes
