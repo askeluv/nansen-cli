@@ -8,6 +8,7 @@
  * Override env vars:
  *   NANSEN_EVM_RPC        Custom Ethereum RPC (also used as generic EVM fallback)
  *   NANSEN_BASE_RPC       Custom Base RPC
+ *   NANSEN_BSC_RPC        Custom BNB Smart Chain RPC
  *   NANSEN_XLAYER_RPC     Custom X Layer RPC
  *   NANSEN_SOLANA_RPC     Custom Solana RPC
  *
@@ -20,6 +21,7 @@
 
 const DEFAULT_EVM_RPC    = 'https://eth.public-rpc.com';
 const DEFAULT_BASE_RPC   = 'https://mainnet.base.org';
+const DEFAULT_BSC_RPC    = 'https://bsc-dataseed.binance.org';
 const DEFAULT_XLAYER_RPC = 'https://rpc.xlayer.tech';
 const DEFAULT_SOLANA_RPC = 'https://api.mainnet-beta.solana.com';
 
@@ -27,6 +29,7 @@ export const CHAIN_RPCS = {
   ethereum: process.env.NANSEN_EVM_RPC    || DEFAULT_EVM_RPC,
   evm:      process.env.NANSEN_EVM_RPC    || DEFAULT_EVM_RPC,   // generic EVM fallback
   base:     process.env.NANSEN_BASE_RPC   || process.env.NANSEN_RPC_BASE || DEFAULT_BASE_RPC,
+  bsc:      process.env.NANSEN_BSC_RPC    || DEFAULT_BSC_RPC,
   xlayer:   process.env.NANSEN_XLAYER_RPC || DEFAULT_XLAYER_RPC,
   solana:   process.env.NANSEN_SOLANA_RPC || DEFAULT_SOLANA_RPC,
 };
