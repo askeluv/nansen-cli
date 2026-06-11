@@ -493,7 +493,7 @@ export class NansenAPI {
    * an attemptX402Payment() method so adding a new payment provider only requires
    * touching that one method, not hunting inside the retry loop.
    */
-  async _x402Retry(signature, walletLabel, network, url, body, options = {}) {
+  async _x402Retry(signature, walletLabel, network, url, body, options = {}, asset = null) {
     const paidResponse = await fetch(url, {
       method: 'POST',
       headers: {
@@ -514,7 +514,7 @@ export class NansenAPI {
     if (network) {
       try {
         const { checkX402Balance } = await import('./x402.js');
-        const result = await checkX402Balance(network);
+        const result = await checkX402Balance(network, asset);
         if (result !== null && result.balance < 0.25) {
           console.error(`[x402] Warning: ${result.symbol} balance low ($${result.balance.toFixed(2)}). Fund your wallet to avoid interruptions.`);
         }
@@ -651,8 +651,8 @@ export class NansenAPI {
               // 1. Try local wallet with fallback across payment networks
               try {
                 const { createPaymentSignatures } = await import('./x402.js');
-                for await (const { signature, network } of createPaymentSignatures(response, url)) {
-                  const result = await this._x402Retry(signature, `local wallet ${defaultWalletName}`, network, url, body, options);
+                for await (const { signature, network, asset } of createPaymentSignatures(response, url)) {
+                  const result = await this._x402Retry(signature, `local wallet ${defaultWalletName}`, network, url, body, options, asset);
                   if (result !== null) return result;
                   // This payment option was rejected, try next
                 }
