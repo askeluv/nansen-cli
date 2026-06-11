@@ -59,13 +59,14 @@ function rankRequirements(requirements) {
 const ALLOWANCE_SELECTOR = '0xdd62ed3e';
 
 /**
- * Check whether `owner` has approved Permit2 to spend `token`.
- * Permit2-based payments are doomed without this one-time on-chain approval,
- * so skip those entries early instead of burning a failed verify round-trip.
+ * Check whether `owner` has approved Permit2 to spend at least `amount` of
+ * `token`. Permit2-based payments are doomed without sufficient allowance
+ * (never approved, or a finite approval now below the payment amount), so
+ * skip those entries early instead of burning a failed verify round-trip.
  * Returns true when the allowance is unknown (RPC failure) — let the server
  * decide rather than block a possibly-valid payment.
  */
-async function hasPermit2Allowance(network, token, owner) {
+async function hasPermit2Allowance(network, token, owner, amount) {
   const rpc = getEvmRpcUrl(network);
   if (!rpc) return true;
   try {
@@ -82,7 +83,7 @@ async function hasPermit2Allowance(network, token, owner) {
     });
     const data = await resp.json();
     if (typeof data.result !== 'string') return true;
-    return BigInt(data.result) > 0n;
+    return BigInt(data.result) >= BigInt(amount);
   } catch {
     return true;
   }
@@ -99,12 +100,14 @@ async function buildPaymentForRequirement(requirement, exported, url) {
         requirement.network,
         requirement.asset,
         exported.evm.address,
+        requirement.amount,
       );
       if (!approved) {
         console.error(
-          `[x402] Skipping ${requirement.network} permit2 option: wallet has not ` +
-          `approved Permit2 (${PERMIT2_ADDRESS}) for token ${requirement.asset}. ` +
-          `Send a one-time approve(${PERMIT2_ADDRESS}, <amount>) from the wallet to enable it.`,
+          `[x402] Skipping ${requirement.network} permit2 option: Permit2 ` +
+          `(${PERMIT2_ADDRESS}) allowance for token ${requirement.asset} is ` +
+          `missing or below the payment amount (${requirement.amount}). ` +
+          `Send approve(${PERMIT2_ADDRESS}, <amount>) from the wallet to enable it.`,
         );
         return null;
       }
