@@ -955,11 +955,20 @@ export class NansenAPI {
     const { address, filters = {}, orderBy } = params;
     // Perp positions work with HL addresses (not validated)
     // Note: This endpoint does NOT support pagination parameter
-    return this.request('/api/v1/profiler/perp-positions', {
+    const result = await this.request('/api/v1/profiler/perp-positions', {
       address,
       filters,
       order_by: orderBy
     });
+    // The API returns {asset_positions: [{position: {...}, position_type}]} — flatten
+    // to a standard array so the table formatter renders one row per position.
+    if (result?.data?.asset_positions) {
+      result.data = result.data.asset_positions.map(p => ({
+        ...p.position,
+        position_type: p.position_type,
+      }));
+    }
+    return result;
   }
 
   async addressPerpTrades(params = {}) {
