@@ -1367,7 +1367,19 @@ export function buildCommands(deps = {}) {
       const days = options.days ? parseInt(options.days) : 30;
 
       const handlers = {
-        'screener': () => apiInstance.perpScreener({ filters, orderBy, pagination, days }),
+        'screener': () => {
+          const traderType = options['trader-type'];
+          const sectorsFilter = options['sectors-filter']
+            ? options['sectors-filter'].split(',').map(s => s.trim()).filter(Boolean)
+            : undefined;
+          const smLabelFilter = options['sm-label-filter']
+            ? options['sm-label-filter'].split(',').map(s => s.trim()).filter(Boolean)
+            : undefined;
+          const traderLabelFilter = options['trader-label-filter']
+            ? options['trader-label-filter'].split(',').map(s => s.trim()).filter(Boolean)
+            : undefined;
+          return apiInstance.perpScreener({ filters, orderBy, pagination, days, traderType, sectorsFilter, smLabelFilter, traderLabelFilter });
+        },
         'leaderboard': () => {
           const withLabels = resolveBooleanOption(options, flags, 'premium-labels');
           return apiInstance.perpLeaderboard({ filters, orderBy, pagination, days, withLabels });

@@ -236,6 +236,11 @@ const MOCK_RESPONSES = {
       { address: '0x123', pnl_usd: 500000 }
     ]
   },
+  perpScreener: {
+    data: [
+      { token_symbol: 'BTC', volume: 1000000, open_interest: 500000, mark_price: 95000 }
+    ]
+  },
   perpLeaderboard: {
     leaders: [
       { address: '0x123', pnl_usd: 200000 }
@@ -1801,6 +1806,74 @@ describe('NansenAPI', () => {
   // =================== Perp Endpoints ===================
 
   describe('Perp', () => {
+    describe('perpScreener', () => {
+      it('should fetch perp screener with correct endpoint', async () => {
+        setupMock(MOCK_RESPONSES.perpScreener);
+
+        const result = await api.perpScreener({});
+
+        const body = expectFetchCalledWith('/api/v1/perp-screener');
+        expect(body.date).toBeDefined();
+        expect(result.data).toBeInstanceOf(Array);
+      });
+
+      it('should include trader_type when provided', async () => {
+        setupMock(MOCK_RESPONSES.perpScreener);
+
+        await api.perpScreener({ traderType: 'whale' });
+
+        const body = expectFetchCalledWith('/api/v1/perp-screener');
+        expect(body.trader_type).toBe('whale');
+      });
+
+      it('should not include trader_type when not provided', async () => {
+        setupMock(MOCK_RESPONSES.perpScreener);
+
+        await api.perpScreener({});
+
+        const body = expectFetchCalledWith('/api/v1/perp-screener');
+        expect(body.trader_type).toBeUndefined();
+      });
+
+      it('should include sectors_filter array when provided', async () => {
+        setupMock(MOCK_RESPONSES.perpScreener);
+
+        await api.perpScreener({ sectorsFilter: ['Crypto:AI', 'Crypto:DeFi'] });
+
+        const body = expectFetchCalledWith('/api/v1/perp-screener');
+        expect(body.sectors_filter).toEqual(['Crypto:AI', 'Crypto:DeFi']);
+      });
+
+      it('should include sm_label_filter when provided', async () => {
+        setupMock(MOCK_RESPONSES.perpScreener);
+
+        await api.perpScreener({ smLabelFilter: ['30D Smart Trader'] });
+
+        const body = expectFetchCalledWith('/api/v1/perp-screener');
+        expect(body.sm_label_filter).toEqual(['30D Smart Trader']);
+      });
+
+      it('should include trader_label_filter when provided', async () => {
+        setupMock(MOCK_RESPONSES.perpScreener);
+
+        await api.perpScreener({ traderLabelFilter: ['HL Perps Whale'] });
+
+        const body = expectFetchCalledWith('/api/v1/perp-screener');
+        expect(body.trader_label_filter).toEqual(['HL Perps Whale']);
+      });
+
+      it('should not include optional fields when not provided', async () => {
+        setupMock(MOCK_RESPONSES.perpScreener);
+
+        await api.perpScreener({});
+
+        const body = expectFetchCalledWith('/api/v1/perp-screener');
+        expect(body.sectors_filter).toBeUndefined();
+        expect(body.sm_label_filter).toBeUndefined();
+        expect(body.trader_label_filter).toBeUndefined();
+      });
+    });
+
     describe('perpLeaderboard', () => {
       it('should fetch perp leaderboard with correct endpoint', async () => {
         setupMock(MOCK_RESPONSES.perpLeaderboard);

@@ -1187,13 +1187,18 @@ export class NansenAPI {
   // ============= Perp Endpoints =============
 
   async perpScreener(params = {}) {
-    const { filters = {}, orderBy, pagination, days = 30 } = params;
-    return this.request('/api/v1/perp-screener', {
+    const { filters = {}, orderBy, pagination, days = 30, traderType, sectorsFilter, smLabelFilter, traderLabelFilter } = params;
+    const body = {
       date: buildDateRange(days),
       filters,
       order_by: orderBy,
       pagination
-    });
+    };
+    if (traderType !== undefined) body.trader_type = traderType;
+    if (sectorsFilter !== undefined) body.sectors_filter = sectorsFilter;
+    if (smLabelFilter !== undefined) body.sm_label_filter = smLabelFilter;
+    if (traderLabelFilter !== undefined) body.trader_label_filter = traderLabelFilter;
+    return this.request('/api/v1/perp-screener', body);
   }
 
   async perpLeaderboard(params = {}) {
