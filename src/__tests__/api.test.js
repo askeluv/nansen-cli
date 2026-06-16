@@ -1823,7 +1823,7 @@ describe('NansenAPI', () => {
         await api.perpScreener({ traderType: 'whale' });
 
         const body = expectFetchCalledWith('/api/v1/perp-screener');
-        expect(body.trader_type).toBe('whale');
+        expect(body.filters.trader_type).toBe('whale');
       });
 
       it('should not include trader_type when not provided', async () => {
@@ -1832,7 +1832,7 @@ describe('NansenAPI', () => {
         await api.perpScreener({});
 
         const body = expectFetchCalledWith('/api/v1/perp-screener');
-        expect(body.trader_type).toBeUndefined();
+        expect(body.filters?.trader_type).toBeUndefined();
       });
 
       it('should include sectors_filter array when provided', async () => {
@@ -1841,7 +1841,7 @@ describe('NansenAPI', () => {
         await api.perpScreener({ sectorsFilter: ['Crypto:AI', 'Crypto:DeFi'] });
 
         const body = expectFetchCalledWith('/api/v1/perp-screener');
-        expect(body.sectors_filter).toEqual(['Crypto:AI', 'Crypto:DeFi']);
+        expect(body.filters.sectors_filter).toEqual(['Crypto:AI', 'Crypto:DeFi']);
       });
 
       it('should include sm_label_filter when provided', async () => {
@@ -1850,7 +1850,7 @@ describe('NansenAPI', () => {
         await api.perpScreener({ smLabelFilter: ['30D Smart Trader'] });
 
         const body = expectFetchCalledWith('/api/v1/perp-screener');
-        expect(body.sm_label_filter).toEqual(['30D Smart Trader']);
+        expect(body.filters.sm_label_filter).toEqual(['30D Smart Trader']);
       });
 
       it('should include trader_label_filter when provided', async () => {
@@ -1859,7 +1859,7 @@ describe('NansenAPI', () => {
         await api.perpScreener({ traderLabelFilter: ['HL Perps Whale'] });
 
         const body = expectFetchCalledWith('/api/v1/perp-screener');
-        expect(body.trader_label_filter).toEqual(['HL Perps Whale']);
+        expect(body.filters.trader_label_filter).toEqual(['HL Perps Whale']);
       });
 
       it('should not include optional fields when not provided', async () => {
@@ -1868,9 +1868,9 @@ describe('NansenAPI', () => {
         await api.perpScreener({});
 
         const body = expectFetchCalledWith('/api/v1/perp-screener');
-        expect(body.sectors_filter).toBeUndefined();
-        expect(body.sm_label_filter).toBeUndefined();
-        expect(body.trader_label_filter).toBeUndefined();
+        expect(body.filters?.sectors_filter).toBeUndefined();
+        expect(body.filters?.sm_label_filter).toBeUndefined();
+        expect(body.filters?.trader_label_filter).toBeUndefined();
       });
     });
 
