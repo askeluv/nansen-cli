@@ -11,6 +11,7 @@ Harden perp, swap, and bridge command safety:
 - `limit-order list` no longer aborts the whole render when one order has a non-integer amount.
 - Quote loaders reject a cross-type quote (a bridge quote sent to `trade execute`, or a swap quote sent to `bridge execute`).
 - `bridge execute` now refuses a quote that has already been executed, preventing an accidental double-bridge on retry.
+- `bridge quote` accepts human amounts via `--amount-unit token|usd` (default stays base units), resolving token decimals per chain so the same `5` isn't 100x off between chains (USDC is 6 decimals on EVM, 8 on Hyperliquid). Hyperliquid USDC is floored to the bridge's 6-decimal precision to avoid a round-up-past-balance rejection.
 - `perp meta` supports `--all` and `--filter <text>` so assets past the first 20 (e.g. HYPE) are listable.
 - Deprecated top-level aliases now print a deprecation notice on stderr when run, not only in `--help`.
 - `limit-order` rejects a zero-duration or past expiry instead of creating an order that expires immediately.

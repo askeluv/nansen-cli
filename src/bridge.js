@@ -13,9 +13,11 @@ import * as path from 'node:path';
 import { signSecp256k1 } from './crypto.js';
 import { retrievePassword } from './keychain.js';
 import {
+  convertToBaseUnits,
   evmRpcCall,
   getEvmNonce,
   getQuotesDir,
+  resolveUsdPrice,
   safeQuotesPath,
   signEvmTransaction,
   waitForReceipt,
@@ -43,6 +45,49 @@ function resolveBridgeToken(symbolOrAddress, chain) {
   const tokens = BRIDGE_TOKENS[chain.toLowerCase()];
   if (!tokens) return symbolOrAddress;
   return tokens[symbolOrAddress.toUpperCase()] || symbolOrAddress;
+}
+
+function isBridgeUsdc(tokenAddress, chain) {
+  const usdc = BRIDGE_TOKENS[chain.toLowerCase()]?.USDC;
+  return !!usdc && tokenAddress.toLowerCase() === usdc.toLowerCase();
+}
+
+// Resolve a token's on-chain decimals so a human --amount can be converted to
+// base units. USDC is 6 on every supported EVM chain but 8 on Hyperliquid (the
+// crux of the per-chain decimals trap); other EVM tokens fall back to decimals().
+export async function resolveBridgeTokenDecimals(tokenAddress, chain) {
+  const normChain = chain.toLowerCase();
+  if (normChain === 'hyperliquid') {
+    if (isBridgeUsdc(tokenAddress, normChain)) return 8;
+    throw new Error(
+      `Cannot resolve decimals for ${tokenAddress} on hyperliquid. Pass --amount in base units (omit --amount-unit).`,
+    );
+  }
+  if (isBridgeUsdc(tokenAddress, normChain)) return 6;
+  // EVM fallback: decimals() selector 0x313ce567
+  const result = await evmRpcCall(normChain, 'eth_call', [{ to: tokenAddress, data: '0x313ce567' }, 'latest']);
+  const decimals = parseInt(result, 16);
+  if (isNaN(decimals) || decimals > 255) {
+    throw new Error(`Could not resolve decimals for ${tokenAddress} on ${normChain}.`);
+  }
+  return decimals;
+}
+
+// USDC's canonical precision the Relay bridge formats Hyperliquid sendAsset to.
+const HYPERLIQUID_USDC_BRIDGE_DECIMALS = 6;
+
+// Hyperliquid spot USDC is 8 decimals, but the Relay bridge rounds the sendAsset
+// amount to USDC's 6 decimals (round-half-up). Submitting the full 8-decimal
+// amount can round UP past the balance, which Hyperliquid rejects. Flooring to 6
+// keeps the bridge's rounding a no-op. (Mirrors Superapp SUPER-13582.)
+export function floorHyperliquidUsdcBridgeAmount(amountBaseUnits, decimals, tokenAddress, chain) {
+  if (chain.toLowerCase() !== 'hyperliquid' || !isBridgeUsdc(tokenAddress, chain)) {
+    return amountBaseUnits;
+  }
+  const dropped = decimals - HYPERLIQUID_USDC_BRIDGE_DECIMALS;
+  if (dropped <= 0) return amountBaseUnits;
+  const factor = 10n ** BigInt(dropped);
+  return ((BigInt(amountBaseUnits) / factor) * factor).toString();
 }
 
 // ── API helpers ──────────────────────────────────────────────────────
@@ -376,20 +421,24 @@ export function buildBridgeCommands(deps = {}) {
       const fromTokenRaw = options['from-token'] || options.token || '';
       const toTokenRaw = options['to-token'] || '';
       const amount = options.amount;
+      const amountUnit = options['amount-unit'];
       const slippageBps = options.slippage ? parseInt(options.slippage, 10) : 50;
       const walletName = options.wallet;
       const recipient = options.recipient;
 
       if (!originChain || !destinationChain || !fromTokenRaw || !amount) {
         throw new Error(
-          `Usage: nansen bridge quote --from-chain <chain> --to-chain <chain> --from-token <token> --amount <baseUnits> [--wallet <name>]
+          `Usage: nansen bridge quote --from-chain <chain> --to-chain <chain> --from-token <token> --amount <amount> [--wallet <name>]
 
 OPTIONS:
   --from-chain    Source chain (${[...BRIDGE_CHAINS].join(', ')})
   --to-chain      Destination chain
   --from-token    Source token (symbol like USDC, or address)
   --to-token      Destination token (defaults to USDC)
-  --amount        Amount in base units (integer string)
+  --amount        Amount. Base units by default (decimals differ per chain:
+                  USDC is 6 on EVM chains, 8 on Hyperliquid). Use --amount-unit
+                  to pass human amounts instead.
+  --amount-unit   token (human token amount) or usd. Omit for base units.
   --slippage      Slippage in bps (default 50 = 0.5%)
   --wallet        Wallet name
   --recipient     Destination wallet (defaults to same address)`,
@@ -410,6 +459,24 @@ OPTIONS:
 
       const wallet = resolveWalletAddress(walletName);
 
+      // Default: --amount is base units. With --amount-unit, accept a human token
+      // or USD amount and convert client-side using the source token's decimals.
+      let resolvedAmount = amount;
+      if (amountUnit === 'token' || amountUnit === 'usd') {
+        try {
+          const decimals = await resolveBridgeTokenDecimals(originToken, originChain);
+          let humanAmount = amount;
+          if (amountUnit === 'usd') {
+            const price = await resolveUsdPrice(apiInstance, originToken, originChain);
+            humanAmount = (parseFloat(amount) / price).toFixed(decimals);
+          }
+          resolvedAmount = convertToBaseUnits(humanAmount, decimals);
+          resolvedAmount = floorHyperliquidUsdcBridgeAmount(resolvedAmount, decimals, originToken, originChain);
+        } catch (err) {
+          throw new Error(`Error converting --amount: ${err.message}`, { cause: err });
+        }
+      }
+
       log(`\n  Fetching bridge quote: ${originChain} → ${destinationChain}...`);
 
       const result = await getBridgeQuote(apiInstance, {
@@ -418,7 +485,7 @@ OPTIONS:
         destination_chain: destinationChain,
         origin_token: originToken,
         destination_token: destinationToken,
-        amount,
+        amount: resolvedAmount,
         slippage_bps: slippageBps,
         ...(recipient && { recipient }),
       });
