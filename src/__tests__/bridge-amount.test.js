@@ -102,4 +102,26 @@ describe('bridge quote --amount-unit (M2)', () => {
     });
     expect(api.captured.params.amount).toBe('5000000');
   });
+
+  it('rejects an unknown --amount-unit instead of silently using base units', async () => {
+    const cmds = buildBridgeCommands({ log: () => {} });
+    const api = fakeApi();
+    await expect(
+      cmds.quote([], api, {}, {
+        'from-chain': 'base', 'to-chain': 'hyperliquid',
+        'from-token': 'USDC', amount: '5', 'amount-unit': 'tokens', wallet: 'w',
+      }),
+    ).rejects.toThrow(/Invalid --amount-unit/);
+    expect(api.captured.params).toBeUndefined();
+  });
+
+  it('accepts a case-insensitive --amount-unit', async () => {
+    const cmds = buildBridgeCommands({ log: () => {} });
+    const api = fakeApi();
+    await cmds.quote([], api, {}, {
+      'from-chain': 'base', 'to-chain': 'hyperliquid',
+      'from-token': 'USDC', amount: '5', 'amount-unit': 'Token', wallet: 'w',
+    });
+    expect(api.captured.params.amount).toBe('5000000');
+  });
 });

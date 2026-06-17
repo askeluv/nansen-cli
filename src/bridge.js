@@ -421,10 +421,21 @@ export function buildBridgeCommands(deps = {}) {
       const fromTokenRaw = options['from-token'] || options.token || '';
       const toTokenRaw = options['to-token'] || '';
       const amount = options.amount;
-      const amountUnit = options['amount-unit'];
+      // Normalize so "Token"/"USD" etc. are accepted; reject anything unknown
+      // rather than silently falling back to base units (which would re-open the
+      // per-chain magnitude trap --amount-unit exists to prevent).
+      const amountUnit = options['amount-unit'] != null
+        ? String(options['amount-unit']).toLowerCase()
+        : undefined;
       const slippageBps = options.slippage ? parseInt(options.slippage, 10) : 50;
       const walletName = options.wallet;
       const recipient = options.recipient;
+
+      if (amountUnit !== undefined && amountUnit !== 'token' && amountUnit !== 'usd') {
+        throw new Error(
+          `Invalid --amount-unit "${options['amount-unit']}". Must be "token" or "usd" (omit for base units).`,
+        );
+      }
 
       if (!originChain || !destinationChain || !fromTokenRaw || !amount) {
         throw new Error(
