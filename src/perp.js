@@ -385,20 +385,32 @@ OPTIONS:
       return undefined;
     },
 
-    'meta': async (args, apiInstance, _flags, _options) => {
+    'meta': async (args, apiInstance, flags, options) => {
       const result = await perpRead(apiInstance, 'meta', {});
-      const assets = result.assets || [];
+      let assets = result.assets || [];
 
-      log(`\n  Hyperliquid Perp Assets (${assets.length}):`);
+      const filter = (options.filter || '').toUpperCase();
+      if (filter) {
+        assets = assets.filter(a => String(a.name).toUpperCase().includes(filter));
+      }
+      // Default to a preview; --all or --filter shows the full (matching) set so
+      // assets past the first 20 (e.g. HYPE) are reachable from the CLI.
+      const showAll = flags.all || !!filter;
+      const shown = showAll ? assets : assets.slice(0, 20);
+
+      const heading = filter ? ` matching "${options.filter}"` : '';
+      log(`\n  Hyperliquid Perp Assets (${assets.length}${heading}):`);
       log('    ID   Name         Size Dec   Max Lev');
-      for (const a of assets.slice(0, 20)) {
+      for (const a of shown) {
         const id = String(a.asset_id).padStart(4);
         const name = a.name.padEnd(12);
         const szDec = String(a.sz_decimals).padStart(8);
         const maxLev = String(a.max_leverage).padStart(9);
         log(`    ${id} ${name} ${szDec} ${maxLev}`);
       }
-      if (assets.length > 20) log(`    ... and ${assets.length - 20} more`);
+      if (!showAll && assets.length > 20) {
+        log(`    ... and ${assets.length - 20} more (use --all, or --filter <text>)`);
+      }
       log('');
       return undefined;
     },

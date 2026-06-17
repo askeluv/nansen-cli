@@ -603,7 +603,9 @@ export class NansenAPI {
           || `API error: ${response.status}`;
         // nansen-api proxy stringifies nested error dicts via Python str(), producing
         // "{'message': 'actual error', ...}". Extract the inner message if present.
-        const nestedMatch = typeof message === 'string' && message.match(/['"]message['"]\s*:\s*['"](.*?)['"]/);
+        // Require the closing quote to be followed by a comma or closing brace so
+        // an apostrophe inside the message (e.g. "can't") doesn't truncate it.
+        const nestedMatch = typeof message === 'string' && message.match(/['"]message['"]\s*:\s*['"](.*?)['"]\s*[,}]/s);
         if (nestedMatch) message = nestedMatch[1];
         const code = statusToErrorCode(response.status, data);
         const retryAfterMs = parseRetryAfter(response.headers.get('retry-after'));

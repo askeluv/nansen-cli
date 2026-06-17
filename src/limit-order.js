@@ -381,14 +381,20 @@ export function parseExpiry(expiryStr) {
   const match = expiryStr.match(/^(\d+)(h|d)$/i);
   if (match) {
     const value = parseInt(match[1], 10);
+    if (value <= 0) {
+      throw new Error(`Invalid expiry "${expiryStr}". Duration must be greater than 0.`);
+    }
     const unit = match[2].toLowerCase();
     const ms = unit === 'h' ? value * 3600 * 1000 : value * 24 * 3600 * 1000;
     return Date.now() + ms;
   }
 
-  // Try as raw epoch ms
+  // Try as raw epoch ms — must be in the future, or the order expires on arrival.
   const num = Number(expiryStr);
-  if (!isNaN(num) && num > Date.now() - 86400000) {
+  if (!isNaN(num)) {
+    if (num <= Date.now()) {
+      throw new Error(`Expiry "${expiryStr}" is in the past. Provide a future time (e.g. "24h", "7d", or a future epoch in ms).`);
+    }
     return num;
   }
 

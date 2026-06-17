@@ -179,6 +179,16 @@ describe('parseExpiry', () => {
     expect(() => parseExpiry('invalid')).toThrow('Invalid expiry format');
     expect(() => parseExpiry('abc123')).toThrow('Invalid expiry format');
   });
+
+  it('rejects a zero-duration expiry (L5)', () => {
+    expect(() => parseExpiry('0h')).toThrow(/greater than 0/);
+    expect(() => parseExpiry('0d')).toThrow(/greater than 0/);
+  });
+
+  it('rejects a past epoch (L5)', () => {
+    const past = Date.now() - 3600000;
+    expect(() => parseExpiry(String(past))).toThrow(/in the past/);
+  });
 });
 
 // ============= API Client Functions =============

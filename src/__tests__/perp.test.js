@@ -120,6 +120,41 @@ describe('perp cancel validation', () => {
   });
 });
 
+describe('perp meta listing (L1)', () => {
+  // 25 fake assets so the default-20 truncation is observable; HYPE is last.
+  const assets = Array.from({ length: 25 }, (_, i) => ({
+    asset_id: i,
+    name: i === 24 ? 'HYPE' : `A${i}`,
+    sz_decimals: 2,
+    max_leverage: 50,
+  }));
+  const fakeApi = { request: async () => ({ assets }) };
+
+  function run(options) {
+    const logs = [];
+    const metaCmds = buildPerpCommands({ log: (m) => logs.push(m) });
+    return metaCmds.meta([], fakeApi, options.flags || {}, options.options || {}).then(() => logs.join('\n'));
+  }
+
+  it('truncates to 20 by default and hints at --all', async () => {
+    const out = await run({});
+    expect(out).toContain('... and 5 more');
+    expect(out).not.toContain('HYPE');
+  });
+
+  it('shows everything with --all', async () => {
+    const out = await run({ flags: { all: true } });
+    expect(out).toContain('HYPE');
+    expect(out).not.toContain('more (use --all');
+  });
+
+  it('filters by name with --filter', async () => {
+    const out = await run({ options: { filter: 'hype' } });
+    expect(out).toContain('HYPE');
+    expect(out).toContain('matching "hype"');
+  });
+});
+
 describe('perp wallet resolution (M5)', () => {
   beforeEach(() => {
     showWallet.mockReset();

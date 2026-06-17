@@ -1911,6 +1911,15 @@ export async function runCLI(rawArgs, deps = {}) {
       defaultHeaders['Payment-Signature'] = options['x402-payment-signature'];
     }
     const api = new NansenAPIClass(undefined, undefined, { retry: retryOptions, cache: cacheOptions, defaultHeaders });
+
+    // Deprecated top-level aliases otherwise run silently (the notice was only
+    // shown in --help). Warn on stderr so it doesn't pollute parsed stdout.
+    if (DEPRECATED_TO_TRADE.has(command)) {
+      process.stderr.write(`Note: "nansen ${command}" is deprecated. Use "nansen trade ${command}" instead.\n`);
+    } else if (DEPRECATED_TO_RESEARCH.has(command)) {
+      process.stderr.write(`Note: "nansen ${command}" is deprecated. Use "nansen research ${command}" instead.\n`);
+    }
+
     let result = await commands[command](subArgs, api, flags, options);
 
     // Commands that handle their own output return undefined

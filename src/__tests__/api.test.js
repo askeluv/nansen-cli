@@ -2331,6 +2331,22 @@ describe('NansenAPI', () => {
       await expect(api.smartMoneyNetflow({})).rejects.toThrow('Invalid API key');
     });
 
+    it('extracts a nested error message containing an apostrophe (L7)', async () => {
+      if (LIVE_TEST) return;
+
+      const errorResponse = {
+        ok: false,
+        status: 400,
+        headers: new Map(),
+        json: async () => ({ detail: "{'message': 'Order can't be filled', 'code': 'X'}" })
+      };
+      errorResponse.headers.get = () => null;
+
+      mockFetch.mockResolvedValueOnce(errorResponse);
+
+      await expect(api.smartMoneyNetflow({})).rejects.toThrow("Order can't be filled");
+    });
+
     it('should show login guidance for 401 when no API key', async () => {
       if (LIVE_TEST) return;
 
