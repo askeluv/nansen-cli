@@ -54,6 +54,11 @@ function resolveWalletAddress(walletName) {
     if (config.defaultWallet) wallet = showWallet(config.defaultWallet);
   }
   if (!wallet) throw new Error('No wallet found. Create one with: nansen wallet create');
+  if (!wallet.evm || !/^0x[0-9a-fA-F]{40}$/.test(wallet.evm)) {
+    throw new Error(
+      `Wallet "${wallet.name || walletName || 'default'}" has no valid EVM address. Hyperliquid perp trading requires an EVM wallet.`,
+    );
+  }
   return {
     address: wallet.evm,
     provider: wallet.provider || 'local',

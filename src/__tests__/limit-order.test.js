@@ -802,6 +802,39 @@ describe('buildLimitOrderCommands', () => {
       expect(logs.some(l => l.includes('$80.5'))).toBe(true);
     });
 
+    it('renders the list even when an order has a non-integer amount (M8)', async () => {
+      createTestWallet('lo-list-bad-amount');
+      const logs = [];
+      const cmds = buildLimitOrderCommands({ log: (m) => logs.push(m), exit: vi.fn() });
+
+      mockFetchSequence([
+        { body: { challenge: 'sign' } },
+        { body: { token: 'jwt' } },
+        {
+          body: {
+            orders: [{
+              id: 'order-bad',
+              status: 'open',
+              inputMint: 'So11111111111111111111111111111111111111112',
+              outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+              inputAmount: '1.5e9', // float/scientific — BigInt() would throw
+              triggerPriceUsd: 80.5,
+              triggerMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+              triggerCondition: 'below',
+              createdAt: '2026-03-20T00:00:00Z',
+              fills: [],
+            }],
+            pagination: { total: 1, limit: 20, offset: 0 },
+          },
+        },
+      ]);
+
+      await expect(
+        cmds.list([], null, {}, { wallet: 'lo-list-bad-amount' }),
+      ).resolves.not.toThrow();
+      expect(logs.some(l => l.includes('order-bad'))).toBe(true);
+    });
+
     it('passes filter and pagination params', async () => {
       createTestWallet('lo-list-filter');
       const cmds = buildLimitOrderCommands({ log: () => {}, exit: vi.fn() });

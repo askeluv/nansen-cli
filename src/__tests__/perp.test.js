@@ -1,4 +1,12 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+vi.mock('../wallet.js', () => ({
+  showWallet: vi.fn(),
+  getWalletConfig: vi.fn(() => ({})),
+  exportWallet: vi.fn(),
+}));
+
+import { showWallet } from '../wallet.js';
 import { buildPerpCommands } from '../perp.js';
 
 // These tests exercise client-side input validation only. Validation runs
@@ -109,5 +117,25 @@ describe('perp cancel validation', () => {
     await expect(
       cmds.cancel([], null, {}, { coin: 'ETH', oid: '0', wallet: 'x' }),
     ).rejects.toThrow(/Invalid --oid "0"/);
+  });
+});
+
+describe('perp wallet resolution (M5)', () => {
+  beforeEach(() => {
+    showWallet.mockReset();
+  });
+
+  it('rejects a wallet with no EVM address instead of querying for "undefined"', async () => {
+    showWallet.mockReturnValue({ name: 'sol-only', solana: 'So111...', provider: 'local' });
+    await expect(
+      cmds.positions([], null, {}, { wallet: 'sol-only' }),
+    ).rejects.toThrow(/no valid EVM address/);
+  });
+
+  it('rejects a malformed EVM address', async () => {
+    showWallet.mockReturnValue({ name: 'bad', evm: '0xnothex', provider: 'local' });
+    await expect(
+      cmds.positions([], null, {}, { wallet: 'bad' }),
+    ).rejects.toThrow(/no valid EVM address/);
   });
 });

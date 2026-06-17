@@ -390,7 +390,7 @@ export function saveQuote(quoteResponse, chain, signerType = 'local', privyWalle
   const hash = crypto.randomBytes(4).toString('hex');
   const quoteId = `${timestamp}-${hash}`;
 
-  const data = { quoteId, chain, timestamp, signerType, response: quoteResponse };
+  const data = { quoteId, type: 'swap', chain, timestamp, signerType, response: quoteResponse };
   if (toChain) data.toChain = toChain;
   if (privyWalletIds) data.privyWalletIds = privyWalletIds;
 
@@ -411,6 +411,11 @@ export function loadQuote(quoteId) {
   if (Date.now() - data.timestamp > 3600000) {
     fs.unlinkSync(filePath);
     throw new Error('Quote has expired. Please request a new quote.');
+  }
+  // Guard against running a bridge quote through the swap path. Older swap
+  // quotes predate the `type` field, so only reject a known-mismatched type.
+  if (data.type && data.type !== 'swap') {
+    throw new Error(`Quote "${quoteId}" is a ${data.type} quote. Use the matching command (e.g. "nansen bridge execute" for a bridge quote).`);
   }
   return data;
 }
@@ -1074,6 +1079,19 @@ export function buildTradingCommands(deps = {}) {
           'INVALID_AGGREGATOR'
         );
       }
+      // Slippage is a decimal fraction (0.03 = 3%). Reject non-numeric or
+      // out-of-range values so a percent-vs-decimal mix-up (e.g. "3" meaning 3%)
+      // can't become a 300% slippage tolerance.
+      for (const [optName, optVal] of [['slippage', slippage], ['max-auto-slippage', maxAutoSlippage]]) {
+        if (optVal == null) continue;
+        const n = Number(optVal);
+        if (!Number.isFinite(n) || n < 0 || n > 1) {
+          throw new CommandError(
+            `Invalid --${optName} "${optVal}". Use a decimal between 0 and 1 (e.g. 0.03 for 3%).`,
+            'INVALID_SLIPPAGE'
+          );
+        }
+      }
 
       if (!chain || !from || !to || !amount) {
         throw new CommandError(`
@@ -1399,7 +1417,16 @@ EXAMPLES:
         }
 
         // --quote-index pins a specific quote (no fallback)
-        const pinIndex = options['quote-index'] != null ? parseInt(options['quote-index'], 10) : null;
+        let pinIndex = null;
+        if (options['quote-index'] != null) {
+          pinIndex = parseInt(options['quote-index'], 10);
+          if (!Number.isInteger(pinIndex) || pinIndex < 0 || pinIndex >= allQuotes.length) {
+            throw new CommandError(
+              `❌ Invalid --quote-index "${options['quote-index']}". Must be an integer between 0 and ${allQuotes.length - 1}.`,
+              'INVALID_QUOTE_INDEX',
+            );
+          }
+        }
         const startIndex = pinIndex ?? 0;
         const endIndex = pinIndex != null ? startIndex + 1 : allQuotes.length;
 

@@ -76,4 +76,9 @@ describe('bridge quote replay protection', () => {
   it('marking a missing quote is a no-op (does not throw)', () => {
     expect(() => markBridgeQuoteExecuted('ghost')).not.toThrow();
   });
+
+  it('rejects a non-bridge quote loaded through the bridge path', () => {
+    writeQuote('swap-1', { type: 'swap' });
+    expect(() => loadBridgeQuote('swap-1')).toThrow(/not a bridge quote/);
+  });
 });

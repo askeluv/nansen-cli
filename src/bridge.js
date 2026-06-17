@@ -94,6 +94,9 @@ export function loadBridgeQuote(quoteId) {
     fs.unlinkSync(filePath);
     throw new Error('Bridge quote has expired. Please request a new quote.');
   }
+  if (data.type !== 'bridge') {
+    throw new Error(`Quote "${quoteId}" is not a bridge quote. Use "nansen trade execute" for a swap quote.`);
+  }
   if (data.executedAt) {
     // Quotes are single-use: re-signing and re-broadcasting would move funds
     // a second time. Refuse a quote that has already been executed.

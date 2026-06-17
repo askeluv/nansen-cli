@@ -432,8 +432,16 @@ function formatAmount(amount, mintAddress) {
   if (!amount) return '?';
   const info = KNOWN_SOLANA_TOKENS[mintAddress];
   if (!info) return `${amount} ${mintAddress || '?'}`;
-  const raw = BigInt(amount);
-  const divisor = BigInt(10 ** info.decimals);
+  // amount is backend-controlled; a float or scientific-notation string makes
+  // BigInt() throw. Fall back to the raw amount rather than aborting the whole
+  // list render.
+  let raw;
+  try {
+    raw = BigInt(amount);
+  } catch {
+    return `${amount} ${info.symbol}`;
+  }
+  const divisor = 10n ** BigInt(info.decimals);
   const whole = raw / divisor;
   const frac = raw % divisor;
   const fracStr = frac.toString().padStart(info.decimals, '0').replace(/0+$/, '');
