@@ -312,6 +312,22 @@ OPTIONS:
 
       const marginType = assertMarginType(options['margin-type']);
       const leverage = parsePositiveInt(options.leverage, 'leverage');
+
+      // Pre-validate against the asset's max leverage so an over-max value fails
+      // fast with a clear message instead of an opaque backend rejection. Fall
+      // open if meta is unavailable or the coin isn't listed (backend still checks).
+      let maxLeverage = null;
+      try {
+        const meta = await perpRead(apiInstance, 'meta', {});
+        const asset = (meta.assets || []).find(a => String(a.name).toUpperCase() === coin);
+        if (asset && Number.isFinite(asset.max_leverage)) maxLeverage = asset.max_leverage;
+      } catch {
+        // meta lookup failed — skip the pre-check rather than block a valid request.
+      }
+      if (maxLeverage !== null && leverage > maxLeverage) {
+        throw new Error(`Leverage ${leverage}x exceeds the ${maxLeverage}x maximum for ${coin}.`);
+      }
+
       const isCross = marginType === 'cross';
       const wallet = resolveWalletAddress(walletName);
       const privateKeyHex = wallet.provider !== 'privy' ? resolvePrivateKey(walletName) : null;

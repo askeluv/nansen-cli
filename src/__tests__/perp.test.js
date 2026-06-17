@@ -110,6 +110,28 @@ describe('perp leverage validation', () => {
       cmds.leverage([], null, {}, { ...baseLev, leverage: '0' }),
     ).rejects.toThrow(/Invalid --leverage "0"/);
   });
+
+  // meta exposes max_leverage per asset; the leverage command pre-checks against it.
+  const metaApi = { request: async () => ({ assets: [{ name: 'ETH', max_leverage: 25, sz_decimals: 4, asset_id: 1 }] }) };
+
+  it('rejects leverage above the asset maximum with a clear message', async () => {
+    await expect(
+      cmds.leverage([], metaApi, {}, { ...baseLev, leverage: '100' }),
+    ).rejects.toThrow(/exceeds the 25x maximum for ETH/);
+  });
+
+  it('allows leverage within the asset maximum (passes the pre-check)', async () => {
+    await expect(
+      cmds.leverage([], metaApi, {}, { ...baseLev, leverage: '10' }),
+    ).rejects.not.toThrow(/exceeds the/);
+  });
+
+  it('falls open when meta is unavailable (does not block on the pre-check)', async () => {
+    const brokenApi = { request: async () => { throw new Error('meta down'); } };
+    await expect(
+      cmds.leverage([], brokenApi, {}, { ...baseLev, leverage: '100' }),
+    ).rejects.not.toThrow(/exceeds the|meta down/);
+  });
 });
 
 describe('perp cancel validation', () => {
