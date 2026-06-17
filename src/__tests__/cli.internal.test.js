@@ -4211,9 +4211,11 @@ describe('deprecation warnings', () => {
     expect(DEPRECATED_TO_RESEARCH.has('profiler')).toBe(true);
     expect(DEPRECATED_TO_RESEARCH.has('token')).toBe(true);
     expect(DEPRECATED_TO_RESEARCH.has('search')).toBe(true);
-    expect(DEPRECATED_TO_RESEARCH.has('perp')).toBe(true);
     expect(DEPRECATED_TO_RESEARCH.has('portfolio')).toBe(true);
     expect(DEPRECATED_TO_RESEARCH.has('points')).toBe(true);
+    // 'perp' is a top-level trading command (nansen perp order|close|...), not a
+    // deprecated alias for 'research perp', so it must not be in this set.
+    expect(DEPRECATED_TO_RESEARCH.has('perp')).toBe(false);
   });
 
   it('should include quote and execute in DEPRECATED_TO_TRADE', () => {
