@@ -84,7 +84,7 @@ function saveBridgeQuote(response, originChain, destinationChain, walletProvider
   return quoteId;
 }
 
-function loadBridgeQuote(quoteId) {
+export function loadBridgeQuote(quoteId) {
   const filePath = safeQuotesPath(`${quoteId}.json`);
   if (!filePath || !fs.existsSync(filePath)) {
     throw new Error(`Bridge quote "${quoteId}" not found. Quotes expire after 1 hour.`);
@@ -94,7 +94,28 @@ function loadBridgeQuote(quoteId) {
     fs.unlinkSync(filePath);
     throw new Error('Bridge quote has expired. Please request a new quote.');
   }
+  if (data.executedAt) {
+    // Quotes are single-use: re-signing and re-broadcasting would move funds
+    // a second time. Refuse a quote that has already been executed.
+    throw new Error(
+      `Bridge quote "${quoteId}" was already executed at ${new Date(data.executedAt).toISOString()}. Request a new quote to bridge again.`,
+    );
+  }
   return data;
+}
+
+export function markBridgeQuoteExecuted(quoteId) {
+  const filePath = safeQuotesPath(`${quoteId}.json`);
+  if (!filePath || !fs.existsSync(filePath)) return;
+  try {
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    data.executedAt = Date.now();
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), { mode: 0o600 });
+  } catch {
+    // Best-effort: if the marker can't be written, the next execute attempt
+    // will still proceed, but that's preferable to crashing after a successful
+    // broadcast.
+  }
 }
 
 // ── EIP-712 signing (for HL withdrawals) ─────────────────────────────
@@ -478,6 +499,10 @@ Execute a cached bridge quote. Signs transactions and broadcasts them.`,
       } else {
         throw new Error(`Unknown execution type: ${execution_type}`);
       }
+
+      // Funds have now been broadcast — mark the quote consumed so a retry
+      // (e.g. after a polling timeout) can't re-sign and double-bridge.
+      markBridgeQuoteExecuted(quoteId);
 
       log(`\n  Bridge submitted. Polling for completion...`);
       const status = await pollBridgeCompletion(apiInstance, { requestId: request_id, log });

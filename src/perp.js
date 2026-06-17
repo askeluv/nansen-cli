@@ -117,6 +117,56 @@ async function prepareSignExecute(apiInstance, endpoint, body, { privateKeyHex, 
   return result;
 }
 
+// ── Input validation ─────────────────────────────────────────────────
+//
+// The perp path coerces strings to booleans (side -> is_buy, margin-type ->
+// is_cross) before anything reaches the backend, so a typo can't be caught
+// server-side — it silently flips to the false branch (short / isolated).
+// Validate against explicit allowlists, and reject non-positive/non-finite
+// numerics, before signing anything.
+
+const ORDER_SIDES = new Set(['buy', 'long', 'sell', 'short']);
+const CLOSE_SIDES = new Set(['buy', 'sell']);
+const MARGIN_TYPES = new Set(['cross', 'isolated']);
+
+function assertSide(raw, allowed) {
+  const side = (raw || '').toLowerCase();
+  if (!allowed.has(side)) {
+    throw new Error(
+      `Invalid --side "${raw}". Must be one of: ${[...allowed].join(', ')}.`,
+    );
+  }
+  return side;
+}
+
+function assertMarginType(raw) {
+  // --margin-type is optional and defaults to cross when omitted.
+  if (raw === undefined) return 'cross';
+  const marginType = String(raw).toLowerCase();
+  if (!MARGIN_TYPES.has(marginType)) {
+    throw new Error(
+      `Invalid --margin-type "${raw}". Must be one of: ${[...MARGIN_TYPES].join(', ')}.`,
+    );
+  }
+  return marginType;
+}
+
+function parsePositiveNumber(raw, name) {
+  const n = parseFloat(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error(`Invalid --${name} "${raw}". Must be a positive number.`);
+  }
+  return n;
+}
+
+function parsePositiveInt(raw, name) {
+  const n = parseInt(raw, 10);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new Error(`Invalid --${name} "${raw}". Must be a positive integer.`);
+  }
+  return n;
+}
+
 // ── Command builder ──────────────────────────────────────────────────
 
 export function buildPerpCommands(deps = {}) {
@@ -125,9 +175,6 @@ export function buildPerpCommands(deps = {}) {
   return {
     'order': async (args, apiInstance, flags, options) => {
       const coin = (options.coin || '').toUpperCase();
-      const side = (options.side || '').toLowerCase();
-      const size = parseFloat(options.size);
-      const price = parseFloat(options.price);
       const orderType = options.type || 'limit';
       const slippage = options.slippage ? parseFloat(options.slippage) : 0.03;
       const tp = options['take-profit'] ? parseFloat(options['take-profit']) : undefined;
@@ -135,7 +182,7 @@ export function buildPerpCommands(deps = {}) {
       const tif = options.tif || 'Gtc';
       const walletName = options.wallet;
 
-      if (!coin || !side || !size || !price) {
+      if (!coin || !options.side || options.size === undefined || options.price === undefined) {
         throw new Error(
 `Usage: nansen perp order --coin <symbol> --side <buy|sell> --size <amount> --price <price> [options]
 
@@ -152,6 +199,9 @@ OPTIONS:
   --wallet        Wallet name`);
       }
 
+      const side = assertSide(options.side, ORDER_SIDES);
+      const size = parsePositiveNumber(options.size, 'size');
+      const price = parsePositiveNumber(options.price, 'price');
       const isBuy = side === 'buy' || side === 'long';
       const wallet = resolveWalletAddress(walletName);
       const isPrivy = wallet.provider === 'privy';
@@ -191,12 +241,13 @@ OPTIONS:
 
     'cancel': async (args, apiInstance, flags, options) => {
       const coin = (options.coin || '').toUpperCase();
-      const oid = parseInt(options.oid, 10);
       const walletName = options.wallet;
 
-      if (!coin || !oid) {
+      if (!coin || options.oid === undefined) {
         throw new Error('Usage: nansen perp cancel --coin <symbol> --oid <orderId> [--wallet <name>]');
       }
+
+      const oid = parsePositiveInt(options.oid, 'oid');
 
       const wallet = resolveWalletAddress(walletName);
       const privateKeyHex = wallet.provider !== 'privy' ? resolvePrivateKey(walletName) : null;
@@ -214,13 +265,10 @@ OPTIONS:
 
     'close': async (args, apiInstance, flags, options) => {
       const coin = (options.coin || '').toUpperCase();
-      const size = parseFloat(options.size);
-      const price = parseFloat(options.price);
-      const side = (options.side || '').toLowerCase();
       const slippage = options.slippage ? parseFloat(options.slippage) : 0.03;
       const walletName = options.wallet;
 
-      if (!coin || !size || !price || !side) {
+      if (!coin || options.size === undefined || options.price === undefined || !options.side) {
         throw new Error(
 `Usage: nansen perp close --coin <symbol> --size <amount> --price <markPrice> --side <buy|sell> [options]
 
@@ -228,6 +276,9 @@ OPTIONS:
   --slippage  Slippage tolerance (default 0.03 = 3%)`);
       }
 
+      const side = assertSide(options.side, CLOSE_SIDES);
+      const size = parsePositiveNumber(options.size, 'size');
+      const price = parsePositiveNumber(options.price, 'price');
       const isBuy = side === 'buy';
       const wallet = resolveWalletAddress(walletName);
       const privateKeyHex = wallet.provider !== 'privy' ? resolvePrivateKey(walletName) : null;
@@ -248,14 +299,14 @@ OPTIONS:
 
     'leverage': async (args, apiInstance, flags, options) => {
       const coin = (options.coin || '').toUpperCase();
-      const leverage = parseInt(options.leverage, 10);
-      const marginType = (options['margin-type'] || 'cross').toLowerCase();
       const walletName = options.wallet;
 
-      if (!coin || !leverage) {
+      if (!coin || options.leverage === undefined) {
         throw new Error('Usage: nansen perp leverage --coin <symbol> --leverage <n> [--margin-type cross|isolated] [--wallet <name>]');
       }
 
+      const marginType = assertMarginType(options['margin-type']);
+      const leverage = parsePositiveInt(options.leverage, 'leverage');
       const isCross = marginType === 'cross';
       const wallet = resolveWalletAddress(walletName);
       const privateKeyHex = wallet.provider !== 'privy' ? resolvePrivateKey(walletName) : null;
@@ -329,7 +380,7 @@ OPTIONS:
       return undefined;
     },
 
-    'meta': async (args, apiInstance, flags, options) => {
+    'meta': async (args, apiInstance, _flags, _options) => {
       const result = await perpRead(apiInstance, 'meta', {});
       const assets = result.assets || [];
 
