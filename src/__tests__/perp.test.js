@@ -369,6 +369,56 @@ describe('perp account PnL (6828)', () => {
     expect(out).toContain('Unrealized PnL:  $-0.01');
     expect(out).not.toContain('Total PnL');
   });
+
+  it('surfaces the Spot USDC balance (API-14)', async () => {
+    const logs = [];
+    const accountCmds = buildPerpCommands({ log: (m) => logs.push(m) });
+    const api = {
+      request: vi.fn(async () => ({
+        marginSummary: { accountValue: '10', totalMarginUsed: '0' },
+        withdrawable: '10',
+        assetPositions: [],
+        spotUsdc: '15.0',
+      })),
+    };
+    await accountCmds.account([], api, {}, { wallet: 'x' });
+    expect(logs.join('\n')).toContain('Spot USDC:       $15.0');
+  });
+});
+
+describe('perp transfer (API-14)', () => {
+  const base = { direction: 'spot-to-perp', amount: '25', wallet: 'x' };
+
+  it('rejects an invalid --direction with a coded error', async () => {
+    const err = await cmds.transfer([], null, {}, { ...base, direction: 'sideways' }).catch(e => e);
+    expect(err.code).toBe('INVALID_INPUT');
+    expect(err.message).toMatch(/Invalid --direction "sideways"/);
+  });
+
+  it('rejects a non-numeric --amount', async () => {
+    await expect(
+      cmds.transfer([], null, {}, { ...base, amount: '25abc' }),
+    ).rejects.toThrow(/Invalid --amount "25abc"/);
+  });
+
+  it('shows usage when --amount is missing', async () => {
+    const { amount, ...noAmount } = base;
+    void amount;
+    await expect(
+      cmds.transfer([], null, {}, noAmount),
+    ).rejects.toThrow(/Usage: nansen perp transfer/);
+  });
+
+  it('rejects a duplicated --direction instead of crashing', async () => {
+    const err = await cmds.transfer([], null, {}, { ...base, direction: ['spot-to-perp', 'perp-to-spot'] }).catch(e => e);
+    expect(err.message).toMatch(/--direction was provided more than once/);
+  });
+
+  it('accepts a valid direction + amount (passes validation, fails later without a wallet)', async () => {
+    await expect(
+      cmds.transfer([], null, {}, { ...base }),
+    ).rejects.not.toThrow(/Invalid --|Usage:/);
+  });
 });
 
 describe('perp wallet resolution (M5)', () => {

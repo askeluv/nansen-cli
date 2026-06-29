@@ -226,15 +226,18 @@ nansen perp close --coin ETH --size 0.1 --price 1600 --side sell
 nansen perp cancel --coin ETH --oid 123456
 ```
 
-## Leverage & account
+## Leverage, transfers & account
 
 ```bash
 nansen perp leverage --coin ETH --leverage 5 --margin-type cross   # or isolated
+nansen perp transfer --direction spot-to-perp --amount 25          # or perp-to-spot
 nansen perp positions
-nansen perp account     # account value, unrealized PnL, margin used, withdrawable
+nansen perp account     # account value, unrealized PnL, margin used, withdrawable, spot USDC
 ```
 
 `--leverage` must be a whole integer and is capped at the asset's maximum (see `perp meta`).
+
+**Spot vs Perps:** perp trading draws from the **Perps** balance, but USDC sent to a wallet via Hyperliquid's **Send** lands in **Spot** (and shows as `Spot USDC` in `perp account`). Move it across with `perp transfer --direction spot-to-perp --amount <usdc>` before trading. (Deposits via the bridge land in Perps directly.)
 
 ## Source
 

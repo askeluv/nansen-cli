@@ -1628,9 +1628,10 @@ SUBCOMMANDS:
   cancel      Cancel an open order
   close       Close a position (reduce-only market order)
   leverage    Set leverage and margin mode
+  transfer    Move USDC between Spot and Perps balances
   positions   View open positions
   orders      View open orders
-  account     View account state (balance, equity, margin)
+  account     View account state (balance, equity, margin, spot)
   meta        View available assets
 
 USAGE:
@@ -1638,12 +1639,13 @@ USAGE:
   nansen perp cancel --coin BTC --oid 12345
   nansen perp close --coin BTC --size 0.001 --price 100000 --side sell
   nansen perp leverage --coin BTC --leverage 10 --margin-type cross
+  nansen perp transfer --direction spot-to-perp --amount 25
   nansen perp positions
   nansen perp account`);
       return;
     }
     if (!perpCmds[sub]) {
-      throw new NansenError(`Unknown perp subcommand: ${sub}. Available: order, cancel, close, leverage, positions, orders, account, meta`, ErrorCode.UNKNOWN);
+      throw new NansenError(`Unknown perp subcommand: ${sub}. Available: order, cancel, close, leverage, transfer, positions, orders, account, meta`, ErrorCode.UNKNOWN);
     }
     return perpCmds[sub](args.slice(1), apiInstance, flags, options);
   };

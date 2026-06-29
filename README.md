@@ -105,11 +105,12 @@ nansen perp order --coin BTC --side sell --size 0.001 --price 95000 --type marke
 nansen perp close --coin ETH --size 0.1 --price 1600 --side sell   # sell closes a long
 nansen perp cancel --coin ETH --oid <orderId>
 nansen perp leverage --coin ETH --leverage 5 --margin-type cross   # or isolated
+nansen perp transfer --direction spot-to-perp --amount 25          # Spot<->Perps (or perp-to-spot)
 nansen perp positions
-nansen perp account                                            # value, unrealized PnL, margin
+nansen perp account                                            # value, unrealized PnL, margin, spot USDC
 ```
 
-`--side` is `buy`/`long` or `sell`/`short` to open (`buy`/`sell` to close); `--tif` is `Gtc`/`Ioc`/`Alo`; `--slippage` is a decimal in `[0,1]`; `--leverage` is a whole integer capped at the asset max. Perp orders are irreversible once signed. See the `nansen-trading` skill for details.
+`--side` is `buy`/`long` or `sell`/`short` to open (`buy`/`sell` to close); `--tif` is `Gtc`/`Ioc`/`Alo`; `--slippage` is a decimal in `[0,1]`; `--leverage` is a whole integer capped at the asset max. Perp orders are irreversible once signed. USDC sent to a wallet via Hyperliquid's **Send** lands in the **Spot** balance (shown as `Spot USDC`); move it to Perps with `perp transfer` before trading. See the `nansen-trading` skill for details.
 
 ## Wallet
 

@@ -455,6 +455,39 @@ OPTIONS:
       return undefined;
     },
 
+    'transfer': async (args, apiInstance, flags, options) => {
+      const direction = scalar(options.direction, 'direction');
+      const walletName = scalar(options.wallet, 'wallet');
+
+      if (!direction || options.amount === undefined) {
+        throw new CommandError(
+          'Usage: nansen perp transfer --direction <spot-to-perp|perp-to-spot> --amount <usdc> [--wallet <name>]',
+          'MISSING_PARAM',
+        );
+      }
+
+      // Move USDC between the wallet's Spot and Perps balances (usdClassTransfer).
+      const DIRECTIONS = new Map([['spot-to-perp', true], ['perp-to-spot', false]]);
+      const toPerp = DIRECTIONS.get(String(direction).toLowerCase());
+      if (toPerp === undefined) {
+        throw invalid(`Invalid --direction "${direction}". Must be one of: spot-to-perp, perp-to-spot.`);
+      }
+      const amount = parsePositiveNumber(options.amount, 'amount');
+
+      const wallet = resolveWalletAddress(walletName);
+      const privateKeyHex = wallet.provider !== 'privy' ? resolvePrivateKey(walletName) : null;
+
+      log(`\n  Transfer: ${amount} USDC ${toPerp ? 'Spot → Perps' : 'Perps → Spot'}`);
+
+      await prepareSignExecute(apiInstance, 'transfer', {
+        wallet_address: wallet.address,
+        amount,
+        to_perp: toPerp,
+      }, { privateKeyHex, log });
+      log('');
+      return undefined;
+    },
+
     'positions': async (args, apiInstance, flags, options) => {
       const walletName = scalar(options.wallet, 'wallet');
       const wallet = resolveWalletAddress(walletName);
@@ -516,6 +549,9 @@ OPTIONS:
       log(`    Unrealized PnL:  $${unrealizedPnl.toFixed(2)}`);
       log(`    Margin Used:     $${ms.totalMarginUsed || '0'}`);
       log(`    Withdrawable:    $${result.withdrawable || '0'}`);
+      // Spot balance is separate from Perps: USDC sent via Hyperliquid "Send"
+      // lands here and can't be traded until moved with `perp transfer`.
+      log(`    Spot USDC:       $${result.spotUsdc ?? 'n/a'}`);
       log('');
       return undefined;
     },

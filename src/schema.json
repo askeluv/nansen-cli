@@ -159,6 +159,30 @@
             }
           }
         },
+        "transfer": {
+          "endpoint": "/api/v1/perp/transfer",
+          "description": "Move USDC between a wallet's Spot and Perps balances",
+          "options": {
+            "direction": {
+              "type": "string",
+              "required": true,
+              "enum": [
+                "spot-to-perp",
+                "perp-to-spot"
+              ],
+              "description": "Transfer direction"
+            },
+            "amount": {
+              "type": "string",
+              "required": true,
+              "description": "USDC amount to transfer"
+            },
+            "wallet": {
+              "type": "string",
+              "description": "Wallet name (defaults to the configured default wallet)"
+            }
+          }
+        },
         "positions": {
           "endpoint": "/api/v1/perp/positions",
           "description": "View open positions",
