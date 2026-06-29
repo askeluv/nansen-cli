@@ -59,6 +59,32 @@ describe('perp order validation', () => {
     ).rejects.toThrow(/Invalid --size "abc"/);
   });
 
+  it('rejects --size with trailing garbage instead of parseFloat-ing it to a number', async () => {
+    await expect(
+      cmds.order([], null, {}, { ...baseOrder, size: '100abc' }),
+    ).rejects.toThrow(/Invalid --size "100abc"/);
+  });
+
+  it('rejects an unknown --tif client-side', async () => {
+    await expect(
+      cmds.order([], null, {}, { ...baseOrder, tif: 'InvalidTIF' }),
+    ).rejects.toThrow(/Invalid --tif "InvalidTIF"/);
+  });
+
+  it('rejects an unknown --type client-side', async () => {
+    await expect(
+      cmds.order([], null, {}, { ...baseOrder, type: 'stop' }),
+    ).rejects.toThrow(/Invalid --type "stop"/);
+  });
+
+  it('accepts a case-insensitive --type (LIMIT) and valid --tif', async () => {
+    // Pass validation and fail later (no real wallet) — assert the failure is
+    // NOT a type/tif validation error.
+    await expect(
+      cmds.order([], null, {}, { ...baseOrder, type: 'LIMIT', tif: 'Ioc' }),
+    ).rejects.not.toThrow(/Invalid --(type|tif)/);
+  });
+
   it('rejects a zero --price', async () => {
     await expect(
       cmds.order([], null, {}, { ...baseOrder, price: '0' }),
@@ -103,6 +129,12 @@ describe('perp leverage validation', () => {
     await expect(
       cmds.leverage([], null, {}, { ...baseLev, 'margin-type': 'isolated' }),
     ).rejects.not.toThrow(/Invalid --margin-type/);
+  });
+
+  it('rejects a fractional --leverage instead of silently flooring it', async () => {
+    await expect(
+      cmds.leverage([], null, {}, { ...baseLev, leverage: '2.5' }),
+    ).rejects.toThrow(/Invalid --leverage "2.5"/);
   });
 
   it('rejects a zero --leverage with a specific message', async () => {
@@ -174,6 +206,50 @@ describe('perp meta listing (L1)', () => {
     const out = await run({ options: { filter: 'hype' } });
     expect(out).toContain('HYPE');
     expect(out).toContain('matching "hype"');
+  });
+});
+
+describe('perp close direction (NEW-4)', () => {
+  const baseClose = { coin: 'ETH', size: '0.1', price: '2000', wallet: 'x' };
+  const apiWith = (positions) => ({ request: vi.fn(async () => ({ positions })) });
+
+  beforeEach(() => {
+    showWallet.mockReturnValue({ name: 'x', evm: '0x' + '1'.repeat(40), provider: 'local' });
+  });
+
+  it('rejects closing a long with --side buy (wrong direction)', async () => {
+    const api = apiWith([{ coin: 'ETH', szi: '0.5' }]);
+    await expect(
+      cmds.close([], api, {}, { ...baseClose, side: 'buy' }),
+    ).rejects.toThrow(/Cannot close a long ETH position with --side buy\. Use --side sell/);
+  });
+
+  it('rejects closing a short with --side sell (wrong direction)', async () => {
+    const api = apiWith([{ coin: 'ETH', szi: '-0.5' }]);
+    await expect(
+      cmds.close([], api, {}, { ...baseClose, side: 'sell' }),
+    ).rejects.toThrow(/Cannot close a short ETH position with --side sell\. Use --side buy/);
+  });
+
+  it('allows the correct close direction (sell closes a long)', async () => {
+    const api = apiWith([{ coin: 'ETH', szi: '0.5' }]);
+    await expect(
+      cmds.close([], api, {}, { ...baseClose, side: 'sell' }),
+    ).rejects.not.toThrow(/Cannot close/);
+  });
+
+  it('falls open when no open position matches the coin', async () => {
+    const api = apiWith([{ coin: 'BTC', szi: '0.5' }]);
+    await expect(
+      cmds.close([], api, {}, { ...baseClose, side: 'buy' }),
+    ).rejects.not.toThrow(/Cannot close/);
+  });
+
+  it('falls open when the positions lookup fails', async () => {
+    const brokenApi = { request: vi.fn(async () => { throw new Error('positions down'); }) };
+    await expect(
+      cmds.close([], brokenApi, {}, { ...baseClose, side: 'buy' }),
+    ).rejects.not.toThrow(/Cannot close|positions down/);
   });
 });
 

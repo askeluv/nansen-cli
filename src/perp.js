@@ -133,6 +133,11 @@ async function prepareSignExecute(apiInstance, endpoint, body, { privateKeyHex, 
 const ORDER_SIDES = new Set(['buy', 'long', 'sell', 'short']);
 const CLOSE_SIDES = new Set(['buy', 'sell']);
 const MARGIN_TYPES = new Set(['cross', 'isolated']);
+// Case-insensitive input -> canonical value the backend expects. Hyperliquid
+// is case-sensitive (Gtc not gtc, limit not LIMIT), so normalise here rather
+// than forwarding the raw string and letting the backend reject it.
+const TIF_VALUES = new Map([['gtc', 'Gtc'], ['ioc', 'Ioc'], ['alo', 'Alo']]);
+const ORDER_TYPES = new Map([['limit', 'limit'], ['market', 'market']]);
 
 function assertSide(raw, allowed) {
   const side = (raw || '').toLowerCase();
@@ -157,7 +162,13 @@ function assertMarginType(raw) {
 }
 
 function parsePositiveNumber(raw, name) {
-  const n = parseFloat(raw);
+  // Strict numeric check before parseFloat — parseFloat("100abc") returns 100,
+  // so trailing garbage would otherwise slip through and only fail at the backend.
+  const s = String(raw).trim();
+  if (!/^\d*\.?\d+$/.test(s)) {
+    throw new Error(`Invalid --${name} "${raw}". Must be a positive number.`);
+  }
+  const n = parseFloat(s);
   if (!Number.isFinite(n) || n <= 0) {
     throw new Error(`Invalid --${name} "${raw}". Must be a positive number.`);
   }
@@ -165,11 +176,38 @@ function parsePositiveNumber(raw, name) {
 }
 
 function parsePositiveInt(raw, name) {
-  const n = parseInt(raw, 10);
+  // Digits-only check before parseInt — parseInt("2.5") floors to 2 and
+  // parseInt("123abc") yields 123, so a fractional or garbage value would
+  // otherwise be silently accepted.
+  const s = String(raw).trim();
+  if (!/^\d+$/.test(s)) {
+    throw new Error(`Invalid --${name} "${raw}". Must be a positive integer.`);
+  }
+  const n = parseInt(s, 10);
   if (!Number.isInteger(n) || n <= 0) {
     throw new Error(`Invalid --${name} "${raw}". Must be a positive integer.`);
   }
   return n;
+}
+
+function assertTif(raw) {
+  // --tif is optional and defaults to Gtc when omitted.
+  if (raw === undefined) return 'Gtc';
+  const tif = TIF_VALUES.get(String(raw).toLowerCase());
+  if (!tif) {
+    throw new Error(`Invalid --tif "${raw}". Must be one of: Gtc, Ioc, Alo.`);
+  }
+  return tif;
+}
+
+function assertOrderType(raw) {
+  // --type is optional and defaults to limit when omitted.
+  if (raw === undefined) return 'limit';
+  const type = ORDER_TYPES.get(String(raw).toLowerCase());
+  if (!type) {
+    throw new Error(`Invalid --type "${raw}". Must be one of: limit, market.`);
+  }
+  return type;
 }
 
 // ── Command builder ──────────────────────────────────────────────────
@@ -180,11 +218,9 @@ export function buildPerpCommands(deps = {}) {
   return {
     'order': async (args, apiInstance, flags, options) => {
       const coin = (options.coin || '').toUpperCase();
-      const orderType = options.type || 'limit';
       const slippage = options.slippage ? parseFloat(options.slippage) : 0.03;
       const tp = options['take-profit'] ? parseFloat(options['take-profit']) : undefined;
       const sl = options['stop-loss'] ? parseFloat(options['stop-loss']) : undefined;
-      const tif = options.tif || 'Gtc';
       const walletName = options.wallet;
 
       if (!coin || !options.side || options.size === undefined || options.price === undefined) {
@@ -205,6 +241,8 @@ OPTIONS:
       }
 
       const side = assertSide(options.side, ORDER_SIDES);
+      const orderType = assertOrderType(options.type);
+      const tif = assertTif(options.tif);
       const size = parsePositiveNumber(options.size, 'size');
       const price = parsePositiveNumber(options.price, 'price');
       const isBuy = side === 'buy' || side === 'long';
@@ -286,6 +324,32 @@ OPTIONS:
       const price = parsePositiveNumber(options.price, 'price');
       const isBuy = side === 'buy';
       const wallet = resolveWalletAddress(walletName);
+
+      // Validate the close direction against the open position so a wrong --side
+      // fails fast with a clear message instead of the backend's opaque "reduce
+      // only order would increase position". sell closes a long, buy closes a
+      // short. Fall open if positions can't be fetched — the backend still checks.
+      let openPositions = null;
+      try {
+        const result = await perpRead(apiInstance, 'positions', { wallet_address: wallet.address });
+        openPositions = result.positions || [];
+      } catch {
+        // positions lookup failed — skip the direction pre-check.
+      }
+      if (openPositions) {
+        const pos = openPositions.find(p => String(p.coin).toUpperCase() === coin);
+        const szi = pos ? parseFloat(pos.szi) : NaN;
+        if (Number.isFinite(szi) && szi !== 0) {
+          const requiredSide = szi > 0 ? 'sell' : 'buy';
+          if (side !== requiredSide) {
+            const posSide = szi > 0 ? 'long' : 'short';
+            throw new Error(
+              `Cannot close a ${posSide} ${coin} position with --side ${side}. Use --side ${requiredSide} (sell closes a long, buy closes a short).`,
+            );
+          }
+        }
+      }
+
       const privateKeyHex = wallet.provider !== 'privy' ? resolvePrivateKey(walletName) : null;
 
       log(`\n  Close: ${coin} ${isBuy ? 'buy-to-close' : 'sell-to-close'} ${size} @ ${price}`);
