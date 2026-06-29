@@ -190,6 +190,18 @@ function parsePositiveInt(raw, name) {
   return n;
 }
 
+function parseSlippage(raw) {
+  // Slippage is a decimal fraction in [0, 1] (0.03 = 3%). Reject trailing
+  // garbage (parseFloat would accept "0.03abc") and percent-vs-decimal
+  // mix-ups (e.g. "3" meaning 3% would otherwise be a 300% tolerance).
+  const s = String(raw).trim();
+  const n = /^\d*\.?\d+$/.test(s) ? parseFloat(s) : NaN;
+  if (!Number.isFinite(n) || n < 0 || n > 1) {
+    throw new Error(`Invalid --slippage "${raw}". Use a decimal between 0 and 1 (e.g. 0.03 for 3%).`);
+  }
+  return n;
+}
+
 function assertTif(raw) {
   // --tif is optional and defaults to Gtc when omitted.
   if (raw === undefined) return 'Gtc';
@@ -218,9 +230,6 @@ export function buildPerpCommands(deps = {}) {
   return {
     'order': async (args, apiInstance, flags, options) => {
       const coin = (options.coin || '').toUpperCase();
-      const slippage = options.slippage ? parseFloat(options.slippage) : 0.03;
-      const tp = options['take-profit'] ? parseFloat(options['take-profit']) : undefined;
-      const sl = options['stop-loss'] ? parseFloat(options['stop-loss']) : undefined;
       const walletName = options.wallet;
 
       if (!coin || !options.side || options.size === undefined || options.price === undefined) {
@@ -245,6 +254,9 @@ OPTIONS:
       const tif = assertTif(options.tif);
       const size = parsePositiveNumber(options.size, 'size');
       const price = parsePositiveNumber(options.price, 'price');
+      const slippage = options.slippage !== undefined ? parseSlippage(options.slippage) : 0.03;
+      const tp = options['take-profit'] !== undefined ? parsePositiveNumber(options['take-profit'], 'take-profit') : undefined;
+      const sl = options['stop-loss'] !== undefined ? parsePositiveNumber(options['stop-loss'], 'stop-loss') : undefined;
       const isBuy = side === 'buy' || side === 'long';
       const wallet = resolveWalletAddress(walletName);
       const isPrivy = wallet.provider === 'privy';
@@ -308,7 +320,6 @@ OPTIONS:
 
     'close': async (args, apiInstance, flags, options) => {
       const coin = (options.coin || '').toUpperCase();
-      const slippage = options.slippage ? parseFloat(options.slippage) : 0.03;
       const walletName = options.wallet;
 
       if (!coin || options.size === undefined || options.price === undefined || !options.side) {
@@ -322,6 +333,7 @@ OPTIONS:
       const side = assertSide(options.side, CLOSE_SIDES);
       const size = parsePositiveNumber(options.size, 'size');
       const price = parsePositiveNumber(options.price, 'price');
+      const slippage = options.slippage !== undefined ? parseSlippage(options.slippage) : 0.03;
       const isBuy = side === 'buy';
       const wallet = resolveWalletAddress(walletName);
 

@@ -85,6 +85,30 @@ describe('perp order validation', () => {
     ).rejects.not.toThrow(/Invalid --(type|tif)/);
   });
 
+  it('rejects --slippage with trailing garbage', async () => {
+    await expect(
+      cmds.order([], null, {}, { ...baseOrder, slippage: '0.03abc' }),
+    ).rejects.toThrow(/Invalid --slippage "0.03abc"/);
+  });
+
+  it('rejects an out-of-range --slippage (percent-vs-decimal mix-up)', async () => {
+    await expect(
+      cmds.order([], null, {}, { ...baseOrder, slippage: '3' }),
+    ).rejects.toThrow(/Invalid --slippage "3"/);
+  });
+
+  it('rejects a non-numeric --take-profit', async () => {
+    await expect(
+      cmds.order([], null, {}, { ...baseOrder, 'take-profit': '1800x' }),
+    ).rejects.toThrow(/Invalid --take-profit "1800x"/);
+  });
+
+  it('rejects a negative --stop-loss', async () => {
+    await expect(
+      cmds.order([], null, {}, { ...baseOrder, 'stop-loss': '-1' }),
+    ).rejects.toThrow(/Invalid --stop-loss "-1"/);
+  });
+
   it('rejects a zero --price', async () => {
     await expect(
       cmds.order([], null, {}, { ...baseOrder, price: '0' }),
@@ -113,6 +137,12 @@ describe('perp close validation', () => {
     await expect(
       cmds.close([], null, {}, { ...baseClose, size: '-1' }),
     ).rejects.toThrow(/Invalid --size/);
+  });
+
+  it('rejects an out-of-range --slippage', async () => {
+    await expect(
+      cmds.close([], null, {}, { ...baseClose, slippage: '5' }),
+    ).rejects.toThrow(/Invalid --slippage "5"/);
   });
 });
 
