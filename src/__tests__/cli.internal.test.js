@@ -4300,9 +4300,17 @@ describe('SCHEMA structure', () => {
     expect(SCHEMA.commands.profiler).toBeUndefined();
     expect(SCHEMA.commands.token).toBeUndefined();
     expect(SCHEMA.commands.search).toBeUndefined();
-    expect(SCHEMA.commands.perp).toBeUndefined();
     expect(SCHEMA.commands.portfolio).toBeUndefined();
     expect(SCHEMA.commands.points).toBeUndefined();
+    // Note: `perp` IS a valid top-level command — Hyperliquid perp *trading*
+    // (nansen perp order/close/...). Perp *analytics* lives under `research perp`.
+  });
+
+  it('documents perp trading as a top-level command', () => {
+    expect(SCHEMA.commands.perp).toBeDefined();
+    expect(SCHEMA.commands.perp.subcommands.order).toBeDefined();
+    expect(SCHEMA.commands.perp.subcommands.close).toBeDefined();
+    expect(SCHEMA.commands.perp.subcommands.account.endpoint).toBe('/api/v1/perp/account');
   });
 });
 

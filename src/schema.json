@@ -1,5 +1,210 @@
 {
   "commands": {
+    "perp": {
+      "description": "Hyperliquid perpetual trading commands",
+      "subcommands": {
+        "order": {
+          "endpoint": "/api/v1/perp/order",
+          "description": "Place a perp order (limit or market, with optional take-profit/stop-loss)",
+          "options": {
+            "coin": {
+              "type": "string",
+              "required": true,
+              "description": "Asset symbol, e.g. BTC, ETH (alias: --symbol)"
+            },
+            "side": {
+              "type": "string",
+              "required": true,
+              "enum": [
+                "buy",
+                "long",
+                "sell",
+                "short"
+              ],
+              "description": "buy/long opens a long, sell/short opens a short"
+            },
+            "size": {
+              "type": "string",
+              "required": true,
+              "description": "Position size in base asset units"
+            },
+            "price": {
+              "type": "string",
+              "required": true,
+              "description": "Limit price (or mark price for market orders)"
+            },
+            "type": {
+              "type": "string",
+              "default": "limit",
+              "enum": [
+                "limit",
+                "market"
+              ],
+              "description": "Order type"
+            },
+            "tif": {
+              "type": "string",
+              "default": "Gtc",
+              "enum": [
+                "Gtc",
+                "Ioc",
+                "Alo"
+              ],
+              "description": "Time-in-force"
+            },
+            "slippage": {
+              "type": "string",
+              "default": "0.03",
+              "description": "Slippage tolerance for market orders as a decimal in [0,1] (0.03 = 3%)"
+            },
+            "take-profit": {
+              "type": "string",
+              "description": "Take-profit trigger price"
+            },
+            "stop-loss": {
+              "type": "string",
+              "description": "Stop-loss trigger price"
+            },
+            "wallet": {
+              "type": "string",
+              "description": "Wallet name (defaults to the configured default wallet)"
+            }
+          }
+        },
+        "cancel": {
+          "endpoint": "/api/v1/perp/cancel",
+          "description": "Cancel an open order by order id",
+          "options": {
+            "coin": {
+              "type": "string",
+              "required": true,
+              "description": "Asset symbol (alias: --symbol)"
+            },
+            "oid": {
+              "type": "string",
+              "required": true,
+              "description": "Order id to cancel"
+            },
+            "wallet": {
+              "type": "string",
+              "description": "Wallet name"
+            }
+          }
+        },
+        "close": {
+          "endpoint": "/api/v1/perp/close",
+          "description": "Close a position (reduce-only market order)",
+          "options": {
+            "coin": {
+              "type": "string",
+              "required": true,
+              "description": "Asset symbol (alias: --symbol)"
+            },
+            "size": {
+              "type": "string",
+              "required": true,
+              "description": "Size to close in base asset units"
+            },
+            "price": {
+              "type": "string",
+              "required": true,
+              "description": "Mark price"
+            },
+            "side": {
+              "type": "string",
+              "required": true,
+              "enum": [
+                "buy",
+                "sell"
+              ],
+              "description": "sell closes a long, buy closes a short"
+            },
+            "slippage": {
+              "type": "string",
+              "default": "0.03",
+              "description": "Slippage tolerance as a decimal in [0,1] (0.03 = 3%)"
+            },
+            "wallet": {
+              "type": "string",
+              "description": "Wallet name"
+            }
+          }
+        },
+        "leverage": {
+          "endpoint": "/api/v1/perp/leverage",
+          "description": "Set leverage and margin mode for an asset",
+          "options": {
+            "coin": {
+              "type": "string",
+              "required": true,
+              "description": "Asset symbol (alias: --symbol)"
+            },
+            "leverage": {
+              "type": "string",
+              "required": true,
+              "description": "Leverage multiplier (positive integer, capped at the asset maximum)"
+            },
+            "margin-type": {
+              "type": "string",
+              "default": "cross",
+              "enum": [
+                "cross",
+                "isolated"
+              ],
+              "description": "Margin mode"
+            },
+            "wallet": {
+              "type": "string",
+              "description": "Wallet name"
+            }
+          }
+        },
+        "positions": {
+          "endpoint": "/api/v1/perp/positions",
+          "description": "View open positions",
+          "options": {
+            "wallet": {
+              "type": "string",
+              "description": "Wallet name"
+            }
+          }
+        },
+        "orders": {
+          "endpoint": "/api/v1/perp/orders",
+          "description": "View open/resting orders",
+          "options": {
+            "wallet": {
+              "type": "string",
+              "description": "Wallet name"
+            }
+          }
+        },
+        "account": {
+          "endpoint": "/api/v1/perp/account",
+          "description": "View account state (account value, unrealized PnL, margin, withdrawable)",
+          "options": {
+            "wallet": {
+              "type": "string",
+              "description": "Wallet name"
+            }
+          }
+        },
+        "meta": {
+          "endpoint": "/api/v1/perp/meta",
+          "description": "View available perp assets (id, size decimals, max leverage)",
+          "options": {
+            "filter": {
+              "type": "string",
+              "description": "Filter assets by name substring (also shows the full matching set)"
+            },
+            "all": {
+              "type": "boolean",
+              "description": "Show all assets instead of the first 20"
+            }
+          }
+        }
+      }
+    },
     "research": {
       "description": "Research and analytics commands",
       "subcommands": {

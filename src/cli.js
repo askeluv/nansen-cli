@@ -1966,15 +1966,14 @@ export async function runCLI(rawArgs, deps = {}) {
     await trackCommandSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, from_cache: !!result?.fromCache, flags: usedFlags, chain });
     return { type: csv ? 'csv' : 'success', data: result };
   } catch (error) {
-    let errorData;
-    if (error instanceof CommandError) {
-      output(error.data ? JSON.stringify(error.data) : error.message);
-      errorData = { error: error.message, code: error.code };
-    } else {
-      errorData = formatError(error);
-      const formatted = formatOutput(errorData, { pretty, table, csv });
-      output(formatted.text);
-    }
+    // Unified error envelope across all command families (perp/bridge/trade):
+    // every failure serializes through formatError as
+    // {success:false, error, code, status, details}. A CommandError's structured
+    // data (e.g. PASSWORD_REQUIRED resolution steps) is preserved under `details`,
+    // so agents get one consistent shape to branch on regardless of command.
+    const errorData = formatError(error);
+    const formatted = formatOutput(errorData, { pretty, table, csv });
+    output(formatted.text);
     await trackCommandFailed({
       command: fullCommand,
       duration_ms: Date.now() - startTime,

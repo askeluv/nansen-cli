@@ -6,7 +6,11 @@ vi.mock('../wallet.js', () => ({
   exportWallet: vi.fn(),
 }));
 
-import { showWallet } from '../wallet.js';
+vi.mock('../keychain.js', () => ({
+  retrievePassword: vi.fn(() => ({ password: null, source: null })),
+}));
+
+import { showWallet, getWalletConfig } from '../wallet.js';
 import { buildPerpCommands } from '../perp.js';
 
 // These tests exercise client-side input validation only. Validation runs
@@ -280,6 +284,90 @@ describe('perp close direction (NEW-4)', () => {
     await expect(
       cmds.close([], brokenApi, {}, { ...baseClose, side: 'buy' }),
     ).rejects.not.toThrow(/Cannot close|positions down/);
+  });
+});
+
+describe('perp duplicate flags (6824)', () => {
+  it('rejects a duplicated --coin with a clean coded error instead of crashing', async () => {
+    const err = await cmds.order([], null, {}, { ...baseOrder, coin: ['ETH', 'BTC'] }).catch(e => e);
+    expect(err.code).toBe('INVALID_INPUT');
+    expect(err.message).toMatch(/--coin was provided more than once/);
+    expect(err.message).not.toMatch(/is not a function/);
+  });
+
+  it('rejects a duplicated --side instead of crashing', async () => {
+    const err = await cmds.order([], null, {}, { ...baseOrder, side: ['buy', 'sell'] }).catch(e => e);
+    expect(err.message).toMatch(/--side was provided more than once/);
+    expect(err.message).not.toMatch(/is not a function/);
+  });
+
+  it('rejects a duplicated --size instead of silently using the first value', async () => {
+    const err = await cmds.order([], null, {}, { ...baseOrder, size: ['0.1', '0.2'] }).catch(e => e);
+    expect(err.message).toMatch(/--size was provided more than once/);
+  });
+
+  it('rejects a duplicated --oid', async () => {
+    const err = await cmds.cancel([], null, {}, { coin: 'ETH', oid: ['111', '222'], wallet: 'x' }).catch(e => e);
+    expect(err.message).toMatch(/--oid was provided more than once/);
+  });
+});
+
+describe('perp coded errors (6826 N2)', () => {
+  it('throws a coded INVALID_INPUT error (not a bare Error) so agents can branch', async () => {
+    const err = await cmds.order([], null, {}, { ...baseOrder, side: 'xyz' }).catch(e => e);
+    expect(err.name).toBe('CommandError');
+    expect(err.code).toBe('INVALID_INPUT');
+  });
+});
+
+describe('perp --symbol alias (6827)', () => {
+  it('accepts --symbol as an alias for --coin (no usage banner)', async () => {
+    const { coin, ...noCoin } = baseOrder;
+    void coin;
+    // passes coin resolution; fails later (no real wallet) — assert it is NOT
+    // the usage banner that a missing --coin would produce.
+    await expect(
+      cmds.order([], null, {}, { ...noCoin, symbol: 'ETH' }),
+    ).rejects.not.toThrow(/Usage: nansen perp order/);
+  });
+});
+
+describe('perp password (6826 N4)', () => {
+  beforeEach(() => {
+    showWallet.mockReturnValue({ name: 'x', evm: '0x' + '1'.repeat(40), provider: 'local' });
+    getWalletConfig.mockReturnValue({ passwordHash: 'hash', defaultWallet: 'x' });
+  });
+  afterEach(() => {
+    getWalletConfig.mockReturnValue({});
+  });
+
+  it('reports PASSWORD_REQUIRED (not "Incorrect password") when none is configured', async () => {
+    const err = await cmds.order([], null, {}, { ...baseOrder, wallet: 'x' }).catch(e => e);
+    expect(err.code).toBe('PASSWORD_REQUIRED');
+    expect(err.message).not.toMatch(/Incorrect password/);
+    expect(err.data?.resolution?.length).toBeGreaterThan(0);
+  });
+});
+
+describe('perp account PnL (6828)', () => {
+  beforeEach(() => {
+    showWallet.mockReturnValue({ name: 'x', evm: '0x' + '1'.repeat(40), provider: 'local' });
+  });
+
+  it('shows real unrealized PnL summed from positions, not the account value', async () => {
+    const logs = [];
+    const accountCmds = buildPerpCommands({ log: (m) => logs.push(m) });
+    const api = {
+      request: vi.fn(async () => ({
+        marginSummary: { accountValue: '14.98945', totalRawUsd: '14.98945', totalMarginUsed: '0.0' },
+        withdrawable: '14.98945',
+        assetPositions: [{ position: { coin: 'ETH', unrealizedPnl: '-0.01' } }],
+      })),
+    };
+    await accountCmds.account([], api, {}, { wallet: 'x' });
+    const out = logs.join('\n');
+    expect(out).toContain('Unrealized PnL:  $-0.01');
+    expect(out).not.toContain('Total PnL');
   });
 });
 

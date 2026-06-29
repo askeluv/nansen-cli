@@ -1,6 +1,6 @@
 ---
 name: nansen-trading
-description: Execute DEX swaps on Solana or Base, including cross-chain bridges. Use when buying or selling a token, getting a swap quote, or executing a trade.
+description: Execute DEX swaps on Solana or Base (including cross-chain bridges) and Hyperliquid perpetual trades. Use when buying or selling a token, getting a swap quote, executing a trade, or opening/closing/managing a perp position.
 metadata:
   openclaw:
     requires:
@@ -190,6 +190,51 @@ If the user says "$20 worth of X", use `--amount-unit usd` directly — no manua
 - Quotes expire after ~1 hour. If execute fails, get a fresh quote.
 - A wallet is required even for quotes (the API builds sender-specific transactions).
 - ERC-20 swaps may require an approval step — execute handles this automatically.
+
+# Perp Trading
+
+Use `nansen perp` for Hyperliquid perpetual trading. Uses the same wallet and `NANSEN_WALLET_PASSWORD` as DEX trading; requires an **EVM** wallet. **Perp orders are irreversible once signed.**
+
+Subcommands: `order`, `cancel`, `close`, `leverage`, `positions`, `orders`, `account`, `meta`.
+
+The asset is selected with `--coin` (e.g. `BTC`, `ETH`); `--symbol` is accepted as an alias. List tradable assets and their max leverage with `nansen perp meta` (use `--filter <text>` or `--all` to see beyond the first 20).
+
+## Open a position
+
+```bash
+# Limit long: 0.1 ETH at $1600
+nansen perp order --coin ETH --side buy --size 0.1 --price 1600 --type limit
+
+# Market short with optional take-profit / stop-loss
+nansen perp order --coin BTC --side sell --size 0.001 --price 95000 --type market \
+  --take-profit 90000 --stop-loss 98000
+```
+
+- `--side`: `buy`/`long` to open a long, `sell`/`short` to open a short.
+- `--size`: position size in base asset units (positive number).
+- `--price`: limit price (or mark price for market orders).
+- `--type`: `limit` (default) or `market`. `--tif`: `Gtc` (default), `Ioc`, `Alo`.
+- `--slippage`: decimal in `[0,1]` for market orders (default `0.03` = 3%).
+
+## Close / cancel
+
+```bash
+# Close: sell to close a long, buy to close a short (validated against your open position)
+nansen perp close --coin ETH --size 0.1 --price 1600 --side sell
+
+# Cancel a resting order by id
+nansen perp cancel --coin ETH --oid 123456
+```
+
+## Leverage & account
+
+```bash
+nansen perp leverage --coin ETH --leverage 5 --margin-type cross   # or isolated
+nansen perp positions
+nansen perp account     # account value, unrealized PnL, margin used, withdrawable
+```
+
+`--leverage` must be a whole integer and is capped at the asset's maximum (see `perp meta`).
 
 ## Source
 

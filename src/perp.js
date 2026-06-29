@@ -4,6 +4,7 @@
  * Signing uses existing EIP-712 infrastructure (hashTypedData + signSecp256k1).
  */
 
+import { CommandError } from './api.js';
 import { signSecp256k1 } from './crypto.js';
 import { retrievePassword } from './keychain.js';
 import { exportWallet, getWalletConfig, showWallet } from './wallet.js';
@@ -75,9 +76,22 @@ function resolvePrivateKey(walletName) {
       process.stderr.write('⚠️  Password loaded from ~/.nansen/wallets/.credentials (insecure).\n');
     }
     password = pw;
+    // Distinguish "no password configured" from "wrong password": without this,
+    // exportWallet(name, null) fails with the misleading "Incorrect password"
+    // even though nothing was entered. Mirror trade/limit-order's PASSWORD_REQUIRED.
+    if (!password) {
+      throw new CommandError('Wallet is encrypted and no password was found.', 'PASSWORD_REQUIRED', {
+        error: 'PASSWORD_REQUIRED',
+        message: 'Wallet is encrypted and no password was found.',
+        resolution: [
+          'Set NANSEN_WALLET_PASSWORD environment variable',
+          'Or run: nansen wallet create (password is saved to OS keychain automatically)',
+        ],
+      });
+    }
   }
   const name = walletName || config.defaultWallet;
-  if (!name) throw new Error('No wallet found. Create one with: nansen wallet create');
+  if (!name) throw new CommandError('No wallet found. Create one with: nansen wallet create', 'NO_WALLET');
   const exported = exportWallet(name, password);
   return exported.evm.privateKey;
 }
@@ -129,6 +143,9 @@ async function prepareSignExecute(apiInstance, endpoint, body, { privateKeyHex, 
 // server-side — it silently flips to the false branch (short / isolated).
 // Validate against explicit allowlists, and reject non-positive/non-finite
 // numerics, before signing anything.
+//
+// All guards throw a coded CommandError ('INVALID_INPUT') rather than a bare
+// Error, so agents can branch on the error code instead of string-matching.
 
 const ORDER_SIDES = new Set(['buy', 'long', 'sell', 'short']);
 const CLOSE_SIDES = new Set(['buy', 'sell']);
@@ -139,12 +156,25 @@ const MARGIN_TYPES = new Set(['cross', 'isolated']);
 const TIF_VALUES = new Map([['gtc', 'Gtc'], ['ioc', 'Ioc'], ['alo', 'Alo']]);
 const ORDER_TYPES = new Map([['limit', 'limit'], ['market', 'market']]);
 
+function invalid(message) {
+  return new CommandError(message, 'INVALID_INPUT');
+}
+
+// The arg parser collects a repeated flag into an array (to support genuinely
+// repeatable flags elsewhere). Perp flags are never repeatable, so reject the
+// array with a clear message instead of crashing in a string guard or silently
+// using the first element.
+function scalar(raw, name) {
+  if (Array.isArray(raw)) {
+    throw invalid(`--${name} was provided more than once. Pass --${name} exactly once.`);
+  }
+  return raw;
+}
+
 function assertSide(raw, allowed) {
-  const side = (raw || '').toLowerCase();
+  const side = String(scalar(raw, 'side') ?? '').toLowerCase();
   if (!allowed.has(side)) {
-    throw new Error(
-      `Invalid --side "${raw}". Must be one of: ${[...allowed].join(', ')}.`,
-    );
+    throw invalid(`Invalid --side "${raw}". Must be one of: ${[...allowed].join(', ')}.`);
   }
   return side;
 }
@@ -152,11 +182,9 @@ function assertSide(raw, allowed) {
 function assertMarginType(raw) {
   // --margin-type is optional and defaults to cross when omitted.
   if (raw === undefined) return 'cross';
-  const marginType = String(raw).toLowerCase();
+  const marginType = String(scalar(raw, 'margin-type') ?? '').toLowerCase();
   if (!MARGIN_TYPES.has(marginType)) {
-    throw new Error(
-      `Invalid --margin-type "${raw}". Must be one of: ${[...MARGIN_TYPES].join(', ')}.`,
-    );
+    throw invalid(`Invalid --margin-type "${raw}". Must be one of: ${[...MARGIN_TYPES].join(', ')}.`);
   }
   return marginType;
 }
@@ -164,13 +192,13 @@ function assertMarginType(raw) {
 function parsePositiveNumber(raw, name) {
   // Strict numeric check before parseFloat — parseFloat("100abc") returns 100,
   // so trailing garbage would otherwise slip through and only fail at the backend.
-  const s = String(raw).trim();
+  const s = String(scalar(raw, name) ?? '').trim();
   if (!/^\d*\.?\d+$/.test(s)) {
-    throw new Error(`Invalid --${name} "${raw}". Must be a positive number.`);
+    throw invalid(`Invalid --${name} "${raw}". Must be a positive number.`);
   }
   const n = parseFloat(s);
   if (!Number.isFinite(n) || n <= 0) {
-    throw new Error(`Invalid --${name} "${raw}". Must be a positive number.`);
+    throw invalid(`Invalid --${name} "${raw}". Must be a positive number.`);
   }
   return n;
 }
@@ -179,13 +207,13 @@ function parsePositiveInt(raw, name) {
   // Digits-only check before parseInt — parseInt("2.5") floors to 2 and
   // parseInt("123abc") yields 123, so a fractional or garbage value would
   // otherwise be silently accepted.
-  const s = String(raw).trim();
+  const s = String(scalar(raw, name) ?? '').trim();
   if (!/^\d+$/.test(s)) {
-    throw new Error(`Invalid --${name} "${raw}". Must be a positive integer.`);
+    throw invalid(`Invalid --${name} "${raw}". Must be a positive integer.`);
   }
   const n = parseInt(s, 10);
   if (!Number.isInteger(n) || n <= 0) {
-    throw new Error(`Invalid --${name} "${raw}". Must be a positive integer.`);
+    throw invalid(`Invalid --${name} "${raw}". Must be a positive integer.`);
   }
   return n;
 }
@@ -194,10 +222,10 @@ function parseSlippage(raw) {
   // Slippage is a decimal fraction in [0, 1] (0.03 = 3%). Reject trailing
   // garbage (parseFloat would accept "0.03abc") and percent-vs-decimal
   // mix-ups (e.g. "3" meaning 3% would otherwise be a 300% tolerance).
-  const s = String(raw).trim();
+  const s = String(scalar(raw, 'slippage') ?? '').trim();
   const n = /^\d*\.?\d+$/.test(s) ? parseFloat(s) : NaN;
   if (!Number.isFinite(n) || n < 0 || n > 1) {
-    throw new Error(`Invalid --slippage "${raw}". Use a decimal between 0 and 1 (e.g. 0.03 for 3%).`);
+    throw invalid(`Invalid --slippage "${raw}". Use a decimal between 0 and 1 (e.g. 0.03 for 3%).`);
   }
   return n;
 }
@@ -205,9 +233,9 @@ function parseSlippage(raw) {
 function assertTif(raw) {
   // --tif is optional and defaults to Gtc when omitted.
   if (raw === undefined) return 'Gtc';
-  const tif = TIF_VALUES.get(String(raw).toLowerCase());
+  const tif = TIF_VALUES.get(String(scalar(raw, 'tif') ?? '').toLowerCase());
   if (!tif) {
-    throw new Error(`Invalid --tif "${raw}". Must be one of: Gtc, Ioc, Alo.`);
+    throw invalid(`Invalid --tif "${raw}". Must be one of: Gtc, Ioc, Alo.`);
   }
   return tif;
 }
@@ -215,11 +243,18 @@ function assertTif(raw) {
 function assertOrderType(raw) {
   // --type is optional and defaults to limit when omitted.
   if (raw === undefined) return 'limit';
-  const type = ORDER_TYPES.get(String(raw).toLowerCase());
+  const type = ORDER_TYPES.get(String(scalar(raw, 'type') ?? '').toLowerCase());
   if (!type) {
-    throw new Error(`Invalid --type "${raw}". Must be one of: limit, market.`);
+    throw invalid(`Invalid --type "${raw}". Must be one of: limit, market.`);
   }
   return type;
+}
+
+// Resolve the asset symbol from --coin (or its --symbol alias), rejecting a
+// duplicated flag. Returns the upper-cased symbol, or '' when neither is set.
+function resolveCoin(options) {
+  const raw = scalar(options.coin, 'coin') ?? scalar(options.symbol, 'symbol');
+  return String(raw ?? '').toUpperCase();
 }
 
 // ── Command builder ──────────────────────────────────────────────────
@@ -229,11 +264,11 @@ export function buildPerpCommands(deps = {}) {
 
   return {
     'order': async (args, apiInstance, flags, options) => {
-      const coin = (options.coin || '').toUpperCase();
-      const walletName = options.wallet;
+      const coin = resolveCoin(options);
+      const walletName = scalar(options.wallet, 'wallet');
 
       if (!coin || !options.side || options.size === undefined || options.price === undefined) {
-        throw new Error(
+        throw new CommandError(
 `Usage: nansen perp order --coin <symbol> --side <buy|sell> --size <amount> --price <price> [options]
 
 OPTIONS:
@@ -246,7 +281,7 @@ OPTIONS:
   --slippage      Slippage for market orders (default 0.03 = 3%)
   --take-profit   Take-profit trigger price
   --stop-loss     Stop-loss trigger price
-  --wallet        Wallet name`);
+  --wallet        Wallet name`, 'MISSING_PARAM');
       }
 
       const side = assertSide(options.side, ORDER_SIDES);
@@ -295,11 +330,11 @@ OPTIONS:
     },
 
     'cancel': async (args, apiInstance, flags, options) => {
-      const coin = (options.coin || '').toUpperCase();
-      const walletName = options.wallet;
+      const coin = resolveCoin(options);
+      const walletName = scalar(options.wallet, 'wallet');
 
       if (!coin || options.oid === undefined) {
-        throw new Error('Usage: nansen perp cancel --coin <symbol> --oid <orderId> [--wallet <name>]');
+        throw new CommandError('Usage: nansen perp cancel --coin <symbol> --oid <orderId> [--wallet <name>]', 'MISSING_PARAM');
       }
 
       const oid = parsePositiveInt(options.oid, 'oid');
@@ -319,15 +354,15 @@ OPTIONS:
     },
 
     'close': async (args, apiInstance, flags, options) => {
-      const coin = (options.coin || '').toUpperCase();
-      const walletName = options.wallet;
+      const coin = resolveCoin(options);
+      const walletName = scalar(options.wallet, 'wallet');
 
       if (!coin || options.size === undefined || options.price === undefined || !options.side) {
-        throw new Error(
+        throw new CommandError(
 `Usage: nansen perp close --coin <symbol> --size <amount> --price <markPrice> --side <buy|sell> [options]
 
   --side    buy (closing a short) or sell (closing a long)
-  --slippage  Slippage tolerance (default 0.03 = 3%)`);
+  --slippage  Slippage tolerance (default 0.03 = 3%)`, 'MISSING_PARAM');
       }
 
       const side = assertSide(options.side, CLOSE_SIDES);
@@ -355,7 +390,7 @@ OPTIONS:
           const requiredSide = szi > 0 ? 'sell' : 'buy';
           if (side !== requiredSide) {
             const posSide = szi > 0 ? 'long' : 'short';
-            throw new Error(
+            throw invalid(
               `Cannot close a ${posSide} ${coin} position with --side ${side}. Use --side ${requiredSide} (sell closes a long, buy closes a short).`,
             );
           }
@@ -379,11 +414,11 @@ OPTIONS:
     },
 
     'leverage': async (args, apiInstance, flags, options) => {
-      const coin = (options.coin || '').toUpperCase();
-      const walletName = options.wallet;
+      const coin = resolveCoin(options);
+      const walletName = scalar(options.wallet, 'wallet');
 
       if (!coin || options.leverage === undefined) {
-        throw new Error('Usage: nansen perp leverage --coin <symbol> --leverage <n> [--margin-type cross|isolated] [--wallet <name>]');
+        throw new CommandError('Usage: nansen perp leverage --coin <symbol> --leverage <n> [--margin-type cross|isolated] [--wallet <name>]', 'MISSING_PARAM');
       }
 
       const marginType = assertMarginType(options['margin-type']);
@@ -401,7 +436,7 @@ OPTIONS:
         // meta lookup failed — skip the pre-check rather than block a valid request.
       }
       if (maxLeverage !== null && leverage > maxLeverage) {
-        throw new Error(`Leverage ${leverage}x exceeds the ${maxLeverage}x maximum for ${coin}.`);
+        throw invalid(`Leverage ${leverage}x exceeds the ${maxLeverage}x maximum for ${coin}.`);
       }
 
       const isCross = marginType === 'cross';
@@ -421,7 +456,7 @@ OPTIONS:
     },
 
     'positions': async (args, apiInstance, flags, options) => {
-      const walletName = options.wallet;
+      const walletName = scalar(options.wallet, 'wallet');
       const wallet = resolveWalletAddress(walletName);
 
       const result = await perpRead(apiInstance, 'positions', { wallet_address: wallet.address });
@@ -442,7 +477,7 @@ OPTIONS:
     },
 
     'orders': async (args, apiInstance, flags, options) => {
-      const walletName = options.wallet;
+      const walletName = scalar(options.wallet, 'wallet');
       const wallet = resolveWalletAddress(walletName);
 
       const result = await perpRead(apiInstance, 'orders', { wallet_address: wallet.address });
@@ -462,17 +497,25 @@ OPTIONS:
     },
 
     'account': async (args, apiInstance, flags, options) => {
-      const walletName = options.wallet;
+      const walletName = scalar(options.wallet, 'wallet');
       const wallet = resolveWalletAddress(walletName);
 
       const result = await perpRead(apiInstance, 'account', { wallet_address: wallet.address });
       const ms = result.marginSummary || {};
 
+      // Sum per-position unrealized PnL. marginSummary.totalRawUsd is the account's
+      // total raw USD (≈ collateral / account value), NOT profit-and-loss — labeling
+      // it "Total PnL" made it read identical to account value (ECINT-6828).
+      const unrealizedPnl = (result.assetPositions || []).reduce(
+        (sum, p) => sum + (parseFloat(p.position?.unrealizedPnl) || 0),
+        0,
+      );
+
       log(`\n  Hyperliquid Account: ${wallet.address}`);
-      log(`    Account Value:  $${ms.accountValue || '0'}`);
-      log(`    Total PnL:      $${ms.totalRawUsd || '0'}`);
-      log(`    Margin Used:    $${ms.totalMarginUsed || '0'}`);
-      log(`    Withdrawable:   $${result.withdrawable || '0'}`);
+      log(`    Account Value:   $${ms.accountValue || '0'}`);
+      log(`    Unrealized PnL:  $${unrealizedPnl.toFixed(2)}`);
+      log(`    Margin Used:     $${ms.totalMarginUsed || '0'}`);
+      log(`    Withdrawable:    $${result.withdrawable || '0'}`);
       log('');
       return undefined;
     },
@@ -481,7 +524,7 @@ OPTIONS:
       const result = await perpRead(apiInstance, 'meta', {});
       let assets = result.assets || [];
 
-      const filter = (options.filter || '').toUpperCase();
+      const filter = String(scalar(options.filter, 'filter') ?? '').toUpperCase();
       if (filter) {
         assets = assets.filter(a => String(a.name).toUpperCase().includes(filter));
       }

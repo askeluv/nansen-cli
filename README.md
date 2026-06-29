@@ -93,6 +93,24 @@ nansen trade limit-order update --order <orderId> --trigger-price 85
 
 For EVM chains, there's no native limit-order surface — pair an external venue's resting order with a `common-token-transfer` smart alert on the settlement wallet as a best-effort fill signal. See the `nansen-limit-orders` skill for details.
 
+## Perpetuals
+
+Hyperliquid perpetual trading via `nansen perp`. Uses the same wallet and `NANSEN_WALLET_PASSWORD` as DEX trading (requires an EVM wallet). Select the asset with `--coin` (`--symbol` is accepted as an alias).
+
+```bash
+nansen perp meta --filter ETH                                  # list assets + max leverage
+nansen perp order --coin ETH --side buy --size 0.1 --price 1600 --type limit
+nansen perp order --coin BTC --side sell --size 0.001 --price 95000 --type market \
+  --take-profit 90000 --stop-loss 98000
+nansen perp close --coin ETH --size 0.1 --price 1600 --side sell   # sell closes a long
+nansen perp cancel --coin ETH --oid <orderId>
+nansen perp leverage --coin ETH --leverage 5 --margin-type cross   # or isolated
+nansen perp positions
+nansen perp account                                            # value, unrealized PnL, margin
+```
+
+`--side` is `buy`/`long` or `sell`/`short` to open (`buy`/`sell` to close); `--tif` is `Gtc`/`Ioc`/`Alo`; `--slippage` is a decimal in `[0,1]`; `--leverage` is a whole integer capped at the asset max. Perp orders are irreversible once signed. See the `nansen-trading` skill for details.
+
 ## Wallet
 
 ```bash
@@ -195,7 +213,8 @@ nansen research smart-money netflow --chain solana --fields token_symbol,net_flo
 |---------|-----|
 | `command not found` | `npm install -g nansen-cli` |
 | `UNAUTHORIZED` after login | `cat ~/.nansen/config.json` or set `NANSEN_API_KEY` |
-| Empty perp results | Use `--symbol BTC`, not `--token`. Perps are Hyperliquid-only. |
+| Empty perp _research_ results | Use `--symbol BTC`, not `--token`. Perps are Hyperliquid-only. |
+| `perp` _trading_ prints the usage banner | Trading needs `--coin BTC` (`--symbol` also works); see the Perpetuals section. |
 | `UNSUPPORTED_FILTER` on token holders | Remove `--smart-money` — not all tokens have that data. |
 | Huge JSON response | Use `--fields` to select columns. |
 
