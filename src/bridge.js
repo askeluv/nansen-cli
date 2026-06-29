@@ -478,7 +478,13 @@ OPTIONS:
           const decimals = await resolveBridgeTokenDecimals(originToken, originChain);
           let humanAmount = amount;
           if (amountUnit === 'usd') {
-            const price = await resolveUsdPrice(apiInstance, originToken, originChain);
+            // USDC is USD-pegged ($1), so skip the price lookup — and Hyperliquid's
+            // USDC uses a sentinel address the price API can't resolve, which would
+            // otherwise make `--amount-unit usd` unusable from HL. Non-stable tokens
+            // still fetch a live price.
+            const price = isBridgeUsdc(originToken, originChain)
+              ? 1
+              : await resolveUsdPrice(apiInstance, originToken, originChain);
             humanAmount = (parseFloat(amount) / price).toFixed(decimals);
           }
           resolvedAmount = convertToBaseUnits(humanAmount, decimals);

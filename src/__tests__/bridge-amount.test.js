@@ -124,4 +124,28 @@ describe('bridge quote --amount-unit (M2)', () => {
     });
     expect(api.captured.params.amount).toBe('5000000');
   });
+
+  // --amount-unit usd on USDC must NOT call the price API: USDC is $1, and HL's
+  // USDC uses a sentinel address the price API can't resolve. fakeApi() has no
+  // generalSearch, so reaching resolveUsdPrice would throw — passing proves the
+  // $1 short-circuit fired.
+  it('treats USDC as $1 for --amount-unit usd from Hyperliquid (no price lookup)', async () => {
+    const cmds = buildBridgeCommands({ log: () => {} });
+    const api = fakeApi();
+    await cmds.quote([], api, {}, {
+      'from-chain': 'hyperliquid', 'to-chain': 'base',
+      'from-token': 'USDC', amount: '5', 'amount-unit': 'usd', wallet: 'w',
+    });
+    expect(api.captured.params.amount).toBe('500000000'); // $5 -> 5 USDC at 8 dec
+  });
+
+  it('treats USDC as $1 for --amount-unit usd on an EVM chain (no price lookup)', async () => {
+    const cmds = buildBridgeCommands({ log: () => {} });
+    const api = fakeApi();
+    await cmds.quote([], api, {}, {
+      'from-chain': 'base', 'to-chain': 'hyperliquid',
+      'from-token': 'USDC', amount: '5', 'amount-unit': 'usd', wallet: 'w',
+    });
+    expect(api.captured.params.amount).toBe('5000000'); // $5 -> 5 USDC at 6 dec
+  });
 });
