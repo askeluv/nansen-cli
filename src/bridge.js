@@ -90,6 +90,20 @@ export function floorHyperliquidUsdcBridgeAmount(amountBaseUnits, decimals, toke
   return ((BigInt(amountBaseUnits) / factor) * factor).toString();
 }
 
+// Slippage is whole basis points in [0, 10000] (50 = 0.5%, 10000 = 100%).
+// Validate client-side so "abc" or "-1" fail here with a clear message instead
+// of an opaque backend 422, matching how `perp` validates --slippage. parseInt
+// alone would silently accept "999abc" (-> 999) or "-1", so check the string
+// shape before parsing.
+export function parseSlippageBps(raw) {
+  const s = String(raw).trim();
+  const bad = `Invalid --slippage "${raw}". Use whole basis points between 0 and 10000 (e.g. 50 = 0.5%).`;
+  if (!/^\d+$/.test(s)) throw new Error(bad);
+  const n = parseInt(s, 10);
+  if (!Number.isInteger(n) || n < 0 || n > 10000) throw new Error(bad);
+  return n;
+}
+
 // ── API helpers ──────────────────────────────────────────────────────
 
 async function getBridgeQuote(apiInstance, params) {
@@ -427,7 +441,7 @@ export function buildBridgeCommands(deps = {}) {
       const amountUnit = options['amount-unit'] != null
         ? String(options['amount-unit']).toLowerCase()
         : undefined;
-      const slippageBps = options.slippage ? parseInt(options.slippage, 10) : 50;
+      const slippageBps = options.slippage !== undefined ? parseSlippageBps(options.slippage) : 50;
       const walletName = options.wallet;
       const recipient = options.recipient;
 

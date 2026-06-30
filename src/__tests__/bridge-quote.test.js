@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { loadBridgeQuote, markBridgeQuoteExecuted } from '../bridge.js';
+import { loadBridgeQuote, markBridgeQuoteExecuted, parseSlippageBps } from '../bridge.js';
 
 // loadBridgeQuote/markBridgeQuoteExecuted resolve the quotes dir from
 // process.env.HOME, so point HOME at a throwaway dir for each test.
@@ -80,5 +80,29 @@ describe('bridge quote replay protection', () => {
   it('rejects a non-bridge quote loaded through the bridge path', () => {
     writeQuote('swap-1', { type: 'swap' });
     expect(() => loadBridgeQuote('swap-1')).toThrow(/not a bridge quote/);
+  });
+});
+
+describe('bridge --slippage validation', () => {
+  it('rejects a non-numeric value client-side instead of forwarding it to the API', () => {
+    expect(() => parseSlippageBps('abc')).toThrow(/Invalid --slippage "abc"/);
+  });
+
+  it('rejects trailing garbage that parseInt would otherwise truncate', () => {
+    expect(() => parseSlippageBps('999abc')).toThrow(/Invalid --slippage/);
+  });
+
+  it('rejects a negative value', () => {
+    expect(() => parseSlippageBps('-1')).toThrow(/Invalid --slippage "-1"/);
+  });
+
+  it('rejects a value above 10000 bps (100%)', () => {
+    expect(() => parseSlippageBps('10001')).toThrow(/between 0 and 10000/);
+  });
+
+  it('accepts valid basis points', () => {
+    expect(parseSlippageBps('50')).toBe(50);
+    expect(parseSlippageBps('0')).toBe(0);
+    expect(parseSlippageBps('10000')).toBe(10000);
   });
 });

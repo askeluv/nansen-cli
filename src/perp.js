@@ -96,11 +96,30 @@ function resolvePrivateKey(walletName) {
   return exported.evm.privateKey;
 }
 
+// The size/price a perp order will actually execute at, post-rounding. The
+// backend echoes them as explicit `size`/`price`; fall back to the signed order
+// wire ("s"/"p") for an older backend that omits them. Returns undefined for
+// actions with no order (cancel/leverage/transfer), so callers can skip the line.
+export function effectiveOrderValues(prepared) {
+  const order0 = prepared?.action?.orders?.[0];
+  const size = prepared?.size ?? (order0?.s !== undefined ? Number(order0.s) : undefined);
+  const price = prepared?.price ?? (order0?.p !== undefined ? Number(order0.p) : undefined);
+  return { size, price };
+}
+
 // ── Prepare + sign + execute flow ────────────────────────────────────
 
 async function prepareSignExecute(apiInstance, endpoint, body, { privateKeyHex, privyClient, privyWalletId, log }) {
   log(`  Preparing ${endpoint}...`);
   const prepared = await perpPrepare(apiInstance, endpoint, body);
+
+  // Report the values actually encoded in the signed action, not the raw input:
+  // the backend rounds size to the asset's precision and folds slippage into the
+  // market price, so echoing the input would misreport the fill (M4).
+  const { size: effSize, price: effPrice } = effectiveOrderValues(prepared);
+  if (effSize !== undefined && effPrice !== undefined) {
+    log(`  Submitting: ${effSize} @ ${effPrice}`);
+  }
 
   let signature;
   if (privyClient && privyWalletId) {
@@ -230,6 +249,44 @@ function parseSlippage(raw) {
   return n;
 }
 
+// Count the decimal places in a validated numeric string. The numeric guards
+// above reject scientific notation and trailing garbage, so a plain split on
+// "." is exact (no float-repr drift from parseFloat).
+function countDecimals(numStr) {
+  const s = String(numStr).trim();
+  const dot = s.indexOf('.');
+  return dot === -1 ? 0 : s.length - dot - 1;
+}
+
+// Hyperliquid rounds an over-precise size/price to the asset's precision rather
+// than rejecting it (size -> szDecimals; price -> 6 - szDecimals decimals for
+// perps), so the order still fills — but silently at a different value than the
+// user typed. Warn up front (the post-prepare "Submitting" line then shows the
+// exact rounded value). Fail open: with no szDecimals (meta unavailable) skip.
+function warnImpreciseValue(coin, szDecimals, { sizeRaw, priceRaw }, warn) {
+  if (!Number.isInteger(szDecimals)) return;
+  if (sizeRaw !== undefined && countDecimals(sizeRaw) > szDecimals) {
+    warn(`⚠️  --size ${sizeRaw} is more precise than ${coin} allows (max ${szDecimals} decimals); Hyperliquid will round it.`);
+  }
+  const maxPriceDecimals = Math.max(0, 6 - szDecimals);
+  if (priceRaw !== undefined && countDecimals(priceRaw) > maxPriceDecimals) {
+    warn(`⚠️  --price ${priceRaw} is more precise than ${coin} allows (max ${maxPriceDecimals} decimals); Hyperliquid will round it.`);
+  }
+}
+
+// Resolve an asset's szDecimals from meta, or null when meta is unavailable or
+// the coin isn't listed. Fail open — the precision check is advisory.
+async function fetchSzDecimals(apiInstance, coin) {
+  try {
+    const meta = await perpRead(apiInstance, 'meta', {});
+    const asset = (meta.assets || []).find(a => String(a.name).toUpperCase() === coin);
+    if (asset && Number.isInteger(asset.sz_decimals)) return asset.sz_decimals;
+  } catch {
+    // meta lookup failed — skip the advisory precision check.
+  }
+  return null;
+}
+
 function assertTif(raw) {
   // --tif is optional and defaults to Gtc when omitted.
   if (raw === undefined) return 'Gtc';
@@ -260,7 +317,7 @@ function resolveCoin(options) {
 // ── Command builder ──────────────────────────────────────────────────
 
 export function buildPerpCommands(deps = {}) {
-  const { log = console.log } = deps;
+  const { log = console.log, warn = (m) => process.stderr.write(`${m}\n`) } = deps;
 
   return {
     'order': async (args, apiInstance, flags, options) => {
@@ -293,6 +350,12 @@ OPTIONS:
       const tp = options['take-profit'] !== undefined ? parsePositiveNumber(options['take-profit'], 'take-profit') : undefined;
       const sl = options['stop-loss'] !== undefined ? parsePositiveNumber(options['stop-loss'], 'stop-loss') : undefined;
       const isBuy = side === 'buy' || side === 'long';
+
+      // Advisory: warn before signing if size/price are finer than the asset's
+      // precision (Hyperliquid silently rounds rather than rejecting).
+      const szDecimals = await fetchSzDecimals(apiInstance, coin);
+      warnImpreciseValue(coin, szDecimals, { sizeRaw: options.size, priceRaw: options.price }, warn);
+
       const wallet = resolveWalletAddress(walletName);
       const isPrivy = wallet.provider === 'privy';
 
@@ -370,6 +433,13 @@ OPTIONS:
       const price = parsePositiveNumber(options.price, 'price');
       const slippage = options.slippage !== undefined ? parseSlippage(options.slippage) : 0.03;
       const isBuy = side === 'buy';
+
+      // Advisory: warn before signing if the close size is finer than the asset
+      // allows (Hyperliquid rounds rather than rejects). --price here is only a
+      // reference mark for the slippage calc, so its precision is not flagged.
+      const szDecimals = await fetchSzDecimals(apiInstance, coin);
+      warnImpreciseValue(coin, szDecimals, { sizeRaw: options.size }, warn);
+
       const wallet = resolveWalletAddress(walletName);
 
       // Validate the close direction against the open position so a wrong --side

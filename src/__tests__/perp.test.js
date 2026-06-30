@@ -11,7 +11,7 @@ vi.mock('../keychain.js', () => ({
 }));
 
 import { showWallet, getWalletConfig } from '../wallet.js';
-import { buildPerpCommands } from '../perp.js';
+import { buildPerpCommands, effectiveOrderValues } from '../perp.js';
 
 // These tests exercise client-side input validation only. Validation runs
 // before any wallet resolution or network call, so a rejected input throws
@@ -125,6 +125,66 @@ describe('perp order validation', () => {
     await expect(
       cmds.order([], null, {}, noSide),
     ).rejects.toThrow(/Usage: nansen perp order/);
+  });
+});
+
+describe('perp precision warnings (NEW — price/size precision)', () => {
+  // BTC with szDecimals=4 → max 4 size decimals, max (6-4)=2 price decimals.
+  const metaApi = { request: async () => ({ assets: [{ name: 'BTC', sz_decimals: 4, max_leverage: 50, asset_id: 1 }] }) };
+  const base = { coin: 'BTC', side: 'buy', size: '0.001', price: '50000', type: 'limit' };
+
+  function runOrder(options) {
+    const warnings = [];
+    const cmds2 = buildPerpCommands({ log: () => {}, warn: (m) => warnings.push(m) });
+    // Validation/warnings run before wallet resolution, which then rejects (no
+    // wallet) — swallow that so we can assert on the warnings collected first.
+    return cmds2.order([], metaApi, {}, options).catch(() => warnings);
+  }
+
+  it('warns when --size is finer than the asset allows (M4 root cause)', async () => {
+    const warnings = await runOrder({ ...base, size: '0.0071111' });
+    expect(warnings.some(w => /--size 0.0071111 is more precise than BTC/.test(w))).toBe(true);
+  });
+
+  it('warns when --price exceeds the asset price precision (NEW)', async () => {
+    const warnings = await runOrder({ ...base, price: '50000.123' });
+    expect(warnings.some(w => /--price 50000.123 is more precise than BTC/.test(w))).toBe(true);
+  });
+
+  it('does not warn when size and price are within precision', async () => {
+    const warnings = await runOrder({ ...base, size: '0.0071', price: '50000.1' });
+    expect(warnings.length).toBe(0);
+  });
+
+  it('falls open (no warning, no crash) when meta is unavailable', async () => {
+    const warnings = [];
+    const brokenApi = { request: async () => { throw new Error('meta down'); } };
+    const cmds2 = buildPerpCommands({ log: () => {}, warn: (m) => warnings.push(m) });
+    await cmds2.order([], brokenApi, {}, { ...base, size: '0.0071111' }).catch(() => {});
+    expect(warnings.length).toBe(0);
+  });
+});
+
+describe('perp effective order values (M4 display)', () => {
+  it('prefers the backend-rounded size/price over raw input', () => {
+    const prepared = {
+      size: 0.0071,
+      price: 50000,
+      action: { orders: [{ s: '0.0071', p: '50000' }] },
+    };
+    expect(effectiveOrderValues(prepared)).toEqual({ size: 0.0071, price: 50000 });
+  });
+
+  it('falls back to the signed order wire (s/p) when size/price are absent', () => {
+    const prepared = { action: { orders: [{ s: '0.0071', p: '50000' }] } };
+    expect(effectiveOrderValues(prepared)).toEqual({ size: 0.0071, price: 50000 });
+  });
+
+  it('returns undefined for an action with no order (cancel/leverage/transfer)', () => {
+    expect(effectiveOrderValues({ action: { type: 'cancel', cancels: [] } })).toEqual({
+      size: undefined,
+      price: undefined,
+    });
   });
 });
 
