@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.34.0
+
+### Minor Changes
+
+- [#459](https://github.com/nansen-ai/nansen-cli/pull/459) [`37e6725`](https://github.com/nansen-ai/nansen-cli/commit/37e6725aeeb3b83eb29c4650908b8dbb522ed316) Thanks [@dependabot](https://github.com/apps/dependabot)! - Drop support for Node.js 18 (EOL since April 2025). The minimum supported version is now Node.js 20, matching our test toolchain (vitest 4.x requires Node 20+).
+
+- [#460](https://github.com/nansen-ai/nansen-cli/pull/460) [`aac4bbe`](https://github.com/nansen-ai/nansen-cli/commit/aac4bbe18312edb48c91df60ab555f9c1d8334ce) Thanks [@gulshngill](https://github.com/gulshngill)! - Add trader_type, sectors_filter, sm_label_filter, and trader_label_filter filters to `nansen research perp screener` (ECINT-6680).
+
+  New CLI options:
+
+  - `--trader-type <type>` — filter by trader type: all, sm, whale, public_figure, high_winrate_hl_perps_trader
+  - `--sectors-filter <sectors>` — comma-separated sector:subcategory pairs, e.g. "Crypto:AI,TradFi:Stocks"
+  - `--sm-label-filter <labels>` — comma-separated Nansen SM labels (applies when trader-type is all or sm)
+  - `--trader-label-filter <labels>` — comma-separated HL perps trader labels (applies when trader-type is all or sm)
+
 ## 1.33.0
 
 ### Minor Changes
