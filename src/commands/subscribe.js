@@ -5,6 +5,39 @@
 
 import { NansenError, ErrorCode } from '../api.js';
 
+const PROVIDERS = new Set(['stripe', 'coinbase', 'moonpay']);
+
+function parseTextOption(name, flags, options, { required = false } = {}) {
+  const label = `--${name}`;
+  if (flags[name] && !(name in options)) {
+    throw new NansenError(`Required: ${label} <value>`, ErrorCode.MISSING_PARAM);
+  }
+
+  const raw = options[name];
+  if (raw === undefined) {
+    if (required) throw new NansenError(`Required: ${label}`, ErrorCode.MISSING_PARAM);
+    return undefined;
+  }
+  if (Array.isArray(raw)) {
+    throw new NansenError(`Use ${label} only once`, ErrorCode.INVALID_PARAMS);
+  }
+  if (typeof raw !== 'string') {
+    throw new NansenError(`${label} must be a string`, ErrorCode.INVALID_PARAMS);
+  }
+
+  const value = raw.trim();
+  if (!value) {
+    throw new NansenError(`Required: ${label} <value>`, ErrorCode.MISSING_PARAM);
+  }
+  return value;
+}
+
+function parsePromoCodeArg(code) {
+  const value = typeof code === 'string' ? code.trim() : '';
+  if (!value) throw new NansenError('Required: <code>', ErrorCode.MISSING_PARAM);
+  return value;
+}
+
 // ============= Formatting =============
 
 export function formatPlansTable(plans) {
@@ -155,21 +188,26 @@ USAGE:
           return apiInstance.getApiPlans();
         },
         'promo-code': async () => {
-          const code = args[1];
-          if (!code) throw new NansenError('Required: <code>', ErrorCode.MISSING_PARAM);
-          return apiInstance.validatePromoCode(code);
+          return apiInstance.validatePromoCode(parsePromoCodeArg(args[1]));
         },
         'create': async () => {
-          const priceId = options['price-id'];
-          if (!priceId) throw new NansenError('Required: --price-id', ErrorCode.MISSING_PARAM);
-          const provider = options.provider || 'stripe';
-          const promoCode = options['promo-code'];
+          const priceId = parseTextOption('price-id', flags, options, { required: true });
+          const provider = (parseTextOption('provider', flags, options) || 'stripe').toLowerCase();
+          const promoCode = parseTextOption('promo-code', flags, options);
+          const paymentMethodId = parseTextOption('payment-method', flags, options);
+
+          if (!PROVIDERS.has(provider)) {
+            throw new NansenError(`Unknown provider: ${provider}. Use stripe, coinbase, or moonpay`, ErrorCode.INVALID_PARAMS);
+          }
+          if (paymentMethodId && provider !== 'stripe') {
+            throw new NansenError('--payment-method is only supported with --provider stripe', ErrorCode.INVALID_PARAMS);
+          }
 
           if (provider === 'stripe') {
             return apiInstance.createStripeSubscription({
               priceId,
               promotionCode: promoCode,
-              paymentMethodId: options['payment-method'],
+              paymentMethodId,
             });
           } else if (provider === 'coinbase') {
             return apiInstance.createCoinbaseSubscription({
@@ -181,8 +219,6 @@ USAGE:
               priceId,
               promotionCode: promoCode,
             });
-          } else {
-            throw new NansenError(`Unknown provider: ${provider}. Use stripe, coinbase, or moonpay`, ErrorCode.INVALID_PARAMS);
           }
         },
         'cancel': async () => {

@@ -528,7 +528,7 @@ export class NansenAPI {
   }
 
   async request(endpoint, body = {}, options = {}) {
-    const url = `${this.baseUrl}${endpoint}`;
+    const url = `${options.baseUrl || this.baseUrl}${endpoint}`;
     const { maxRetries, baseDelayMs, maxDelayMs, retryOnStatus } = this.retryOptions;
     const shouldRetry = options.retry !== false; // Allow disabling retry per-request
     
@@ -1570,13 +1570,7 @@ export class NansenAPI {
    * Reuses apiKey auth but targets appBaseUrl instead of baseUrl.
    */
   async appRequest(endpoint, body = {}, options = {}) {
-    const savedBaseUrl = this.baseUrl;
-    this.baseUrl = this.appBaseUrl;
-    try {
-      return await this.request(endpoint, body, options);
-    } finally {
-      this.baseUrl = savedBaseUrl;
-    }
+    return this.request(endpoint, body, { ...options, baseUrl: this.appBaseUrl });
   }
 
   async getApiPlans() {
@@ -1591,27 +1585,27 @@ export class NansenAPI {
     const body = { priceId };
     if (promotionCode) body.promotionCode = promotionCode;
     if (paymentMethodId) body.paymentMethodId = paymentMethodId;
-    return this.appRequest('/subscription/stripe', body);
+    return this.appRequest('/subscription/stripe', body, { cache: false });
   }
 
   async createCoinbaseSubscription({ priceId, promotionCode }) {
     const body = { priceId };
     if (promotionCode) body.promotionCode = promotionCode;
-    return this.appRequest('/subscription/coinbase', body);
+    return this.appRequest('/subscription/coinbase', body, { cache: false });
   }
 
   async createMoonpaySubscription({ priceId, promotionCode }) {
     const body = { priceId };
     if (promotionCode) body.promotionCode = promotionCode;
-    return this.appRequest('/subscription/moonpay', body);
+    return this.appRequest('/subscription/moonpay', body, { cache: false });
   }
 
   async getActiveSubscriptions() {
-    return this.appRequest('/subscription/recurring', {}, { method: 'GET' });
+    return this.appRequest('/subscription/recurring', {}, { method: 'GET', cache: false });
   }
 
   async cancelSubscription() {
-    return this.appRequest('/subscription/recurring', {}, { method: 'DELETE' });
+    return this.appRequest('/subscription/recurring', {}, { method: 'DELETE', cache: false });
   }
 }
 

@@ -1885,16 +1885,19 @@ export async function runCLI(rawArgs, deps = {}) {
 
     // Subscribe table formatting
     if (command === 'subscribe' && table) {
+      let tableOutput = null;
       if (subcommand === 'plans') {
-        output(formatPlansTable(Array.isArray(result) ? result : result?.plans ?? result?.data ?? []));
-        return { type: 'success', data: result };
+        tableOutput = formatPlansTable(Array.isArray(result) ? result : result?.plans ?? result?.data ?? []);
       }
       if (subcommand === 'status') {
-        output(formatSubscriptionsTable(Array.isArray(result) ? result : result?.subscriptions ?? result?.data ?? []));
-        return { type: 'success', data: result };
+        tableOutput = formatSubscriptionsTable(Array.isArray(result) ? result : result?.subscriptions ?? result?.data ?? []);
       }
       if (subcommand === 'promo-code') {
-        output(formatPromoCode(result));
+        tableOutput = formatPromoCode(result);
+      }
+      if (tableOutput !== null) {
+        output(tableOutput);
+        await trackCommandSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, flags: usedFlags, chain });
         return { type: 'success', data: result };
       }
     }
