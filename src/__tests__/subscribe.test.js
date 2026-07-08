@@ -275,9 +275,19 @@ describe('formatPromoCode', () => {
     expect(result).toContain('20%');
   });
 
-  it('formats amount off', () => {
-    const result = formatPromoCode({ code: 'FLAT10', amountOff: 1000, currency: 'usd' });
-    expect(result).toContain('10.00 USD');
+  it('formats amount off (backend returns dollars, not cents)', () => {
+    const result = formatPromoCode({ code: 'FLAT10', amountOff: 10, currency: 'usd' });
+    expect(result).toContain('10.00 USD off');
+  });
+
+  it('omits minimum when backend returns 0 (no minimum)', () => {
+    const result = formatPromoCode({ code: 'SAVE20', percentOff: 20, minimumAmount: 0 });
+    expect(result).not.toContain('Minimum');
+  });
+
+  it('formats a non-zero minimum in dollars', () => {
+    const result = formatPromoCode({ code: 'SAVE20', percentOff: 20, minimumAmount: 50 });
+    expect(result).toContain('Minimum: 50.00 USD');
   });
 
   it('formats firstTimeTransaction', () => {

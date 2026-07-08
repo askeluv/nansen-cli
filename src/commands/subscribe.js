@@ -110,11 +110,13 @@ export function formatPromoCode(promo) {
   if (promo.percentOff != null) lines.push(`Discount: ${promo.percentOff}% off`);
   if (promo.amountOff != null) {
     const currency = (promo.currency || 'usd').toUpperCase();
-    lines.push(`Discount: ${(promo.amountOff / 100).toFixed(2)} ${currency} off`);
+    // Backend already returns dollars (amount_off / 100); do not divide again.
+    lines.push(`Discount: ${Number(promo.amountOff).toFixed(2)} ${currency} off`);
   }
-  if (promo.minimumAmount != null) {
+  if (promo.minimumAmount) {
+    // Backend returns dollars; defaults to 0 (no minimum) — skip when falsy.
     const currency = (promo.currency || 'usd').toUpperCase();
-    lines.push(`Minimum: ${(promo.minimumAmount / 100).toFixed(2)} ${currency}`);
+    lines.push(`Minimum: ${Number(promo.minimumAmount).toFixed(2)} ${currency}`);
   }
   if (promo.firstTimeTransaction != null) lines.push(`First-time only: ${promo.firstTimeTransaction ? 'yes' : 'no'}`);
   if (Array.isArray(promo.appliesToPlanIds) && promo.appliesToPlanIds.length > 0) {
