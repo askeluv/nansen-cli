@@ -581,24 +581,28 @@ export class NansenAPI {
       }
 
       let data;
-      try {
-        data = await response.json();
-      } catch (_err) {
-        // Non-JSON response (rare, usually server errors)
-        const error = new NansenError(
-          `Invalid response from API (status ${response.status})`,
-          response.status >= 500 ? ErrorCode.SERVER_ERROR : ErrorCode.UNKNOWN,
-          response.status,
-          { body: await response.text().catch(() => null), attempt: attempt + 1 }
-        );
+      if (response.status === 204) {
+        data = {};
+      } else {
+        try {
+          data = await response.json();
+        } catch (_err) {
+          // Non-JSON response (rare, usually server errors)
+          const error = new NansenError(
+            `Invalid response from API (status ${response.status})`,
+            response.status >= 500 ? ErrorCode.SERVER_ERROR : ErrorCode.UNKNOWN,
+            response.status,
+            { body: await response.text().catch(() => null), attempt: attempt + 1 }
+          );
         
-        if (shouldRetry && attempt < maxRetries && response.status >= 500) {
-          const delayMs = calculateBackoff(attempt, baseDelayMs, maxDelayMs);
-          await sleep(delayMs);
-          lastError = error;
-          continue;
+          if (shouldRetry && attempt < maxRetries && response.status >= 500) {
+            const delayMs = calculateBackoff(attempt, baseDelayMs, maxDelayMs);
+            await sleep(delayMs);
+            lastError = error;
+            continue;
+          }
+          throw error;
         }
-        throw error;
       }
 
       if (!response.ok) {
@@ -1582,16 +1586,13 @@ export class NansenAPI {
   }
 
   async createStripeSubscription({ priceId, promotionCode, paymentMethodId }) {
+    if (!paymentMethodId) {
+      throw new NansenError('Required: paymentMethodId', ErrorCode.MISSING_PARAM);
+    }
     const body = { priceId };
     if (promotionCode) body.promotionCode = promotionCode;
-    if (paymentMethodId) body.paymentMethodId = paymentMethodId;
+    body.paymentMethodId = paymentMethodId;
     return this.appRequest('/subscription/stripe', body, { cache: false });
-  }
-
-  async createCoinbaseSubscription({ priceId, promotionCode }) {
-    const body = { priceId };
-    if (promotionCode) body.promotionCode = promotionCode;
-    return this.appRequest('/subscription/coinbase', body, { cache: false });
   }
 
   async createMoonpaySubscription({ priceId, promotionCode }) {

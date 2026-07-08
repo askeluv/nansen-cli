@@ -5,7 +5,7 @@
 
 import { NansenError, ErrorCode } from '../api.js';
 
-const PROVIDERS = new Set(['stripe', 'coinbase', 'moonpay']);
+const PROVIDERS = new Set(['stripe', 'moonpay']);
 
 function parseTextOption(name, flags, options, { required = false } = {}) {
   const label = `--${name}`;
@@ -41,14 +41,15 @@ function parsePromoCodeArg(code) {
 // ============= Formatting =============
 
 export function formatPlansTable(plans) {
+  plans = normalizePlans(plans);
   if (!Array.isArray(plans) || plans.length === 0) {
     return 'No plans available';
   }
 
-  const nameWidth = Math.max(4, Math.min(30, Math.max(...plans.map(p => (p.name || '').length))));
+  const nameWidth = Math.max(4, Math.min(30, Math.max(...plans.map(p => String(p.name || '').length))));
   const priceWidth = Math.max(5, Math.min(15, Math.max(...plans.map(p => formatPrice(p).length))));
-  const intervalWidth = Math.max(8, Math.min(15, Math.max(...plans.map(p => (p.interval || '').length))));
-  const idWidth = Math.max(8, Math.min(40, Math.max(...plans.map(p => (p.priceId || p.id || '').length))));
+  const intervalWidth = Math.max(8, Math.min(15, Math.max(...plans.map(p => formatInterval(p).length))));
+  const idWidth = Math.max(8, Math.min(40, Math.max(...plans.map(p => String(p.priceId || p.id || '').length))));
 
   const lines = [];
   const header = `${'NAME'.padEnd(nameWidth)} │ ${'PRICE'.padEnd(priceWidth)} │ ${'INTERVAL'.padEnd(intervalWidth)} │ ${'PRICE ID'.padEnd(idWidth)}`;
@@ -56,21 +57,50 @@ export function formatPlansTable(plans) {
   lines.push('─'.repeat(nameWidth) + '─┼─' + '─'.repeat(priceWidth) + '─┼─' + '─'.repeat(intervalWidth) + '─┼─' + '─'.repeat(idWidth));
 
   for (const plan of plans) {
-    const name = (plan.name || '').slice(0, nameWidth).padEnd(nameWidth);
+    const name = String(plan.name || '').slice(0, nameWidth).padEnd(nameWidth);
     const price = formatPrice(plan).slice(0, priceWidth).padEnd(priceWidth);
-    const interval = (plan.interval || '').slice(0, intervalWidth).padEnd(intervalWidth);
-    const id = (plan.priceId || plan.id || '').slice(0, idWidth).padEnd(idWidth);
+    const interval = formatInterval(plan).slice(0, intervalWidth).padEnd(intervalWidth);
+    const id = String(plan.priceId || plan.id || '').slice(0, idWidth).padEnd(idWidth);
     lines.push(`${name} │ ${price} │ ${interval} │ ${id}`);
   }
 
   return lines.join('\n');
 }
 
+function normalizePlans(input) {
+  const value = input?.result ?? input?.plans ?? input?.data ?? input;
+  const plans = Array.isArray(value) ? value : (value ? [value] : []);
+
+  return plans.flatMap(plan => {
+    if (!Array.isArray(plan?.prices)) return [plan];
+    return plan.prices.map(price => ({
+      name: plan.name,
+      priceId: price.priceId || price.id,
+      ...price,
+    }));
+  });
+}
+
 function formatPrice(plan) {
-  if (plan.price == null) return '';
-  const amount = typeof plan.price === 'number' ? (plan.price / 100).toFixed(2) : String(plan.price);
+  let amount;
+  if (plan.price_usd != null) {
+    amount = Number(plan.price_usd).toFixed(2);
+  } else if (plan.unit_amount_decimal != null) {
+    amount = (Number(plan.unit_amount_decimal) / 100).toFixed(2);
+  } else if (plan.price != null) {
+    amount = typeof plan.price === 'number' ? (plan.price / 100).toFixed(2) : String(plan.price);
+  } else {
+    return '';
+  }
   const currency = (plan.currency || 'usd').toUpperCase();
   return `${amount} ${currency}`;
+}
+
+function formatInterval(plan) {
+  const interval = String(plan.interval || '');
+  const count = Number(plan.interval_count ?? plan.intervalCount);
+  if (!interval || !Number.isFinite(count) || count <= 1) return interval;
+  return `${count} ${interval}${count === 1 ? '' : 's'}`;
 }
 
 export function formatPromoCode(promo) {
@@ -100,18 +130,27 @@ export function formatSubscriptionsTable(subs) {
 
   const idWidth = Math.max(2, Math.min(40, Math.max(...subs.map(s => (s.id || '').length))));
   const statusWidth = Math.max(6, Math.min(15, Math.max(...subs.map(s => (s.status || '').length))));
-  const providerWidth = Math.max(8, Math.min(15, Math.max(...subs.map(s => (s.provider || '').length))));
+  const hasProvider = subs.some(s => s.provider);
+  const providerWidth = hasProvider ? Math.max(8, Math.min(15, Math.max(...subs.map(s => (s.provider || '').length)))) : 0;
 
   const lines = [];
-  const header = `${'ID'.padEnd(idWidth)} │ ${'STATUS'.padEnd(statusWidth)} │ ${'PROVIDER'.padEnd(providerWidth)}`;
+  const header = hasProvider
+    ? `${'ID'.padEnd(idWidth)} │ ${'STATUS'.padEnd(statusWidth)} │ ${'PROVIDER'.padEnd(providerWidth)}`
+    : `${'ID'.padEnd(idWidth)} │ ${'STATUS'.padEnd(statusWidth)}`;
   lines.push(header);
-  lines.push('─'.repeat(idWidth) + '─┼─' + '─'.repeat(statusWidth) + '─┼─' + '─'.repeat(providerWidth));
+  lines.push(hasProvider
+    ? '─'.repeat(idWidth) + '─┼─' + '─'.repeat(statusWidth) + '─┼─' + '─'.repeat(providerWidth)
+    : '─'.repeat(idWidth) + '─┼─' + '─'.repeat(statusWidth));
 
   for (const sub of subs) {
     const id = (sub.id || '').slice(0, idWidth).padEnd(idWidth);
     const status = (sub.status || '').slice(0, statusWidth).padEnd(statusWidth);
-    const provider = (sub.provider || '').slice(0, providerWidth).padEnd(providerWidth);
-    lines.push(`${id} │ ${status} │ ${provider}`);
+    if (hasProvider) {
+      const provider = (sub.provider || '').slice(0, providerWidth).padEnd(providerWidth);
+      lines.push(`${id} │ ${status} │ ${provider}`);
+    } else {
+      lines.push(`${id} │ ${status}`);
+    }
   }
 
   return lines.join('\n');
@@ -154,18 +193,19 @@ EXAMPLES:
         create: `nansen subscribe create — Create a new subscription
 
 USAGE:
-  nansen subscribe create --price-id <id> [--promo-code <code>] [--provider stripe|coinbase|moonpay] [--payment-method <id>]
+  nansen subscribe create --price-id <id> [--promo-code <code>] [--provider stripe|moonpay] [--payment-method <id>]
 
 OPTIONS:
   --price-id <id>              Plan price ID (required, from "nansen subscribe plans")
   --promo-code <code>          Promotion/coupon code (optional)
-  --provider <name>            Payment provider: stripe (default), coinbase, moonpay
-  --payment-method <id>        Stripe payment method ID (stripe only, optional)
+  --provider <name>            Payment provider: stripe (default), moonpay
+  --payment-method <id>        Stripe payment method ID (required for stripe)
 
 EXAMPLES:
   nansen subscribe create --price-id price_abc123
   nansen subscribe create --price-id price_abc123 --promo-code SAVE20
-  nansen subscribe create --price-id price_abc123 --provider coinbase`,
+  nansen subscribe create --price-id price_abc123 --payment-method pm_abc123
+  nansen subscribe create --price-id price_abc123 --provider moonpay`,
 
         cancel: `nansen subscribe cancel — Cancel active recurring subscription
 
@@ -197,7 +237,10 @@ USAGE:
           const paymentMethodId = parseTextOption('payment-method', flags, options);
 
           if (!PROVIDERS.has(provider)) {
-            throw new NansenError(`Unknown provider: ${provider}. Use stripe, coinbase, or moonpay`, ErrorCode.INVALID_PARAMS);
+            throw new NansenError(`Unknown provider: ${provider}. Use stripe or moonpay`, ErrorCode.INVALID_PARAMS);
+          }
+          if (provider === 'stripe' && !paymentMethodId) {
+            throw new NansenError('Required: --payment-method for --provider stripe', ErrorCode.MISSING_PARAM);
           }
           if (paymentMethodId && provider !== 'stripe') {
             throw new NansenError('--payment-method is only supported with --provider stripe', ErrorCode.INVALID_PARAMS);
@@ -208,11 +251,6 @@ USAGE:
               priceId,
               promotionCode: promoCode,
               paymentMethodId,
-            });
-          } else if (provider === 'coinbase') {
-            return apiInstance.createCoinbaseSubscription({
-              priceId,
-              promotionCode: promoCode,
             });
           } else if (provider === 'moonpay') {
             return apiInstance.createMoonpaySubscription({

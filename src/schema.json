@@ -1108,7 +1108,7 @@
       "subcommands": {
         "plans": {
           "description": "List available API plans",
-          "returns": ["name", "price", "currency", "interval", "priceId"]
+          "returns": ["result.id", "result.name", "result.prices[].id", "result.prices[].price_usd", "result.prices[].currency", "result.prices[].interval"]
         },
         "promo-code": {
           "description": "Validate a promo/coupon code. Usage: nansen subscribe promo-code <code>",
@@ -1126,10 +1126,10 @@
             },
             "provider": {
               "default": "stripe",
-              "description": "Payment provider: stripe, coinbase, or moonpay"
+              "description": "Payment provider: stripe or moonpay"
             },
             "payment-method": {
-              "description": "Stripe payment method ID (stripe only)"
+              "description": "Stripe payment method ID (required when provider is stripe)"
             }
           }
         },
@@ -1138,7 +1138,7 @@
         },
         "status": {
           "description": "Show active subscription(s)",
-          "returns": ["id", "status", "provider"]
+          "returns": ["id", "status"]
         }
       }
     },

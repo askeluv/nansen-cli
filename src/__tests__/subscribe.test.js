@@ -17,7 +17,6 @@ function mockApi(overrides = {}) {
     getApiPlans: vi.fn(),
     validatePromoCode: vi.fn(),
     createStripeSubscription: vi.fn(),
-    createCoinbaseSubscription: vi.fn(),
     createMoonpaySubscription: vi.fn(),
     getActiveSubscriptions: vi.fn(),
     cancelSubscription: vi.fn(),
@@ -102,30 +101,19 @@ describe('subscribe command', () => {
     it('creates a stripe subscription by default', async () => {
       const resp = { id: 'sub_1', url: 'https://checkout.stripe.com/...' };
       const api = mockApi({ createStripeSubscription: vi.fn().mockResolvedValue(resp) });
-      const result = await cmd(['create'], api, {}, { 'price-id': 'price_123', 'promo-code': 'SAVE20' });
+      const result = await cmd(['create'], api, {}, { 'price-id': 'price_123', 'promo-code': 'SAVE20', 'payment-method': 'pm_abc' });
       expect(api.createStripeSubscription).toHaveBeenCalledWith({
         priceId: 'price_123',
         promotionCode: 'SAVE20',
-        paymentMethodId: undefined,
-      });
-      expect(result).toEqual(resp);
-    });
-
-    it('creates a coinbase subscription', async () => {
-      const resp = { id: 'sub_2' };
-      const api = mockApi({ createCoinbaseSubscription: vi.fn().mockResolvedValue(resp) });
-      const result = await cmd(['create'], api, {}, { 'price-id': 'price_123', provider: 'coinbase' });
-      expect(api.createCoinbaseSubscription).toHaveBeenCalledWith({
-        priceId: 'price_123',
-        promotionCode: undefined,
+        paymentMethodId: 'pm_abc',
       });
       expect(result).toEqual(resp);
     });
 
     it('normalizes provider and trims create inputs', async () => {
-      const api = mockApi({ createCoinbaseSubscription: vi.fn().mockResolvedValue({}) });
-      await cmd(['create'], api, {}, { 'price-id': ' price_123 ', provider: ' Coinbase ', 'promo-code': ' SAVE20 ' });
-      expect(api.createCoinbaseSubscription).toHaveBeenCalledWith({
+      const api = mockApi({ createMoonpaySubscription: vi.fn().mockResolvedValue({}) });
+      await cmd(['create'], api, {}, { 'price-id': ' price_123 ', provider: ' Moonpay ', 'promo-code': ' SAVE20 ' });
+      expect(api.createMoonpaySubscription).toHaveBeenCalledWith({
         priceId: 'price_123',
         promotionCode: 'SAVE20',
       });
@@ -145,6 +133,14 @@ describe('subscribe command', () => {
     it('throws when --price-id is missing', async () => {
       await expect(cmd(['create'], mockApi(), {}, {}))
         .rejects.toThrow('Required: --price-id');
+    });
+
+    it('throws when stripe is missing --payment-method', async () => {
+      const api = mockApi({ createStripeSubscription: vi.fn() });
+      const err = await cmd(['create'], api, {}, { 'price-id': 'price_123' }).catch(e => e);
+      expect(err.message).toContain('Required: --payment-method');
+      expect(err.code).toBe(ErrorCode.MISSING_PARAM);
+      expect(api.createStripeSubscription).not.toHaveBeenCalled();
     });
 
     it('throws for unknown provider', async () => {
@@ -180,7 +176,7 @@ describe('subscribe command', () => {
     });
 
     it('throws when --payment-method is used with non-stripe providers', async () => {
-      await expect(cmd(['create'], mockApi(), {}, { 'price-id': 'price_123', provider: 'coinbase', 'payment-method': 'pm_abc' }))
+      await expect(cmd(['create'], mockApi(), {}, { 'price-id': 'price_123', provider: 'moonpay', 'payment-method': 'pm_abc' }))
         .rejects.toThrow('--payment-method is only supported');
     });
 
@@ -240,6 +236,36 @@ describe('formatPlansTable', () => {
   it('returns "No plans available" for empty array', () => {
     expect(formatPlansTable([])).toBe('No plans available');
   });
+
+  it('formats backend /plans/api response shape', () => {
+    const table = formatPlansTable({
+      result: {
+        id: 'prod_api',
+        name: 'api',
+        prices: [
+          {
+            id: 'price_api_month',
+            currency: 'usd',
+            price_usd: 49,
+            interval: 'month',
+            interval_count: 1,
+          },
+          {
+            id: 'price_api_year',
+            currency: 'usd',
+            price_usd: 499,
+            interval: 'year',
+            interval_count: 1,
+          },
+        ],
+      },
+    });
+    expect(table).toContain('api');
+    expect(table).toContain('49.00 USD');
+    expect(table).toContain('499.00 USD');
+    expect(table).toContain('price_api_month');
+    expect(table).toContain('price_api_year');
+  });
 });
 
 describe('formatPromoCode', () => {
@@ -272,6 +298,13 @@ describe('formatSubscriptionsTable', () => {
     expect(table).toContain('STATUS');
     expect(table).toContain('sub_1');
     expect(table).toContain('active');
+  });
+
+  it('omits provider column when subscriptions do not include providers', () => {
+    const table = formatSubscriptionsTable([{ id: 'sub_1', status: 'active' }]);
+    expect(table).toContain('ID');
+    expect(table).toContain('STATUS');
+    expect(table).not.toContain('PROVIDER');
   });
 
   it('returns "No active subscriptions" for empty array', () => {
@@ -313,9 +346,36 @@ describe('NansenAPI subscription endpoints', () => {
     });
     const priceId = `price_${Date.now()}`;
 
-    await api.createStripeSubscription({ priceId });
-    await api.createStripeSubscription({ priceId });
+    await api.createStripeSubscription({ priceId, paymentMethodId: 'pm_abc' });
+    await api.createStripeSubscription({ priceId, paymentMethodId: 'pm_abc' });
 
     expect(global.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('handles no-content subscription cancellation responses', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 204,
+      json: vi.fn(),
+    });
+    const api = new NansenAPI('test-key', 'https://api.nansen.ai', {
+      appBaseUrl: 'https://app.example',
+    });
+
+    await expect(api.cancelSubscription()).resolves.toEqual({});
+    expect(global.fetch).toHaveBeenCalledWith(
+      'https://app.example/subscription/recurring',
+      expect.objectContaining({ method: 'DELETE' })
+    );
+  });
+
+  it('requires paymentMethodId for stripe subscription requests', async () => {
+    const api = new NansenAPI('test-key', 'https://api.nansen.ai', {
+      appBaseUrl: 'https://app.example',
+    });
+
+    await expect(api.createStripeSubscription({ priceId: 'price_123' }))
+      .rejects.toMatchObject({ code: ErrorCode.MISSING_PARAM });
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 });

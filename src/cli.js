@@ -1887,7 +1887,7 @@ export async function runCLI(rawArgs, deps = {}) {
     if (command === 'subscribe' && table) {
       let tableOutput = null;
       if (subcommand === 'plans') {
-        tableOutput = formatPlansTable(Array.isArray(result) ? result : result?.plans ?? result?.data ?? []);
+        tableOutput = formatPlansTable(result);
       }
       if (subcommand === 'status') {
         tableOutput = formatSubscriptionsTable(Array.isArray(result) ? result : result?.subscriptions ?? result?.data ?? []);
