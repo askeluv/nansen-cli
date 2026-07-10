@@ -66,6 +66,26 @@ describe('CLI Smoke Tests', () => {
     expect(stdout).toContain('wallet');
   });
 
+  // Regression for #155: --help on a handler command (quote/execute) used to fall
+  // through to command execution, which errored on missing args and exited 1.
+  it('quote --help exits 0 and shows trade usage', () => {
+    const { stdout, exitCode } = runCLI('quote --help');
+
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain('nansen trade');
+    expect(stdout).toContain('quote');
+  });
+
+  it('trade quote --help exits 0', () => {
+    const { exitCode } = runCLI('trade quote --help');
+    expect(exitCode).toBe(0);
+  });
+
+  it('execute --help exits 0', () => {
+    const { exitCode } = runCLI('execute --help');
+    expect(exitCode).toBe(0);
+  });
+
   it('should show schema', () => {
     const { stdout, exitCode } = runCLI('schema');
     
