@@ -20,16 +20,15 @@ SUBCOMMANDS:
   run     Run in foreground (pipe mode — alerts emitted as NDJSON on stdout)
   start   Start daemon in background (writes PID file)
   stop    Stop the running daemon
-  status  Show daemon state (running/stopped, last alert, uptime)
-  logs    Tail the daemon log file
+  status  Show daemon state (running/stopped, last alert, PID)
+  logs    Show the last 50 daemon log lines
 
-OPTIONS (run / start):
+OPTIONS:
   --action <cmd>          Shell command to run per alert.
                           Alert JSON passed on stdin. Supports {alertId}, {alertName},
                           {alertType}, {firedAt} placeholder substitutions.
   --action-env            Pass alert JSON as NANSEN_ALERT env var instead of stdin
   --no-backfill           Skip past-alert backfill on (re)connect
-  --reconnect-delay <s>   Base reconnect delay in seconds (default: 5)
   --ws-url <url>          Override WebSocket server URL
   --state-file <path>     Path to state JSON (default: ~/.nansen/alerts-daemon-state.json)
   --pid-file <path>       Path to PID file (default: ~/.nansen/alerts-daemon.pid)
@@ -57,7 +56,8 @@ EXAMPLES:
 
 function readPid(pidFile) {
   try {
-    return parseInt(fs.readFileSync(pidFile, 'utf8').trim());
+    const pid = Number(fs.readFileSync(pidFile, 'utf8').trim());
+    return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
   } catch {
     return null;
   }
@@ -82,6 +82,25 @@ export function buildDaemonCommand(deps = {}) {
     if (!sub || sub === 'help' || flags.help || flags.h) {
       log(DAEMON_HELP);
       return;
+    }
+
+    for (const key of ['action', 'ws-url', 'state-file', 'pid-file', 'log-file']) {
+      if (options[key] !== undefined && (typeof options[key] !== 'string' || !options[key])) {
+        throw new Error(`--${key} must be a non-empty string`);
+      }
+    }
+
+    if (options['ws-url']) {
+      let url;
+      try {
+        url = new URL(options['ws-url']);
+      } catch {
+        throw new Error('--ws-url must be a valid WebSocket URL');
+      }
+      const localHosts = new Set(['localhost', '127.0.0.1', '0.0.0.0', '[::1]']);
+      if (url.protocol !== 'wss:' && !(url.protocol === 'ws:' && localHosts.has(url.hostname))) {
+        throw new Error('--ws-url must use wss:// (ws:// is allowed only for localhost)');
+      }
     }
 
     const pidFile = options['pid-file'] ?? DEFAULT_PID_FILE;
@@ -109,7 +128,7 @@ export function buildDaemonCommand(deps = {}) {
           actionEnv: flags['action-env'],
           backfill: !flags['no-backfill'],
           stateFile,
-          logFile: null, // foreground: log to stderr, not file
+          logFile: options['log-file'] ?? null,
           log: (level, message) => {
             process.stderr.write(`[${new Date().toISOString()}] [${level.toUpperCase()}] ${message}\n`);
           },
@@ -182,7 +201,9 @@ export function buildDaemonCommand(deps = {}) {
         let state = {};
         try {
           state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-        } catch {}
+        } catch {
+          // Missing or corrupt state is reported as empty.
+        }
 
         const status = {
           running,

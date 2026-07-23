@@ -63,8 +63,7 @@ const httpServer = http.createServer((req, res) => {
 const wss = new WebSocketServer({ server: httpServer, path: '/v1/smart-alert/stream' });
 
 wss.on('connection', (ws, req) => {
-  const auth = req.headers['authorization'];
-  if (!auth?.startsWith('Bearer ')) {
+  if (!req.headers['apikey']) {
     ws.send(JSON.stringify({ type: 'error', code: 'UNAUTHORIZED', message: 'Missing API key' }));
     ws.close(1008, 'Unauthorized');
     return;
@@ -86,7 +85,9 @@ wss.on('connection', (ws, req) => {
       if (msg.type === 'ping') {
         ws.send(JSON.stringify({ type: 'pong', ts: msg.ts }));
       }
-    } catch {}
+    } catch {
+      // Ignore malformed messages in the local development server.
+    }
   });
 
   // Fire mock alerts on interval

@@ -6,6 +6,7 @@
 
 import { EventEmitter } from 'events';
 import { spawn } from 'child_process';
+import WebSocket from 'ws';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -40,7 +41,7 @@ function sleep(ms) {
  */
 function writeJsonAtomic(filePath, data) {
   const tmp = filePath + '.tmp';
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
   fs.renameSync(tmp, filePath);
 }
@@ -129,7 +130,11 @@ export class AlertsDaemon extends EventEmitter {
     this._running = false;
     this._clearTimers();
     if (this._ws) {
-      try { this._ws.close(1000, 'daemon stopped'); } catch {}
+      try {
+        this._ws.close(1000, 'daemon stopped');
+      } catch {
+        // The socket may already be closed.
+      }
       this._ws = null;
     }
     this.log('info', 'Daemon stopped');
@@ -155,33 +160,16 @@ export class AlertsDaemon extends EventEmitter {
   }
 
   async _connect() {
-    // Resolve WebSocket class: injected (tests) > Node 22 built-in > ws package
-    let WS = this._WebSocket;
-    if (!WS) {
-      if (typeof globalThis.WebSocket !== 'undefined') {
-        WS = globalThis.WebSocket;
-      } else {
-        // Dynamically import 'ws' — optional peer dependency
-        try {
-          WS = (await import('ws')).default;
-        } catch {
-          throw new Error(
-            'No WebSocket implementation found. ' +
-            'Node 22+ has it built-in. For older Node, run: npm install ws'
-          );
-        }
-      }
-    }
+    const WS = this._WebSocket ?? WebSocket;
 
     return new Promise((resolve, reject) => {
       const ws = new WS(this.wsUrl, {
-        headers: { Authorization: `Bearer ${this.apiKey}` },
+        headers: { apikey: this.apiKey },
       });
       this._ws = ws;
 
       ws.on('open', async () => {
         this.log('info', `Connected to ${this.wsUrl}`);
-        this._reconnectAttempt = 0;
         this._startPing();
         this._saveState({ startedAt: this._state.startedAt ?? new Date().toISOString() });
 
@@ -207,14 +195,22 @@ export class AlertsDaemon extends EventEmitter {
 
       ws.on('close', (code, reason) => {
         this._clearTimers();
+        if (this._ws === ws) this._ws = null;
         this.log('info', `Connection closed (code=${code} reason=${reason?.toString() ?? ''})`);
         resolve(); // let the loop decide whether to reconnect
       });
 
       ws.on('error', (err) => {
         this.log('error', `WebSocket error: ${err.message}`);
-        // 'close' will fire after 'error', so we reject to surface it in connectLoop
-        reject(err);
+        if (/Unexpected server response: (401|403)\b/.test(err.message)) {
+          this._running = false;
+        }
+        try {
+          if (typeof ws.terminate === 'function') ws.terminate();
+          else ws.close();
+        } catch {
+          reject(err);
+        }
       });
     });
   }
@@ -222,17 +218,33 @@ export class AlertsDaemon extends EventEmitter {
   // ── Message handling ─────────────────────────────────────────────────────────
 
   _handleMessage(msg) {
+    if (!msg || typeof msg !== 'object' || Array.isArray(msg)) {
+      this.log('warn', 'Received invalid message, ignoring');
+      return;
+    }
+
     switch (msg.type) {
       case 'connected':
+        this._reconnectAttempt = 0;
         this._saveState({ sessionId: msg.sessionId });
         this.log('info', `Session: ${msg.sessionId}`);
         this.emit('connected', msg);
         break;
 
       case 'alert':
+        if (!msg.alertId || !msg.firedAt) {
+          this.log('warn', 'Received invalid alert, ignoring');
+          break;
+        }
+        if (msg.alertId === this._state.lastAlertId && msg.firedAt === this._state.lastAlertAt) {
+          this.log('debug', `Duplicate alert ignored: ${msg.alertId}`);
+          break;
+        }
         // Log only metadata — not alert data payload (may contain market-sensitive info)
         this.log('info', `Alert: [${msg.alertId}] ${msg.alertName} (${msg.alertType}) at ${msg.firedAt}`);
-        this._saveState({ lastAlertAt: msg.firedAt, lastAlertId: msg.alertId });
+        if (!this._state.lastAlertAt || msg.firedAt >= this._state.lastAlertAt) {
+          this._saveState({ lastAlertAt: msg.firedAt, lastAlertId: msg.alertId });
+        }
         this.emit('alert', msg);
         this._dispatchAlert(msg);
         break;
@@ -277,6 +289,9 @@ export class AlertsDaemon extends EventEmitter {
       });
 
       if (!this.actionEnv) {
+        child.stdin.on('error', (err) => {
+          this.log('error', `Action hook stdin error: ${err.message}`);
+        });
         child.stdin.write(alertJson);
         child.stdin.end();
       }
@@ -302,7 +317,7 @@ export class AlertsDaemon extends EventEmitter {
     const url = `${this.restUrl}?since=${encodeURIComponent(since)}&limit=50`;
 
     const res = await this._fetch(url, {
-      headers: { Authorization: `Bearer ${this.apiKey}` },
+      headers: { apikey: this.apiKey },
     });
 
     if (!res.ok) {
@@ -310,7 +325,10 @@ export class AlertsDaemon extends EventEmitter {
     }
 
     const body = await res.json();
-    const alerts = body.alerts ?? [];
+    if (!Array.isArray(body?.alerts)) {
+      throw new Error('past-alerts returned an invalid response');
+    }
+    const alerts = body.alerts;
 
     if (alerts.length === 0) {
       this.log('info', 'No missed alerts in backfill window');
@@ -319,8 +337,7 @@ export class AlertsDaemon extends EventEmitter {
 
     this.log('info', `Replaying ${alerts.length} missed alert(s)`);
     for (const alert of alerts) {
-      this.emit('alert', alert);
-      this._dispatchAlert(alert);
+      this._handleMessage(alert);
     }
   }
 
@@ -369,7 +386,12 @@ export class AlertsDaemon extends EventEmitter {
       process.stderr.write(line + '\n');
     }
     if (this.logFile) {
-      try { fs.appendFileSync(this.logFile, line + '\n'); } catch {}
+      try {
+        fs.mkdirSync(path.dirname(this.logFile), { recursive: true, mode: 0o700 });
+        fs.appendFileSync(this.logFile, line + '\n', { mode: 0o600 });
+      } catch (err) {
+        process.stderr.write(`Failed to write daemon log: ${err.message}\n`);
+      }
     }
     this.emit('log', { level, message, line });
   }

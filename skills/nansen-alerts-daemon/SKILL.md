@@ -28,7 +28,7 @@ nansen alerts daemon run                       # Foreground, NDJSON on stdout
 nansen alerts daemon start --action '<cmd>'    # Background, runs <cmd> per alert
 nansen alerts daemon stop                      # Stop background daemon
 nansen alerts daemon status                    # Running? Last alert? PID?
-nansen alerts daemon logs                      # Tail daemon log
+nansen alerts daemon logs                      # Show recent daemon log lines
 ```
 
 ## Architecture
@@ -44,7 +44,7 @@ The daemon connects to `wss://api.nansen.ai/v1/smart-alert/stream` using your AP
 On disconnect, it reconnects with exponential backoff (5s → 300s max) and backfills
 missed alerts from the `/past-alerts` REST endpoint.
 
-## Options (run / start)
+## Options
 
 | Flag | Description |
 |------|-------------|
@@ -92,6 +92,5 @@ Written atomically (tmp + rename). Permissions: `0600`.
 ## Notes
 
 - Requires a valid Nansen API key (`nansen login` or `NANSEN_API_KEY` env var)
-- Node 22+ has built-in WebSocket; older versions need `npm install ws`
-- The `--action` hook runs each alert as a subprocess — not `eval` — preventing shell injection from alert data
+- The `--action` hook is intentionally run through `/bin/sh`; alert placeholder values are filtered before interpolation
 - Log files contain only alert metadata (ID, name, type, timestamp), not data payloads

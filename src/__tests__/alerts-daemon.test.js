@@ -11,6 +11,10 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { buildDaemonCommand } from '../commands/daemon.js';
 import { AlertsDaemon } from '../daemon/alerts-daemon.js';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -84,10 +88,18 @@ describe('AlertsDaemon', () => {
     expect(() => new AlertsDaemon({})).toThrow('apiKey is required');
   });
 
+  it('ignores non-object messages', () => {
+    const { daemon } = makeDaemon();
+    expect(() => daemon._handleMessage(null)).not.toThrow();
+  });
+
   it('emits "connected" event on WS open + connected message', async () => {
+    let headers;
+
     class AutoMockWS extends EventEmitter {
-      constructor() {
+      constructor(_url, options) {
         super();
+        headers = options.headers;
         this.readyState = 1;
         this.send = vi.fn();
         this.close = vi.fn((code) => {
@@ -126,6 +138,7 @@ describe('AlertsDaemon', () => {
     daemon.stop();
 
     expect(conn.sessionId).toBe('sess-abc');
+    expect(headers).toEqual({ apikey: 'test-key' });
   });
 
   it('emits "alert" event and writes JSON to stdout', async () => {
@@ -311,8 +324,49 @@ describe('AlertsDaemon', () => {
 
     expect(mockFetch).toHaveBeenCalledWith(
       expect.stringContaining('/past-alerts'),
-      expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer test-key' }) })
+      expect.objectContaining({ headers: { apikey: 'test-key' } })
     );
     expect(backfilledAlerts.some((a) => a.alertId === 'past-001')).toBe(true);
+    expect(daemon._state).toMatchObject({
+      lastAlertAt: missedAlert.firedAt,
+      lastAlertId: 'past-001',
+    });
+
+    await daemon._fetchPastAlerts(daemon._state.lastAlertAt);
+    expect(backfilledAlerts.filter((a) => a.alertId === 'past-001')).toHaveLength(1);
+
+    daemon._handleMessage({
+      ...missedAlert,
+      firedAt: new Date(Date.parse(missedAlert.firedAt) + 1_000).toISOString(),
+    });
+    expect(backfilledAlerts.filter((a) => a.alertId === 'past-001')).toHaveLength(2);
+  });
+});
+
+describe('daemon command', () => {
+  it('does not treat an invalid PID file as a running daemon', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nansen-daemon-test-'));
+    const pidFile = path.join(dir, 'daemon.pid');
+    fs.writeFileSync(pidFile, '-1');
+
+    try {
+      const command = buildDaemonCommand({ log: vi.fn() });
+      const status = await command(['status'], null, {}, {
+        'pid-file': pidFile,
+        'state-file': path.join(dir, 'state.json'),
+        'log-file': path.join(dir, 'daemon.log'),
+      });
+
+      expect(status.running).toBe(false);
+      expect(status.pid).toBeNull();
+      await expect(command(['status'], null, {}, {
+        'pid-file': -1,
+      })).rejects.toThrow('--pid-file must be a non-empty string');
+      await expect(command(['status'], null, {}, {
+        'ws-url': 'ws://example.com/stream',
+      })).rejects.toThrow('--ws-url must use wss://');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -1126,6 +1126,10 @@
                 "state-file": {
                   "type": "string",
                   "description": "Path to state JSON (default: ~/.nansen/alerts-daemon-state.json)"
+                },
+                "log-file": {
+                  "type": "string",
+                  "description": "Optional path to a log file"
                 }
               }
             },
@@ -1172,7 +1176,7 @@
               }
             },
             "status": {
-              "description": "Show daemon state (running/stopped, last alert, uptime)",
+              "description": "Show daemon state (running/stopped, last alert, PID)",
               "options": {
                 "state-file": {
                   "type": "string",
@@ -1189,7 +1193,7 @@
               }
             },
             "logs": {
-              "description": "Tail the daemon log file",
+              "description": "Show the last 50 daemon log lines",
               "options": {
                 "log-file": {
                   "type": "string",
