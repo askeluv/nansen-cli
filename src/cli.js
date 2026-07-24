@@ -1629,6 +1629,7 @@ SUBCOMMANDS:
   close       Close a position (reduce-only market order)
   leverage    Set leverage and margin mode
   transfer    Move USDC between Spot and Perps balances
+  approve-builder-fee  Authorize the Nansen builder fee (one-time; auto-fired on first trade)
   positions   View open positions
   orders      View open orders
   account     View account state (balance, equity, margin, spot)
@@ -1640,12 +1641,13 @@ USAGE:
   nansen perp close --coin BTC --size 0.001 --price 100000 --side sell
   nansen perp leverage --coin BTC --leverage 10 --margin-type cross
   nansen perp transfer --direction spot-to-perp --amount 25
+  nansen perp approve-builder-fee
   nansen perp positions
   nansen perp account`);
       return;
     }
     if (!perpCmds[sub]) {
-      throw new NansenError(`Unknown perp subcommand: ${sub}. Available: order, cancel, close, leverage, transfer, positions, orders, account, meta`, ErrorCode.UNKNOWN);
+      throw new NansenError(`Unknown perp subcommand: ${sub}. Available: order, cancel, close, leverage, transfer, approve-builder-fee, positions, orders, account, meta`, ErrorCode.UNKNOWN);
     }
     return perpCmds[sub](args.slice(1), apiInstance, flags, options);
   };

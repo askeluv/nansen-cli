@@ -10,7 +10,16 @@ vi.mock('../keychain.js', () => ({
   retrievePassword: vi.fn(() => ({ password: null, source: null })),
 }));
 
-import { showWallet, getWalletConfig } from '../wallet.js';
+// Stub the ONE direct-to-HL network call so the flow tests can assert what
+// gets submitted without hitting api.hyperliquid.xyz. No existing test reaches
+// submit (they throw at validation/wallet/screening first), so this is inert
+// for them.
+vi.mock('../hl-client.js', () => ({
+  submitExchange: vi.fn(async () => ({ status: 'ok', response: { data: { statuses: [{ resting: {} }] } } })),
+}));
+
+import { showWallet, getWalletConfig, exportWallet } from '../wallet.js';
+import { submitExchange } from '../hl-client.js';
 import { buildPerpCommands, effectiveOrderValues } from '../perp.js';
 
 // These tests exercise client-side input validation only. Validation runs
@@ -498,5 +507,101 @@ describe('perp wallet resolution (M5)', () => {
     await expect(
       cmds.positions([], null, {}, { wallet: 'bad' }),
     ).rejects.toThrow(/no valid EVM address/);
+  });
+});
+
+// ── Chunk 3/4/5: direct-to-HL build + screen + submit ────────────────
+describe('perp direct-to-HL flow (Chunk 3/4/5)', () => {
+  const WALLET = '0x' + '1'.repeat(40);
+  const BUILDER = '0x' + 'Ab'.repeat(20); // mixed case → asserts lowercasing
+  const KEY = '11'.repeat(32); // valid secp256k1 scalar; address is irrelevant here
+  const ETH = { name: 'ETH', asset_id: 1, sz_decimals: 4, max_leverage: 50 };
+  const baseOrder = { coin: 'ETH', side: 'buy', size: '0.01', price: '2000', type: 'market', wallet: 'x' };
+
+  // Dispatch the proxy/screen calls by endpoint. `screen` is a function so a
+  // test can make it throw (unavailable) or flag an address (sanctioned).
+  function mockApi({ assets = [ETH], builder, screen }) {
+    const builderStatus = builder ?? {
+      approved: true,
+      max_fee_rate: 80,
+      required_fee: 80,
+      builder_address: BUILDER,
+    };
+    return {
+      request: vi.fn(async (endpoint, body) => {
+        if (endpoint.startsWith('/api/v1/perp/meta')) return { assets };
+        if (endpoint.startsWith('/api/v1/perp/builder-fee')) return builderStatus;
+        if (endpoint.startsWith('/api/v1/perp/positions')) return { positions: [] };
+        if (endpoint.startsWith('/api/v1/sanctions/screen')) return screen(body);
+        throw new Error(`unexpected endpoint ${endpoint}`);
+      }),
+    };
+  }
+
+  const clean = () => ({ results: [{ address: WALLET, sanctioned: false }] });
+
+  beforeEach(() => {
+    submitExchange.mockClear();
+    showWallet.mockReturnValue({ name: 'x', evm: WALLET, provider: 'local' });
+    getWalletConfig.mockReturnValue({});
+    exportWallet.mockReturnValue({ evm: { privateKey: KEY } });
+  });
+
+  it('aborts a sanctioned wallet before signing/submitting', async () => {
+    const api = mockApi({ screen: () => ({ results: [{ address: WALLET, sanctioned: true }] }) });
+    const err = await cmds.order([], api, {}, baseOrder).catch(e => e);
+    expect(err.code).toBe('SANCTIONED');
+    expect(submitExchange).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when screening is unavailable', async () => {
+    const api = mockApi({ screen: () => { throw new Error('503 SDN snapshot unavailable'); } });
+    const err = await cmds.order([], api, {}, baseOrder).catch(e => e);
+    expect(err.code).toBe('SCREENING_UNAVAILABLE');
+    expect(submitExchange).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when a requested address is absent from the screening result', async () => {
+    const api = mockApi({ screen: () => ({ results: [] }) });
+    const err = await cmds.order([], api, {}, baseOrder).catch(e => e);
+    expect(err.code).toBe('SCREENING_UNAVAILABLE');
+    expect(submitExchange).not.toHaveBeenCalled();
+  });
+
+  it('aborts with META_UNAVAILABLE when the asset is not listed', async () => {
+    const api = mockApi({ assets: [], screen: clean });
+    const err = await cmds.order([], api, {}, baseOrder).catch(e => e);
+    expect(err.code).toBe('META_UNAVAILABLE');
+    expect(submitExchange).not.toHaveBeenCalled();
+  });
+
+  it('submits an order carrying the lowercased builder code {b,f}', async () => {
+    const api = mockApi({ screen: clean });
+    await cmds.order([], api, {}, baseOrder);
+    expect(submitExchange).toHaveBeenCalledTimes(1);
+    const submitted = submitExchange.mock.calls[0][0];
+    expect(submitted.action.type).toBe('order');
+    expect(submitted.action.builder).toEqual({ b: BUILDER.toLowerCase(), f: 80 });
+    expect(typeof submitted.nonce).toBe('number');
+    expect(submitted.signature).toHaveProperty('r');
+  });
+
+  it('auto-fires the one-time builder-fee approval before the first order', async () => {
+    const api = mockApi({
+      builder: { approved: false, max_fee_rate: 0, required_fee: 80, builder_address: BUILDER },
+      screen: clean,
+    });
+    await cmds.order([], api, {}, baseOrder);
+    expect(submitExchange).toHaveBeenCalledTimes(2);
+    expect(submitExchange.mock.calls[0][0].action.type).toBe('approveBuilderFee');
+    expect(submitExchange.mock.calls[0][0].action.maxFeeRate).toBe('0.08%');
+    expect(submitExchange.mock.calls[1][0].action.type).toBe('order');
+  });
+
+  it('screens and submits a transfer (user-signed usdClassTransfer)', async () => {
+    const api = mockApi({ screen: clean });
+    await cmds.transfer([], api, {}, { direction: 'spot-to-perp', amount: '25', wallet: 'x' });
+    expect(submitExchange).toHaveBeenCalledTimes(1);
+    expect(submitExchange.mock.calls[0][0].action.type).toBe('usdClassTransfer');
   });
 });

@@ -183,6 +183,16 @@
             }
           }
         },
+        "approve-builder-fee": {
+          "endpoint": "/api/v1/perp/builder-fee",
+          "description": "Authorize the Nansen builder fee (one-time; auto-fired on the first order/close)",
+          "options": {
+            "wallet": {
+              "type": "string",
+              "description": "Wallet name (defaults to the configured default wallet)"
+            }
+          }
+        },
         "positions": {
           "endpoint": "/api/v1/perp/positions",
           "description": "View open positions",

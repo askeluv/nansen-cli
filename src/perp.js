@@ -1,11 +1,27 @@
 /**
  * Nansen CLI — Hyperliquid perpetual trading commands.
- * Calls nansen-api /api/v1/perp/* endpoints.
- * Signing uses existing EIP-712 infrastructure (hashTypedData + signSecp256k1).
+ *
+ * Mutating commands (order/cancel/close/leverage/transfer) build the HL action
+ * locally (hl-action.js), screen the signing wallet against the live SDN list,
+ * sign with existing EIP-712 infrastructure, and submit straight to
+ * api.hyperliquid.xyz (hl-client.js) — the Nansen API is out of the order path.
+ * Reads (positions/orders/account/meta) and the builder-fee status still go
+ * through the proxy /api/v1/perp/* endpoints (Decision D4).
  */
 
 import { CommandError } from './api.js';
 import { signSecp256k1 } from './crypto.js';
+import {
+  buildApproveBuilderFeeAction,
+  buildCancelAction,
+  buildCloseAction,
+  buildLeverageAction,
+  buildOrderAction,
+  buildUsdClassTransferAction,
+  l1Eip712,
+  userSignedEip712,
+} from './hl-action.js';
+import { submitExchange } from './hl-client.js';
 import { retrievePassword } from './keychain.js';
 import { exportWallet, getWalletConfig, showWallet } from './wallet.js';
 import { hashTypedData } from './x402-evm.js';
@@ -24,24 +40,87 @@ function signAgent(eip712, privateKeyHex) {
   };
 }
 
-// ── API helpers ──────────────────────────────────────────────────────
-
-async function perpPrepare(apiInstance, endpoint, body) {
-  return apiInstance.request(`/api/v1/perp/${endpoint}`, body);
-}
-
-async function perpExecute(apiInstance, { action, nonce, signature, vaultAddress }) {
-  return apiInstance.request('/api/v1/perp/execute', {
-    action,
-    nonce,
-    signature,
-    vault_address: vaultAddress || null,
-  });
-}
+// ── Proxy read helpers (Decision D4: reads stay on the API) ───────────
 
 async function perpRead(apiInstance, endpoint, params) {
   const qs = new URLSearchParams(params).toString();
   return apiInstance.request(`/api/v1/perp/${endpoint}?${qs}`, {}, { method: 'GET' });
+}
+
+// Resolve an asset's id + szDecimals (+ maxLeverage) from the proxy /perp/meta.
+// Fail OPEN to null: a meta outage must not preempt a clearer earlier error
+// (missing wallet, wrong password) — callers that need it to build an action
+// re-check for null and abort at that point (see requireAsset).
+async function fetchAssetMeta(apiInstance, coin) {
+  try {
+    const meta = await perpRead(apiInstance, 'meta', {});
+    const asset = (meta.assets || []).find(a => String(a.name).toUpperCase() === coin);
+    if (asset && Number.isInteger(asset.asset_id) && Number.isInteger(asset.sz_decimals)) {
+      return { assetId: asset.asset_id, szDecimals: asset.sz_decimals, maxLeverage: asset.max_leverage };
+    }
+  } catch {
+    // meta lookup failed — treat as unavailable; caller decides whether to abort.
+  }
+  return null;
+}
+
+// An action builder needs the asset metadata; without it we cannot construct a
+// correct wire, so abort (fail closed) rather than guessing. The message
+// deliberately omits any upstream error text so it can't be confused with the
+// advisory pre-checks that fall open on the same outage.
+function requireAsset(assetMeta, coin) {
+  if (!assetMeta) {
+    throw new CommandError(
+      `Could not load Hyperliquid asset metadata for ${coin}; not trading.`,
+      'META_UNAVAILABLE',
+    );
+  }
+  return assetMeta;
+}
+
+// Fetch the builder-fee status + code from the proxy (single source of truth,
+// Decision D1): { approved, max_fee_rate, required_fee, builder_address }. One
+// call yields both the {b,f} attached to every order/close and the approval
+// gate. Fail closed — this endpoint shares availability with screening, so if
+// it's down we abort rather than trade without the builder code.
+async function fetchBuilderFee(apiInstance, walletAddress) {
+  const qs = new URLSearchParams({ wallet_address: walletAddress }).toString();
+  let status;
+  try {
+    status = await apiInstance.request(`/api/v1/perp/builder-fee?${qs}`, {}, { method: 'GET' });
+  } catch (err) {
+    throw new CommandError(
+      `Could not resolve the Hyperliquid builder fee, so the trade was not submitted: ${err.message}`,
+      'BUILDER_FEE_UNAVAILABLE',
+    );
+  }
+  if (!status || !status.builder_address || !Number.isInteger(status.required_fee)) {
+    throw new CommandError(
+      'Builder-fee status response was malformed, so the trade was not submitted.',
+      'BUILDER_FEE_UNAVAILABLE',
+    );
+  }
+  return status;
+}
+
+// The {b,f} builder code attached to order/close actions. `b` is lowercased (HL
+// requirement); `f` is the fee in tenths of a basis point.
+function builderCode(status) {
+  return { b: String(status.builder_address).toLowerCase(), f: status.required_fee };
+}
+
+// maxFeeRate string signed in approveBuilderFee, derived from the per-order fee
+// so the two can't drift — mirrors the API's config.hl_builder_max_fee_rate
+// (80 tenths-of-a-bp -> "0.08%").
+function builderMaxFeeRate(requiredFee) {
+  const percent = requiredFee / 1000;
+  return percent.toFixed(4).replace(/0+$/, '').replace(/\.$/, '') + '%';
+}
+
+// HL nonce: current time in milliseconds. Must be recent and strictly
+// increasing per account; Date.now() satisfies both for a single command.
+function hlNonce() {
+  return Date.now();
 }
 
 // ── Wallet helpers ───────────────────────────────────────────────────
@@ -107,52 +186,118 @@ export function effectiveOrderValues(prepared) {
   return { size, price };
 }
 
-// ── Prepare + sign + execute flow ────────────────────────────────────
+// ── Screening (Chunk 4) ──────────────────────────────────────────────
+//
+// Per-trade OFAC screening against the live SDN list. This is the compliance
+// checkpoint that lets the CLI submit directly to HL: every mutating action
+// re-screens the signing wallet before it is signed. Fail CLOSED — a sanctioned
+// hit, a non-200 (503 = SDN snapshot unavailable), a network error, or a
+// response that doesn't cover every requested address all abort the trade
+// before signing, never trade through.
 
-async function prepareSignExecute(apiInstance, endpoint, body, { privateKeyHex, privyClient, privyWalletId, log }) {
-  log(`  Preparing ${endpoint}...`);
-  const prepared = await perpPrepare(apiInstance, endpoint, body);
-
-  // Report the values actually encoded in the signed action, not the raw input:
-  // the backend rounds size to the asset's precision and folds slippage into the
-  // market price, so echoing the input would misreport the fill (M4).
-  const { size: effSize, price: effPrice } = effectiveOrderValues(prepared);
-  if (effSize !== undefined && effPrice !== undefined) {
-    log(`  Submitting: ${effSize} @ ${effPrice}`);
+async function screenOrThrow(apiInstance, addresses) {
+  let result;
+  try {
+    result = await apiInstance.request('/api/v1/sanctions/screen', { addresses });
+  } catch (err) {
+    throw new CommandError(
+      `Compliance screening is unavailable, so the trade was not submitted: ${err.message}`,
+      'SCREENING_UNAVAILABLE',
+    );
   }
 
-  let signature;
+  const results = Array.isArray(result?.results) ? result.results : [];
+  const sanctioned = results.filter(r => r && r.sanctioned).map(r => r.address);
+  if (sanctioned.length > 0) {
+    throw new CommandError(
+      `Wallet address is on the compliance blocklist and cannot trade: ${sanctioned.join(', ')}`,
+      'SANCTIONED',
+    );
+  }
+
+  // A 200 that omitted a requested address is unverifiable — fail closed rather
+  // than assume the missing address is clean.
+  const screened = new Set(results.map(r => String(r.address).toLowerCase()));
+  const missing = addresses.filter(a => !screened.has(String(a).toLowerCase()));
+  if (missing.length > 0) {
+    throw new CommandError(
+      `Compliance screening did not cover all addresses, so the trade was not submitted: ${missing.join(', ')}`,
+      'SCREENING_UNAVAILABLE',
+    );
+  }
+}
+
+// ── Sign + direct submit ─────────────────────────────────────────────
+
+// Sign an EIP-712 payload with the local wallet key or via Privy. Returns the
+// {r,s,v} object submitExchange expects. Works for both L1 (phantom-agent) and
+// user-signed payloads — the field list comes from the payload's own types.
+async function signHlAction(eip712, { privateKeyHex, privyClient, privyWalletId, log }) {
   if (privyClient && privyWalletId) {
     log('  Signing via Privy...');
-    const result = await privyClient.ethSignTypedDataV4(privyWalletId, prepared.eip712);
+    const result = await privyClient.ethSignTypedDataV4(privyWalletId, eip712);
     const sig = result.data?.signature || result.signature || result;
-    const rHex = sig.slice(2, 66);
-    const sHex = sig.slice(66, 130);
-    const vHex = sig.slice(130, 132);
-    signature = { r: '0x' + rHex, s: '0x' + sHex, v: parseInt(vHex, 16) };
-  } else {
-    log('  Signing...');
-    signature = signAgent(prepared.eip712, privateKeyHex);
+    return {
+      r: '0x' + sig.slice(2, 66),
+      s: '0x' + sig.slice(66, 130),
+      v: parseInt(sig.slice(130, 132), 16),
+    };
+  }
+  log('  Signing...');
+  return signAgent(eip712, privateKeyHex);
+}
+
+// The direct-to-HL flow that replaces prepareSignExecute: screen the signing
+// wallet against the live SDN list (Chunk 4), sign the locally-built action,
+// and submit straight to api.hyperliquid.xyz (Chunk 2). `prepared` is
+// { action, nonce, eip712, size?, price? } from an hl-action.js builder; the
+// vault is always null for a normal wallet (the CLI signs L1 actions with the
+// wallet key directly). submitExchange throws on any HL rejection.
+async function buildScreenSignSubmit(apiInstance, prepared, ctx) {
+  const { action, nonce, eip712, size, price } = prepared;
+  const { walletAddress, log } = ctx;
+
+  log('  Screening...');
+  await screenOrThrow(apiInstance, [walletAddress]);
+
+  // Report the values actually encoded in the signed action (rounded size,
+  // slippage-adjusted market price), not the raw input, so we don't misreport
+  // the fill.
+  if (size !== undefined && price !== undefined) {
+    log(`  Submitting: ${size} @ ${price}`);
   }
 
-  log('  Executing...');
-  const result = await perpExecute(apiInstance, {
-    action: prepared.action,
-    nonce: prepared.nonce,
-    signature,
-    vaultAddress: prepared.vault_address,
-  });
+  const signature = await signHlAction(eip712, ctx);
 
-  if (result.status === 'err') {
-    throw new Error(`Hyperliquid error: ${result.response || 'unknown'}`);
-  }
+  log('  Submitting to Hyperliquid...');
+  const result = await submitExchange({ action, nonce, signature, vaultAddress: null });
 
-  log(`  Status: ${result.status}`);
+  const status = result.status ?? 'ok';
+  log(`  Status: ${status}`);
   if (result.response) {
     const resp = typeof result.response === 'string' ? result.response : JSON.stringify(result.response);
     log(`  Response: ${resp}`);
   }
   return result;
+}
+
+// ── Builder-fee onboarding (Chunk 5) ─────────────────────────────────
+//
+// HL silently rejects orders carrying our builder code until the master wallet
+// has approved a matching maxFeeRate. Auto-fire the one-time approval before the
+// first order/close; skip when already approved. The approval is a user-signed
+// action signed by the same wallet key, and is screened like any other.
+async function ensureBuilderApproved(apiInstance, status, ctx) {
+  if (status.approved) return;
+  ctx.log('  Approving Nansen builder fee (one-time)...');
+  const nonce = hlNonce();
+  const { action, primaryType, signTypes } = buildApproveBuilderFeeAction({
+    maxFeeRate: builderMaxFeeRate(status.required_fee),
+    builder: String(status.builder_address).toLowerCase(),
+    nonce,
+  });
+  const eip712 = userSignedEip712(primaryType, signTypes, action);
+  await buildScreenSignSubmit(apiInstance, { action, nonce, eip712 }, ctx);
 }
 
 // ── Input validation ─────────────────────────────────────────────────
@@ -274,17 +419,28 @@ function warnImpreciseValue(coin, szDecimals, { sizeRaw, priceRaw }, warn) {
   }
 }
 
-// Resolve an asset's szDecimals from meta, or null when meta is unavailable or
-// the coin isn't listed. Fail open — the precision check is advisory.
-async function fetchSzDecimals(apiInstance, coin) {
-  try {
-    const meta = await perpRead(apiInstance, 'meta', {});
-    const asset = (meta.assets || []).find(a => String(a.name).toUpperCase() === coin);
-    if (asset && Number.isInteger(asset.sz_decimals)) return asset.sz_decimals;
-  } catch {
-    // meta lookup failed — skip the advisory precision check.
+// Resolve the signing half of a mutating command's context for an
+// already-resolved wallet: a local private key, or a Privy client + wallet id.
+// Returns the ctx object buildScreenSignSubmit consumes (walletAddress + one of
+// the two signing paths + log). Kept separate from resolveWalletAddress so a
+// command that needs the address earlier (e.g. close's direction pre-check) can
+// resolve the key afterwards, matching the previous ordering.
+async function resolveSigningCtx(wallet, walletName, log) {
+  const ctx = {
+    walletAddress: wallet.address,
+    privateKeyHex: null,
+    privyClient: null,
+    privyWalletId: null,
+    log,
+  };
+  if (wallet.provider === 'privy') {
+    const { PrivyClient } = await import('./privy.js');
+    ctx.privyClient = new PrivyClient(process.env.PRIVY_APP_ID, process.env.PRIVY_APP_SECRET);
+    ctx.privyWalletId = wallet.privyWalletIds?.evm;
+  } else {
+    ctx.privateKeyHex = resolvePrivateKey(walletName);
   }
-  return null;
+  return ctx;
 }
 
 function assertTif(raw) {
@@ -351,43 +507,43 @@ OPTIONS:
       const sl = options['stop-loss'] !== undefined ? parsePositiveNumber(options['stop-loss'], 'stop-loss') : undefined;
       const isBuy = side === 'buy' || side === 'long';
 
-      // Advisory: warn before signing if size/price are finer than the asset's
-      // precision (Hyperliquid silently rounds rather than rejecting).
-      const szDecimals = await fetchSzDecimals(apiInstance, coin);
-      warnImpreciseValue(coin, szDecimals, { sizeRaw: options.size, priceRaw: options.price }, warn);
+      // One meta read serves both the advisory precision warning and the
+      // required build metadata. Fetched fail-open so a meta outage doesn't
+      // preempt a clearer error below (missing wallet, wrong password); we
+      // re-require it just before building the action.
+      const assetMeta = await fetchAssetMeta(apiInstance, coin);
+      warnImpreciseValue(coin, assetMeta?.szDecimals, { sizeRaw: options.size, priceRaw: options.price }, warn);
 
       const wallet = resolveWalletAddress(walletName);
-      const isPrivy = wallet.provider === 'privy';
+      const ctx = await resolveSigningCtx(wallet, walletName, log);
 
-      let privateKeyHex = null;
-      let privyClient = null;
-      let privyWalletId = null;
-
-      if (isPrivy) {
-        const { PrivyClient } = await import('./privy.js');
-        privyClient = new PrivyClient(process.env.PRIVY_APP_ID, process.env.PRIVY_APP_SECRET);
-        privyWalletId = wallet.privyWalletIds?.evm;
-      } else {
-        privateKeyHex = resolvePrivateKey(walletName);
-      }
+      const { assetId, szDecimals } = requireAsset(assetMeta, coin);
 
       log(`\n  Perp Order: ${coin} ${isBuy ? 'LONG' : 'SHORT'} ${size} @ ${price} (${orderType})`);
 
-      const body = {
-        wallet_address: wallet.address,
-        coin,
-        is_buy: isBuy,
-        size,
-        price,
-        order_type: orderType,
-        tif,
-        slippage,
-        reduce_only: false,
-        ...(tp !== undefined && { take_profit: tp }),
-        ...(sl !== undefined && { stop_loss: sl }),
-      };
+      // Single source of truth for the builder code + approval gate (D1).
+      const builderStatus = await fetchBuilderFee(apiInstance, wallet.address);
+      await ensureBuilderApproved(apiInstance, builderStatus, ctx);
 
-      await prepareSignExecute(apiInstance, 'order', body, { privateKeyHex, privyClient, privyWalletId, log });
+      const { action, size: effSize, price: effPrice } = buildOrderAction(
+        {
+          isBuy,
+          size,
+          price,
+          orderType,
+          reduceOnly: false,
+          tif,
+          slippage,
+          takeProfit: tp ?? null,
+          stopLoss: sl ?? null,
+          builder: builderCode(builderStatus),
+        },
+        { assetId, szDecimals },
+      );
+      const nonce = hlNonce();
+      const eip712 = l1Eip712(action, null, nonce);
+
+      await buildScreenSignSubmit(apiInstance, { action, nonce, eip712, size: effSize, price: effPrice }, ctx);
       log('');
       return undefined;
     },
@@ -402,16 +558,18 @@ OPTIONS:
 
       const oid = parsePositiveInt(options.oid, 'oid');
 
+      const assetMeta = await fetchAssetMeta(apiInstance, coin);
       const wallet = resolveWalletAddress(walletName);
-      const privateKeyHex = wallet.provider !== 'privy' ? resolvePrivateKey(walletName) : null;
+      const ctx = await resolveSigningCtx(wallet, walletName, log);
+      const { assetId } = requireAsset(assetMeta, coin);
 
       log(`\n  Cancel: ${coin} order #${oid}`);
 
-      await prepareSignExecute(apiInstance, 'cancel', {
-        wallet_address: wallet.address,
-        coin,
-        order_id: oid,
-      }, { privateKeyHex, log });
+      const { action } = buildCancelAction({ orderId: oid }, { assetId });
+      const nonce = hlNonce();
+      const eip712 = l1Eip712(action, null, nonce);
+
+      await buildScreenSignSubmit(apiInstance, { action, nonce, eip712 }, ctx);
       log('');
       return undefined;
     },
@@ -437,15 +595,15 @@ OPTIONS:
       // Advisory: warn before signing if the close size is finer than the asset
       // allows (Hyperliquid rounds rather than rejects). --price here is only a
       // reference mark for the slippage calc, so its precision is not flagged.
-      const szDecimals = await fetchSzDecimals(apiInstance, coin);
-      warnImpreciseValue(coin, szDecimals, { sizeRaw: options.size }, warn);
+      const assetMeta = await fetchAssetMeta(apiInstance, coin);
+      warnImpreciseValue(coin, assetMeta?.szDecimals, { sizeRaw: options.size }, warn);
 
       const wallet = resolveWalletAddress(walletName);
 
       // Validate the close direction against the open position so a wrong --side
       // fails fast with a clear message instead of the backend's opaque "reduce
       // only order would increase position". sell closes a long, buy closes a
-      // short. Fall open if positions can't be fetched — the backend still checks.
+      // short. Fall open if positions can't be fetched — HL still checks.
       let openPositions = null;
       try {
         const result = await perpRead(apiInstance, 'positions', { wallet_address: wallet.address });
@@ -467,18 +625,22 @@ OPTIONS:
         }
       }
 
-      const privateKeyHex = wallet.provider !== 'privy' ? resolvePrivateKey(walletName) : null;
+      const ctx = await resolveSigningCtx(wallet, walletName, log);
+      const { assetId, szDecimals } = requireAsset(assetMeta, coin);
 
       log(`\n  Close: ${coin} ${isBuy ? 'buy-to-close' : 'sell-to-close'} ${size} @ ${price}`);
 
-      await prepareSignExecute(apiInstance, 'close', {
-        wallet_address: wallet.address,
-        coin,
-        size,
-        price,
-        is_buy: isBuy,
-        slippage,
-      }, { privateKeyHex, log });
+      const builderStatus = await fetchBuilderFee(apiInstance, wallet.address);
+      await ensureBuilderApproved(apiInstance, builderStatus, ctx);
+
+      const { action, size: effSize, price: effPrice } = buildCloseAction(
+        { size, price, isBuy, slippage, builder: builderCode(builderStatus) },
+        { assetId, szDecimals },
+      );
+      const nonce = hlNonce();
+      const eip712 = l1Eip712(action, null, nonce);
+
+      await buildScreenSignSubmit(apiInstance, { action, nonce, eip712, size: effSize, price: effPrice }, ctx);
       log('');
       return undefined;
     },
@@ -495,32 +657,26 @@ OPTIONS:
       const leverage = parsePositiveInt(options.leverage, 'leverage');
 
       // Pre-validate against the asset's max leverage so an over-max value fails
-      // fast with a clear message instead of an opaque backend rejection. Fall
-      // open if meta is unavailable or the coin isn't listed (backend still checks).
-      let maxLeverage = null;
-      try {
-        const meta = await perpRead(apiInstance, 'meta', {});
-        const asset = (meta.assets || []).find(a => String(a.name).toUpperCase() === coin);
-        if (asset && Number.isFinite(asset.max_leverage)) maxLeverage = asset.max_leverage;
-      } catch {
-        // meta lookup failed — skip the pre-check rather than block a valid request.
-      }
-      if (maxLeverage !== null && leverage > maxLeverage) {
-        throw invalid(`Leverage ${leverage}x exceeds the ${maxLeverage}x maximum for ${coin}.`);
+      // fast with a clear message instead of an opaque HL rejection. Falls open
+      // if meta is unavailable or the coin isn't listed (HL still checks); the
+      // build below re-requires meta since it needs the asset id.
+      const assetMeta = await fetchAssetMeta(apiInstance, coin);
+      if (assetMeta && Number.isFinite(assetMeta.maxLeverage) && leverage > assetMeta.maxLeverage) {
+        throw invalid(`Leverage ${leverage}x exceeds the ${assetMeta.maxLeverage}x maximum for ${coin}.`);
       }
 
       const isCross = marginType === 'cross';
       const wallet = resolveWalletAddress(walletName);
-      const privateKeyHex = wallet.provider !== 'privy' ? resolvePrivateKey(walletName) : null;
+      const ctx = await resolveSigningCtx(wallet, walletName, log);
+      const { assetId } = requireAsset(assetMeta, coin);
 
       log(`\n  Leverage: ${coin} ${leverage}x ${isCross ? 'cross' : 'isolated'}`);
 
-      await prepareSignExecute(apiInstance, 'leverage', {
-        wallet_address: wallet.address,
-        coin,
-        leverage,
-        is_cross: isCross,
-      }, { privateKeyHex, log });
+      const { action } = buildLeverageAction({ leverage, isCross }, { assetId });
+      const nonce = hlNonce();
+      const eip712 = l1Eip712(action, null, nonce);
+
+      await buildScreenSignSubmit(apiInstance, { action, nonce, eip712 }, ctx);
       log('');
       return undefined;
     },
@@ -545,15 +701,36 @@ OPTIONS:
       const amount = parsePositiveNumber(options.amount, 'amount');
 
       const wallet = resolveWalletAddress(walletName);
-      const privateKeyHex = wallet.provider !== 'privy' ? resolvePrivateKey(walletName) : null;
+      const ctx = await resolveSigningCtx(wallet, walletName, log);
 
       log(`\n  Transfer: ${amount} USDC ${toPerp ? 'Spot → Perps' : 'Perps → Spot'}`);
 
-      await prepareSignExecute(apiInstance, 'transfer', {
-        wallet_address: wallet.address,
-        amount,
-        to_perp: toPerp,
-      }, { privateKeyHex, log });
+      // usdClassTransfer is user-signed: the nonce is embedded in the action.
+      const nonce = hlNonce();
+      const { action, primaryType, signTypes } = buildUsdClassTransferAction({ amount, toPerp, nonce });
+      const eip712 = userSignedEip712(primaryType, signTypes, action);
+
+      await buildScreenSignSubmit(apiInstance, { action, nonce, eip712 }, ctx);
+      log('');
+      return undefined;
+    },
+
+    'approve-builder-fee': async (args, apiInstance, flags, options) => {
+      // One-time onboarding: authorize Nansen's builder fee so orders route with
+      // the builder code. order/close auto-fire this on the first trade; this
+      // command lets a client approve up front. No-op when already approved.
+      const walletName = scalar(options.wallet, 'wallet');
+      const wallet = resolveWalletAddress(walletName);
+      const ctx = await resolveSigningCtx(wallet, walletName, log);
+
+      const builderStatus = await fetchBuilderFee(apiInstance, wallet.address);
+      if (builderStatus.approved) {
+        log(`\n  Builder fee already approved for ${wallet.address}\n`);
+        return undefined;
+      }
+
+      log(`\n  Approve builder fee: ${wallet.address}`);
+      await ensureBuilderApproved(apiInstance, builderStatus, ctx);
       log('');
       return undefined;
     },
