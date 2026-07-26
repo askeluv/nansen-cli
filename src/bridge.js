@@ -1,9 +1,9 @@
 /**
  * nansen bridge — Hyperliquid bridge commands (EVM <-> Hyperliquid via Relay).
  *
- * Calls nansen-api /api/v1/bridge/* endpoints. Transaction signing and
+ * Calls nansen-api /api/v1/perp/bridge/* endpoints. Transaction signing and
  * EVM broadcasting happen client-side; HL withdrawal signatures are
- * proxied through the API's /bridge/execute endpoint.
+ * proxied through the API's /perp/bridge/execute endpoint.
  */
 
 import * as crypto from 'node:crypto';
@@ -107,18 +107,18 @@ export function parseSlippageBps(raw) {
 // ── API helpers ──────────────────────────────────────────────────────
 
 async function getBridgeQuote(apiInstance, params) {
-  return apiInstance.request('/api/v1/bridge/quote', params);
+  return apiInstance.request('/api/v1/perp/bridge/quote', params);
 }
 
 async function postBridgeExecute(apiInstance, targetUrl, body) {
-  return apiInstance.request('/api/v1/bridge/execute', { target_url: targetUrl, body });
+  return apiInstance.request('/api/v1/perp/bridge/execute', { target_url: targetUrl, body });
 }
 
 async function getBridgeStatus(apiInstance, { requestId, txHash }) {
   const params = new URLSearchParams();
   if (requestId) params.set('request_id', requestId);
   if (txHash) params.set('tx_hash', txHash);
-  return apiInstance.request(`/api/v1/bridge/status?${params}`, {}, { method: 'GET' });
+  return apiInstance.request(`/api/v1/perp/bridge/status?${params}`, {}, { method: 'GET' });
 }
 
 // ── Quote caching ────────────────────────────────────────────────────
