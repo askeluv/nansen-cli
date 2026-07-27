@@ -1,7 +1,20 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+// bridge execute resolves the signing wallet before screening, so the gate tests
+// need a wallet to resolve. Mocked at the module boundary, as perp.test.js does.
+vi.mock('../wallet.js', () => ({
+  showWallet: vi.fn(),
+  getWalletConfig: vi.fn(() => ({})),
+  exportWallet: vi.fn(),
+}));
+
+vi.mock('../keychain.js', () => ({
+  retrievePassword: vi.fn(() => ({ password: null, source: null })),
+}));
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { getWalletConfig, showWallet } from '../wallet.js';
 import { buildBridgeCommands, loadBridgeQuote, markBridgeQuoteExecuted, parseSlippageBps } from '../bridge.js';
 
 // loadBridgeQuote/markBridgeQuoteExecuted resolve the quotes dir from
@@ -190,8 +203,54 @@ describe('bridge execute compliance gate', () => {
     });
   }
 
-  const execute = (api, quoteId) =>
-    buildBridgeCommands({ log: () => {} }).execute([], api, {}, { quote: quoteId });
+  const execute = (api, quoteId, options = {}) =>
+    buildBridgeCommands({ log: () => {} }).execute([], api, {}, { quote: quoteId, ...options });
+
+  beforeEach(() => {
+    // Signing wallet matches the quote's wallet unless a test overrides it.
+    getWalletConfig.mockReturnValue({ defaultWallet: 'w' });
+    showWallet.mockReturnValue({ name: 'w', evm: WALLET, provider: 'local' });
+  });
+
+  it('refuses to sign when the resolved wallet is not the quote wallet', async () => {
+    // Screening one address while signing with another would move funds from an
+    // unscreened wallet — and the cached nonce/from belong to the quote's wallet.
+    executableQuote('bridge-wrong-wallet');
+    showWallet.mockReturnValue({
+      name: 'other',
+      evm: '0x1111111111111111111111111111111111111111',
+      provider: 'local',
+    });
+    let screened = false;
+    const api = {
+      request: async () => {
+        screened = true;
+        return { results: [] };
+      },
+    };
+    await expect(execute(api, 'bridge-wrong-wallet', { wallet: 'other' })).rejects.toThrow(
+      /was created for .* but the signing wallet is/,
+    );
+    // Refused before screening, so nothing was signed or broadcast either.
+    expect(screened).toBe(false);
+    const onDisk = JSON.parse(
+      fs.readFileSync(path.join(quotesDir, 'bridge-wrong-wallet.json'), 'utf8'),
+    );
+    expect(onDisk.executedAt).toBeUndefined();
+  });
+
+  it('screens the address that actually signs', async () => {
+    executableQuote('bridge-screens-signer');
+    const seen = [];
+    const api = {
+      request: async (endpoint, body) => {
+        seen.push(...(body?.addresses || []));
+        return { results: [{ address: WALLET, sanctioned: true }] };
+      },
+    };
+    await expect(execute(api, 'bridge-screens-signer')).rejects.toThrow(/compliance blocklist/);
+    expect(seen).toEqual([WALLET]);
+  });
 
   it('refuses to sign when the wallet is sanctioned', async () => {
     executableQuote('bridge-sanctioned');

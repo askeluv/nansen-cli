@@ -604,12 +604,28 @@ Execute a cached bridge quote. Signs transactions and broadcasts them.`,
       log(`  Type: ${execution_type}`);
       log(`  Steps: ${steps.length}`);
 
+      // The quote was issued for one wallet, but the signing wallet is resolved
+      // separately from --wallet / the current default — which can have changed
+      // since. Signing with a different wallet than the quote was built for would
+      // screen one address and move funds from another, and the cached tx data
+      // (nonce, from) belongs to the quote's wallet regardless. Refuse instead.
+      const signer = resolveWalletAddress(walletName);
+      if (
+        quoteData.walletAddress &&
+        String(signer.address).toLowerCase() !== String(quoteData.walletAddress).toLowerCase()
+      ) {
+        throw new Error(
+          `Bridge quote "${quoteId}" was created for ${quoteData.walletAddress} but the signing wallet is ${signer.address}. Pass --wallet for the quote's wallet, or request a new quote.`,
+        );
+      }
+
       // Re-screen immediately before signing, fail-closed, mirroring the perp
-      // path. The quote was screened server-side when it was issued, but quotes
-      // live up to an hour and the EVM deposit leg broadcasts straight to a
-      // public RPC — so without this, nothing re-checks the wallet between quote
-      // and the transaction that actually moves funds.
-      await screenOrThrow(apiInstance, [quoteData.walletAddress]);
+      // path — and screen the address that actually signs, now known to match the
+      // quote. The quote was screened server-side when issued, but quotes live up
+      // to an hour and the EVM deposit leg broadcasts straight to a public RPC, so
+      // without this nothing re-checks the wallet between the quote and the
+      // transaction that moves funds.
+      await screenOrThrow(apiInstance, [signer.address]);
 
       const creds = resolveWalletCredentials(walletName);
 
@@ -645,11 +661,12 @@ Execute a cached bridge quote. Signs transactions and broadcasts them.`,
         if (creds.provider === 'privy') {
           const { PrivyClient } = await import('./privy.js');
           const privyClient = new PrivyClient(process.env.PRIVY_APP_ID, process.env.PRIVY_APP_SECRET);
-          const wallet = resolveWalletAddress(walletName);
           for (const [index, step] of steps.entries()) {
             await processSignatureStepPrivy(step, {
               privyClient,
-              walletId: wallet.privyWalletIds?.evm,
+              // `signer` above — the same resolution that was screened and
+              // matched against the quote, rather than resolving a second time.
+              walletId: signer.privyWalletIds?.evm,
               log,
               apiInstance,
               onBroadcast,
