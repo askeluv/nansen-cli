@@ -4,7 +4,7 @@
  * Supports EVM (EIP-3009 on Base) and Solana (SPL TransferChecked).
  */
 
-import { createEvmPaymentPayload, isEvmNetwork } from './x402-evm.js';
+import { createEvmPaymentPayload, isEvmNetwork, PERMIT2_ADDRESS } from './x402-evm.js';
 import {
   createSvmPaymentPayload,
   isSvmNetwork,
@@ -55,12 +55,63 @@ function rankRequirements(requirements) {
   return ranked;
 }
 
+// ERC-20 allowance(owner, spender) selector for the Permit2 preflight.
+const ALLOWANCE_SELECTOR = '0xdd62ed3e';
+
+/**
+ * Check whether `owner` has approved Permit2 to spend at least `amount` of
+ * `token`. Permit2-based payments are doomed without sufficient allowance
+ * (never approved, or a finite approval now below the payment amount), so
+ * skip those entries early instead of burning a failed verify round-trip.
+ * Returns true when the allowance is unknown (RPC failure) — let the server
+ * decide rather than block a possibly-valid payment.
+ */
+async function hasPermit2Allowance(network, token, owner, amount) {
+  const rpc = getEvmRpcUrl(network);
+  if (!rpc) return true;
+  try {
+    const ownerArg = owner.replace(/^0x/, '').toLowerCase().padStart(64, '0');
+    const spenderArg = PERMIT2_ADDRESS.replace(/^0x/, '').toLowerCase().padStart(64, '0');
+    const resp = await fetch(rpc, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1,
+        method: 'eth_call',
+        params: [{ to: token, data: `${ALLOWANCE_SELECTOR}${ownerArg}${spenderArg}` }, 'latest'],
+      }),
+    });
+    const data = await resp.json();
+    if (typeof data.result !== 'string') return true;
+    return BigInt(data.result) >= BigInt(amount);
+  } catch {
+    return true;
+  }
+}
+
 /**
  * Build a payment signature for a single requirement.
  * @returns {string|null} Base64 payment signature, or null on failure
  */
 async function buildPaymentForRequirement(requirement, exported, url) {
   if (isEvmNetwork(requirement.network)) {
+    if ((requirement.extra || {}).assetTransferMethod === 'permit2-exact') {
+      const approved = await hasPermit2Allowance(
+        requirement.network,
+        requirement.asset,
+        exported.evm.address,
+        requirement.amount,
+      );
+      if (!approved) {
+        console.error(
+          `[x402] Skipping ${requirement.network} permit2 option: Permit2 ` +
+          `(${PERMIT2_ADDRESS}) allowance for token ${requirement.asset} is ` +
+          `missing or below the payment amount (${requirement.amount}). ` +
+          `Send approve(${PERMIT2_ADDRESS}, <amount>) from the wallet to enable it.`,
+        );
+        return null;
+      }
+    }
     return createEvmPaymentPayload(
       requirement,
       exported.evm.privateKey,
@@ -132,7 +183,7 @@ export async function* createPaymentSignatures(response, url, options = {}) {
   for (const req of ranked) {
     try {
       const sig = await buildPaymentForRequirement(req, exported, url);
-      if (sig) yield { signature: sig, network: req.network };
+      if (sig) yield { signature: sig, network: req.network, asset: req.asset };
     } catch {
       // This payment option failed to build, try next
       continue;
@@ -157,10 +208,47 @@ export async function createPaymentSignature(response, url, options = {}) {
 }
 
 /**
+ * x402 payment tokens per EVM network, matching the stablecoins the API
+ * advertises in 402 `accepts` entries. `decimals` matters: USDT on BNB Smart
+ * Chain uses 18 decimals, unlike the 6-decimal tokens on Base and X Layer.
+ */
+// RPC endpoint per supported x402 EVM network.
+export const EVM_X402_RPCS = {
+  'eip155:8453': CHAIN_RPCS.base,
+  'eip155:196': CHAIN_RPCS.xlayer,
+  'eip155:56': CHAIN_RPCS.bsc,
+};
+
+function getEvmRpcUrl(network) {
+  return EVM_X402_RPCS[network] || null;
+}
+
+// Known payment tokens per network, in the order servers typically advertise
+// them. A network can accept several stablecoins (BSC accepts four); `decimals`
+// is per token — every BSC stablecoin is an 18-decimal BEP-20 deployment,
+// unlike the 6-decimal tokens on Base and X Layer.
+export const EVM_X402_TOKENS = {
+  'eip155:8453': [
+    { token: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', symbol: 'USDC', decimals: 6 }, // Base USDC
+  ],
+  'eip155:196': [
+    { token: '0x779Ded0c9e1022225f8E0630b35a9b54bE713736', symbol: 'USDT0', decimals: 6 }, // X Layer USDT0
+  ],
+  'eip155:56': [
+    { token: '0xcE24439F2D9C6a2289F741120FE202248B666666', symbol: 'U', decimals: 18 }, // United Stables
+    { token: '0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d', symbol: 'USD1', decimals: 18 }, // World Liberty Financial USD
+    { token: '0x55d398326f99059fF775485246999027B3197955', symbol: 'USDT', decimals: 18 }, // Tether USD
+    { token: '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d', symbol: 'USDC', decimals: 18 }, // Binance-Peg USD Coin
+  ],
+};
+
+/**
  * Check stablecoin balance for x402 payment wallet on the given network.
+ * Pass the token contract paid with (`asset`) to check that specific token;
+ * otherwise the network's first known token is checked.
  * Returns `{ balance, symbol }` (USD amount + token symbol) or null if check fails.
  */
-export async function checkX402Balance(network) {
+export async function checkX402Balance(network, asset = null) {
   try {
     const { listWallets, exportWallet: _exportWallet } = await import('./wallet.js');
     const wallets = listWallets();
@@ -192,13 +280,13 @@ export async function checkX402Balance(network) {
     }
 
     if (network.startsWith('eip155:')) {
-      // Per-network token + RPC. Both tokens are 6-decimals.
       // Default to Base USDC if the network is unknown so existing wallets keep working.
-      const EVM_NETWORKS = {
-        'eip155:8453': { token: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', rpc: CHAIN_RPCS.base,   symbol: 'USDC'  }, // Base USDC
-        'eip155:196':  { token: '0x779Ded0c9e1022225f8E0630b35a9b54bE713736', rpc: CHAIN_RPCS.xlayer, symbol: 'USDT0' }, // X Layer USDT0
-      };
-      const { token, rpc, symbol } = EVM_NETWORKS[network] || EVM_NETWORKS['eip155:8453'];
+      const tokens = EVM_X402_TOKENS[network] || EVM_X402_TOKENS['eip155:8453'];
+      const entry = (asset
+        && tokens.find(t => t.token.toLowerCase() === asset.toLowerCase()))
+        || tokens[0];
+      const { token, symbol, decimals } = entry;
+      const rpc = getEvmRpcUrl(network) || EVM_X402_RPCS['eip155:8453'];
       const addr = walletInfo.evm.replace('0x', '').toLowerCase().padStart(64, '0');
       const resp = await fetch(rpc, {
         method: 'POST',
@@ -210,7 +298,7 @@ export async function checkX402Balance(network) {
         }),
       });
       const data = await resp.json();
-      return { balance: parseInt(data.result, 16) / 1e6, symbol };
+      return { balance: parseInt(data.result, 16) / 10 ** decimals, symbol };
     }
 
     return null;

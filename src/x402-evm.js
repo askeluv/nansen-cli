@@ -25,6 +25,39 @@ const AUTHORIZATION_TYPES = [
   { name: 'nonce', type: 'bytes32' },
 ];
 
+// ============= Permit2 (permit2-exact transfer method) =============
+// Some tokens (e.g. USDT/USDC on BNB Smart Chain) predate EIP-3009, so
+// facilitators settle them through Uniswap's canonical Permit2 contract
+// instead: the payer signs a PermitWitnessTransferFrom and the facilitator's
+// proxy (requirements.extra.spenderAddress) executes the transfer. Requires a
+// one-time on-chain `token.approve(PERMIT2_ADDRESS, ...)` from the payer.
+
+export const PERMIT2_ADDRESS = '0x000000000022D473030F116dDEE9F6B43aC78BA3';
+
+// Permit2's EIP-712 domain has no version field.
+const PERMIT2_DOMAIN_TYPES = [
+  { name: 'name', type: 'string' },
+  { name: 'chainId', type: 'uint256' },
+  { name: 'verifyingContract', type: 'address' },
+];
+
+const TOKEN_PERMISSIONS_TYPES = [
+  { name: 'token', type: 'address' },
+  { name: 'amount', type: 'uint256' },
+];
+
+const WITNESS_TYPES = [
+  { name: 'to', type: 'address' },
+  { name: 'validAfter', type: 'uint256' },
+];
+
+// encodeType for a nested primary type: referenced struct types are appended
+// in alphabetical order per EIP-712 (TokenPermissions before Witness).
+const PERMIT_WITNESS_TYPE_STRING =
+  'PermitWitnessTransferFrom(TokenPermissions permitted,address spender,uint256 nonce,uint256 deadline,Witness witness)' +
+  'TokenPermissions(address token,uint256 amount)' +
+  'Witness(address to,uint256 validAfter)';
+
 /**
  * Encode a type string for EIP-712 typeHash.
  * e.g. "TransferWithAuthorization(address from,address to,uint256 value,...)"
@@ -110,6 +143,38 @@ export function hashTypedData(domain, primaryType, fields, message) {
   ]));
 }
 
+/**
+ * Compute the EIP-712 digest for a Permit2 PermitWitnessTransferFrom.
+ *
+ * Hand-rolled because the generic helpers above only support flat structs:
+ * the primary typeHash must cover the full type string including referenced
+ * structs, and struct-typed fields encode as their structHash.
+ *
+ * @param {number} chainId - EVM chain id (Permit2 domain field)
+ * @param {object} message - { permitted: {token, amount}, spender, nonce, deadline, witness: {to, validAfter} }
+ * @returns {Buffer} 32-byte digest to sign
+ */
+export function hashPermit2WitnessTransfer(chainId, message) {
+  const domainSeparator = hashStruct('EIP712Domain', PERMIT2_DOMAIN_TYPES, {
+    name: 'Permit2',
+    chainId,
+    verifyingContract: PERMIT2_ADDRESS,
+  });
+  const structHash = keccak256(Buffer.concat([
+    keccak256(Buffer.from(PERMIT_WITNESS_TYPE_STRING, 'utf8')),
+    hashStruct('TokenPermissions', TOKEN_PERMISSIONS_TYPES, message.permitted),
+    encodeValue('address', message.spender),
+    encodeValue('uint256', message.nonce),
+    encodeValue('uint256', message.deadline),
+    hashStruct('Witness', WITNESS_TYPES, message.witness),
+  ]));
+  return keccak256(Buffer.concat([
+    Buffer.from([0x19, 0x01]),
+    domainSeparator,
+    structHash,
+  ]));
+}
+
 // ============= x402 EVM Payment =============
 
 /**
@@ -123,7 +188,13 @@ function getChainId(network) {
 }
 
 /**
- * Create an x402 payment payload for EVM (EIP-3009 TransferWithAuthorization).
+ * Create an x402 payment payload for EVM.
+ *
+ * Routes on requirements.extra.assetTransferMethod: absent or "eip3009" signs
+ * an EIP-3009 TransferWithAuthorization (gasless); "permit2-exact" signs a
+ * Permit2 PermitWitnessTransferFrom (requires a prior one-time
+ * token.approve(PERMIT2_ADDRESS, ...)). Other methods throw so the fallback
+ * loop tries the next accepts entry.
  *
  * @param {object} requirements - Parsed PaymentRequirements from 402 response
  * @param {string} privateKeyHex - 32-byte EVM private key as hex
@@ -134,6 +205,14 @@ function getChainId(network) {
 export function createEvmPaymentPayload(requirements, privateKeyHex, walletAddress, resource) {
   const chainId = getChainId(requirements.network);
   const extra = requirements.extra || {};
+
+  const method = extra.assetTransferMethod;
+  if (method === 'permit2-exact') {
+    return createPermit2ExactPayload(requirements, privateKeyHex, walletAddress, resource);
+  }
+  if (method && method !== 'eip3009') {
+    throw new Error(`Unsupported assetTransferMethod: ${method}`);
+  }
 
   // Token name and version from requirements.extra (set by server/facilitator)
   const tokenName = extra.name;
@@ -192,6 +271,71 @@ export function createEvmPaymentPayload(requirements, privateKeyHex, walletAddre
   };
 
   // Add resource as object if provided
+  if (resource) {
+    payload.resource = { url: resource };
+  }
+
+  return Buffer.from(JSON.stringify(payload)).toString('base64');
+}
+
+/**
+ * Create an x402 payment payload via Permit2 PermitWitnessTransferFrom
+ * (assetTransferMethod "permit2-exact").
+ *
+ * The spender is the facilitator's Permit2 proxy advertised in
+ * requirements.extra.spenderAddress; the witness binds the transfer to the
+ * merchant wallet (requirements.payTo). Wire-format numeric fields are
+ * decimal strings.
+ *
+ * @param {object} requirements - Parsed PaymentRequirements from 402 response
+ * @param {string} privateKeyHex - 32-byte EVM private key as hex
+ * @param {string} walletAddress - Signer's EVM address
+ * @param {string} resource - Original request URL
+ * @returns {string} Base64-encoded PaymentPayload for Payment-Signature header
+ */
+export function createPermit2ExactPayload(requirements, privateKeyHex, walletAddress, resource) {
+  const chainId = getChainId(requirements.network);
+  const extra = requirements.extra || {};
+  const spender = extra.spenderAddress;
+  if (!spender) {
+    throw new Error('spenderAddress missing from requirements.extra (required for permit2-exact)');
+  }
+
+  const payTo = requirements.pay_to || requirements.payTo;
+  const now = Math.floor(Date.now() / 1000);
+  // 256-bit random nonce — Permit2 uses an unordered nonce bitmap.
+  const nonce = BigInt('0x' + crypto.randomBytes(32).toString('hex')).toString();
+  const deadline = String(now + 3600);
+  const validAfter = String(now - 60); // allow clock skew
+
+  const message = {
+    permitted: { token: requirements.asset, amount: BigInt(requirements.amount) },
+    spender,
+    nonce: BigInt(nonce),
+    deadline: BigInt(deadline),
+    witness: { to: payTo, validAfter: BigInt(validAfter) },
+  };
+
+  const msgHash = hashPermit2WitnessTransfer(chainId, message);
+  const { r, s, v } = signSecp256k1(msgHash, Buffer.from(privateKeyHex, 'hex'));
+  const signature = '0x' + r.toString('hex') + s.toString('hex') + (27 + v).toString(16);
+
+  const payload = {
+    x402Version: 2,
+    payload: {
+      permit2Authorization: {
+        permitted: { token: requirements.asset, amount: String(requirements.amount) },
+        from: walletAddress,
+        spender,
+        nonce,
+        deadline,
+        witness: { to: payTo, validAfter },
+      },
+      signature,
+    },
+    accepted: requirements,
+  };
+
   if (resource) {
     payload.resource = { url: resource };
   }

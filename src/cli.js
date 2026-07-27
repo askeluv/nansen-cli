@@ -1378,7 +1378,19 @@ export function buildCommands(deps = {}) {
       const days = options.days ? parseInt(options.days) : 30;
 
       const handlers = {
-        'screener': () => apiInstance.perpScreener({ filters, orderBy, pagination, days }),
+        'screener': () => {
+          const traderType = options['trader-type'];
+          const sectorsFilter = options['sectors-filter']
+            ? options['sectors-filter'].split(',').map(s => s.trim()).filter(Boolean)
+            : undefined;
+          const smLabelFilter = options['sm-label-filter']
+            ? options['sm-label-filter'].split(',').map(s => s.trim()).filter(Boolean)
+            : undefined;
+          const traderLabelFilter = options['trader-label-filter']
+            ? options['trader-label-filter'].split(',').map(s => s.trim()).filter(Boolean)
+            : undefined;
+          return apiInstance.perpScreener({ filters, orderBy, pagination, days, traderType, sectorsFilter, smLabelFilter, traderLabelFilter });
+        },
         'leaderboard': () => {
           const withLabels = resolveBooleanOption(options, flags, 'premium-labels');
           return apiInstance.perpLeaderboard({ filters, orderBy, pagination, days, withLabels });
@@ -1616,8 +1628,13 @@ SUPPORTED CHAINS:
     return bridgeCmds[sub](args.slice(1), apiInstance, flags, options);
   };
 
-  // 'perp' delegates to buildPerpCommands
+  // 'perp' delegates to buildPerpCommands. The trading subcommands are added on
+  // top of the pre-existing perp analytics command, so capture that handler and
+  // keep screener/leaderboard reachable instead of shadowing them — both
+  // `nansen perp screener` and `nansen research perp screener` route through here.
   const perpCmds = buildPerpCommands(deps);
+  const perpAnalytics = cmds['perp'];
+  const PERP_ANALYTICS_SUBCOMMANDS = new Set(['screener', 'leaderboard']);
   cmds['perp'] = async (args, apiInstance, flags, options) => {
     const sub = args[0];
     if (!sub || sub === 'help') {
@@ -1634,6 +1651,8 @@ SUBCOMMANDS:
   orders      View open orders
   account     View account state (balance, equity, margin, spot)
   meta        View available assets
+  screener    Perp market screener (analytics)
+  leaderboard Perp trader leaderboard (analytics)
 
 USAGE:
   nansen perp order --coin BTC --side buy --size 0.001 --price 50000 --type limit
@@ -1647,7 +1666,10 @@ USAGE:
       return;
     }
     if (!perpCmds[sub]) {
-      throw new NansenError(`Unknown perp subcommand: ${sub}. Available: order, cancel, close, leverage, transfer, approve-builder-fee, positions, orders, account, meta`, ErrorCode.UNKNOWN);
+      if (PERP_ANALYTICS_SUBCOMMANDS.has(sub)) {
+        return perpAnalytics(args, apiInstance, flags, options);
+      }
+      throw new NansenError(`Unknown perp subcommand: ${sub}. Available: order, cancel, close, leverage, transfer, approve-builder-fee, positions, orders, account, meta, screener, leaderboard`, ErrorCode.UNKNOWN);
     }
     return perpCmds[sub](args.slice(1), apiInstance, flags, options);
   };

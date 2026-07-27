@@ -761,7 +761,11 @@
               "options": {
                 "market-cap": {
                   "description": "Filter by market cap group",
-                  "enum": ["lowcap", "midcap", "largecap"]
+                  "enum": [
+                    "lowcap",
+                    "midcap",
+                    "largecap"
+                  ]
                 },
                 "limit": {
                   "default": 25
@@ -794,6 +798,25 @@
               "options": {
                 "days": {
                   "default": 30
+                },
+                "trader-type": {
+                  "description": "Filter by trader type. One of: all, sm, whale, public_figure, high_winrate_hl_perps_trader. Defaults to all.",
+                  "enum": [
+                    "all",
+                    "sm",
+                    "whale",
+                    "public_figure",
+                    "high_winrate_hl_perps_trader"
+                  ]
+                },
+                "sectors-filter": {
+                  "description": "Comma-separated sector:subcategory pairs to filter by, e.g. \"Crypto:AI,TradFi:Stocks\"."
+                },
+                "sm-label-filter": {
+                  "description": "Comma-separated Nansen SM labels to filter by, e.g. \"30D Smart Trader\". Only applies when trader-type is all or sm."
+                },
+                "trader-label-filter": {
+                  "description": "Comma-separated HL perps trader labels to filter by, e.g. \"HL Perps Whale\". Only applies when trader-type is all or sm."
                 }
               }
             },
@@ -855,8 +878,12 @@
               "endpoint": "/api/v1/prediction-market/market-screener",
               "description": "Get Prediction Market Screener",
               "options": {
-                "query": { "default": "" },
-                "sort-by": { "description": "Deprecated: use --sort field:dir instead" },
+                "query": {
+                  "default": ""
+                },
+                "sort-by": {
+                  "description": "Deprecated: use --sort field:dir instead"
+                },
                 "tags": {},
                 "min-liquidity": {},
                 "max-liquidity": {},
@@ -877,8 +904,12 @@
               "endpoint": "/api/v1/prediction-market/event-screener",
               "description": "Get Prediction Market Event Screener",
               "options": {
-                "query": { "default": "" },
-                "sort-by": { "description": "Deprecated: use --sort field:dir instead" },
+                "query": {
+                  "default": ""
+                },
+                "sort-by": {
+                  "description": "Deprecated: use --sort field:dir instead"
+                },
                 "tags": {},
                 "min-liquidity": {},
                 "max-liquidity": {},
@@ -956,104 +987,218 @@
           "endpoint": "/api/v1beta1/tgm/historical-dex-trades",
           "description": "Historical DEX trades for a token at a point in time",
           "options": {
-            "token-address": { "required": true, "description": "Token address" },
-            "from-date": { "required": true, "description": "Start of date range (YYYY-MM-DD)" },
-            "to-date": { "required": true, "description": "End of date range (YYYY-MM-DD)" },
-            "chain": { "default": "solana", "description": "Chain" }
+            "token-address": {
+              "required": true,
+              "description": "Token address"
+            },
+            "from-date": {
+              "required": true,
+              "description": "Start of date range (YYYY-MM-DD)"
+            },
+            "to-date": {
+              "required": true,
+              "description": "End of date range (YYYY-MM-DD)"
+            },
+            "chain": {
+              "default": "solana",
+              "description": "Chain"
+            }
           }
         },
         "historical-pnl-leaderboard": {
           "endpoint": "/api/v1beta1/tgm/historical-pnl-leaderboard",
           "description": "Historical PnL leaderboard for a token",
           "options": {
-            "token-address": { "required": true, "description": "Token address" },
-            "from-date": { "required": true, "description": "Start of date range (YYYY-MM-DD)" },
-            "to-date": { "required": true, "description": "End of date range (YYYY-MM-DD)" },
-            "chain": { "default": "solana", "description": "Chain" }
+            "token-address": {
+              "required": true,
+              "description": "Token address"
+            },
+            "from-date": {
+              "required": true,
+              "description": "Start of date range (YYYY-MM-DD)"
+            },
+            "to-date": {
+              "required": true,
+              "description": "End of date range (YYYY-MM-DD)"
+            },
+            "chain": {
+              "default": "solana",
+              "description": "Chain"
+            }
           }
         },
         "historical-token-flow-summary": {
           "endpoint": "/api/v1beta1/tgm/historical-token-flow-summary",
           "description": "Historical token flow summary (no pagination)",
           "options": {
-            "token-address": { "required": true, "description": "Token address" },
-            "from-date": { "required": true, "description": "Start of date range (YYYY-MM-DD)" },
-            "to-date": { "required": true, "description": "End of date range (YYYY-MM-DD)" },
-            "chain": { "default": "solana", "description": "Chain" }
+            "token-address": {
+              "required": true,
+              "description": "Token address"
+            },
+            "from-date": {
+              "required": true,
+              "description": "Start of date range (YYYY-MM-DD)"
+            },
+            "to-date": {
+              "required": true,
+              "description": "End of date range (YYYY-MM-DD)"
+            },
+            "chain": {
+              "default": "solana",
+              "description": "Chain"
+            }
           }
         },
         "historical-token-quant-scores": {
           "endpoint": "/api/v1beta1/tgm/historical-token-quant-scores",
           "description": "Historical token quantitative scores at a snapshot date",
           "options": {
-            "token-address": { "required": true, "description": "Token address" },
-            "as-of-date": { "required": true, "description": "Snapshot date (YYYY-MM-DD)" },
-            "chain": { "default": "solana", "description": "Chain" }
+            "token-address": {
+              "required": true,
+              "description": "Token address"
+            },
+            "as-of-date": {
+              "required": true,
+              "description": "Snapshot date (YYYY-MM-DD)"
+            },
+            "chain": {
+              "default": "solana",
+              "description": "Chain"
+            }
           }
         },
         "historical-top-holders": {
           "endpoint": "/api/v1beta1/tgm/historical-top-holders",
           "description": "Historical top holders of a token at a snapshot date",
           "options": {
-            "token-address": { "required": true, "description": "Token address" },
-            "as-of-date": { "required": true, "description": "Snapshot date (YYYY-MM-DD)" },
-            "chain": { "default": "solana", "description": "Chain" }
+            "token-address": {
+              "required": true,
+              "description": "Token address"
+            },
+            "as-of-date": {
+              "required": true,
+              "description": "Snapshot date (YYYY-MM-DD)"
+            },
+            "chain": {
+              "default": "solana",
+              "description": "Chain"
+            }
           }
         },
         "historical-who-bought-sold": {
           "endpoint": "/api/v1beta1/tgm/historical-who-bought-sold",
           "description": "Historical buyers/sellers of a token",
           "options": {
-            "token-address": { "required": true, "description": "Token address" },
-            "from-date": { "required": true, "description": "Start of date range (YYYY-MM-DD)" },
-            "to-date": { "required": true, "description": "End of date range (YYYY-MM-DD)" },
-            "buy-or-sell": { "default": "BUY", "description": "BUY or SELL" },
-            "chain": { "default": "solana", "description": "Chain" }
+            "token-address": {
+              "required": true,
+              "description": "Token address"
+            },
+            "from-date": {
+              "required": true,
+              "description": "Start of date range (YYYY-MM-DD)"
+            },
+            "to-date": {
+              "required": true,
+              "description": "End of date range (YYYY-MM-DD)"
+            },
+            "buy-or-sell": {
+              "default": "BUY",
+              "description": "BUY or SELL"
+            },
+            "chain": {
+              "default": "solana",
+              "description": "Chain"
+            }
           }
         },
         "historical-smart-money-balances": {
           "endpoint": "/api/v1beta1/smart-money/historical-token-balances",
           "description": "Historical smart money token balances at a snapshot date (no order_by)",
           "options": {
-            "as-of-date": { "required": true, "description": "Snapshot date (YYYY-MM-DD)" },
-            "chains": { "default": "solana", "description": "Comma-separated chains" }
+            "as-of-date": {
+              "required": true,
+              "description": "Snapshot date (YYYY-MM-DD)"
+            },
+            "chains": {
+              "default": "solana",
+              "description": "Comma-separated chains"
+            }
           }
         },
         "historical-token-screener": {
           "endpoint": "/api/v1beta1/token-screener/historical",
           "description": "Historical token screener over a trailing window",
           "options": {
-            "timeframe-days": { "required": true, "type": "number", "description": "Trailing window size in days" },
-            "to-date": { "required": true, "description": "End date for the window (YYYY-MM-DD)" },
-            "chains": { "default": "solana", "description": "Comma-separated chains" }
+            "timeframe-days": {
+              "required": true,
+              "type": "number",
+              "description": "Trailing window size in days"
+            },
+            "to-date": {
+              "required": true,
+              "description": "End date for the window (YYYY-MM-DD)"
+            },
+            "chains": {
+              "default": "solana",
+              "description": "Comma-separated chains"
+            }
           }
         },
         "historical-wallet-balances": {
           "endpoint": "/api/v1beta1/profiler/address/historical-token-balances",
           "description": "Historical token balances for a wallet at a snapshot date",
           "options": {
-            "address": { "required": true, "description": "Wallet address" },
-            "as-of-date": { "required": true, "description": "Snapshot date (YYYY-MM-DD)" },
-            "chain": { "default": "ethereum", "description": "Chain" }
+            "address": {
+              "required": true,
+              "description": "Wallet address"
+            },
+            "as-of-date": {
+              "required": true,
+              "description": "Snapshot date (YYYY-MM-DD)"
+            },
+            "chain": {
+              "default": "ethereum",
+              "description": "Chain"
+            }
           }
         },
         "historical-tx-lookup": {
           "endpoint": "/api/v1beta1/profiler/historical-transaction-lookup",
           "description": "Lookup a historical transaction by hash",
           "options": {
-            "transaction-hash": { "required": true, "description": "Transaction hash (0x-prefixed, 66 chars)" },
-            "as-of-date": { "required": true, "description": "Reference date for label and pricing resolution (YYYY-MM-DD)" },
-            "block-timestamp": { "description": "Block timestamp (YYYY-MM-DD HH:MM:SS) — skips slow hash-resolution step if provided" },
-            "chain": { "default": "ethereum", "description": "Chain (ethereum, bnb, base)" }
+            "transaction-hash": {
+              "required": true,
+              "description": "Transaction hash (0x-prefixed, 66 chars)"
+            },
+            "as-of-date": {
+              "required": true,
+              "description": "Reference date for label and pricing resolution (YYYY-MM-DD)"
+            },
+            "block-timestamp": {
+              "description": "Block timestamp (YYYY-MM-DD HH:MM:SS) \u2014 skips slow hash-resolution step if provided"
+            },
+            "chain": {
+              "default": "ethereum",
+              "description": "Chain (ethereum, bnb, base)"
+            }
           }
         },
         "historical-wallet-transactions": {
           "endpoint": "/api/v1beta1/profiler/address/historical-transactions",
           "description": "Historical transactions for a wallet at a snapshot date",
           "options": {
-            "address": { "required": true, "description": "Wallet address" },
-            "as-of-date": { "required": true, "description": "Snapshot date (YYYY-MM-DD)" },
-            "chain": { "default": "ethereum", "description": "Chain" }
+            "address": {
+              "required": true,
+              "description": "Wallet address"
+            },
+            "as-of-date": {
+              "required": true,
+              "description": "Snapshot date (YYYY-MM-DD)"
+            },
+            "chain": {
+              "default": "ethereum",
+              "description": "Chain"
+            }
           }
         }
       }
@@ -1210,7 +1355,7 @@
             },
             "to-chain": {
               "type": "string",
-              "description": "Destination blockchain for cross-chain swap (solana or base). Omit for same-chain. At least one side must be USDC or a native token (ETH, SOL). Non-native to non-native is not supported — swap to USDC first, then bridge. Bridge providers (Li.Fi or Relay) are selected automatically based on best price. Sub-dollar swaps are supported via Relay."
+              "description": "Destination blockchain for cross-chain swap (solana or base). Omit for same-chain. At least one side must be USDC or a native token (ETH, SOL). Non-native to non-native is not supported \u2014 swap to USDC first, then bridge. Bridge providers (Li.Fi or Relay) are selected automatically based on best price. Sub-dollar swaps are supported via Relay."
             },
             "from": {
               "type": "string",
@@ -1286,7 +1431,7 @@
             },
             "aggregator": {
               "type": "string",
-              "description": "lifi or relay. Overrides auto-detection — use when polling from a different machine or after the 30-day local record TTL has expired."
+              "description": "lifi or relay. Overrides auto-detection \u2014 use when polling from a different machine or after the 30-day local record TTL has expired."
             }
           }
         },
@@ -1340,7 +1485,9 @@
                   "description": "Wallet name (or \"walletconnect\"/\"wc\")"
                 }
               },
-              "chains": ["solana"],
+              "chains": [
+                "solana"
+              ],
               "prerequisites": [
                 "A Solana wallet must be configured. Run: nansen wallet create"
               ]
@@ -1380,7 +1527,9 @@
                   "description": "Wallet name (or \"walletconnect\"/\"wc\")"
                 }
               },
-              "chains": ["solana"]
+              "chains": [
+                "solana"
+              ]
             },
             "cancel": {
               "description": "Cancel an open limit order",
@@ -1395,7 +1544,9 @@
                   "description": "Wallet name (or \"walletconnect\"/\"wc\")"
                 }
               },
-              "chains": ["solana"]
+              "chains": [
+                "solana"
+              ]
             },
             "update": {
               "description": "Update trigger price or slippage on an existing order",
@@ -1418,7 +1569,9 @@
                   "description": "Wallet name (or \"walletconnect\"/\"wc\")"
                 }
               },
-              "chains": ["solana"]
+              "chains": [
+                "solana"
+              ]
             }
           }
         }

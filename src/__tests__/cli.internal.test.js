@@ -4767,3 +4767,78 @@ describe('alerts update -- type-specific validation', () => {
     expect(mockApi.alertsUpdate).toHaveBeenCalled();
   });
 });
+
+describe('perp screener CLI handler - new filters (ECINT-6680)', () => {
+  let commands;
+  let mockApi;
+
+  beforeEach(() => {
+    commands = buildCommands({});
+    mockApi = {
+      perpScreener: vi.fn().mockResolvedValue({ data: [] }),
+      perpLeaderboard: vi.fn().mockResolvedValue({ leaders: [] }),
+    };
+  });
+
+  it('dispatches screener with no new options (baseline)', async () => {
+    await commands['perp'](['screener'], mockApi, {}, { days: '7' });
+    expect(mockApi.perpScreener).toHaveBeenCalledWith(expect.objectContaining({
+      days: 7,
+    }));
+    const call = mockApi.perpScreener.mock.calls[0][0];
+    expect(call.traderType).toBeUndefined();
+    expect(call.sectorsFilter).toBeUndefined();
+    expect(call.smLabelFilter).toBeUndefined();
+    expect(call.traderLabelFilter).toBeUndefined();
+  });
+
+  it('passes trader-type through to perpScreener', async () => {
+    await commands['perp'](['screener'], mockApi, {}, { 'trader-type': 'whale' });
+    expect(mockApi.perpScreener).toHaveBeenCalledWith(expect.objectContaining({
+      traderType: 'whale',
+    }));
+  });
+
+  it('splits sectors-filter CSV into array', async () => {
+    await commands['perp'](['screener'], mockApi, {}, { 'sectors-filter': 'Crypto:AI,Crypto:DeFi' });
+    expect(mockApi.perpScreener).toHaveBeenCalledWith(expect.objectContaining({
+      sectorsFilter: ['Crypto:AI', 'Crypto:DeFi'],
+    }));
+  });
+
+  it('splits sm-label-filter CSV into array', async () => {
+    await commands['perp'](['screener'], mockApi, {}, { 'sm-label-filter': '30D Smart Trader,Smart LP' });
+    expect(mockApi.perpScreener).toHaveBeenCalledWith(expect.objectContaining({
+      smLabelFilter: ['30D Smart Trader', 'Smart LP'],
+    }));
+  });
+
+  it('splits trader-label-filter CSV into array', async () => {
+    await commands['perp'](['screener'], mockApi, {}, { 'trader-label-filter': 'HL Perps Whale' });
+    expect(mockApi.perpScreener).toHaveBeenCalledWith(expect.objectContaining({
+      traderLabelFilter: ['HL Perps Whale'],
+    }));
+  });
+
+  it('handles single-value sectors-filter (no comma)', async () => {
+    await commands['perp'](['screener'], mockApi, {}, { 'sectors-filter': 'Crypto:AI' });
+    expect(mockApi.perpScreener).toHaveBeenCalledWith(expect.objectContaining({
+      sectorsFilter: ['Crypto:AI'],
+    }));
+  });
+
+  it('passes all four new options together', async () => {
+    await commands['perp'](['screener'], mockApi, {}, {
+      'trader-type': 'sm',
+      'sectors-filter': 'Crypto:AI',
+      'sm-label-filter': '30D Smart Trader',
+      'trader-label-filter': 'HL Perps Whale',
+    });
+    expect(mockApi.perpScreener).toHaveBeenCalledWith(expect.objectContaining({
+      traderType: 'sm',
+      sectorsFilter: ['Crypto:AI'],
+      smLabelFilter: ['30D Smart Trader'],
+      traderLabelFilter: ['HL Perps Whale'],
+    }));
+  });
+});
