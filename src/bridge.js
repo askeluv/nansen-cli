@@ -22,6 +22,7 @@ import {
   signEvmTransaction,
   waitForReceipt,
 } from './trading.js';
+import { screenOrThrow } from './perp.js';
 import { exportWallet, getWalletConfig, showWallet } from './wallet.js';
 import { hashTypedData } from './x402-evm.js';
 
@@ -160,6 +161,17 @@ export function loadBridgeQuote(quoteId) {
     // Quotes are single-use: re-signing and re-broadcasting would move funds
     // a second time. Refuse a quote that has already been executed.
     const when = new Date(data.executedAt).toISOString();
+    const fullyDone = data.totalSteps && data.broadcastSteps >= data.totalSteps;
+    if (!fullyDone && data.broadcasts?.length) {
+      // Something is in flight but the run didn't finish — e.g. the tx was
+      // accepted and the receipt wait timed out. Re-running would re-send it, so
+      // refuse and name the hashes so the operator can check what landed.
+      const hashes = data.broadcasts.map(b => b.txHash).filter(Boolean);
+      const detail = hashes.length ? ` (${hashes.join(', ')})` : '';
+      throw new Error(
+        `Bridge quote "${quoteId}" partially executed at ${when}: ${data.broadcasts.length} transaction(s) already broadcast${detail}. Funds may be in flight — check "nansen bridge status" before requesting a new quote.`,
+      );
+    }
     if (data.totalSteps && data.broadcastSteps && data.broadcastSteps < data.totalSteps) {
       // Partial execution: a later step failed after an earlier one had already
       // been broadcast. Re-running from step 0 would re-send what already went
@@ -185,6 +197,9 @@ export function markBridgeQuoteExecuted(quoteId, progress = {}) {
   try {
     const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     data.executedAt = data.executedAt || Date.now();
+    if (progress.broadcast) {
+      data.broadcasts = [...(data.broadcasts || []), { ...progress.broadcast, at: Date.now() }];
+    }
     if (progress.broadcastSteps !== undefined) {
       data.broadcastSteps = Math.max(data.broadcastSteps || 0, progress.broadcastSteps);
     }
@@ -209,7 +224,7 @@ function signEip712Local(typedData, privateKeyHex) {
 
 // ── Step processors ──────────────────────────────────────────────────
 
-async function processEvmStep(step, { chain, privateKeyHex, log }) {
+async function processEvmStep(step, { chain, privateKeyHex, log, onBroadcast }) {
   for (const item of step.items || []) {
     if (item.status === 'complete') continue;
     const txData = item.data;
@@ -226,6 +241,9 @@ async function processEvmStep(step, { chain, privateKeyHex, log }) {
 
     log(`  Broadcasting ${step.id} on ${chain}...`);
     const txHash = await evmRpcCall(chain, 'eth_sendRawTransaction', [signedTx]);
+    // In flight now: record it before waiting on the receipt, because a receipt
+    // timeout must not leave the quote reusable.
+    onBroadcast?.(step.id, txHash);
     log(`  Tx: ${txHash}`);
 
     const receipt = await waitForReceipt(chain, txHash);
@@ -237,7 +255,7 @@ async function processEvmStep(step, { chain, privateKeyHex, log }) {
   }
 }
 
-async function processSignatureStepLocal(step, { privateKeyHex, log, apiInstance }) {
+async function processSignatureStepLocal(step, { privateKeyHex, log, apiInstance, onBroadcast }) {
   for (const item of step.items || []) {
     if (item.status === 'complete') continue;
     const { data: signData } = item;
@@ -266,6 +284,7 @@ async function processSignatureStepLocal(step, { privateKeyHex, log, apiInstance
 
       log(`  Signing ${step.id} (EIP-712)...`);
       await postBridgeExecute(apiInstance, targetUrl, postBody);
+      onBroadcast?.(step.id, null);
       log(`  Submitted to ${new URL(targetUrl).hostname}`);
     } else if (signData.action) {
       const domain = {
@@ -296,12 +315,13 @@ async function processSignatureStepLocal(step, { privateKeyHex, log, apiInstance
 
       log(`  Signing ${step.id} (Hyperliquid deposit)...`);
       await postBridgeExecute(apiInstance, 'https://api.hyperliquid.xyz/exchange', hlBody);
+      onBroadcast?.(step.id, null);
       log(`  Submitted to api.hyperliquid.xyz`);
     }
   }
 }
 
-async function processSignatureStepPrivy(step, { privyClient, walletId, log, apiInstance }) {
+async function processSignatureStepPrivy(step, { privyClient, walletId, log, apiInstance, onBroadcast }) {
   for (const item of step.items || []) {
     if (item.status === 'complete') continue;
     const { data: signData } = item;
@@ -349,6 +369,7 @@ async function processSignatureStepPrivy(step, { privyClient, walletId, log, api
         postBody.signature = signature;
       }
       await postBridgeExecute(apiInstance, targetUrl, postBody);
+      onBroadcast?.(step.id, null);
     } else {
       const [rHex, sHex, vHex] = [signature.slice(2, 66), signature.slice(66, 130), signature.slice(130, 132)];
       const flatAction = { type: signData.action.type, ...signData.action.parameters, signatureChainId: '0x1' };
@@ -359,6 +380,7 @@ async function processSignatureStepPrivy(step, { privyClient, walletId, log, api
         vaultAddress: null,
       };
       await postBridgeExecute(apiInstance, 'https://api.hyperliquid.xyz/exchange', hlBody);
+      onBroadcast?.(step.id, null);
     }
     log(`  Submitted`);
   }
@@ -582,12 +604,27 @@ Execute a cached bridge quote. Signs transactions and broadcasts them.`,
       log(`  Type: ${execution_type}`);
       log(`  Steps: ${steps.length}`);
 
+      // Re-screen immediately before signing, fail-closed, mirroring the perp
+      // path. The quote was screened server-side when it was issued, but quotes
+      // live up to an hour and the EVM deposit leg broadcasts straight to a
+      // public RPC — so without this, nothing re-checks the wallet between quote
+      // and the transaction that actually moves funds.
+      await screenOrThrow(apiInstance, [quoteData.walletAddress]);
+
       const creds = resolveWalletCredentials(walletName);
 
-      // Mark after EVERY broadcast, not once at the end: a multi-step bridge that
-      // broadcasts step 1 and then throws on step 2 must not leave the quote
-      // reusable, or a retry re-runs from step 0 and re-sends step 1 with a fresh
-      // nonce. markBridgeQuoteExecuted pins executedAt on the first call.
+      // Consume the quote at each INDIVIDUAL broadcast, before any receipt wait.
+      // A tx can be accepted by the network and then have waitForReceipt time
+      // out; if the quote were still unspent, a retry would re-sign and re-send
+      // it with a fresh nonce. markBridgeQuoteExecuted pins executedAt on the
+      // first call, so the quote is spent the instant anything is in flight.
+      const onBroadcast = (stepId, txHash) =>
+        markBridgeQuoteExecuted(quoteId, {
+          broadcast: { step: stepId, txHash: txHash || null },
+          totalSteps: steps.length,
+        });
+
+      // Step-level counter, recorded only once a step fully completes.
       const markBroadcast = (index) =>
         markBridgeQuoteExecuted(quoteId, {
           broadcastSteps: index + 1,
@@ -600,6 +637,7 @@ Execute a cached bridge quote. Signs transactions and broadcasts them.`,
             chain: quoteData.originChain,
             privateKeyHex: creds.privateKey,
             log,
+            onBroadcast,
           });
           markBroadcast(index);
         }
@@ -614,6 +652,7 @@ Execute a cached bridge quote. Signs transactions and broadcasts them.`,
               walletId: wallet.privyWalletIds?.evm,
               log,
               apiInstance,
+              onBroadcast,
             });
             markBroadcast(index);
           }
@@ -623,6 +662,7 @@ Execute a cached bridge quote. Signs transactions and broadcasts them.`,
               privateKeyHex: creds.privateKey,
               log,
               apiInstance,
+              onBroadcast,
             });
             markBroadcast(index);
           }

@@ -195,7 +195,11 @@ export function effectiveOrderValues(prepared) {
 // response that doesn't cover every requested address all abort the trade
 // before signing, never trade through.
 
-async function screenOrThrow(apiInstance, addresses) {
+// Exported for bridge.js, which needs the same fail-closed check before it signs
+// (its EVM deposit leg broadcasts straight to a public RPC, so no server-side
+// screen sits in that path). Worth lifting into its own module if a third caller
+// appears.
+export async function screenOrThrow(apiInstance, addresses) {
   let result;
   try {
     result = await apiInstance.request('/api/v1/sanctions/screen', { addresses });

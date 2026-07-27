@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { loadBridgeQuote, markBridgeQuoteExecuted, parseSlippageBps } from '../bridge.js';
+import { buildBridgeCommands, loadBridgeQuote, markBridgeQuoteExecuted, parseSlippageBps } from '../bridge.js';
 
 // loadBridgeQuote/markBridgeQuoteExecuted resolve the quotes dir from
 // process.env.HOME, so point HOME at a throwaway dir for each test.
@@ -122,6 +122,105 @@ describe('bridge quote replay protection', () => {
     writeQuote('bridge-full');
     markBridgeQuoteExecuted('bridge-full', { broadcastSteps: 2, totalSteps: 2 });
     expect(() => loadBridgeQuote('bridge-full')).toThrow(/already executed/);
+  });
+
+  it('consumes the quote on a single broadcast, before any receipt is seen', () => {
+    // The receipt-timeout case: eth_sendRawTransaction succeeded, waitForReceipt
+    // then threw. Nothing has "completed", but a tx is in flight — a retry must
+    // not re-sign it.
+    writeQuote('bridge-inflight');
+    markBridgeQuoteExecuted('bridge-inflight', {
+      broadcast: { step: 'deposit', txHash: '0xabc' },
+      totalSteps: 1,
+    });
+    expect(() => loadBridgeQuote('bridge-inflight')).toThrow(/partially executed/);
+    expect(() => loadBridgeQuote('bridge-inflight')).toThrow(/0xabc/);
+  });
+
+  it('records every individual broadcast, not just one per step', () => {
+    // A single step can carry several fund-moving items.
+    writeQuote('bridge-items');
+    markBridgeQuoteExecuted('bridge-items', { broadcast: { step: 'deposit', txHash: '0x1' }, totalSteps: 1 });
+    markBridgeQuoteExecuted('bridge-items', { broadcast: { step: 'deposit', txHash: '0x2' }, totalSteps: 1 });
+    const onDisk = JSON.parse(
+      fs.readFileSync(path.join(quotesDir, 'bridge-items.json'), 'utf8'),
+    );
+    expect(onDisk.broadcasts.map(b => b.txHash)).toEqual(['0x1', '0x2']);
+    expect(() => loadBridgeQuote('bridge-items')).toThrow(/2 transaction\(s\) already broadcast/);
+  });
+
+  it('reports a completed run as executed even though broadcasts were recorded', () => {
+    writeQuote('bridge-done');
+    markBridgeQuoteExecuted('bridge-done', { broadcast: { step: 'deposit', txHash: '0x9' }, totalSteps: 1 });
+    markBridgeQuoteExecuted('bridge-done', { broadcastSteps: 1, totalSteps: 1 });
+    expect(() => loadBridgeQuote('bridge-done')).toThrow(/already executed/);
+  });
+
+  it('a signature-step broadcast with no tx hash still consumes the quote', () => {
+    writeQuote('bridge-sig');
+    markBridgeQuoteExecuted('bridge-sig', { broadcast: { step: 'authorize', txHash: null }, totalSteps: 2 });
+    expect(() => loadBridgeQuote('bridge-sig')).toThrow(/1 transaction\(s\) already broadcast/);
+  });
+});
+
+describe('bridge execute compliance gate', () => {
+  const WALLET = '0x8CB9c3F23C7d600fB430bbd171a313D9ea61cEBc';
+
+  // The bridge quote was screened server-side when issued, but it stays valid for
+  // an hour and the EVM deposit leg broadcasts straight to a public RPC — so the
+  // re-screen here is the only thing standing between a newly-listed address and
+  // a fund-moving transaction.
+  function mockApi(screen) {
+    return {
+      request: async (endpoint, body) => {
+        if (endpoint.startsWith('/api/v1/sanctions/screen')) return screen(body);
+        throw new Error(`unexpected endpoint ${endpoint}`);
+      },
+    };
+  }
+
+  function executableQuote(quoteId) {
+    writeQuote(quoteId, {
+      walletAddress: WALLET,
+      response: {
+        execution_type: 'evm_transaction',
+        steps: [{ id: 'deposit', items: [] }],
+        request_id: 'req-1',
+      },
+    });
+  }
+
+  const execute = (api, quoteId) =>
+    buildBridgeCommands({ log: () => {} }).execute([], api, {}, { quote: quoteId });
+
+  it('refuses to sign when the wallet is sanctioned', async () => {
+    executableQuote('bridge-sanctioned');
+    const api = mockApi(() => ({ results: [{ address: WALLET, sanctioned: true }] }));
+    await expect(execute(api, 'bridge-sanctioned')).rejects.toThrow(/compliance blocklist/);
+  });
+
+  it('refuses to sign when screening is unavailable (fail closed)', async () => {
+    executableQuote('bridge-screen-down');
+    const api = mockApi(() => {
+      throw new Error('503 snapshot unavailable');
+    });
+    await expect(execute(api, 'bridge-screen-down')).rejects.toThrow(/screening is unavailable/);
+  });
+
+  it('refuses to sign when the response omits the wallet (unverifiable)', async () => {
+    executableQuote('bridge-screen-partial');
+    const api = mockApi(() => ({ results: [] }));
+    await expect(execute(api, 'bridge-screen-partial')).rejects.toThrow(/did not cover all addresses/);
+  });
+
+  it('leaves the quote unconsumed when screening blocks it — nothing was broadcast', async () => {
+    executableQuote('bridge-blocked');
+    const api = mockApi(() => ({ results: [{ address: WALLET, sanctioned: true }] }));
+    await expect(execute(api, 'bridge-blocked')).rejects.toThrow();
+    const onDisk = JSON.parse(
+      fs.readFileSync(path.join(quotesDir, 'bridge-blocked.json'), 'utf8'),
+    );
+    expect(onDisk.executedAt).toBeUndefined();
   });
 });
 
