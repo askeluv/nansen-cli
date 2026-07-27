@@ -81,6 +81,48 @@ describe('bridge quote replay protection', () => {
     writeQuote('swap-1', { type: 'swap' });
     expect(() => loadBridgeQuote('swap-1')).toThrow(/not a bridge quote/);
   });
+
+  it('consumes the quote after the FIRST broadcast of a multi-step bridge', () => {
+    // The double-send case: step 1 goes out, step 2 throws. The quote must
+    // already be spent, or a retry re-runs from step 0 and re-broadcasts step 1.
+    writeQuote('bridge-partial');
+    markBridgeQuoteExecuted('bridge-partial', { broadcastSteps: 1, totalSteps: 2 });
+    expect(() => loadBridgeQuote('bridge-partial')).toThrow(/partially executed/);
+    expect(() => loadBridgeQuote('bridge-partial')).toThrow(/1 of 2 steps/);
+  });
+
+  it('keeps the original executedAt when a later step is marked', () => {
+    writeQuote('bridge-progress');
+    markBridgeQuoteExecuted('bridge-progress', { broadcastSteps: 1, totalSteps: 2 });
+    const first = JSON.parse(
+      fs.readFileSync(path.join(quotesDir, 'bridge-progress.json'), 'utf8'),
+    ).executedAt;
+    markBridgeQuoteExecuted('bridge-progress', { broadcastSteps: 2, totalSteps: 2 });
+    const after = JSON.parse(
+      fs.readFileSync(path.join(quotesDir, 'bridge-progress.json'), 'utf8'),
+    );
+    expect(after.executedAt).toBe(first);
+    expect(after.broadcastSteps).toBe(2);
+  });
+
+  it('never regresses the broadcast count', () => {
+    // Marking is best-effort and idempotent; a stale/lower count must not
+    // reopen a fully-executed quote as "partial".
+    writeQuote('bridge-monotonic');
+    markBridgeQuoteExecuted('bridge-monotonic', { broadcastSteps: 2, totalSteps: 2 });
+    markBridgeQuoteExecuted('bridge-monotonic', { broadcastSteps: 1, totalSteps: 2 });
+    const onDisk = JSON.parse(
+      fs.readFileSync(path.join(quotesDir, 'bridge-monotonic.json'), 'utf8'),
+    );
+    expect(onDisk.broadcastSteps).toBe(2);
+    expect(() => loadBridgeQuote('bridge-monotonic')).toThrow(/already executed/);
+  });
+
+  it('a fully executed multi-step quote reports as executed, not partial', () => {
+    writeQuote('bridge-full');
+    markBridgeQuoteExecuted('bridge-full', { broadcastSteps: 2, totalSteps: 2 });
+    expect(() => loadBridgeQuote('bridge-full')).toThrow(/already executed/);
+  });
 });
 
 describe('bridge --slippage validation', () => {

@@ -159,19 +159,36 @@ export function loadBridgeQuote(quoteId) {
   if (data.executedAt) {
     // Quotes are single-use: re-signing and re-broadcasting would move funds
     // a second time. Refuse a quote that has already been executed.
+    const when = new Date(data.executedAt).toISOString();
+    if (data.totalSteps && data.broadcastSteps && data.broadcastSteps < data.totalSteps) {
+      // Partial execution: a later step failed after an earlier one had already
+      // been broadcast. Re-running from step 0 would re-send what already went
+      // out, so refuse and say what landed — the funds may be in flight.
+      throw new Error(
+        `Bridge quote "${quoteId}" partially executed at ${when}: ${data.broadcastSteps} of ${data.totalSteps} steps were broadcast. Check "nansen bridge status" before requesting a new quote — the earlier step may already have moved funds.`,
+      );
+    }
     throw new Error(
-      `Bridge quote "${quoteId}" was already executed at ${new Date(data.executedAt).toISOString()}. Request a new quote to bridge again.`,
+      `Bridge quote "${quoteId}" was already executed at ${when}. Request a new quote to bridge again.`,
     );
   }
   return data;
 }
 
-export function markBridgeQuoteExecuted(quoteId) {
+// Records that a broadcast has happened. `executedAt` is set on the first call
+// and never moved, so the quote is consumed the moment any step goes out — a
+// later step throwing must not leave the quote reusable. The step counters make
+// a partial failure legible to the operator (see loadBridgeQuote).
+export function markBridgeQuoteExecuted(quoteId, progress = {}) {
   const filePath = safeQuotesPath(`${quoteId}.json`);
   if (!filePath || !fs.existsSync(filePath)) return;
   try {
     const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    data.executedAt = Date.now();
+    data.executedAt = data.executedAt || Date.now();
+    if (progress.broadcastSteps !== undefined) {
+      data.broadcastSteps = Math.max(data.broadcastSteps || 0, progress.broadcastSteps);
+    }
+    if (progress.totalSteps !== undefined) data.totalSteps = progress.totalSteps;
     fs.writeFileSync(filePath, JSON.stringify(data, null, 2), { mode: 0o600 });
   } catch {
     // Best-effort: if the marker can't be written, the next execute attempt
@@ -567,43 +584,55 @@ Execute a cached bridge quote. Signs transactions and broadcasts them.`,
 
       const creds = resolveWalletCredentials(walletName);
 
+      // Mark after EVERY broadcast, not once at the end: a multi-step bridge that
+      // broadcasts step 1 and then throws on step 2 must not leave the quote
+      // reusable, or a retry re-runs from step 0 and re-sends step 1 with a fresh
+      // nonce. markBridgeQuoteExecuted pins executedAt on the first call.
+      const markBroadcast = (index) =>
+        markBridgeQuoteExecuted(quoteId, {
+          broadcastSteps: index + 1,
+          totalSteps: steps.length,
+        });
+
       if (execution_type === 'evm_transaction') {
-        for (const step of steps) {
+        for (const [index, step] of steps.entries()) {
           await processEvmStep(step, {
             chain: quoteData.originChain,
             privateKeyHex: creds.privateKey,
             log,
           });
+          markBroadcast(index);
         }
       } else if (execution_type === 'hyperliquid_signature') {
         if (creds.provider === 'privy') {
           const { PrivyClient } = await import('./privy.js');
           const privyClient = new PrivyClient(process.env.PRIVY_APP_ID, process.env.PRIVY_APP_SECRET);
           const wallet = resolveWalletAddress(walletName);
-          for (const step of steps) {
+          for (const [index, step] of steps.entries()) {
             await processSignatureStepPrivy(step, {
               privyClient,
               walletId: wallet.privyWalletIds?.evm,
               log,
               apiInstance,
             });
+            markBroadcast(index);
           }
         } else {
-          for (const step of steps) {
+          for (const [index, step] of steps.entries()) {
             await processSignatureStepLocal(step, {
               privateKeyHex: creds.privateKey,
               log,
               apiInstance,
             });
+            markBroadcast(index);
           }
         }
       } else {
         throw new Error(`Unknown execution type: ${execution_type}`);
       }
 
-      // Funds have now been broadcast — mark the quote consumed so a retry
-      // (e.g. after a polling timeout) can't re-sign and double-bridge.
-      markBridgeQuoteExecuted(quoteId);
+      // Every step is out; the marker above already consumed the quote.
+      markBridgeQuoteExecuted(quoteId, { broadcastSteps: steps.length, totalSteps: steps.length });
 
       log(`\n  Bridge submitted. Polling for completion...`);
       const status = await pollBridgeCompletion(apiInstance, { requestId: request_id, log });
