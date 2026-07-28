@@ -42,9 +42,14 @@ function signAgent(eip712, privateKeyHex) {
 
 // ── Proxy read helpers (Decision D4: reads stay on the API) ───────────
 
+// cache: false on every read. --cache is meant for research endpoints; here a
+// stale response either misreports live money to the user (positions, orders,
+// account) or feeds a signing decision (close sizes its order from positions,
+// and asset ids/szDecimals come from meta), so a hit inside the 5-minute TTL
+// would sign against data that has moved.
 async function perpRead(apiInstance, endpoint, params) {
   const qs = new URLSearchParams(params).toString();
-  return apiInstance.request(`/api/v1/perp/${endpoint}?${qs}`, {}, { method: 'GET' });
+  return apiInstance.request(`/api/v1/perp/${endpoint}?${qs}`, {}, { method: 'GET', cache: false });
 }
 
 // Resolve an asset's id + szDecimals (+ maxLeverage) from the proxy /perp/meta.
@@ -87,7 +92,10 @@ async function fetchBuilderFee(apiInstance, walletAddress) {
   const qs = new URLSearchParams({ wallet_address: walletAddress }).toString();
   let status;
   try {
-    status = await apiInstance.request(`/api/v1/perp/builder-fee?${qs}`, {}, { method: 'GET' });
+    // cache: false — this gates whether we sign a builder-fee approval, so a
+    // stale verdict either skips a needed approval (HL then rejects the order)
+    // or re-signs one that already exists.
+    status = await apiInstance.request(`/api/v1/perp/builder-fee?${qs}`, {}, { method: 'GET', cache: false });
   } catch (err) {
     throw new CommandError(
       `Could not resolve the Hyperliquid builder fee, so the trade was not submitted: ${err.message}`,
@@ -202,7 +210,12 @@ export function effectiveOrderValues(prepared) {
 export async function screenOrThrow(apiInstance, addresses) {
   let result;
   try {
-    result = await apiInstance.request('/api/v1/sanctions/screen', { addresses });
+    // cache: false is load-bearing, not hygiene. Every mutating command
+    // re-screens the signing wallet immediately before signing; serving that
+    // verdict from a cache written up to 5 minutes ago would let a
+    // newly-listed address through on exactly the guarantee this check exists
+    // to provide.
+    result = await apiInstance.request('/api/v1/sanctions/screen', { addresses }, { cache: false });
   } catch (err) {
     throw new CommandError(
       `Compliance screening is unavailable, so the trade was not submitted: ${err.message}`,

@@ -133,19 +133,34 @@ export function parseSlippageBps(raw) {
 
 // ── API helpers ──────────────────────────────────────────────────────
 
+// cache: false — a quote carries live pricing, fees and per-step transaction
+// data, and is cached locally as a quote file anyway. Replaying a stale one
+// would mean signing against amounts the route no longer offers.
 async function getBridgeQuote(apiInstance, params) {
-  return apiInstance.request('/api/v1/perp/bridge/quote', params);
+  return apiInstance.request('/api/v1/perp/bridge/quote', params, { cache: false });
 }
 
+// retry: false because this is not idempotent — it proxies to Relay's
+// /authorize and to Hyperliquid's /exchange, so an automatic re-send on a 500
+// or 502 can submit the same signed action twice. hl-client.js's submitExchange
+// documents the same reasoning for the direct path; this is the proxied one.
 async function postBridgeExecute(apiInstance, targetUrl, body) {
-  return apiInstance.request('/api/v1/perp/bridge/execute', { target_url: targetUrl, body });
+  return apiInstance.request(
+    '/api/v1/perp/bridge/execute',
+    { target_url: targetUrl, body },
+    { cache: false, retry: false },
+  );
 }
 
+// cache: false, and here it is what makes polling work at all. The cache key is
+// endpoint + body, so every poll for a given request id is the same key — under
+// --cache the loop would re-read one cached verdict for the whole TTL and stay
+// blind to a bridge that had already completed or failed.
 async function getBridgeStatus(apiInstance, { requestId, txHash }) {
   const params = new URLSearchParams();
   if (requestId) params.set('request_id', requestId);
   if (txHash) params.set('tx_hash', txHash);
-  return apiInstance.request(`/api/v1/perp/bridge/status?${params}`, {}, { method: 'GET' });
+  return apiInstance.request(`/api/v1/perp/bridge/status?${params}`, {}, { method: 'GET', cache: false });
 }
 
 // ── Quote caching ────────────────────────────────────────────────────
@@ -240,9 +255,20 @@ export function markBridgeQuoteExecuted(quoteId, progress = {}) {
 
 // ── EIP-712 signing (for HL withdrawals) ─────────────────────────────
 
-function signEip712Local(typedData, privateKeyHex) {
+// `types[primaryType] || []` used to swallow a missing type definition: with no
+// fields, hashStruct hashes typeHash("PrimaryType()") over none of the message's
+// contents, so we would hand back a well-formed signature that commits to
+// nothing about the action being authorised. Refuse instead — an omitted or
+// misspelled type list is a bug or a tampered response, never something to sign
+// through.
+function signEip712Local(typedData, privateKeyHex, context = 'EIP-712 payload') {
   const { domain, types, primaryType, message } = typedData;
-  const fields = (types[primaryType] || []).map(f => ({ name: f.name, type: f.type }));
+  const fields = (types?.[primaryType] || []).map(f => ({ name: f.name, type: f.type }));
+  if (fields.length === 0) {
+    throw new Error(
+      `${context} is missing its EIP-712 type definition for "${primaryType}", so the signature would not cover the action. Refusing to sign.`,
+    );
+  }
   const msgHash = hashTypedData(domain, primaryType, fields, message);
   const { r, s, v } = signSecp256k1(msgHash, Buffer.from(privateKeyHex, 'hex'));
   return '0x' + r.toString('hex') + s.toString('hex') + (27 + v).toString(16).padStart(2, '0');
@@ -293,7 +319,7 @@ async function processSignatureStepLocal(step, { privateKeyHex, log, apiInstance
         primaryType: signData.sign.primaryType,
         message: signData.sign.value,
       };
-      const signature = signEip712Local(typedData, privateKeyHex);
+      const signature = signEip712Local(typedData, privateKeyHex, `Bridge step "${step.id}"`);
 
       let targetUrl = signData.post.endpoint;
       if (!targetUrl.startsWith('http')) {
@@ -328,7 +354,7 @@ async function processSignatureStepLocal(step, { privateKeyHex, log, apiInstance
       };
 
       const typedData = { domain, types, primaryType, message };
-      const signature = signEip712Local(typedData, privateKeyHex);
+      const signature = signEip712Local(typedData, privateKeyHex, `Bridge step "${step.id}"`);
       const [rHex, sHex, vHex] = [signature.slice(2, 66), signature.slice(66, 130), signature.slice(130, 132)];
 
       const flatAction = { type: signData.action.type, ...signData.action.parameters, signatureChainId: '0x1' };
