@@ -10,6 +10,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
+import { CommandError } from './api.js';
 import { signSecp256k1 } from './crypto.js';
 import { retrievePassword } from './keychain.js';
 import {
@@ -516,7 +517,7 @@ export function buildBridgeCommands(deps = {}) {
       }
 
       if (!originChain || !destinationChain || !fromTokenRaw || !amount) {
-        throw new Error(
+        throw new CommandError(
           `Usage: nansen bridge quote --from-chain <chain> --to-chain <chain> --from-token <token> --amount <amount> [--wallet <name>]
 
 SUPPORTED ROUTES:
@@ -534,6 +535,7 @@ OPTIONS:
   --slippage      Slippage in bps (default 50 = 0.5%)
   --wallet        Wallet name
   --recipient     Destination wallet (defaults to same address)`,
+          'MISSING_PARAM',
         );
       }
 
@@ -617,10 +619,11 @@ OPTIONS:
       const walletName = options.wallet;
 
       if (!quoteId) {
-        throw new Error(
+        throw new CommandError(
           `Usage: nansen bridge execute --quote <quoteId> [--wallet <name>]
 
 Execute a cached bridge quote. Signs transactions and broadcasts them.`,
+          'MISSING_PARAM',
         );
       }
 
@@ -736,10 +739,11 @@ Execute a cached bridge quote. Signs transactions and broadcasts them.`,
       const txHash = options['tx-hash'];
 
       if (!requestId && !txHash) {
-        throw new Error(
+        throw new CommandError(
           `Usage: nansen bridge status --request-id <id> or --tx-hash <hash>
 
 Check the status of a Hyperliquid bridge transaction.`,
+          'MISSING_PARAM',
         );
       }
 

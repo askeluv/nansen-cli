@@ -367,6 +367,19 @@ export function formatOutput(data, { pretty = false, table = false, csv = false 
   }
 }
 
+// Codes whose message is a usage banner written for a human to read: multi-line,
+// indented, with a blank line between sections. Serialising one into the error
+// envelope turns every newline into a literal \n and makes it unreadable, so an
+// interactive terminal gets the message as written instead. Piped or explicitly
+// formatted output still gets the envelope, so agents keep one shape to branch on.
+export const USAGE_ERROR_CODES = new Set(['MISSING_PARAM', 'MISSING_ARGS']);
+
+export function isUsageError(errorData, { pretty, table, csv, stream, isTTY }) {
+  if (!USAGE_ERROR_CODES.has(errorData.code)) return false;
+  if (pretty || table || csv || stream) return false;
+  return !!isTTY;
+}
+
 // Format error data (returns object, does not exit)
 export function formatError(error) {
   const details = error.details ?? error.data ?? null;
@@ -1755,7 +1768,10 @@ export async function runCLI(rawArgs, deps = {}) {
     errorOutput = console.error,
     exit = process.exit,
     NansenAPIClass = NansenAPI,
-    commandOverrides = {}
+    commandOverrides = {},
+    // Injectable so tests can exercise both renderings; defaults to the real
+    // terminal, which is false under a pipe or in CI.
+    isTTY = process.stdout.isTTY,
   } = deps;
 
   const { _: positional, flags, options } = parseArgs(rawArgs);
@@ -1998,8 +2014,12 @@ export async function runCLI(rawArgs, deps = {}) {
     // data (e.g. PASSWORD_REQUIRED resolution steps) is preserved under `details`,
     // so agents get one consistent shape to branch on regardless of command.
     const errorData = formatError(error);
-    const formatted = formatOutput(errorData, { pretty, table, csv });
-    output(formatted.text);
+    if (isUsageError(errorData, { pretty, table, csv, stream, isTTY })) {
+      output(errorData.error);
+    } else {
+      const formatted = formatOutput(errorData, { pretty, table, csv });
+      output(formatted.text);
+    }
     await trackCommandFailed({
       command: fullCommand,
       duration_ms: Date.now() - startTime,
