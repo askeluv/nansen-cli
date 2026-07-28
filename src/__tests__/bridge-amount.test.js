@@ -149,3 +149,93 @@ describe('bridge quote --amount-unit (M2)', () => {
     expect(api.captured.params.amount).toBe('5000000'); // $5 -> 5 USDC at 6 dec
   });
 });
+
+// The CLI offers a deliberately narrower, asymmetric route set than the API
+// accepts: deposits need a locally signable origin chain (Base only), while
+// withdrawals sign an HL action and so work to any API-supported destination.
+describe('bridge quote supported routes', () => {
+  let tmpHome;
+  let prevHome;
+
+  beforeEach(() => {
+    prevHome = process.env.HOME;
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'nansen-bridge-routes-'));
+    process.env.HOME = tmpHome;
+  });
+
+  afterEach(() => {
+    process.env.HOME = prevHome;
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+  });
+
+  function fakeApi() {
+    const captured = {};
+    return {
+      captured,
+      request: async (_path, params) => {
+        captured.params = params;
+        return { details: {}, fees: {}, steps: [] };
+      },
+    };
+  }
+
+  function quoteWith(api, fromChain, toChain) {
+    return buildBridgeCommands({ log: () => {} }).quote([], api, {}, {
+      'from-chain': fromChain, 'to-chain': toChain,
+      'from-token': 'USDC', amount: '5000000', wallet: 'w',
+    });
+  }
+
+  // The bug this guards: these origins have RPCs, chain IDs and USDC addresses
+  // wired, so a quote used to succeed and only blow up at execute time inside
+  // signEvmTransaction ("Unsupported EVM chain"), after the user had a quote
+  // file in hand. Reject at quote time instead.
+  for (const origin of ['ethereum', 'arbitrum', 'polygon', 'bnb']) {
+    it(`rejects a ${origin} -> hyperliquid deposit (not locally signable)`, async () => {
+      const api = fakeApi();
+      await expect(quoteWith(api, origin, 'hyperliquid')).rejects.toThrow(
+        /Unsupported bridge route/,
+      );
+      expect(api.captured.params).toBeUndefined();
+    });
+  }
+
+  it('accepts the base -> hyperliquid deposit', async () => {
+    const api = fakeApi();
+    await quoteWith(api, 'base', 'hyperliquid');
+    expect(api.captured.params.origin_chain).toBe('base');
+  });
+
+  for (const destination of ['base', 'ethereum', 'arbitrum']) {
+    it(`accepts the hyperliquid -> ${destination} withdrawal`, async () => {
+      const api = fakeApi();
+      await quoteWith(api, 'hyperliquid', destination);
+      expect(api.captured.params.destination_chain).toBe(destination);
+    });
+  }
+
+  // Mirrors the API's own pair matrix, which has no HL -> polygon/bnb route.
+  for (const destination of ['polygon', 'bnb']) {
+    it(`rejects the hyperliquid -> ${destination} withdrawal`, async () => {
+      const api = fakeApi();
+      await expect(quoteWith(api, 'hyperliquid', destination)).rejects.toThrow(
+        /Unsupported bridge route/,
+      );
+      expect(api.captured.params).toBeUndefined();
+    });
+  }
+
+  it('rejects an EVM -> EVM route (not a Hyperliquid bridge)', async () => {
+    const api = fakeApi();
+    await expect(quoteWith(api, 'base', 'arbitrum')).rejects.toThrow(
+      /Unsupported bridge route/,
+    );
+    expect(api.captured.params).toBeUndefined();
+  });
+
+  it('lists the supported routes in the rejection message', async () => {
+    await expect(quoteWith(fakeApi(), 'polygon', 'hyperliquid')).rejects.toThrow(
+      /base -> hyperliquid/,
+    );
+  });
+});

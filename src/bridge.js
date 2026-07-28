@@ -32,14 +32,39 @@ const BRIDGE_TOKENS = {
   ethereum:    { USDC: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48' },
   base:        { USDC: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913' },
   arbitrum:    { USDC: '0xaf88d065e77c8cc2239327c5edb3a432268e5831' },
-  polygon:     { USDC: '0x3c499c542cef5e3811e1192ce70d8cc03d5c3359' },
-  bnb:         { USDC: '0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d' },
   hyperliquid: { USDC: '0x00000000000000000000000000000000' },
 };
 
-const BRIDGE_CHAINS = new Set([
-  'ethereum', 'base', 'arbitrum', 'polygon', 'bnb', 'hyperliquid',
-]);
+// Routes this CLI can actually complete, as ordered [origin, destination] pairs.
+// Deliberately narrower than the API accepts, and asymmetric, because the two
+// directions need different things from us:
+//
+//   Deposits (EVM → HL) broadcast an EVM transaction locally, so the origin
+//   chain must be signable by signEvmTransaction — which only knows Base. The
+//   API accepts ethereum/arbitrum/polygon/bnb origins as well, but nothing here
+//   can sign them, so offering them would just fail at execute time. Base → HL
+//   is also the only deposit route with a real-money round-trip behind it.
+//
+//   Withdrawals (HL → EVM) sign a Hyperliquid EIP-712 action instead and never
+//   touch the destination chain, so no local per-chain support is needed; these
+//   mirror the API's supported pairs.
+//
+// Widening the deposit side means teaching signEvmTransaction the chain AND
+// putting real funds through it first.
+const BRIDGE_ROUTES = [
+  ['base', 'hyperliquid'],
+  ['hyperliquid', 'base'],
+  ['hyperliquid', 'ethereum'],
+  ['hyperliquid', 'arbitrum'],
+];
+
+function isSupportedBridgeRoute(originChain, destinationChain) {
+  return BRIDGE_ROUTES.some(([o, d]) => o === originChain && d === destinationChain);
+}
+
+function formatBridgeRoutes() {
+  return BRIDGE_ROUTES.map(([o, d]) => `${o} -> ${d}`).join(', ');
+}
 
 function resolveBridgeToken(symbolOrAddress, chain) {
   if (!symbolOrAddress || !chain) return symbolOrAddress;
@@ -494,9 +519,12 @@ export function buildBridgeCommands(deps = {}) {
         throw new Error(
           `Usage: nansen bridge quote --from-chain <chain> --to-chain <chain> --from-token <token> --amount <amount> [--wallet <name>]
 
+SUPPORTED ROUTES:
+  ${BRIDGE_ROUTES.map(([o, d]) => `${o} -> ${d}`).join('\n  ')}
+
 OPTIONS:
-  --from-chain    Source chain (${[...BRIDGE_CHAINS].join(', ')})
-  --to-chain      Destination chain
+  --from-chain    Source chain (see supported routes above)
+  --to-chain      Destination chain (see supported routes above)
   --from-token    Source token (symbol like USDC, or address)
   --to-token      Destination token (defaults to USDC)
   --amount        Amount. Base units by default (decimals differ per chain:
@@ -509,11 +537,10 @@ OPTIONS:
         );
       }
 
-      if (!BRIDGE_CHAINS.has(originChain)) {
-        throw new Error(`Unsupported origin chain: ${originChain}. Supported: ${[...BRIDGE_CHAINS].join(', ')}`);
-      }
-      if (!BRIDGE_CHAINS.has(destinationChain)) {
-        throw new Error(`Unsupported destination chain: ${destinationChain}. Supported: ${[...BRIDGE_CHAINS].join(', ')}`);
+      if (!isSupportedBridgeRoute(originChain, destinationChain)) {
+        throw new Error(
+          `Unsupported bridge route: ${originChain} -> ${destinationChain}. Supported routes: ${formatBridgeRoutes()}`,
+        );
       }
 
       const originToken = resolveBridgeToken(fromTokenRaw, originChain);
