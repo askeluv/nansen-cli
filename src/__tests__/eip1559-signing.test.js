@@ -4,7 +4,11 @@ import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { keccak256 } from '../crypto.js';
 import { signEvmTransaction, signEip1559Transaction } from '../trading.js';
 
-const KEY = '4c0883a69102937d6231471b5dbb6204fe512961708279cd54bd1d5b2b0b1b1b';
+// Valid secp256k1 scalar, matching the convention in perp.test.js. Deliberately
+// not a random 64-hex literal: those read as a real private key to secret
+// scanners, and nothing here depends on the key's value — the recovery test
+// derives the expected address from it.
+const KEY = '11'.repeat(32);
 const BASE_CHAIN_ID = 8453;
 
 function addressForKey(privHex) {
