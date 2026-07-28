@@ -503,25 +503,29 @@ export function signSolanaTransaction(transactionBase64, privateKeyHex) {
  *   { to, data, value?, gas?, gasPrice? }
  *
  * The nonce must be fetched from the chain RPC.
- * Signs as a legacy (type 0) transaction with gasPrice (matching the e2e tests).
  *
- * @param {object} txData - Transaction fields from quote.transaction { to, data, value, gas, gasPrice }
+ * Emits an EIP-1559 (type 2) transaction when the quote supplies fee-cap
+ * fields, and a legacy (type 0) one otherwise. Quotes from the trading API and
+ * from Relay both carry maxFeePerGas/maxPriorityFeePerGas, so type 2 is the
+ * normal path; flattening those into a single legacy gasPrice — as this used to
+ * do — discards the fee cap the aggregator computed and leaves the transaction
+ * unincludable the moment the base fee rises past it.
+ *
+ * @param {object} txData - Transaction fields from a quote { to, data, value, gas, gasPrice | maxFeePerGas + maxPriorityFeePerGas }
  * @param {string} privateKeyHex - 64-char hex (32-byte secp256k1 private key)
  * @param {string} chain - Chain name
  * @param {number} nonce - Account nonce
  * @returns {string} 0x-prefixed signed transaction hex
  */
 // ⚠️ SECURITY: EVM transaction signing - requires thorough review before production use
-// TODO: Always signs as legacy (type 0) transactions. Do we need EIP-1559 (type 2) support?
 export function signEvmTransaction(txData, privateKeyHex, chain, nonce) {
   const chainConfig = CHAIN_MAP[chain];
   if (!chainConfig || chainConfig.type !== 'evm') {
     throw new Error(`Unsupported EVM chain: ${chain}`);
   }
 
-  const tx = {
+  const common = {
     nonce,
-    gasPrice: toHex(txData.gasPrice || txData.maxFeePerGas || '1'),
     gasLimit: toHex(txData.gas || txData.gasLimit || '210000'),
     to: txData.to,
     value: toHex(txData.value || '0'),
@@ -529,7 +533,26 @@ export function signEvmTransaction(txData, privateKeyHex, chain, nonce) {
     chainId: chainConfig.chainId,
   };
 
-  return signLegacyTransaction(tx, privateKeyHex);
+  if (txData.maxFeePerGas) {
+    return signEip1559Transaction({
+      ...common,
+      maxFeePerGas: toHex(txData.maxFeePerGas),
+      // A zero priority fee is a valid choice but not a sane default, so fall
+      // back to the fee cap rather than to nothing when the quote omits it.
+      maxPriorityFeePerGas: toHex(txData.maxPriorityFeePerGas || txData.maxFeePerGas),
+    }, privateKeyHex);
+  }
+
+  // Previously this fell back to a gasPrice of 1 wei, which signs a transaction
+  // that can never be mined and burns the nonce. Refuse instead: a quote with no
+  // fee information at all is a bug upstream, not something to sign through.
+  if (!txData.gasPrice) {
+    throw new Error(
+      'Quote supplied no gas price (expected gasPrice or maxFeePerGas), so any signed transaction would be unmineable. Refusing to sign.',
+    );
+  }
+
+  return signLegacyTransaction({ ...common, gasPrice: toHex(txData.gasPrice) }, privateKeyHex);
 }
 
 /**
@@ -549,11 +572,18 @@ export async function getEvmNonce(chain, address) {
  *
  * @param {string} chain - Chain name
  * @param {string} txHash - Transaction hash (0x...)
- * @param {number} [timeoutMs=30000] - Max wait time
+ * The default window is deliberately generous: by the time this is called the
+ * transaction is already broadcast, so giving up early converts "still
+ * confirming" into a hard failure the caller has to interpret, without undoing
+ * anything. A tight 30s window did exactly that during a real Base deposit.
+ *
+ * @param {string} chain - Chain name
+ * @param {string} txHash - Transaction hash (0x...)
+ * @param {number} [timeoutMs=180000] - Max wait time
  * @param {number} [pollMs=2000] - Poll interval
  * @returns {Promise<object>} Transaction receipt
  */
-export async function waitForReceipt(chain, txHash, timeoutMs = 30000, pollMs = 2000) {
+export async function waitForReceipt(chain, txHash, timeoutMs = 180000, pollMs = 2000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
@@ -744,6 +774,49 @@ export function signLegacyTransaction(tx, privateKeyHex) {
   ];
 
   return '0x' + rlpEncode(signedFields).toString('hex');
+}
+
+/**
+ * Sign an EIP-1559 (type 2) transaction.
+ *
+ * Envelope: 0x02 || RLP([chainId, nonce, maxPriorityFeePerGas, maxFeePerGas,
+ * gasLimit, to, value, data, accessList, yParity, r, s]).
+ *
+ * Type 2 exists here because a legacy transaction pays exactly `gasPrice`: once
+ * the base fee rises above it the transaction is not slow, it is permanently
+ * unincludable at that nonce. A type-2 transaction pays baseFee + priority
+ * capped at maxFeePerGas, so it rides fee movement instead of dying.
+ *
+ * Note yParity is the raw recovery bit (0/1), not EIP-155's chainId*2+35+bit —
+ * the chain id is already a first-class field in the payload.
+ */
+export function signEip1559Transaction(tx, privateKeyHex) {
+  const payloadFields = [
+    rlpNormalize(tx.chainId),
+    rlpNormalize(tx.nonce),
+    rlpNormalize(tx.maxPriorityFeePerGas),
+    rlpNormalize(tx.maxFeePerGas),
+    rlpNormalize(tx.gasLimit),
+    toBuffer(tx.to),
+    rlpNormalize(tx.value),
+    toBuffer(tx.data || '0x'),
+    [], // accessList — always empty; we never build access-listed transactions
+  ];
+
+  const msgHash = keccak256(Buffer.concat([Buffer.from([0x02]), rlpEncode(payloadFields)]));
+  const { r, s, v: recoveryBit } = signSecp256k1(msgHash, Buffer.from(privateKeyHex, 'hex'));
+
+  const signed = Buffer.concat([
+    Buffer.from([0x02]),
+    rlpEncode([
+      ...payloadFields,
+      rlpNormalize(recoveryBit),
+      stripLeadingZeros(r),
+      stripLeadingZeros(s),
+    ]),
+  ]);
+
+  return '0x' + signed.toString('hex');
 }
 
 export function toBuffer(v) {

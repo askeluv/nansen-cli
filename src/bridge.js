@@ -276,16 +276,72 @@ function signEip712Local(typedData, privateKeyHex, context = 'EIP-712 payload') 
 
 // ── Step processors ──────────────────────────────────────────────────
 
+// Headroom multiplier applied to the current base fee when setting maxFeePerGas.
+// A type-2 transaction only ever pays baseFee + priority, so a generous cap
+// costs nothing extra — it just buys tolerance for the base fee moving between
+// signing and inclusion. Base's fee moved ~2x within minutes while this was
+// being tested, so the tolerance is not theoretical.
+const BASE_FEE_HEADROOM = 3n;
+
+// Floor for maxPriorityFeePerGas, in wei (0.01 gwei).
+//
+// The priority fee is what orders a transaction for inclusion, and it is where a
+// real deposit got stuck: Relay quotes ~0.0011 gwei, while Base was including at
+// ~0.008 gwei and up, so the transaction sat in the mempool and burned the nonce.
+// A cap alone does not fix that — the cap is only what you are *willing* to pay.
+// At 21k-75k gas this floor is a small fraction of a cent per step.
+const MIN_PRIORITY_FEE_WEI = 10000000n;
+
+// Decide the fee fields for an EVM bridge step.
+//
+// Relay's quote already carries maxFeePerGas/maxPriorityFeePerGas, which this
+// used to discard in favour of a bare eth_gasPrice reading — producing a legacy
+// transaction priced at roughly the current base fee with almost no priority
+// fee. Keep Relay's intent, but raise the priority fee to something Base will
+// actually schedule and lift the cap to cover it plus base-fee movement.
+export async function resolveEvmStepFees(chain, txData) {
+  if (txData.maxFeePerGas) {
+    let maxPriorityFeePerGas = BigInt(txData.maxPriorityFeePerGas ?? 0);
+    if (maxPriorityFeePerGas < MIN_PRIORITY_FEE_WEI) {
+      maxPriorityFeePerGas = MIN_PRIORITY_FEE_WEI;
+    }
+
+    // The cap must cover the raised priority fee, or the transaction is
+    // self-contradictory: maxFeePerGas < maxPriorityFeePerGas is rejected
+    // outright by every node.
+    let maxFeePerGas = BigInt(txData.maxFeePerGas);
+    try {
+      const block = await evmRpcCall(chain, 'eth_getBlockByNumber', ['latest', false]);
+      const baseFee = BigInt(block?.baseFeePerGas ?? 0);
+      const floor = baseFee * BASE_FEE_HEADROOM + maxPriorityFeePerGas;
+      if (floor > maxFeePerGas) maxFeePerGas = floor;
+    } catch {
+      // Base-fee lookup is best-effort, but the cap still has to clear the
+      // priority fee even without it.
+      if (maxFeePerGas < maxPriorityFeePerGas) maxFeePerGas = maxPriorityFeePerGas;
+    }
+
+    return {
+      maxFeePerGas: maxFeePerGas.toString(),
+      maxPriorityFeePerGas: maxPriorityFeePerGas.toString(),
+    };
+  }
+
+  // Pre-1559 shape (or a quote that only gave a flat price): fall back to the
+  // node's reading, which is what the legacy signer needs.
+  return { gasPrice: await evmRpcCall(chain, 'eth_gasPrice') };
+}
+
 async function processEvmStep(step, { chain, privateKeyHex, log, onBroadcast }) {
   for (const item of step.items || []) {
     if (item.status === 'complete') continue;
     const txData = item.data;
 
-    const gasPrice = await evmRpcCall(chain, 'eth_gasPrice');
+    const fees = await resolveEvmStepFees(chain, txData);
     const nonce = await getEvmNonce(chain, txData.from);
 
     const signedTx = signEvmTransaction(
-      { ...txData, gasPrice },
+      { ...txData, ...fees },
       privateKeyHex,
       chain,
       parseInt(nonce, 16),
