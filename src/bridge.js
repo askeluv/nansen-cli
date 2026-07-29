@@ -291,6 +291,27 @@ const BASE_FEE_HEADROOM = 3n;
 // At 21k-75k gas this floor is a small fraction of a cent per step.
 const MIN_PRIORITY_FEE_WEI = 10000000n;
 
+// Parse a --priority-fee / --max-fee override. Given in gwei, because that is
+// the unit every fee tracker and block explorer quotes; returned in wei.
+//
+// Converted digit-wise rather than by multiplying a float, so 0.05 gwei is
+// exactly 50000000 wei and not whatever the binary representation rounds to.
+export function parseGweiToWei(raw, name) {
+  const s = String(raw).trim();
+  if (!/^\d*\.?\d+$/.test(s)) {
+    throw new CommandError(
+      `Invalid --${name} "${raw}". Give a fee in gwei (e.g. 0.05).`,
+      'INVALID_INPUT',
+    );
+  }
+  const [int, frac = ''] = s.split('.');
+  const wei = BigInt(int || '0') * 1000000000n + BigInt((frac + '000000000').slice(0, 9));
+  if (wei <= 0n) {
+    throw new CommandError(`Invalid --${name} "${raw}". Must be greater than zero.`, 'INVALID_INPUT');
+  }
+  return wei;
+}
+
 // Decide the fee fields for an EVM bridge step.
 //
 // Relay's quote already carries maxFeePerGas/maxPriorityFeePerGas, which this
@@ -298,17 +319,38 @@ const MIN_PRIORITY_FEE_WEI = 10000000n;
 // transaction priced at roughly the current base fee with almost no priority
 // fee. Keep Relay's intent, but raise the priority fee to something Base will
 // actually schedule and lift the cap to cover it plus base-fee movement.
-export async function resolveEvmStepFees(chain, txData) {
-  if (txData.maxFeePerGas) {
-    let maxPriorityFeePerGas = BigInt(txData.maxPriorityFeePerGas ?? 0);
-    if (maxPriorityFeePerGas < MIN_PRIORITY_FEE_WEI) {
+//
+// `overrides` are the operator's explicit --priority-fee/--max-fee, in wei. They
+// win outright, including over MIN_PRIORITY_FEE_WEI: their whole purpose is
+// outbidding a transaction that is already stuck, which the computed values
+// cannot do — they reproduce the same numbers that got stuck in the first place,
+// and a replacement needs roughly +10% to be accepted at all.
+export async function resolveEvmStepFees(chain, txData, overrides = {}) {
+  const { priorityFeeWei = null, maxFeeWei = null } = overrides;
+
+  if (txData.maxFeePerGas || priorityFeeWei || maxFeeWei) {
+    let maxPriorityFeePerGas = priorityFeeWei ?? BigInt(txData.maxPriorityFeePerGas ?? 0);
+    if (!priorityFeeWei && maxPriorityFeePerGas < MIN_PRIORITY_FEE_WEI) {
       maxPriorityFeePerGas = MIN_PRIORITY_FEE_WEI;
     }
 
     // The cap must cover the raised priority fee, or the transaction is
     // self-contradictory: maxFeePerGas < maxPriorityFeePerGas is rejected
     // outright by every node.
-    let maxFeePerGas = BigInt(txData.maxFeePerGas);
+    if (maxFeeWei) {
+      if (maxFeeWei < maxPriorityFeePerGas) {
+        throw new CommandError(
+          `--max-fee is below --priority-fee (${maxFeeWei} wei < ${maxPriorityFeePerGas} wei); no node accepts that. Raise --max-fee.`,
+          'INVALID_INPUT',
+        );
+      }
+      return {
+        maxFeePerGas: maxFeeWei.toString(),
+        maxPriorityFeePerGas: maxPriorityFeePerGas.toString(),
+      };
+    }
+
+    let maxFeePerGas = BigInt(txData.maxFeePerGas ?? 0);
     try {
       const block = await evmRpcCall(chain, 'eth_getBlockByNumber', ['latest', false]);
       const baseFee = BigInt(block?.baseFeePerGas ?? 0);
@@ -331,19 +373,26 @@ export async function resolveEvmStepFees(chain, txData) {
   return { gasPrice: await evmRpcCall(chain, 'eth_gasPrice') };
 }
 
-async function processEvmStep(step, { chain, privateKeyHex, log, onBroadcast }) {
+async function processEvmStep(step, { chain, privateKeyHex, log, onBroadcast, feeOverrides, nonceSequence }) {
   for (const item of step.items || []) {
     if (item.status === 'complete') continue;
     const txData = item.data;
 
-    const fees = await resolveEvmStepFees(chain, txData);
-    const nonce = await getEvmNonce(chain, txData.from);
+    const fees = await resolveEvmStepFees(chain, txData, feeOverrides);
+    // getEvmNonce returns a decimal number and reconciles pending against the
+    // mined count. An explicit --nonce skips both: it is how an operator
+    // deliberately re-signs at the nonce of a stuck transaction to replace it,
+    // which is exactly the case the reconciliation refuses.
+    const nonce = nonceSequence
+      ? nonceSequence.next++
+      : await getEvmNonce(chain, txData.from);
+    if (nonceSequence) log(`  Nonce: ${nonce} (from --nonce)`);
 
     const signedTx = signEvmTransaction(
       { ...txData, ...fees },
       privateKeyHex,
       chain,
-      parseInt(nonce, 16),
+      nonce,
     );
 
     log(`  Broadcasting ${step.id} on ${chain}...`);
@@ -716,13 +765,64 @@ OPTIONS:
         throw new CommandError(
           `Usage: nansen bridge execute --quote <quoteId> [--wallet <name>]
 
-Execute a cached bridge quote. Signs transactions and broadcasts them.`,
+Execute a cached bridge quote. Signs transactions and broadcasts them.
+
+RECOVERY OPTIONS (EVM deposit legs only):
+  --priority-fee  Priority fee in gwei, overriding the quoted one
+  --max-fee       Fee cap in gwei, overriding the computed one
+  --nonce         Sign at this nonce instead of the next one
+
+Use these to replace a transaction that is stuck in the mempool: a replacement
+must reuse the stuck nonce and outbid it (roughly +10%), and the fees computed
+from a quote are the same ones that got stuck. Check the stuck nonce with
+"nansen wallet balance" or an explorer, then:
+
+  nansen bridge execute --quote <new quoteId> --nonce <stuck nonce> --priority-fee 0.05`,
           'MISSING_PARAM',
         );
       }
 
+      // Fee/nonce overrides. Parsed before the quote is touched so a typo can't
+      // consume it, and only applied to EVM legs — an HL withdrawal signs an
+      // action with no fee fields at all.
+      const feeOverrides = {
+        priorityFeeWei: options['priority-fee'] !== undefined
+          ? parseGweiToWei(options['priority-fee'], 'priority-fee')
+          : null,
+        maxFeeWei: options['max-fee'] !== undefined
+          ? parseGweiToWei(options['max-fee'], 'max-fee')
+          : null,
+      };
+      let nonceSequence = null;
+      if (options.nonce !== undefined) {
+        const s = String(options.nonce).trim();
+        if (!/^\d+$/.test(s)) {
+          throw new CommandError(
+            `Invalid --nonce "${options.nonce}". Must be a non-negative whole number.`,
+            'INVALID_INPUT',
+          );
+        }
+        // A multi-step quote (approve then deposit) signs consecutive nonces, so
+        // this is a starting point rather than a single value.
+        nonceSequence = { next: parseInt(s, 10) };
+      }
+
       const quoteData = loadBridgeQuote(quoteId);
       const { execution_type, steps, request_id } = quoteData.response;
+
+      // The overrides only mean something for an EVM broadcast. A withdrawal
+      // signs a Hyperliquid action with no fee or nonce fields, so there is
+      // nothing to apply them to — refuse rather than ignore them, since the
+      // operator passed them expecting a different outcome.
+      if (
+        execution_type !== 'evm_transaction'
+        && (feeOverrides.priorityFeeWei || feeOverrides.maxFeeWei || nonceSequence)
+      ) {
+        throw new CommandError(
+          `--priority-fee/--max-fee/--nonce apply only to EVM deposit legs, but quote "${quoteId}" is a ${execution_type} leg with no on-chain transaction to price.`,
+          'INVALID_INPUT',
+        );
+      }
 
       log(`\n  Executing bridge: ${quoteData.originChain} → ${quoteData.destinationChain}`);
       log(`  Type: ${execution_type}`);
@@ -776,12 +876,23 @@ Execute a cached bridge quote. Signs transactions and broadcasts them.`,
         });
 
       if (execution_type === 'evm_transaction') {
+        // Overrides move real money differently from what was quoted, so say so
+        // rather than letting them apply silently.
+        if (feeOverrides.priorityFeeWei || feeOverrides.maxFeeWei || nonceSequence) {
+          const parts = [];
+          if (feeOverrides.priorityFeeWei) parts.push(`priority fee ${feeOverrides.priorityFeeWei} wei`);
+          if (feeOverrides.maxFeeWei) parts.push(`fee cap ${feeOverrides.maxFeeWei} wei`);
+          if (nonceSequence) parts.push(`starting nonce ${nonceSequence.next}`);
+          log(`  Overrides: ${parts.join(', ')}`);
+        }
         for (const [index, step] of steps.entries()) {
           await processEvmStep(step, {
             chain: quoteData.originChain,
             privateKeyHex: creds.privateKey,
             log,
             onBroadcast,
+            feeOverrides,
+            nonceSequence,
           });
           markBroadcast(index);
         }

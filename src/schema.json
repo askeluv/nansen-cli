@@ -365,7 +365,7 @@
             "/api/v1/sanctions/screen"
           ],
           "description": "Execute a cached bridge quote. Screens the signing wallet, signs, submits, then polls to completion.",
-          "notes": "The wallet must match the one the quote was created for. A deposit broadcasts its EVM transaction straight to a public RPC rather than through the Nansen API; only the Hyperliquid signature legs are proxied. Quotes are single-use.",
+          "notes": "The wallet must match the one the quote was created for. A deposit broadcasts its EVM transaction straight to a public RPC rather than through the Nansen API; only the Hyperliquid signature legs are proxied. Quotes are single-use. If a deposit transaction is stuck in the mempool, replace it by requesting a fresh quote and executing it with --nonce set to the stuck nonce and a higher --priority-fee; a replacement must reuse the nonce and outbid the original by roughly 10%.",
           "options": {
             "quote": {
               "type": "string",
@@ -375,6 +375,18 @@
             "wallet": {
               "type": "string",
               "description": "Wallet name (defaults to the configured default wallet)"
+            },
+            "priority-fee": {
+              "type": "string",
+              "description": "Priority fee in gwei, overriding the quoted one (EVM deposit legs only)"
+            },
+            "max-fee": {
+              "type": "string",
+              "description": "Fee cap in gwei, overriding the computed one (EVM deposit legs only)"
+            },
+            "nonce": {
+              "type": "string",
+              "description": "Sign at this nonce instead of the next one, to replace a stuck transaction (EVM deposit legs only)"
             }
           },
           "prerequisites": [

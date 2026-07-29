@@ -555,15 +555,60 @@ export function signEvmTransaction(txData, privateKeyHex, chain, nonce) {
   return signLegacyTransaction({ ...common, gasPrice: toHex(txData.gasPrice) }, privateKeyHex);
 }
 
+// How many queued-but-unmined transactions we are willing to sign past.
+//
+// `pending` counts mempool-queued transactions as well as mined ones, and that is
+// what callers want: the bridge signs its approve and deposit steps back to back,
+// so the second has to be numbered after the first while the first is still
+// pending. But a transaction that *cannot* be mined — priced below what the chain
+// is currently including — keeps the count elevated for as long as it sits there,
+// and every later signature is numbered behind it, unexecutable until it clears.
+//
+// One or two in flight is normal for a multi-step run. Beyond that, something is
+// wedged, and adding another transaction to the queue cannot help.
+const MAX_PENDING_NONCE_GAP = 2;
+
 /**
- * Fetch the pending nonce for an EVM address.
+ * Fetch the next nonce for an EVM address, reconciled against the mined count.
+ *
+ * Returns a DECIMAL number, not a hex string — callers must not decode it again.
+ * (bridge.js did, and `parseInt(20, 16)` is 32: a wallet at nonce 20 signed at
+ * 32, which no node can execute. It only showed up past nonce 9, where decimal
+ * and hex digits diverge.)
+ *
  * @param {string} chain - Chain name
  * @param {string} address - 0x address
- * @returns {Promise<number>} Nonce
+ * @returns {Promise<number>} Next nonce, decimal
  */
 export async function getEvmNonce(chain, address) {
-  const result = await evmRpcCall(chain, 'eth_getTransactionCount', [address, 'pending']);
-  return parseInt(result, 16);
+  const [pendingHex, latestHex] = await Promise.all([
+    evmRpcCall(chain, 'eth_getTransactionCount', [address, 'pending']),
+    evmRpcCall(chain, 'eth_getTransactionCount', [address, 'latest']),
+  ]);
+  const pending = parseInt(pendingHex, 16);
+  const latest = parseInt(latestHex, 16);
+  if (!Number.isInteger(pending) || !Number.isInteger(latest)) {
+    throw new Error(
+      `Could not read the nonce for ${address} on ${chain} (pending: ${pendingHex}, latest: ${latestHex}).`,
+    );
+  }
+
+  const gap = pending - latest;
+  if (gap > MAX_PENDING_NONCE_GAP) {
+    // Refuse rather than pile on. Signing at `pending` here produces a
+    // transaction that cannot execute until everything ahead of it does, and the
+    // symptom the operator sees is only "no receipt" — no indication that the
+    // real problem is a transaction from an earlier run.
+    throw new Error(
+      `${address} has ${gap} unmined transactions queued on ${chain} (next mined nonce ${latest}, next pending ${pending}). `
+      + `Signing another would queue behind them and stay unexecutable until they clear. `
+      + `Replace the transaction at nonce ${latest} with a higher fee first: request a fresh quote and run `
+      + `"nansen bridge execute --quote <id> --nonce ${latest} --priority-fee <gwei>". `
+      + `Note that a load-balanced public RPC may deny holding a transaction it does in fact hold, so do not diagnose from one endpoint.`,
+    );
+  }
+
+  return pending;
 }
 
 /**
