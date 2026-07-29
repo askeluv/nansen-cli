@@ -1,17 +1,19 @@
 /**
- * Credit and rate-limit metadata, read from Nansen API response headers.
+ * Request-id, credit, rate-limit, and notice metadata, read from Nansen API
+ * response headers.
  *
- * The API reports what a call actually cost and what quota is left on every
- * response. Until now the CLI dropped those headers on the floor and showed
- * only the static per-endpoint estimate published in the OpenAPI spec (see
- * cost-cache.js), which is a quote rather than a charge.
+ * The API reports what a call actually cost, what quota is left, and an id that
+ * identifies the call end to end. Until now the CLI dropped those headers on the
+ * floor and showed only the static per-endpoint estimate published in the
+ * OpenAPI spec (see cost-cache.js), which is a quote rather than a charge.
  *
  * readResponseMeta(response) — parse the headers, or null if none are present
  * creditWarning(meta)        — stderr warning string when the balance is short, else null
  *
  * Every header is optional. Some auth rails charge no credits, some responses
- * are served before quota is resolved, and older deployments may not send the
- * rate-limit triplet at all — so a missing header means "unknown", never zero.
+ * are served before quota is resolved, and older deployments may send neither
+ * the rate-limit triplet nor the request id — so a missing header means
+ * "unknown", never zero.
  */
 
 /** Header names, as documented in the API reference. */
@@ -23,33 +25,32 @@ const RATE_RESET = 'x-ratelimit-reset';
 const UPGRADE_HINT = 'x-nansen-upgrade-hint';
 const PLAN_NOTICE = 'x-nansen-plan-notice';
 const API_KEY_NOTICE = 'x-nansen-api-key-notice';
+const REQUEST_ID = 'x-request-id';
 
 /**
  * Read a header as a non-negative integer, or null when absent/unparseable.
  * Tolerates any header bag with a .get() — a real Headers, or a Map in tests.
  */
 function intHeader(response, name) {
-  const raw = response?.headers?.get?.(name);
-  if (raw == null || raw === '') return null;
+  const raw = stringHeader(response, name);
+  if (raw === null) return null;
   const value = Number.parseInt(raw, 10);
   return Number.isInteger(value) && value >= 0 ? value : null;
 }
 
 /**
- * Extract credit + rate-limit metadata from a fetch Response.
- * Returns null when the response carries none of it, so callers can skip
- * attaching an object full of nulls.
+ * Read a header as a trimmed non-empty string, or null when absent.
+ * Tolerates any header bag with a .get() — a real Headers, or a Map in tests.
  */
-/**
- * Read a header as a trimmed string, or null when absent/empty.
- */
-function strHeader(response, name) {
+function stringHeader(response, name) {
   const raw = response?.headers?.get?.(name);
-  return (raw != null && raw !== '') ? raw.trim() : null;
+  if (raw == null) return null;
+  const value = String(raw).trim();
+  return value === '' ? null : value;
 }
 
 /**
- * Extract credit, rate-limit, and notice metadata from a fetch Response.
+ * Extract request-id, credit, rate-limit, and notice metadata from a fetch Response.
  * Returns null when the response carries none of it, so callers can skip
  * attaching an object full of nulls.
  */
@@ -59,11 +60,17 @@ export function readResponseMeta(response) {
   const limit = intHeader(response, RATE_LIMIT);
   const rateRemaining = intHeader(response, RATE_REMAINING);
   const resetSeconds = intHeader(response, RATE_RESET);
-  const upgradeHint = strHeader(response, UPGRADE_HINT);
-  const planNotice = strHeader(response, PLAN_NOTICE);
-  const apiKeyNotice = strHeader(response, API_KEY_NOTICE);
+  const upgradeHint = stringHeader(response, UPGRADE_HINT);
+  const planNotice = stringHeader(response, PLAN_NOTICE);
+  const apiKeyNotice = stringHeader(response, API_KEY_NOTICE);
+  const requestId = stringHeader(response, REQUEST_ID);
 
   const meta = {};
+  if (requestId !== null) {
+    // The single value that identifies this call to Nansen support. Opaque —
+    // never parse it or assume a format.
+    meta.requestId = requestId;
+  }
   if (used !== null || remaining !== null) {
     meta.credits = { used, remaining };
   }

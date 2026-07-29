@@ -188,8 +188,17 @@ nansen research smart-money netflow --chain solana --fields token_symbol,net_flo
 | `UNAUTHORIZED` | Wrong or missing key. Re-auth. |
 | `RATE_LIMITED` | Auto-retried by CLI. `details.rateLimit.resetSeconds` is how long the window needs to drain. |
 | `UNSUPPORTED_FILTER` | Remove the filter and retry. |
+| `SERVER_ERROR` | Not your fault. Quote `details.requestId` when reporting it. |
 
-**Quota metadata.** When the API reports them, `details` carries `credits` (`used`, `remaining`) and `rateLimit` (`limit`, `remaining`, `resetSeconds`) on failures. Any field may be `null`, meaning unknown — never assume zero. A low-balance warning goes to **stderr**, so stdout stays pure JSON.
+**Error metadata.** When the API reports them, `details` carries:
+
+| Field | Meaning |
+|-------|---------|
+| `requestId` | Identifies this call end to end. Quote it in any support report. Opaque — do not parse it. |
+| `credits` | `used`, `remaining` |
+| `rateLimit` | `limit`, `remaining`, `resetSeconds` |
+
+Any field may be absent or `null`, meaning unknown — never assume zero. A low-balance warning goes to **stderr**, so stdout stays pure JSON.
 
 ## Troubleshooting
 

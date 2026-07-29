@@ -721,15 +721,21 @@ export class NansenAPI {
           }
         }
 
-        // Quota state belongs on the error above all: an out-of-credits or
-        // rate-limited failure is exactly when the caller needs to see the
-        // numbers. formatError() surfaces details, so this needs no plumbing.
+        // Quota state and the request id belong on the error above all: an
+        // out-of-credits or rate-limited failure is exactly when the caller
+        // needs the numbers, and a 5xx is worthless to support without the id.
+        // formatError() surfaces details, so this needs no plumbing.
+        //
+        // On a retried call this is the LAST attempt's id — each attempt gets
+        // its own server-side id, and the last one is the failure worth
+        // reporting.
         const meta = readResponseMeta(response);
         this.lastResponseMeta = meta ?? this.lastResponseMeta;
         lastError = new NansenError(message, code, response.status, {
           ...data,
           attempt: attempt + 1,
           retryAfterMs,
+          ...(meta?.requestId && { requestId: meta.requestId }),
           ...(meta?.credits && { credits: meta.credits }),
           ...(meta?.rateLimit && { rateLimit: meta.rateLimit })
         });

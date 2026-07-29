@@ -83,6 +83,20 @@ describe('readResponseMeta', () => {
     expect(readResponseMeta({ headers: headers({}) })).toBeNull();
   });
 
+  it('parses the request id', () => {
+    const meta = readResponseMeta({ headers: headers({ 'x-request-id': 'req-a1b2c3' }) });
+    expect(meta).toEqual({ requestId: 'req-a1b2c3' });
+  });
+
+  it('keeps the request id opaque and trims surrounding whitespace', () => {
+    // Any format the server chooses must survive untouched — gateway ids,
+    // caller-forwarded ids and generated ids all look different.
+    expect(
+      readResponseMeta({ headers: headers({ 'x-request-id': '  8f14e45f-ea0a  ' }) })
+    ).toEqual({ requestId: '8f14e45f-ea0a' });
+    expect(readResponseMeta({ headers: headers({ 'x-request-id': '   ' }) })).toBeNull();
+  });
+
   it('tolerates a response with no headers at all', () => {
     // Most existing success-path mocks look like this.
     expect(readResponseMeta({ ok: true })).toBeNull();
@@ -206,6 +220,7 @@ describe('NansenAPI response metadata', () => {
       ok: true,
       json: async () => ({ netflows: [{ token_symbol: 'TEST' }] }),
       headers: headers({
+        'x-request-id': 'req-a1b2c3',
         'x-nansen-credits-used': '5',
         'x-nansen-credits-remaining': '41230',
         'x-ratelimit-limit': '1500',
@@ -218,6 +233,7 @@ describe('NansenAPI response metadata', () => {
     const result = await api.smartMoneyNetflow({ chains: ['solana'] });
 
     expect(result[RESPONSE_META]).toEqual({
+      requestId: 'req-a1b2c3',
       credits: { used: 5, remaining: 41230 },
       rateLimit: { limit: 1500, remaining: 1499, resetSeconds: 60 },
     });
@@ -250,6 +266,41 @@ describe('NansenAPI response metadata', () => {
       code: ErrorCode.CREDITS_EXHAUSTED,
       details: { credits: { used: 0, remaining: 2 } },
     });
+  });
+
+  it('puts the request id on a server error, where support needs it', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      json: async () => ({ error: 'Internal server error' }),
+      headers: headers({ 'x-request-id': 'req-deadbeef' }),
+    });
+
+    const api = new NansenAPI('test-key', undefined, { retry: { maxRetries: 0 } });
+    await expect(api.smartMoneyNetflow({ chains: ['solana'] })).rejects.toMatchObject({
+      code: ErrorCode.SERVER_ERROR,
+      status: 500,
+      details: { requestId: 'req-deadbeef' },
+    });
+  });
+
+  it('omits requestId entirely when the response carries no id', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      json: async () => ({ error: 'Internal server error' }),
+      headers: headers({}),
+    });
+
+    const api = new NansenAPI('test-key', undefined, { retry: { maxRetries: 0 } });
+    // Capture rather than .catch(assert) — a resolving call would skip the
+    // assertion entirely and pass silently.
+    const err = await api.smartMoneyNetflow({ chains: ['solana'] }).then(
+      () => { throw new Error('expected the call to reject'); },
+      e => e
+    );
+    expect(err.status).toBe(500);
+    expect('requestId' in err.details).toBe(false);
   });
 
   it('puts rate-limit state on a 429', async () => {
