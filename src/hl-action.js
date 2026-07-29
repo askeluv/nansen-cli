@@ -21,6 +21,15 @@
  */
 
 import { keccak256 } from './crypto.js';
+import { hlNetwork } from './hl-env.js';
+
+// Phantom-agent `source` for an L1 action: "a" on mainnet, "b" on testnet
+// (signing.py). Every builder below takes the network as an argument defaulting
+// to hlNetwork(), so a caller can pin it in a test while the CLI stays in step
+// with whatever base URL it will actually submit to.
+function phantomAgentSource(network) {
+  return network === 'Testnet' ? 'b' : 'a';
+}
 
 // ── msgpack encoder ──────────────────────────────────────────────────
 //
@@ -377,10 +386,10 @@ export function actionHash(action, vaultAddress, nonce) {
   return keccak256(Buffer.concat(parts));
 }
 
-// Port of construct_phantom_agent + l1_payload (mainnet: source "a", chainId
-// 1337, Exchange domain). Returns the EIP-712 payload the CLI's signAgent()
-// already knows how to sign.
-export function l1Eip712(action, vaultAddress, nonce) {
+// Port of construct_phantom_agent + l1_payload (source "a"/"b" by network,
+// chainId 1337, Exchange domain). Returns the EIP-712 payload the CLI's
+// signAgent() already knows how to sign.
+export function l1Eip712(action, vaultAddress, nonce, network = hlNetwork()) {
   const hash = actionHash(action, vaultAddress, nonce);
   const connectionId = '0x' + hash.toString('hex');
   return {
@@ -397,7 +406,7 @@ export function l1Eip712(action, vaultAddress, nonce) {
       ],
     },
     primaryType: 'Agent',
-    message: { source: 'a', connectionId },
+    message: { source: phantomAgentSource(network), connectionId },
   };
 }
 
@@ -442,11 +451,11 @@ export function userSignedEip712(primaryType, signTypes, action) {
 
 // Build an approveBuilderFee action (user-signed, master key). maxFeeRate is the
 // HL percentage string (e.g. "0.008%"); builder is the lowercased address.
-export function buildApproveBuilderFeeAction({ maxFeeRate, builder, nonce }) {
+export function buildApproveBuilderFeeAction({ maxFeeRate, builder, nonce, network = hlNetwork() }) {
   return {
     action: {
       type: 'approveBuilderFee',
-      hyperliquidChain: 'Mainnet',
+      hyperliquidChain: network,
       signatureChainId: '0x66eee',
       maxFeeRate,
       builder,
@@ -459,12 +468,21 @@ export function buildApproveBuilderFeeAction({ maxFeeRate, builder, nonce }) {
 
 // Build a usdClassTransfer action (Spot<->Perps, user-signed). amount is
 // rendered like the SDK: up to 8 decimals, no trailing zeros / sci-notation.
-export function buildUsdClassTransferAction({ amount, toPerp, nonce }) {
+export function buildUsdClassTransferAction({ amount, toPerp, nonce, network = hlNetwork() }) {
+  // toFixed() switches to exponential notation from 1e21 up ("1e+21"), which
+  // HL's amount parser rejects — and the failure would surface as an opaque
+  // rejection after signing. An amount that large is a mistake either way, so
+  // refuse here.
+  if (!Number.isFinite(amount) || amount <= 0 || amount >= 1e21) {
+    throw new Error(
+      `Invalid usdClassTransfer amount: ${amount}. Must be a positive number below 1e21.`,
+    );
+  }
   const strAmount = amount.toFixed(8).replace(/0+$/, '').replace(/\.$/, '');
   return {
     action: {
       type: 'usdClassTransfer',
-      hyperliquidChain: 'Mainnet',
+      hyperliquidChain: network,
       signatureChainId: '0x66eee',
       amount: strAmount,
       toPerp,

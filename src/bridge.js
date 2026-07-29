@@ -10,9 +10,8 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { CommandError } from './api.js';
+import { CommandError, validateAddress } from './api.js';
 import { signSecp256k1 } from './crypto.js';
-import { retrievePassword } from './keychain.js';
 import {
   convertToBaseUnits,
   evmRpcCall,
@@ -24,7 +23,7 @@ import {
   waitForReceipt,
 } from './trading.js';
 import { screenOrThrow } from './perp.js';
-import { exportWallet, getWalletConfig, showWallet } from './wallet.js';
+import { resolveEvmWallet, resolveSigningCredentials } from './wallet-signing.js';
 import { hashTypedData } from './x402-evm.js';
 
 const QUOTE_TTL_MS = 3600000; // 1 hour
@@ -512,62 +511,72 @@ async function pollBridgeCompletion(apiInstance, { requestId, txHash, timeoutMs 
       }
     } catch (err) {
       if (err.code === 'BRIDGE_FAILED') throw err;
-      log(`  Bridge: poll error — retrying...`);
+      // Say what went wrong. A silent "poll error" hides the difference between
+      // a transient 502 (worth waiting out) and a 401 or a bad request id, which
+      // will still be failing when the timeout arrives ten minutes later.
+      log(`  Bridge: poll error — ${err.message} (retrying...)`);
     }
     await new Promise(r => setTimeout(r, pollMs));
   }
+  // Name whichever handle the caller actually gave us. Interpolating a missing
+  // request_id produced "--request-id undefined", a command that cannot work.
+  const followUp = requestId
+    ? `nansen bridge status --request-id ${requestId}`
+    : txHash
+      ? `nansen bridge status --tx-hash ${txHash}`
+      : 'nansen bridge status --tx-hash <source tx hash>';
   throw Object.assign(
-    new Error(`Bridge polling timed out after ${timeoutMs / 1000}s. Check manually: nansen bridge status --request-id ${requestId || txHash}`),
+    new Error(`Bridge polling timed out after ${timeoutMs / 1000}s. Check manually: ${followUp}`),
     { code: 'BRIDGE_TIMEOUT' },
   );
 }
 
 // ── Wallet helpers ───────────────────────────────────────────────────
 
+// Every route here has an EVM address on at least one side (Hyperliquid uses EVM
+// addresses too), and both legs sign with the EVM key — so a wallet without a
+// valid EVM address can't bridge at all. This used to pass `wallet.evm`
+// through unchecked, so a Solana-only wallet reached the API as
+// `wallet_address: null` and came back a 422.
 function resolveWalletAddress(walletName) {
-  let wallet;
-  if (walletName) {
-    wallet = showWallet(walletName);
-  } else {
-    const config = getWalletConfig();
-    if (config.defaultWallet) wallet = showWallet(config.defaultWallet);
-  }
-  if (!wallet) throw new Error('No wallet found. Create one with: nansen wallet create');
-  return {
-    address: wallet.evm,
-    provider: wallet.provider || 'local',
-    privyWalletIds: wallet.privyWalletIds || null,
-  };
+  return resolveEvmWallet(walletName, 'Bridging');
 }
 
-function resolveWalletCredentials(walletName) {
-  const config = getWalletConfig();
-  const isPrivy = (() => {
-    try {
-      const w = showWallet(walletName || config.defaultWallet);
-      return w.provider === 'privy';
-    } catch { return false; }
-  })();
-
-  if (isPrivy) {
-    return { provider: 'privy', privateKey: null };
+// Destination address for --recipient. Validated against the EVM pattern rather
+// than the destination chain's own rules: every supported destination
+// (base/ethereum/arbitrum/hyperliquid) takes an EVM address, and passing
+// 'hyperliquid' to validateAddress would fall through its unknown-chain branch
+// and accept anything.
+function assertRecipient(recipient) {
+  const { valid, error } = validateAddress(recipient, 'ethereum');
+  if (!valid) {
+    throw new CommandError(`Invalid --recipient "${recipient}". ${error}`, 'INVALID_ADDRESS');
   }
+}
 
-  let password = null;
-  if (config.passwordHash) {
-    const { password: pw, source } = retrievePassword();
-    if (source === 'file') {
-      process.stderr.write(
-        '⚠️  Password loaded from ~/.nansen/wallets/.credentials (insecure).\n',
+// --amount is a base-unit integer by default, or a positive decimal with
+// --amount-unit. Checked client-side because the two failure modes are both
+// quiet: a decimal in base units is a units mix-up (5.5 meaning 5.5 USDC would
+// bridge 5 base units, i.e. 0.000005 USDC), and trailing garbage would reach
+// convertToBaseUnits rather than being rejected.
+function parseBridgeAmount(raw, amountUnit) {
+  const s = String(raw).trim();
+  if (amountUnit === undefined) {
+    if (!/^\d+$/.test(s) || BigInt(s) <= 0n) {
+      throw new CommandError(
+        `Invalid --amount "${raw}". Base units must be a positive whole number (USDC is 6 decimals on EVM chains, 8 on Hyperliquid). Pass --amount-unit token to use a human amount instead.`,
+        'INVALID_INPUT',
       );
     }
-    password = pw;
+    return s;
   }
-
-  const name = walletName || config.defaultWallet;
-  if (!name) throw new Error('No wallet found. Create one with: nansen wallet create');
-  const exported = exportWallet(name, password);
-  return { provider: 'local', privateKey: exported.evm.privateKey };
+  if (!/^\d*\.?\d+$/.test(s) || !(parseFloat(s) > 0)) {
+    throw new CommandError(
+      `Invalid --amount "${raw}". Must be a positive number when --amount-unit is ${amountUnit}.`,
+      'INVALID_INPUT',
+    );
+  }
+  return s;
 }
 
 // ── Command builder ──────────────────────────────────────────────────
@@ -627,6 +636,9 @@ OPTIONS:
         );
       }
 
+      if (recipient !== undefined) assertRecipient(recipient);
+      const amountInput = parseBridgeAmount(amount, amountUnit);
+
       const originToken = resolveBridgeToken(fromTokenRaw, originChain);
       const destinationToken = toTokenRaw
         ? resolveBridgeToken(toTokenRaw, destinationChain)
@@ -636,11 +648,11 @@ OPTIONS:
 
       // Default: --amount is base units. With --amount-unit, accept a human token
       // or USD amount and convert client-side using the source token's decimals.
-      let resolvedAmount = amount;
+      let resolvedAmount = amountInput;
       if (amountUnit === 'token' || amountUnit === 'usd') {
         try {
           const decimals = await resolveBridgeTokenDecimals(originToken, originChain);
-          let humanAmount = amount;
+          let humanAmount = amountInput;
           if (amountUnit === 'usd') {
             // USDC is USD-pegged ($1), so skip the price lookup — and Hyperliquid's
             // USDC uses a sentinel address the price API can't resolve, which would
@@ -649,7 +661,7 @@ OPTIONS:
             const price = isBridgeUsdc(originToken, originChain)
               ? 1
               : await resolveUsdPrice(apiInstance, originToken, originChain);
-            humanAmount = (parseFloat(amount) / price).toFixed(decimals);
+            humanAmount = (parseFloat(amountInput) / price).toFixed(decimals);
           }
           resolvedAmount = convertToBaseUnits(humanAmount, decimals);
           resolvedAmount = floorHyperliquidUsdcBridgeAmount(resolvedAmount, decimals, originToken, originChain);
@@ -739,7 +751,11 @@ Execute a cached bridge quote. Signs transactions and broadcasts them.`,
       // transaction that moves funds.
       await screenOrThrow(apiInstance, [signer.address]);
 
-      const creds = resolveWalletCredentials(walletName);
+      // Signing material for the wallet resolved above — not a second lookup.
+      // Resolving twice re-read the wallet file and, worse, could pick a
+      // different wallet than the one just screened if the default changed in
+      // between.
+      const creds = resolveSigningCredentials(signer);
 
       // Consume the quote at each INDIVIDUAL broadcast, before any receipt wait.
       // A tx can be accepted by the network and then have waitForReceipt time

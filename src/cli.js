@@ -1512,6 +1512,11 @@ export function buildCommands(deps = {}) {
   // 'research' delegates to the category handlers defined above
   const RESEARCH_CATEGORIES = new Set(['smart-money', 'profiler', 'token', 'search', 'perp', 'portfolio', 'points', 'prediction-market']);
 
+  // The analytics-only perp handler, captured before the trading wrapper below
+  // replaces cmds['perp']. Both the wrapper and the research dispatch route to
+  // it, so it has to be taken exactly once, here.
+  const perpAnalytics = cmds['perp'];
+
   const researchHistorical = buildResearchCommands(deps).research;
 
   cmds['research'] = async (args, apiInstance, flags, options) => {
@@ -1531,6 +1536,13 @@ export function buildCommands(deps = {}) {
     const category = RESEARCH_CATEGORY_ALIASES[rawCategory] || rawCategory;
     if (!RESEARCH_CATEGORIES.has(category)) {
       throw new NansenError(`Unknown research category: ${rawCategory}. Available: ${[...RESEARCH_CATEGORIES, ...RESEARCH_HISTORICAL_SUBCOMMANDS].join(', ')}`, ErrorCode.UNKNOWN);
+    }
+    // `research perp` reaches only the analytics half (screener/leaderboard) —
+    // the trading subcommands live at the top level. Routing its help through
+    // cmds['perp'] printed the trading help, advertising order/close/leverage
+    // from a command that can't run them.
+    if (category === 'perp' && (!args[1] || args[1] === 'help')) {
+      return perpAnalytics(['help'], apiInstance, flags, options);
     }
     return cmds[category](args.slice(1), apiInstance, flags, options);
   };
@@ -1646,7 +1658,6 @@ SUPPORTED CHAINS:
   // keep screener/leaderboard reachable instead of shadowing them — both
   // `nansen perp screener` and `nansen research perp screener` route through here.
   const perpCmds = buildPerpCommands(deps);
-  const perpAnalytics = cmds['perp'];
   const PERP_ANALYTICS_SUBCOMMANDS = new Set(['screener', 'leaderboard']);
   cmds['perp'] = async (args, apiInstance, flags, options) => {
     const sub = args[0];

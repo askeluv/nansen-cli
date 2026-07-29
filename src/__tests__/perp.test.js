@@ -20,7 +20,7 @@ vi.mock('../hl-client.js', () => ({
 
 import { showWallet, getWalletConfig, exportWallet } from '../wallet.js';
 import { submitExchange } from '../hl-client.js';
-import { buildPerpCommands, effectiveOrderValues } from '../perp.js';
+import { buildPerpCommands } from '../perp.js';
 
 // These tests exercise client-side input validation only. Validation runs
 // before any wallet resolution or network call, so a rejected input throws
@@ -171,29 +171,6 @@ describe('perp precision warnings (NEW — price/size precision)', () => {
     const cmds2 = buildPerpCommands({ log: () => {}, warn: (m) => warnings.push(m) });
     await cmds2.order([], brokenApi, {}, { ...base, size: '0.0071111' }).catch(() => {});
     expect(warnings.length).toBe(0);
-  });
-});
-
-describe('perp effective order values (M4 display)', () => {
-  it('prefers the backend-rounded size/price over raw input', () => {
-    const prepared = {
-      size: 0.0071,
-      price: 50000,
-      action: { orders: [{ s: '0.0071', p: '50000' }] },
-    };
-    expect(effectiveOrderValues(prepared)).toEqual({ size: 0.0071, price: 50000 });
-  });
-
-  it('falls back to the signed order wire (s/p) when size/price are absent', () => {
-    const prepared = { action: { orders: [{ s: '0.0071', p: '50000' }] } };
-    expect(effectiveOrderValues(prepared)).toEqual({ size: 0.0071, price: 50000 });
-  });
-
-  it('returns undefined for an action with no order (cancel/leverage/transfer)', () => {
-    expect(effectiveOrderValues({ action: { type: 'cancel', cancels: [] } })).toEqual({
-      size: undefined,
-      price: undefined,
-    });
   });
 });
 

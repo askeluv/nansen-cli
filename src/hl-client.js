@@ -18,14 +18,17 @@
  */
 
 import { CommandError } from "./api.js";
+// The base URL and network live in hl-env.js so hl-action.js can resolve the
+// network without importing this module (it builds actions; this one submits
+// them). Re-exported here because this is where callers expect to find them.
+export {
+  HL_MAINNET_API_URL,
+  HL_TESTNET_API_URL,
+  hlApiUrl,
+  hlNetwork,
+} from "./hl-env.js";
 
-export const HL_MAINNET_API_URL = "https://api.hyperliquid.xyz";
-
-// Resolve the HL API base. NANSEN_HL_API_URL overrides it (tests, or pointing at
-// the testnet); defaults to mainnet, matching the prepare flow's phantom agent.
-export function hlApiUrl() {
-  return process.env.NANSEN_HL_API_URL || HL_MAINNET_API_URL;
-}
+import { hlApiUrl } from "./hl-env.js";
 
 // Port of perp_execute.py::extract_action_errors. HL returns top-level
 // status "ok" even when individual actions are rejected:

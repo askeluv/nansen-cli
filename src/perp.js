@@ -22,8 +22,7 @@ import {
   userSignedEip712,
 } from './hl-action.js';
 import { submitExchange } from './hl-client.js';
-import { retrievePassword } from './keychain.js';
-import { exportWallet, getWalletConfig, showWallet } from './wallet.js';
+import { resolveEvmWallet, resolvePrivateKey } from './wallet-signing.js';
 import { hashTypedData } from './x402-evm.js';
 
 // ── EIP-712 signing ──────────────────────────────────────────────────
@@ -83,6 +82,21 @@ function requireAsset(assetMeta, coin) {
   return assetMeta;
 }
 
+// Hard ceiling on the builder fee this CLI will attach to an order or sign an
+// approval for, in tenths of a basis point. Nansen's published rate is 80
+// (0.08%).
+//
+// The rate arrives from the API and approveBuilderFee authorises a *maximum* on
+// HL, so an unbounded value would be signed as given — the only threat model is
+// a compromised or misconfigured API, which makes this defence in depth rather
+// than a live risk. It also catches a units slip: a rate mistakenly expressed in
+// basis points or percent reads as wildly out of range here.
+//
+// Deliberately equal to the published rate, not a loose multiple: if Nansen's
+// builder fee changes, that should ship as a CLI release rather than take effect
+// silently on every installed client.
+const MAX_BUILDER_FEE_TENTHS_BP = 80;
+
 // Fetch the builder-fee status + code from the proxy (single source of truth,
 // Decision D1): { approved, max_fee_rate, required_fee, builder_address }. One
 // call yields both the {b,f} attached to every order/close and the approval
@@ -106,6 +120,15 @@ async function fetchBuilderFee(apiInstance, walletAddress) {
     throw new CommandError(
       'Builder-fee status response was malformed, so the trade was not submitted.',
       'BUILDER_FEE_UNAVAILABLE',
+    );
+  }
+  // Bound the fee at its single entry point: every order/close attaches
+  // required_fee as its builder code, and every approval signs a maxFeeRate
+  // derived from the same number, so checking here covers both.
+  if (status.required_fee < 0 || status.required_fee > MAX_BUILDER_FEE_TENTHS_BP) {
+    throw new CommandError(
+      `Refusing to trade: the builder fee returned was ${status.required_fee} tenths of a basis point (${builderMaxFeeRate(status.required_fee)}), above the ${MAX_BUILDER_FEE_TENTHS_BP} (${builderMaxFeeRate(MAX_BUILDER_FEE_TENTHS_BP)}) this CLI accepts. Upgrade the CLI if Nansen's builder fee has changed.`,
+      'BUILDER_FEE_TOO_HIGH',
     );
   }
   return status;
@@ -133,65 +156,10 @@ function hlNonce() {
 
 // ── Wallet helpers ───────────────────────────────────────────────────
 
+// Resolution and key handling are shared with bridge.js (wallet-signing.js), so
+// a fix to either can't land on one money path and miss the other.
 function resolveWalletAddress(walletName) {
-  let wallet;
-  if (walletName) {
-    wallet = showWallet(walletName);
-  } else {
-    const config = getWalletConfig();
-    if (config.defaultWallet) wallet = showWallet(config.defaultWallet);
-  }
-  if (!wallet) throw new Error('No wallet found. Create one with: nansen wallet create');
-  if (!wallet.evm || !/^0x[0-9a-fA-F]{40}$/.test(wallet.evm)) {
-    throw new Error(
-      `Wallet "${wallet.name || walletName || 'default'}" has no valid EVM address. Hyperliquid perp trading requires an EVM wallet.`,
-    );
-  }
-  return {
-    address: wallet.evm,
-    provider: wallet.provider || 'local',
-    privyWalletIds: wallet.privyWalletIds || null,
-  };
-}
-
-function resolvePrivateKey(walletName) {
-  const config = getWalletConfig();
-  let password = null;
-  if (config.passwordHash) {
-    const { password: pw, source } = retrievePassword();
-    if (source === 'file') {
-      process.stderr.write('⚠️  Password loaded from ~/.nansen/wallets/.credentials (insecure).\n');
-    }
-    password = pw;
-    // Distinguish "no password configured" from "wrong password": without this,
-    // exportWallet(name, null) fails with the misleading "Incorrect password"
-    // even though nothing was entered. Mirror trade/limit-order's PASSWORD_REQUIRED.
-    if (!password) {
-      throw new CommandError('Wallet is encrypted and no password was found.', 'PASSWORD_REQUIRED', {
-        error: 'PASSWORD_REQUIRED',
-        message: 'Wallet is encrypted and no password was found.',
-        resolution: [
-          'Set NANSEN_WALLET_PASSWORD environment variable',
-          'Or run: nansen wallet create (password is saved to OS keychain automatically)',
-        ],
-      });
-    }
-  }
-  const name = walletName || config.defaultWallet;
-  if (!name) throw new CommandError('No wallet found. Create one with: nansen wallet create', 'NO_WALLET');
-  const exported = exportWallet(name, password);
-  return exported.evm.privateKey;
-}
-
-// The size/price a perp order will actually execute at, post-rounding. The
-// backend echoes them as explicit `size`/`price`; fall back to the signed order
-// wire ("s"/"p") for an older backend that omits them. Returns undefined for
-// actions with no order (cancel/leverage/transfer), so callers can skip the line.
-export function effectiveOrderValues(prepared) {
-  const order0 = prepared?.action?.orders?.[0];
-  const size = prepared?.size ?? (order0?.s !== undefined ? Number(order0.s) : undefined);
-  const price = prepared?.price ?? (order0?.p !== undefined ? Number(order0.p) : undefined);
-  return { size, price };
+  return resolveEvmWallet(walletName, 'Hyperliquid perp trading');
 }
 
 // ── Screening (Chunk 4) ──────────────────────────────────────────────
@@ -306,11 +274,17 @@ async function buildScreenSignSubmit(apiInstance, prepared, ctx) {
 // action signed by the same wallet key, and is screened like any other.
 async function ensureBuilderApproved(apiInstance, status, ctx) {
   if (status.approved) return;
-  ctx.log('  Approving Nansen builder fee (one-time)...');
+  const maxFeeRate = builderMaxFeeRate(status.required_fee);
+  const builder = String(status.builder_address).toLowerCase();
+  // Name the rate and the beneficiary before signing: this authorises a maximum
+  // fee on Hyperliquid, so what was approved should be visible in the transcript
+  // rather than implied by "(one-time)". fetchBuilderFee has already bounded the
+  // rate at MAX_BUILDER_FEE_TENTHS_BP.
+  ctx.log(`  Approving Nansen builder fee (one-time): max ${maxFeeRate} to ${builder}`);
   const nonce = hlNonce();
   const { action, primaryType, signTypes } = buildApproveBuilderFeeAction({
-    maxFeeRate: builderMaxFeeRate(status.required_fee),
-    builder: String(status.builder_address).toLowerCase(),
+    maxFeeRate,
+    builder,
     nonce,
   });
   const eip712 = userSignedEip712(primaryType, signTypes, action);
@@ -441,8 +415,9 @@ function warnImpreciseValue(coin, szDecimals, { sizeRaw, priceRaw }, warn) {
 // Returns the ctx object buildScreenSignSubmit consumes (walletAddress + one of
 // the two signing paths + log). Kept separate from resolveWalletAddress so a
 // command that needs the address earlier (e.g. close's direction pre-check) can
-// resolve the key afterwards, matching the previous ordering.
-async function resolveSigningCtx(wallet, walletName, log) {
+// resolve the key afterwards, matching the previous ordering. Takes the resolved
+// wallet, not its name, so the wallet is read once per command.
+async function resolveSigningCtx(wallet, log) {
   const ctx = {
     walletAddress: wallet.address,
     privateKeyHex: null,
@@ -455,7 +430,7 @@ async function resolveSigningCtx(wallet, walletName, log) {
     ctx.privyClient = new PrivyClient(process.env.PRIVY_APP_ID, process.env.PRIVY_APP_SECRET);
     ctx.privyWalletId = wallet.privyWalletIds?.evm;
   } else {
-    ctx.privateKeyHex = resolvePrivateKey(walletName);
+    ctx.privateKeyHex = resolvePrivateKey(wallet);
   }
   return ctx;
 }
@@ -532,7 +507,7 @@ OPTIONS:
       warnImpreciseValue(coin, assetMeta?.szDecimals, { sizeRaw: options.size, priceRaw: options.price }, warn);
 
       const wallet = resolveWalletAddress(walletName);
-      const ctx = await resolveSigningCtx(wallet, walletName, log);
+      const ctx = await resolveSigningCtx(wallet, log);
 
       const { assetId, szDecimals } = requireAsset(assetMeta, coin);
 
@@ -577,7 +552,7 @@ OPTIONS:
 
       const assetMeta = await fetchAssetMeta(apiInstance, coin);
       const wallet = resolveWalletAddress(walletName);
-      const ctx = await resolveSigningCtx(wallet, walletName, log);
+      const ctx = await resolveSigningCtx(wallet, log);
       const { assetId } = requireAsset(assetMeta, coin);
 
       log(`\n  Cancel: ${coin} order #${oid}`);
@@ -642,7 +617,7 @@ OPTIONS:
         }
       }
 
-      const ctx = await resolveSigningCtx(wallet, walletName, log);
+      const ctx = await resolveSigningCtx(wallet, log);
       const { assetId, szDecimals } = requireAsset(assetMeta, coin);
 
       log(`\n  Close: ${coin} ${isBuy ? 'buy-to-close' : 'sell-to-close'} ${size} @ ${price}`);
@@ -684,7 +659,7 @@ OPTIONS:
 
       const isCross = marginType === 'cross';
       const wallet = resolveWalletAddress(walletName);
-      const ctx = await resolveSigningCtx(wallet, walletName, log);
+      const ctx = await resolveSigningCtx(wallet, log);
       const { assetId } = requireAsset(assetMeta, coin);
 
       log(`\n  Leverage: ${coin} ${leverage}x ${isCross ? 'cross' : 'isolated'}`);
@@ -718,7 +693,7 @@ OPTIONS:
       const amount = parsePositiveNumber(options.amount, 'amount');
 
       const wallet = resolveWalletAddress(walletName);
-      const ctx = await resolveSigningCtx(wallet, walletName, log);
+      const ctx = await resolveSigningCtx(wallet, log);
 
       log(`\n  Transfer: ${amount} USDC ${toPerp ? 'Spot → Perps' : 'Perps → Spot'}`);
 
@@ -738,7 +713,7 @@ OPTIONS:
       // command lets a client approve up front. No-op when already approved.
       const walletName = scalar(options.wallet, 'wallet');
       const wallet = resolveWalletAddress(walletName);
-      const ctx = await resolveSigningCtx(wallet, walletName, log);
+      const ctx = await resolveSigningCtx(wallet, log);
 
       const builderStatus = await fetchBuilderFee(apiInstance, wallet.address);
       if (builderStatus.approved) {
