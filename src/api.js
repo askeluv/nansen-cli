@@ -8,6 +8,16 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { EVM_CHAINS } from './chain-ids.js';
 import { getAnonymousId, TELEMETRY_DISABLED } from './telemetry.js';
+import { readResponseMeta } from './response-meta.js';
+
+/**
+ * Key for the credit/rate-limit metadata attached to a successful response.
+ *
+ * A symbol on purpose: JSON.stringify and Object.keys both skip it, so the JSON
+ * every command prints is byte-for-byte unchanged while callers that want the
+ * numbers can still read them off the returned object.
+ */
+export const RESPONSE_META = Symbol('nansenResponseMeta');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -465,6 +475,15 @@ export class NansenAPI {
       ttl: options.cache?.ttl ?? DEFAULT_CACHE_TTL
     };
     this.defaultHeaders = options.defaultHeaders || {};
+    /**
+     * Credit/rate-limit metadata from the most recent response, or null.
+     *
+     * Survives any reshaping a command handler does to the response body, which
+     * the RESPONSE_META symbol on the returned object does not. Last write wins
+     * when a handler makes several calls — the freshest balance, which is what a
+     * low-credit warning wants.
+     */
+    this.lastResponseMeta = null;
   }
 
   static cleanBody(body) {
@@ -702,10 +721,17 @@ export class NansenAPI {
           }
         }
 
+        // Quota state belongs on the error above all: an out-of-credits or
+        // rate-limited failure is exactly when the caller needs to see the
+        // numbers. formatError() surfaces details, so this needs no plumbing.
+        const meta = readResponseMeta(response);
+        this.lastResponseMeta = meta ?? this.lastResponseMeta;
         lastError = new NansenError(message, code, response.status, {
           ...data,
           attempt: attempt + 1,
-          retryAfterMs
+          retryAfterMs,
+          ...(meta?.credits && { credits: meta.credits }),
+          ...(meta?.rateLimit && { rateLimit: meta.rateLimit })
         });
         
         // Retry on specific status codes
@@ -722,12 +748,21 @@ export class NansenAPI {
       if (attempt > 0) {
         data._meta = { ...(data._meta || {}), retriedAttempts: attempt };
       }
-      
+
       // Cache successful response
       if (useCache) {
         setCachedResponse(endpoint, body, data);
       }
-      
+
+      // Attach after caching so the cache stores the payload alone — quota
+      // numbers are per-response and would be stale on a cache hit.
+      // Guarded: a response body can be a primitive, which cannot take a property.
+      const meta = readResponseMeta(response);
+      if (meta) {
+        this.lastResponseMeta = meta;
+        if (data !== null && typeof data === 'object') data[RESPONSE_META] = meta;
+      }
+
       return data;
     }
     

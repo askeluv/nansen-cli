@@ -177,17 +177,19 @@ nansen research smart-money netflow --chain solana --fields token_symbol,net_flo
 
 ```json
 { "success": true,  "data": <api_response> }
-{ "success": false, "error": "message", "code": "ERROR_CODE", "status": 401 }
+{ "success": false, "error": "message", "code": "ERROR_CODE", "status": 401, "details": { ... } }
 ```
 
 **Critical error codes:**
 
 | Code | Action |
 |------|--------|
-| `CREDITS_EXHAUSTED` | Stop all API calls immediately. Check [app.nansen.ai](https://app.nansen.ai). |
+| `CREDITS_EXHAUSTED` | Stop all API calls immediately. `details.credits.remaining` is your actual balance. Top up at [app.nansen.ai/api](https://app.nansen.ai/api). |
 | `UNAUTHORIZED` | Wrong or missing key. Re-auth. |
-| `RATE_LIMITED` | Auto-retried by CLI. |
+| `RATE_LIMITED` | Auto-retried by CLI. `details.rateLimit.resetSeconds` is how long the window needs to drain. |
 | `UNSUPPORTED_FILTER` | Remove the filter and retry. |
+
+**Quota metadata.** When the API reports them, `details` carries `credits` (`used`, `remaining`) and `rateLimit` (`limit`, `remaining`, `resetSeconds`) on failures. Any field may be `null`, meaning unknown — never assume zero. A low-balance warning goes to **stderr**, so stdout stays pure JSON.
 
 ## Troubleshooting
 
