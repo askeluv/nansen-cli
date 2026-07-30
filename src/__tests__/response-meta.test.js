@@ -247,6 +247,7 @@ describe('NansenAPI response metadata', () => {
     mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ netflows: [] }) });
 
     const api = new NansenAPI('test-key');
+    api.lastResponseMeta = { requestId: 'req-stale' };
     const result = await api.smartMoneyNetflow({ chains: ['solana'] });
 
     expect(result[RESPONSE_META]).toBeUndefined();
@@ -301,6 +302,51 @@ describe('NansenAPI response metadata', () => {
     );
     expect(err.status).toBe(500);
     expect('requestId' in err.details).toBe(false);
+  });
+
+  it('puts the request id on a non-JSON gateway error', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 502,
+      json: async () => { throw new SyntaxError('Unexpected token <'); },
+      text: async () => '<html>Bad Gateway</html>',
+      headers: headers({ 'x-request-id': 'req-gateway' }),
+    });
+
+    const api = new NansenAPI('test-key', undefined, { retry: { maxRetries: 0 } });
+    await expect(api.smartMoneyNetflow({ chains: ['solana'] })).rejects.toMatchObject({
+      code: ErrorCode.SERVER_ERROR,
+      status: 502,
+      details: {
+        body: '<html>Bad Gateway</html>',
+        requestId: 'req-gateway',
+      },
+    });
+    expect(api.lastResponseMeta).toEqual({ requestId: 'req-gateway' });
+  });
+
+  it('clears stale metadata when the final retry has none', async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        json: async () => ({ error: 'First failure' }),
+        headers: headers({ 'x-request-id': 'req-first' }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        json: async () => ({ error: 'Final failure' }),
+        headers: headers({}),
+      });
+
+    const api = new NansenAPI('test-key', undefined, {
+      retry: { maxRetries: 1, baseDelayMs: 0, maxDelayMs: 0 },
+    });
+    await expect(api.smartMoneyNetflow({ chains: ['solana'] })).rejects.toMatchObject({
+      details: { attempt: 2 },
+    });
+    expect(api.lastResponseMeta).toBeNull();
   });
 
   it('puts rate-limit state on a 429', async () => {
