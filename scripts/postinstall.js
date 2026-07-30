@@ -41,9 +41,11 @@ function hasTTY() {
   return process.stdin.isTTY && process.stderr.isTTY;
 }
 
+const NPX = process.platform === "win32" ? "npx.cmd" : "npx";
+
 function hasNpx() {
   try {
-    execFileSync("npx", ["--version"], { stdio: "ignore", shell: process.platform === "win32" });
+    execFileSync(NPX, ["--version"], { stdio: "ignore", shell: false });
     return true;
   } catch {
     return false;
@@ -84,9 +86,17 @@ function prompt(question) {
   });
 }
 
-function runCommand(cmd, args) {
+function runNpx(args) {
   return new Promise((resolve) => {
-    const child = spawn(cmd, args, { stdio: "inherit", shell: process.platform === "win32" });
+    const child = spawn(NPX, args, { stdio: "inherit", shell: false });
+    child.on("close", (code) => resolve(code === 0));
+    child.on("error", () => resolve(false));
+  });
+}
+
+function runNode(args) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, args, { stdio: "inherit", shell: false });
     child.on("close", (code) => resolve(code === 0));
     child.on("error", () => resolve(false));
   });
@@ -113,7 +123,7 @@ async function installSkill() {
   }
 
   log(`Installing Nansen skill...`);
-  const ok = await runCommand("npx", ["-y", "skills", "add", SKILL_REPO]);
+  const ok = await runNpx(["-y", "skills", "add", SKILL_REPO]);
   if (!ok) {
     log(`${YELLOW}Skill installation failed. You can retry with: npx skills add ${SKILL_REPO}${RESET}`);
   }
@@ -140,7 +150,7 @@ async function testQuery() {
   log(`Running: ${DIM}${TEST_QUERY_DISPLAY}${RESET}`);
   log();
   // Use process.execPath + CLI_ENTRY so it works even if `nansen` bin isn't linked yet
-  const ok = await runCommand(process.execPath, [CLI_ENTRY, ...TEST_QUERY, "--pretty"]);
+  const ok = await runNode([CLI_ENTRY, ...TEST_QUERY, "--pretty"]);
   if (ok) {
     log();
     log(`${GREEN}✓${RESET} All set! Run ${CYAN}nansen help${RESET} to see all available commands.`);
