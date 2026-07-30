@@ -14,6 +14,7 @@ import { resolveAddress, isEnsName } from './ens.js';
 import fs from 'fs';
 import { getUpdateNotification, getUpgradeNotice, scheduleUpdateCheck } from './update-check.js';
 import { refreshCostMapIfStale, getCostForEndpoint } from './cost-cache.js';
+import { creditWarning, noticeWarnings } from './response-meta.js';
 import { trackCommandSucceeded, trackCommandFailed } from './telemetry.js';
 import { createRequire } from 'module';
 import * as readline from 'readline';
@@ -1853,6 +1854,14 @@ export async function runCLI(rawArgs, deps = {}) {
     }
     const api = new NansenAPIClass(undefined, undefined, { retry: retryOptions, cache: cacheOptions, defaultHeaders });
     let result = await commands[command](subArgs, api, flags, options);
+
+    // Credit balance warning, from the headers on the call just made. Goes to
+    // stderr so it never contaminates the JSON on stdout that agents parse.
+    // Placed before every return path below so it fires for operational
+    // commands too, which print their own output and return undefined.
+    const lowCredits = creditWarning(api.lastResponseMeta);
+    if (lowCredits) errorOutput(lowCredits);
+    for (const notice of noticeWarnings(api.lastResponseMeta)) errorOutput(notice);
 
     // Commands that handle their own output return undefined
     if (result === undefined) {
