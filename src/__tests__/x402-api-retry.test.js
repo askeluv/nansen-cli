@@ -17,7 +17,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { NansenAPI } from '../api.js';
+import { NansenAPI, RESPONSE_META } from '../api.js';
 
 function makeApi() {
   return new NansenAPI('test-key', 'https://api.nansen.ai');
@@ -51,13 +51,17 @@ describe('NansenAPI._x402Retry', () => {
     expect(result).toBeNull();
   });
 
-  it('returns the parsed JSON body when the paid response is ok', async () => {
+  it('returns the parsed JSON body with response metadata when the paid response is ok', async () => {
     // Regression for e918bdd: the resolved JSON value (not a Promise) is
     // returned so callers can use strict !== null to detect success.
     const responseData = { data: { token: 'ETH', value: 1234 } };
     mockFetch.mockResolvedValue({
       ok: true,
       json: async () => responseData,
+      headers: new Map([
+        ['x-request-id', 'req-paid'],
+        ['x-nansen-credits-remaining', '9'],
+      ]),
     });
 
     const api = makeApi();
@@ -65,6 +69,11 @@ describe('NansenAPI._x402Retry', () => {
       'test-sig', null, null, 'https://api.nansen.ai/test', {},
     );
     expect(result).toBe(responseData);
+    expect(result[RESPONSE_META]).toEqual({
+      requestId: 'req-paid',
+      credits: { used: null, remaining: 9 },
+    });
+    expect(api.lastResponseMeta).toEqual(result[RESPONSE_META]);
   });
 
   it('returns a falsy-but-valid JSON body as-is (regression for 3c25a0d)', async () => {

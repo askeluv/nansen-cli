@@ -539,7 +539,11 @@ export class NansenAPI {
         }
       } catch { /* balance check is best-effort */ }
     }
-    return await paidResponse.json();
+    const data = await paidResponse.json();
+    const meta = readResponseMeta(paidResponse);
+    this.lastResponseMeta = meta;
+    if (meta && data !== null && typeof data === 'object') data[RESPONSE_META] = meta;
+    return data;
   }
 
   async request(endpoint, body = {}, options = {}) {
@@ -600,11 +604,17 @@ export class NansenAPI {
         data = await response.json();
       } catch (_err) {
         // Non-JSON response (rare, usually server errors)
+        const meta = readResponseMeta(response);
+        this.lastResponseMeta = meta;
         const error = new NansenError(
           `Invalid response from API (status ${response.status})`,
           response.status >= 500 ? ErrorCode.SERVER_ERROR : ErrorCode.UNKNOWN,
           response.status,
-          { body: await response.text().catch(() => null), attempt: attempt + 1 }
+          {
+            body: await response.text().catch(() => null),
+            attempt: attempt + 1,
+            ...(meta?.requestId && { requestId: meta.requestId })
+          }
         );
         
         if (shouldRetry && attempt < maxRetries && response.status >= 500) {
@@ -721,15 +731,21 @@ export class NansenAPI {
           }
         }
 
-        // Quota state belongs on the error above all: an out-of-credits or
-        // rate-limited failure is exactly when the caller needs to see the
-        // numbers. formatError() surfaces details, so this needs no plumbing.
+        // Quota state and the request id belong on the error above all: an
+        // out-of-credits or rate-limited failure is exactly when the caller
+        // needs the numbers, and a 5xx is worthless to support without the id.
+        // formatError() surfaces details, so this needs no plumbing.
+        //
+        // On a retried call this is the LAST attempt's id — each attempt gets
+        // its own server-side id, and the last one is the failure worth
+        // reporting.
         const meta = readResponseMeta(response);
-        this.lastResponseMeta = meta ?? this.lastResponseMeta;
+        this.lastResponseMeta = meta;
         lastError = new NansenError(message, code, response.status, {
           ...data,
           attempt: attempt + 1,
           retryAfterMs,
+          ...(meta?.requestId && { requestId: meta.requestId }),
           ...(meta?.credits && { credits: meta.credits }),
           ...(meta?.rateLimit && { rateLimit: meta.rateLimit })
         });
@@ -758,8 +774,8 @@ export class NansenAPI {
       // numbers are per-response and would be stale on a cache hit.
       // Guarded: a response body can be a primitive, which cannot take a property.
       const meta = readResponseMeta(response);
+      this.lastResponseMeta = meta;
       if (meta) {
-        this.lastResponseMeta = meta;
         if (data !== null && typeof data === 'object') data[RESPONSE_META] = meta;
       }
 
