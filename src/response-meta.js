@@ -20,6 +20,9 @@ const CREDITS_REMAINING = 'x-nansen-credits-remaining';
 const RATE_LIMIT = 'x-ratelimit-limit';
 const RATE_REMAINING = 'x-ratelimit-remaining';
 const RATE_RESET = 'x-ratelimit-reset';
+const UPGRADE_HINT = 'x-nansen-upgrade-hint';
+const PLAN_NOTICE = 'x-nansen-plan-notice';
+const API_KEY_NOTICE = 'x-nansen-api-key-notice';
 
 /**
  * Read a header as a non-negative integer, or null when absent/unparseable.
@@ -37,12 +40,28 @@ function intHeader(response, name) {
  * Returns null when the response carries none of it, so callers can skip
  * attaching an object full of nulls.
  */
+/**
+ * Read a header as a trimmed string, or null when absent/empty.
+ */
+function strHeader(response, name) {
+  const raw = response?.headers?.get?.(name);
+  return (raw != null && raw !== '') ? raw.trim() : null;
+}
+
+/**
+ * Extract credit, rate-limit, and notice metadata from a fetch Response.
+ * Returns null when the response carries none of it, so callers can skip
+ * attaching an object full of nulls.
+ */
 export function readResponseMeta(response) {
   const used = intHeader(response, CREDITS_USED);
   const remaining = intHeader(response, CREDITS_REMAINING);
   const limit = intHeader(response, RATE_LIMIT);
   const rateRemaining = intHeader(response, RATE_REMAINING);
   const resetSeconds = intHeader(response, RATE_RESET);
+  const upgradeHint = strHeader(response, UPGRADE_HINT);
+  const planNotice = strHeader(response, PLAN_NOTICE);
+  const apiKeyNotice = strHeader(response, API_KEY_NOTICE);
 
   const meta = {};
   if (used !== null || remaining !== null) {
@@ -53,13 +72,34 @@ export function readResponseMeta(response) {
     // drain — not a wall-clock timestamp.
     meta.rateLimit = { limit, remaining: rateRemaining, resetSeconds };
   }
+  if (upgradeHint !== null || planNotice !== null || apiKeyNotice !== null) {
+    meta.notices = {
+      ...(upgradeHint !== null && { upgradeHint }),
+      ...(planNotice !== null && { planNotice }),
+      ...(apiKeyNotice !== null && { apiKeyNotice }),
+    };
+  }
   return Object.keys(meta).length > 0 ? meta : null;
 }
 
 /**
+ * Yield notice strings for any server-set advisory headers.
+ * Each yields a `⚠️  <message>` line for stderr.
+ * Order: apiKeyNotice (most urgent) → upgradeHint → planNotice.
+ */
+export function noticeWarnings(meta) {
+  const notices = meta?.notices;
+  if (!notices) return [];
+  const out = [];
+  if (notices.apiKeyNotice) out.push(`⚠️  ${notices.apiKeyNotice}`);
+  if (notices.upgradeHint) out.push(`ℹ️  ${notices.upgradeHint}`);
+  if (notices.planNotice) out.push(`ℹ️  ${notices.planNotice}`);
+  return out;
+}
+
+/**
  * Warn only when the remaining balance will not cover another call of the size
- * just made. Self-scaling across plans — no absolute threshold to tune, and it
- * stays silent until the warning is actually actionable.
+ * just made.
  */
 export function creditWarning(meta) {
   const credits = meta?.credits;

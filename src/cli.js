@@ -14,7 +14,7 @@ import { resolveAddress, isEnsName } from './ens.js';
 import fs from 'fs';
 import { getUpdateNotification, getUpgradeNotice, scheduleUpdateCheck } from './update-check.js';
 import { refreshCostMapIfStale, getCostForEndpoint } from './cost-cache.js';
-import { creditWarning } from './response-meta.js';
+import { creditWarning, noticeWarnings } from './response-meta.js';
 import { trackCommandSucceeded, trackCommandFailed } from './telemetry.js';
 import { createRequire } from 'module';
 import * as readline from 'readline';
@@ -1861,6 +1861,7 @@ export async function runCLI(rawArgs, deps = {}) {
     // commands too, which print their own output and return undefined.
     const lowCredits = creditWarning(api.lastResponseMeta);
     if (lowCredits) errorOutput(lowCredits);
+    for (const notice of noticeWarnings(api.lastResponseMeta)) errorOutput(notice);
 
     // Commands that handle their own output return undefined
     if (result === undefined) {

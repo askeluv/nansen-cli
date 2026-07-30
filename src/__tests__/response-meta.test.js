@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { readResponseMeta, creditWarning } from '../response-meta.js';
+import { readResponseMeta, creditWarning, noticeWarnings } from '../response-meta.js';
 import { NansenAPI, RESPONSE_META, ErrorCode } from '../api.js';
 
 function headers(entries) {
@@ -14,7 +14,32 @@ function headers(entries) {
 }
 
 describe('readResponseMeta', () => {
-  it('parses credit and rate-limit headers', () => {
+  it('parses credit, rate-limit, and notice headers', () => {
+    const meta = readResponseMeta({
+      headers: headers({
+        'x-nansen-credits-used': '5',
+        'x-nansen-credits-remaining': '41230',
+        'x-ratelimit-limit': '1500',
+        'x-ratelimit-remaining': '1499',
+        'x-ratelimit-reset': '60',
+        'x-nansen-upgrade-hint': 'Upgrade to Pro',
+        'x-nansen-plan-notice': 'Free tier resets at midnight UTC',
+        'x-nansen-api-key-notice': 'Rotate your API key',
+      }),
+    });
+
+    expect(meta).toEqual({
+      credits: { used: 5, remaining: 41230 },
+      rateLimit: { limit: 1500, remaining: 1499, resetSeconds: 60 },
+      notices: {
+        upgradeHint: 'Upgrade to Pro',
+        planNotice: 'Free tier resets at midnight UTC',
+        apiKeyNotice: 'Rotate your API key',
+      },
+    });
+  });
+
+  it('parses credit and rate-limit headers (no notices)', () => {
     const meta = readResponseMeta({
       headers: headers({
         'x-nansen-credits-used': '5',
@@ -29,6 +54,29 @@ describe('readResponseMeta', () => {
       credits: { used: 5, remaining: 41230 },
       rateLimit: { limit: 1500, remaining: 1499, resetSeconds: 60 },
     });
+  });
+
+  it('includes only the notice keys that are present', () => {
+    const meta = readResponseMeta({
+      headers: headers({ 'x-nansen-upgrade-hint': 'Upgrade to Pro' }),
+    });
+    expect(meta).toEqual({ notices: { upgradeHint: 'Upgrade to Pro' } });
+    expect(meta.notices.planNotice).toBeUndefined();
+    expect(meta.notices.apiKeyNotice).toBeUndefined();
+  });
+
+  it('treats empty string notice headers as absent', () => {
+    const meta = readResponseMeta({
+      headers: headers({ 'x-nansen-upgrade-hint': '' }),
+    });
+    expect(meta).toBeNull();
+  });
+
+  it('trims whitespace from notice header values', () => {
+    const meta = readResponseMeta({
+      headers: headers({ 'x-nansen-api-key-notice': '  Rotate your key  ' }),
+    });
+    expect(meta.notices.apiKeyNotice).toBe('Rotate your key');
   });
 
   it('returns null when no relevant headers are present', () => {
@@ -100,6 +148,44 @@ describe('creditWarning', () => {
 
   it('stays silent for free endpoints, which charge nothing', () => {
     expect(creditWarning({ credits: { used: 0, remaining: 5 } })).toBeNull();
+  });
+});
+
+describe('noticeWarnings', () => {
+  it('returns empty array when no notices', () => {
+    expect(noticeWarnings(null)).toEqual([]);
+    expect(noticeWarnings({ credits: { used: 5, remaining: 100 } })).toEqual([]);
+  });
+
+  it('emits ⚠️ for apiKeyNotice (most urgent)', () => {
+    const warnings = noticeWarnings({ notices: { apiKeyNotice: 'Rotate your key by April 27' } });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/^⚠️/);
+    expect(warnings[0]).toContain('Rotate your key by April 27');
+  });
+
+  it('emits ℹ️ for upgradeHint and planNotice', () => {
+    const warnings = noticeWarnings({
+      notices: { upgradeHint: 'Upgrade to Pro', planNotice: 'Free tier resets at midnight' },
+    });
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toMatch(/^ℹ️/);
+    expect(warnings[0]).toContain('Upgrade to Pro');
+    expect(warnings[1]).toMatch(/^ℹ️/);
+    expect(warnings[1]).toContain('Free tier resets at midnight');
+  });
+
+  it('orders apiKeyNotice before upgradeHint before planNotice', () => {
+    const warnings = noticeWarnings({
+      notices: {
+        planNotice: 'Plan notice',
+        upgradeHint: 'Upgrade hint',
+        apiKeyNotice: 'Key notice',
+      },
+    });
+    expect(warnings[0]).toContain('Key notice');
+    expect(warnings[1]).toContain('Upgrade hint');
+    expect(warnings[2]).toContain('Plan notice');
   });
 });
 
