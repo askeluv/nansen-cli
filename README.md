@@ -112,6 +112,19 @@ nansen perp account                                            # value, unrealiz
 
 `--side` is `buy`/`long` or `sell`/`short` to open (`buy`/`sell` to close); `--tif` is `Gtc`/`Ioc`/`Alo`; `--slippage` is a decimal in `[0,1]`; `--leverage` is a whole integer capped at the asset max. Perp orders are irreversible once signed. USDC sent to a wallet via Hyperliquid's **Send** lands in the **Spot** balance (shown as `Spot USDC`); move it to Perps with `perp transfer` before trading. See the `nansen-trading` skill for details.
 
+## Bridge
+
+Move USDC between EVM chains and Hyperliquid via `nansen bridge`. Uses the same wallet and `NANSEN_WALLET_PASSWORD` as perps and DEX trading. Quotes are written to a local file and executed by id; execution signs and broadcasts.
+
+```bash
+nansen bridge quote --from-chain base --to-chain hyperliquid --from-token USDC --amount 1000000
+nansen bridge execute --quote <quoteId>
+nansen bridge execute --quote <quoteId> --nonce 20 --priority-fee 5   # replace a stuck EVM deposit
+nansen bridge status --request-id <id>
+```
+
+Supported routes: `base → hyperliquid` (deposit), and `hyperliquid → base`/`ethereum`/`arbitrum` (withdraw). Deposits broadcast an EVM transaction locally, so only Base is offered on the deposit side; run `nansen bridge help` for the current list. `--amount` is a base-unit integer by default; pass `--amount-unit token` for a human amount. `--recipient` defaults to the wallet's own EVM address. `--priority-fee`/`--max-fee` (gwei) and `--nonce` apply only to EVM deposit legs and let a stuck transaction be replaced. Bridge transfers are irreversible once signed.
+
 ## Wallet
 
 ```bash

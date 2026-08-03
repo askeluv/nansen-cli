@@ -5,7 +5,7 @@
 
 import { NansenAPI, NansenError, CommandError, ErrorCode, saveConfig, deleteConfig, getConfigFile, clearCache, getCacheDir, validateAddress, normalizeAddress, sleep } from './api.js';
 import { buildWalletCommands } from './wallet.js';
-import { buildBridgeCommands } from './bridge.js';
+import { buildBridgeCommands, formatBridgeRoutes } from './bridge.js';
 import { buildPerpCommands } from './perp.js';
 import { buildTradingCommands } from './trading.js';
 import { buildLimitOrderCommands } from './limit-order.js';
@@ -1642,9 +1642,8 @@ USAGE:
   nansen bridge execute --quote <quoteId>
   nansen bridge status --request-id <id>
 
-SUPPORTED CHAINS:
-  EVM -> Hyperliquid: ethereum, base, arbitrum, polygon, bnb
-  Hyperliquid -> EVM: ethereum, base, arbitrum`);
+SUPPORTED ROUTES:
+  ${formatBridgeRoutes()}`);
       return;
     }
     if (!bridgeCmds[sub]) {

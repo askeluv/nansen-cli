@@ -48,7 +48,10 @@ function signAgent(eip712, privateKeyHex) {
 // would sign against data that has moved.
 async function perpRead(apiInstance, endpoint, params) {
   const qs = new URLSearchParams(params).toString();
-  return apiInstance.request(`/api/v1/perp/${endpoint}?${qs}`, {}, { method: 'GET', cache: false });
+  // Only append the query string when there is one; a paramless read like `meta`
+  // would otherwise resolve to `/api/v1/perp/meta?` with a bare trailing `?`.
+  const path = qs ? `/api/v1/perp/${endpoint}?${qs}` : `/api/v1/perp/${endpoint}`;
+  return apiInstance.request(path, {}, { method: 'GET', cache: false });
 }
 
 // Resolve an asset's id + szDecimals (+ maxLeverage) from the proxy /perp/meta.
@@ -514,6 +517,10 @@ OPTIONS:
       log(`\n  Perp Order: ${coin} ${isBuy ? 'LONG' : 'SHORT'} ${size} @ ${price} (${orderType})`);
 
       // Single source of truth for the builder code + approval gate (D1).
+      // On the first trade this screens the wallet once for the builder-fee
+      // approval and again for the order itself. The two round-trips are
+      // deliberate: each signed action re-screens the signer, so this is not
+      // duplication to collapse.
       const builderStatus = await fetchBuilderFee(apiInstance, wallet.address);
       await ensureBuilderApproved(apiInstance, builderStatus, ctx);
 

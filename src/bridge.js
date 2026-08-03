@@ -62,7 +62,7 @@ function isSupportedBridgeRoute(originChain, destinationChain) {
   return BRIDGE_ROUTES.some(([o, d]) => o === originChain && d === destinationChain);
 }
 
-function formatBridgeRoutes() {
+export function formatBridgeRoutes() {
   return BRIDGE_ROUTES.map(([o, d]) => `${o} -> ${d}`).join(', ');
 }
 
@@ -808,6 +808,15 @@ from a quote are the same ones that got stuck. Check the stuck nonce with
       }
 
       const quoteData = loadBridgeQuote(quoteId);
+      // A truncated or hand-edited quote file can be missing `response.steps`
+      // entirely; guard before destructuring so the operator gets an actionable
+      // message rather than a raw TypeError on `steps.length` below.
+      if (!Array.isArray(quoteData.response?.steps)) {
+        throw new CommandError(
+          `Quote "${quoteId}" is malformed: no executable steps found. Request a fresh quote with "nansen bridge quote".`,
+          'INVALID_INPUT',
+        );
+      }
       const { execution_type, steps, request_id } = quoteData.response;
 
       // The overrides only mean something for an EVM broadcast. A withdrawal

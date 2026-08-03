@@ -270,6 +270,11 @@ function orderWiresToOrderAction(orderWires, builder, grouping = 'na') {
 
 // Port of `_validate_tpsl`: a stop/take on the wrong side of entry would trigger
 // immediately and self-close the position the moment it opens.
+//
+// Deliberately validated against the raw `--price`, not the slippage-adjusted IOC
+// limit computed below, to match the reference implementation. A take-profit set
+// just past the mark on a market order can therefore land inside the slippage
+// band; that is accepted here rather than rejected.
 function validateTpsl({ isBuy, price, takeProfit, stopLoss }) {
   if (isBuy) {
     if (stopLoss != null && stopLoss >= price) {
