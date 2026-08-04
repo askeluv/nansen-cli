@@ -23,10 +23,22 @@ import {
   waitForReceipt,
 } from './trading.js';
 import { screenOrThrow } from './perp.js';
+import { extractActionErrors } from './hl-client.js';
 import { resolveEvmWallet, resolveSigningCredentials } from './wallet-signing.js';
 import { hashTypedData } from './x402-evm.js';
 
 const QUOTE_TTL_MS = 3600000; // 1 hour
+
+// Hyperliquid user-signed actions (here, Relay's `sendAsset` withdrawal leg) are
+// signed under the HyperliquidSignTransaction domain, whose chainId must equal
+// the action's own signatureChainId — HL, and the API's OFAC signer-recovery
+// screening, both reconstruct the domain from that field to recover the signer.
+// Use 0x66eee (421614), matching hl-action.js and the API's prepare endpoints, so
+// the whole codebase agrees on one value. (The previous 0x1 / chainId-1 pair was
+// internally consistent too, so it recovered the correct signer — this is
+// codebase consistency, not the withdrawal bug. That bug was a discarded HL error
+// response; see assertHyperliquidStepAccepted.)
+const HL_SIGNATURE_CHAIN_ID = '0x66eee';
 
 const BRIDGE_TOKENS = {
   ethereum:    { USDC: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48' },
@@ -149,6 +161,39 @@ async function postBridgeExecute(apiInstance, targetUrl, body) {
     { target_url: targetUrl, body },
     { cache: false, retry: false },
   );
+}
+
+// Fail loudly on a Hyperliquid rejection instead of printing "Submitted".
+//
+// The /perp/bridge/execute proxy returns { success, data } where `data` is the
+// upstream response verbatim; for the HL leg that is HL's { status, response }
+// envelope. HL signals failure two ways that BOTH come back as HTTP 200, so the
+// proxy forwards them without flagging (it only raises on HTTP errors):
+//   1. top-level status "err" (response is the reason string), and
+//   2. status "ok" with per-action errors in response.data.statuses[].error.
+// Left uninspected — as it was — a rejected withdrawal printed "Submitted" and
+// then polled to a 600s timeout with no reason. Mirrors the direct-path
+// checks in hl-client.js::submitExchange.
+function assertHyperliquidStepAccepted(result, stepId) {
+  const envelope = result?.data ?? result;
+  if (!envelope || typeof envelope !== 'object') return;
+  if (envelope.status === 'err') {
+    const reason =
+      typeof envelope.response === 'string'
+        ? envelope.response
+        : JSON.stringify(envelope.response);
+    throw new CommandError(
+      `Hyperliquid rejected bridge step "${stepId}": ${reason}`,
+      'HL_ACTION_REJECTED',
+    );
+  }
+  const actionErrors = extractActionErrors(envelope.response);
+  if (actionErrors.length > 0) {
+    throw new CommandError(
+      `Hyperliquid rejected bridge step "${stepId}": ${actionErrors.join('; ')}`,
+      'HL_ACTION_REJECTED',
+    );
+  }
 }
 
 // cache: false, and here it is what makes polling work at all. The cache key is
@@ -446,31 +491,36 @@ async function processSignatureStepLocal(step, { privateKeyHex, log, apiInstance
       const domain = {
         name: 'HyperliquidSignTransaction',
         version: '1',
-        chainId: 1,
+        chainId: parseInt(HL_SIGNATURE_CHAIN_ID, 16),
         verifyingContract: '0x0000000000000000000000000000000000000000',
       };
       const types = signData.eip712Types || {};
       const primaryType = signData.eip712PrimaryType || 'HyperliquidTransaction';
-      const message = {
+      // Sign and submit the SAME action object (matching the perp path in
+      // perp.js/hl-action.js). The extra `type`/`signatureChainId` keys are not in
+      // the EIP-712 type list so they don't affect the hash, but building one
+      // object rules out any signed-vs-submitted drift.
+      const action = {
         ...(signData.action.parameters || signData.action),
         type: signData.action.type,
-        signatureChainId: '0x1',
+        signatureChainId: HL_SIGNATURE_CHAIN_ID,
       };
 
-      const typedData = { domain, types, primaryType, message };
+      const typedData = { domain, types, primaryType, message: action };
       const signature = signEip712Local(typedData, privateKeyHex, `Bridge step "${step.id}"`);
       const [rHex, sHex, vHex] = [signature.slice(2, 66), signature.slice(66, 130), signature.slice(130, 132)];
 
-      const flatAction = { type: signData.action.type, ...signData.action.parameters, signatureChainId: '0x1' };
+      // vaultAddress omitted (not null): HL only expects it for vault trades, and
+      // the SDK/submitExchange serialize a normal-wallet action without it.
       const hlBody = {
-        action: flatAction,
+        action,
         nonce: signData.nonce,
         signature: { r: '0x' + rHex, s: '0x' + sHex, v: parseInt(vHex, 16) },
-        vaultAddress: null,
       };
 
       log(`  Signing ${step.id} (Hyperliquid deposit)...`);
-      await postBridgeExecute(apiInstance, 'https://api.hyperliquid.xyz/exchange', hlBody);
+      const result = await postBridgeExecute(apiInstance, 'https://api.hyperliquid.xyz/exchange', hlBody);
+      assertHyperliquidStepAccepted(result, step.id);
       onBroadcast?.(step.id, null);
       log(`  Submitted to api.hyperliquid.xyz`);
     }
@@ -483,6 +533,9 @@ async function processSignatureStepPrivy(step, { privyClient, walletId, log, api
     const { data: signData } = item;
 
     let typedData;
+    // For the HL action leg, the exact object that is signed is also the object
+    // submitted (see the local path for why); hold onto it for the submit below.
+    let hlAction = null;
     if (signData.sign) {
       typedData = {
         domain: signData.sign.domain,
@@ -491,20 +544,21 @@ async function processSignatureStepPrivy(step, { privyClient, walletId, log, api
         message: signData.sign.value,
       };
     } else if (signData.action) {
+      hlAction = {
+        ...(signData.action.parameters || signData.action),
+        type: signData.action.type,
+        signatureChainId: HL_SIGNATURE_CHAIN_ID,
+      };
       typedData = {
         domain: {
           name: 'HyperliquidSignTransaction',
           version: '1',
-          chainId: 1,
+          chainId: parseInt(HL_SIGNATURE_CHAIN_ID, 16),
           verifyingContract: '0x0000000000000000000000000000000000000000',
         },
         types: signData.eip712Types || {},
         primaryType: signData.eip712PrimaryType || 'HyperliquidTransaction',
-        message: {
-          ...(signData.action.parameters || signData.action),
-          type: signData.action.type,
-          signatureChainId: '0x1',
-        },
+        message: hlAction,
       };
     } else {
       throw new Error(`Unexpected signature step format for ${step.id}`);
@@ -528,14 +582,13 @@ async function processSignatureStepPrivy(step, { privyClient, walletId, log, api
       onBroadcast?.(step.id, null);
     } else {
       const [rHex, sHex, vHex] = [signature.slice(2, 66), signature.slice(66, 130), signature.slice(130, 132)];
-      const flatAction = { type: signData.action.type, ...signData.action.parameters, signatureChainId: '0x1' };
       const hlBody = {
-        action: flatAction,
+        action: hlAction,
         nonce: signData.nonce,
         signature: { r: '0x' + rHex, s: '0x' + sHex, v: parseInt(vHex, 16) },
-        vaultAddress: null,
       };
-      await postBridgeExecute(apiInstance, 'https://api.hyperliquid.xyz/exchange', hlBody);
+      const result = await postBridgeExecute(apiInstance, 'https://api.hyperliquid.xyz/exchange', hlBody);
+      assertHyperliquidStepAccepted(result, step.id);
       onBroadcast?.(step.id, null);
     }
     log(`  Submitted`);
@@ -544,8 +597,15 @@ async function processSignatureStepPrivy(step, { privyClient, walletId, log, api
 
 // ── Status polling ───────────────────────────────────────────────────
 
+// A not_found means the relayer has no record of the transfer yet — normal for a
+// few seconds while it indexes, but terminal if it persists (an unknown/malformed
+// handle, or a source tx that never landed). Tolerate it for this bounded window,
+// then treat it as terminal instead of polling "pending" to the full timeout.
+const NOT_FOUND_GRACE_MS = 60000;
+
 async function pollBridgeCompletion(apiInstance, { requestId, txHash, timeoutMs = 600000, pollMs = 10000, log = console.log }) {
   const start = Date.now();
+  let notFoundSince = null;
   while (Date.now() - start < timeoutMs) {
     try {
       const status = await getBridgeStatus(apiInstance, { requestId, txHash });
@@ -558,8 +618,23 @@ async function pollBridgeCompletion(apiInstance, { requestId, txHash, timeoutMs 
         log('  Bridge: REFUNDED — funds returned on source chain');
         return status;
       }
+      if (status.status === 'not_found') {
+        notFoundSince ??= Date.now();
+        if (Date.now() - notFoundSince >= NOT_FOUND_GRACE_MS) {
+          throw Object.assign(
+            new Error(
+              `Bridge not found: the relayer has no record of this transfer after ${NOT_FOUND_GRACE_MS / 1000}s. `
+              + 'The source transaction likely never landed, or the handle is wrong.',
+            ),
+            { code: 'BRIDGE_NOT_FOUND', details: status },
+          );
+        }
+      } else {
+        // Any real status (including pending) clears the not_found streak.
+        notFoundSince = null;
+      }
     } catch (err) {
-      if (err.code === 'BRIDGE_FAILED') throw err;
+      if (err.code === 'BRIDGE_FAILED' || err.code === 'BRIDGE_NOT_FOUND') throw err;
       // Say what went wrong. A silent "poll error" hides the difference between
       // a transient 502 (worth waiting out) and a 401 or a bad request id, which
       // will still be failing when the timeout arrives ten minutes later.
@@ -968,6 +1043,11 @@ Check the status of a Hyperliquid bridge transaction.`,
       const status = await getBridgeStatus(apiInstance, { requestId, txHash });
 
       log(`\n  Bridge Status: ${status.status}`);
+      if (status.status === 'not_found') {
+        log('  (relayer has no record of this transfer — an unknown/malformed handle, or');
+        log('   a source tx that has not landed / is not yet indexed. Retry briefly, then');
+        log('   treat as terminal.)');
+      }
       if (status.raw_status) log(`  Raw:     ${status.raw_status}`);
       if (status.source_tx_hashes?.length) log(`  Source:  ${status.source_tx_hashes.join(', ')}`);
       if (status.destination_tx_hashes?.length) log(`  Dest:    ${status.destination_tx_hashes.join(', ')}`);
