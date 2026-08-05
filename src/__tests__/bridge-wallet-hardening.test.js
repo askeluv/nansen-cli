@@ -10,12 +10,17 @@ vi.mock('../keychain.js', () => ({
   retrievePassword: vi.fn(() => ({ password: null, source: null })),
 }));
 
+vi.mock('../perp.js', () => ({
+  screenOrThrow: vi.fn(),
+}));
+
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
 import { exportWallet, getWalletConfig, showWallet } from '../wallet.js';
 import { retrievePassword } from '../keychain.js';
+import { screenOrThrow } from '../perp.js';
 import { buildBridgeCommands } from '../bridge.js';
 
 // M6: bridge.js missed the wallet hardening perp.js had. These run through the
@@ -130,5 +135,32 @@ describe('bridge execute wallet hardening', () => {
 
     await cmds.execute([], cleanApi, {}, { quote: 'bridge-4', wallet: 'p' }).catch(() => {});
     expect(exportWallet).not.toHaveBeenCalled();
+  });
+
+  it('screens a distinct bridge recipient with the signer', async () => {
+    const recipient = '0x' + 'cd'.repeat(20);
+    const cmds = buildBridgeCommands({ log: () => {} });
+    showWallet.mockReturnValue({ name: 'w', evm: ADDR, provider: 'local' });
+    exportWallet.mockReturnValue({ evm: { privateKey: '11'.repeat(32) } });
+    cleanApi.request.mockImplementation(async endpoint => {
+      if (String(endpoint).includes('/bridge/quote')) {
+        return { execution_type: 'evm_transaction', steps: [], request_id: 'r1' };
+      }
+      return respond(endpoint);
+    });
+
+    await cmds.quote([], cleanApi, {}, {
+      'from-chain': 'base',
+      'to-chain': 'hyperliquid',
+      'from-token': 'USDC',
+      amount: '5000000',
+      wallet: 'w',
+      recipient,
+    });
+    const quoteId = path.basename(fs.readdirSync(quotesDir)[0], '.json');
+
+    await cmds.execute([], cleanApi, {}, { quote: quoteId, wallet: 'w' });
+
+    expect(screenOrThrow).toHaveBeenCalledWith(cleanApi, [ADDR, recipient]);
   });
 });

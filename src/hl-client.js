@@ -33,21 +33,31 @@ import { hlApiUrl } from "./hl-env.js";
 // Port of perp_execute.py::extract_action_errors. HL returns top-level
 // status "ok" even when individual actions are rejected:
 //   {"status":"ok","response":{"data":{"statuses":[{"error":"..."}]}}}
-// Pull out every per-action error so a rejected order/cancel/close isn't masked
-// as success.
-export function extractActionErrors(responseBody) {
-  if (!responseBody || typeof responseBody !== "object") return [];
+// Split every returned leg so a partial TP/SL cannot be reported as either a
+// total success or a total failure.
+export function extractActionErrors(responseBody, action) {
+  const result = { succeeded: [], failed: [] };
+  if (!responseBody || typeof responseBody !== "object") return result;
   const data = responseBody.data;
-  if (!data || typeof data !== "object") return [];
+  if (!data || typeof data !== "object") return result;
   const statuses = data.statuses;
-  if (!Array.isArray(statuses)) return [];
-  const errors = [];
-  for (const entry of statuses) {
+  if (!Array.isArray(statuses)) return result;
+  for (const [index, entry] of statuses.entries()) {
+    const tpsl = action?.orders?.[index]?.t?.trigger?.tpsl;
+    const leg = tpsl === "tp"
+      ? "take-profit"
+      : tpsl === "sl"
+        ? "stop-loss"
+        : action?.grouping === "normalTpsl" && index === 0
+          ? "parent"
+          : `leg ${index + 1}`;
     if (entry && typeof entry === "object" && "error" in entry) {
-      errors.push(String(entry.error));
+      result.failed.push({ leg, error: String(entry.error) });
+    } else {
+      result.succeeded.push(leg);
     }
   }
-  return errors;
+  return result;
 }
 
 // POST a signed action to HL's /exchange endpoint.
@@ -134,10 +144,16 @@ export async function submitExchange(
     );
   }
 
-  const actionErrors = extractActionErrors(responseBody);
-  if (actionErrors.length > 0) {
+  const actionResults = extractActionErrors(responseBody, action);
+  if (actionResults.failed.length > 0 && actionResults.succeeded.length > 0) {
     throw new CommandError(
-      `Hyperliquid rejected the action: ${actionErrors.join("; ")}`,
+      `Hyperliquid partially filled the action: succeeded ${actionResults.succeeded.join(", ")}; failed ${actionResults.failed.map(({ leg, error }) => `${leg}: ${error}`).join("; ")}`,
+      "PARTIAL_FILL"
+    );
+  }
+  if (actionResults.failed.length > 0) {
+    throw new CommandError(
+      `Hyperliquid rejected the action: ${actionResults.failed.map(({ error }) => error).join("; ")}`,
       "HL_ACTION_REJECTED"
     );
   }
