@@ -22,6 +22,7 @@
 
 import { keccak256 } from './crypto.js';
 import { hlNetwork } from './hl-env.js';
+import { CommandError } from './api.js';
 
 // Phantom-agent `source` for an L1 action: "a" on mainnet, "b" on testnet
 // (signing.py). Every builder below takes the network as an argument defaulting
@@ -184,14 +185,10 @@ export function floatToWire(x) {
 }
 
 // Round a positive-ish value to the nearest integer, ties-to-even (banker's).
-// Math.round alone rounds ties up, so an exact .5 (e.g. HL's 1700.25 -> 1700.2)
-// would differ from Python. The EPS band catches near-exact halves that binary
-// float represents a hair off 0.5.
 function roundHalfEven(y) {
   const floor = Math.floor(y);
   const diff = y - floor;
-  const EPS = 1e-9;
-  if (Math.abs(diff - 0.5) < EPS) return floor % 2 === 0 ? floor : floor + 1;
+  if (diff === 0.5) return floor % 2 === 0 ? floor : floor + 1;
   return Math.round(y);
 }
 
@@ -202,7 +199,19 @@ export function pyRound(x, ndigits) {
   if (!Number.isFinite(x)) return x;
   if (ndigits >= 0) {
     const m = 10 ** ndigits;
-    return roundHalfEven(x * m) / m;
+    const y = x * m;
+    const floor = Math.floor(y);
+    const halfUnits = 2 * floor + 1;
+    // toFixed observes which side of a decimal half the binary float is on.
+    // Preserve ties-to-even only when that half is itself exactly representable.
+    if (
+      y - floor === 0.5
+      && Number.isSafeInteger(halfUnits)
+      && BigInt(halfUnits) % (5n ** BigInt(ndigits)) === 0n
+    ) {
+      return roundHalfEven(y) / m;
+    }
+    return parseFloat(x.toFixed(ndigits));
   }
   const m = 10 ** -ndigits; // integer
   return roundHalfEven(x / m) * m;
@@ -293,6 +302,15 @@ function validateTpsl({ isBuy, price, takeProfit, stopLoss }) {
   }
 }
 
+function assertPositiveOrderValues(size, price, szDecimals) {
+  if (size <= 0) {
+    throw new CommandError(`Order size rounds to zero at ${szDecimals} decimals.`, 'ZERO_SIZE');
+  }
+  if (price <= 0) {
+    throw new CommandError('Order price rounds to zero.', 'ZERO_PRICE');
+  }
+}
+
 // ── Action builders (ports of hyperliquid_exchange.py::prepare_*) ─────
 //
 // Each takes the asset metadata (assetId + szDecimals) the caller sourced from
@@ -320,6 +338,7 @@ export function buildOrderAction(
     effectivePrice = roundPrice(price, szDecimals);
     ot = { limit: { tif } };
   }
+  assertPositiveOrderValues(roundedSize, effectivePrice, szDecimals);
 
   const wires = [
     orderRequestToOrderWire({ isBuy, sz: roundedSize, limitPx: effectivePrice, orderType: ot, reduceOnly }, assetId),
@@ -360,6 +379,7 @@ export function buildCloseAction({ size, price, isBuy, slippage = 0.03, builder 
   const raw = isBuy ? price * (1 + slippage) : price * (1 - slippage);
   const effectivePrice = roundPrice(raw, szDecimals);
   const roundedSize = roundSize(size, szDecimals);
+  assertPositiveOrderValues(roundedSize, effectivePrice, szDecimals);
   const wire = orderRequestToOrderWire(
     { isBuy, sz: roundedSize, limitPx: effectivePrice, orderType: { limit: { tif: 'Ioc' } }, reduceOnly: true },
     assetId,
