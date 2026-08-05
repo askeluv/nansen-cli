@@ -146,55 +146,18 @@ describe("submitExchange", () => {
 });
 
 describe("extractActionErrors", () => {
-  const EMPTY = { succeeded: [], failed: [] };
-
-  it("returns empty groups for shapes without statuses", () => {
-    expect(extractActionErrors(null)).toEqual(EMPTY);
-    expect(extractActionErrors("a string")).toEqual(EMPTY);
-    expect(extractActionErrors({ data: {} })).toEqual(EMPTY);
-    expect(extractActionErrors({ data: { statuses: "nope" } })).toEqual(EMPTY);
+  it("returns [] for shapes without statuses", () => {
+    expect(extractActionErrors(null)).toEqual([]);
+    expect(extractActionErrors("a string")).toEqual([]);
+    expect(extractActionErrors({ data: {} })).toEqual([]);
+    expect(extractActionErrors({ data: { statuses: "nope" } })).toEqual([]);
   });
-
-  it("separates all-success and all-fail statuses", () => {
-    expect(
-      extractActionErrors({ data: { statuses: [{ filled: {} }, { resting: {} }] } })
-    ).toEqual({ succeeded: ["leg 1", "leg 2"], failed: [] });
+  it("collects every per-action error, ignoring filled entries", () => {
     expect(
       extractActionErrors({
-        data: { statuses: [{ error: "e1" }, { error: "e2" }] },
+        data: { statuses: [{ filled: {} }, { error: "e1" }, { error: "e2" }] },
       })
-    ).toEqual({
-      succeeded: [],
-      failed: [{ leg: "leg 1", error: "e1" }, { leg: "leg 2", error: "e2" }],
-    });
-  });
-
-  it("reports partial TP/SL results without hiding the filled parent", async () => {
-    const action = {
-      type: "order",
-      grouping: "normalTpsl",
-      orders: [
-        { t: { limit: { tif: "Gtc" } } },
-        { t: { trigger: { tpsl: "sl" } } },
-      ],
-    };
-    const response = {
-      data: { statuses: [{ filled: { oid: 123 } }, { error: "Invalid stop price" }] },
-    };
-    expect(extractActionErrors(response, action)).toEqual({
-      succeeded: ["parent"],
-      failed: [{ leg: "stop-loss", error: "Invalid stop price" }],
-    });
-
-    await expect(
-      submitExchange(
-        { ...SIGNED, action },
-        { fetchImpl: fakeFetch({ status: "ok", response }), baseUrl: "https://hl.test" }
-      )
-    ).rejects.toMatchObject({
-      code: "PARTIAL_FILL",
-      message: expect.stringMatching(/parent.*stop-loss.*Invalid stop price/),
-    });
+    ).toEqual(["e1", "e2"]);
   });
 });
 

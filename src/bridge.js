@@ -187,16 +187,10 @@ function assertHyperliquidStepAccepted(result, stepId) {
       'HL_ACTION_REJECTED',
     );
   }
-  const actionResults = extractActionErrors(envelope.response);
-  if (actionResults.failed.length > 0 && actionResults.succeeded.length > 0) {
+  const actionErrors = extractActionErrors(envelope.response);
+  if (actionErrors.length > 0) {
     throw new CommandError(
-      `Hyperliquid partially filled bridge step "${stepId}": succeeded ${actionResults.succeeded.join(', ')}; failed ${actionResults.failed.map(({ leg, error }) => `${leg}: ${error}`).join('; ')}`,
-      'PARTIAL_FILL',
-    );
-  }
-  if (actionResults.failed.length > 0) {
-    throw new CommandError(
-      `Hyperliquid rejected bridge step "${stepId}": ${actionResults.failed.map(({ error }) => error).join('; ')}`,
+      `Hyperliquid rejected bridge step "${stepId}": ${actionErrors.join('; ')}`,
       'HL_ACTION_REJECTED',
     );
   }
@@ -215,7 +209,7 @@ async function getBridgeStatus(apiInstance, { requestId, txHash }) {
 
 // ── Quote caching ────────────────────────────────────────────────────
 
-function saveBridgeQuote(response, originChain, destinationChain, walletProvider, walletAddress, recipient) {
+function saveBridgeQuote(response, originChain, destinationChain, walletProvider, walletAddress) {
   const dir = getQuotesDir();
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const hash = crypto.randomBytes(4).toString('hex');
@@ -227,7 +221,6 @@ function saveBridgeQuote(response, originChain, destinationChain, walletProvider
     destinationChain,
     walletProvider,
     walletAddress,
-    recipient,
     timestamp: Date.now(),
     response,
   };
@@ -832,14 +825,7 @@ OPTIONS:
         log(`    - ${s.id} (${s.kind})`);
       }
 
-      const quoteId = saveBridgeQuote(
-        result,
-        originChain,
-        destinationChain,
-        wallet.provider,
-        wallet.address,
-        recipient,
-      );
+      const quoteId = saveBridgeQuote(result, originChain, destinationChain, wallet.provider, wallet.address);
       log(`\n  Quote ID: ${quoteId}`);
       log(`  Execute:  nansen bridge execute --quote ${quoteId}`);
       log('');
@@ -907,7 +893,6 @@ from a quote are the same ones that got stuck. Check the stuck nonce with
         );
       }
       const { execution_type, steps, request_id } = quoteData.response;
-      const { recipient } = quoteData;
 
       // The overrides only mean something for an EVM broadcast. A withdrawal
       // signs a Hyperliquid action with no fee or nonce fields, so there is
@@ -942,13 +927,13 @@ from a quote are the same ones that got stuck. Check the stuck nonce with
         );
       }
 
-      // Re-screen the signer and any distinct recipient immediately before
-      // signing. Quotes live up to an hour, and the EVM leg broadcasts directly.
-      const screenAddresses = recipient
-        && String(recipient).toLowerCase() !== String(signer.address).toLowerCase()
-        ? [signer.address, recipient]
-        : [signer.address];
-      await screenOrThrow(apiInstance, screenAddresses);
+      // Re-screen immediately before signing, fail-closed, mirroring the perp
+      // path — and screen the address that actually signs, now known to match the
+      // quote. The quote was screened server-side when issued, but quotes live up
+      // to an hour and the EVM deposit leg broadcasts straight to a public RPC, so
+      // without this nothing re-checks the wallet between the quote and the
+      // transaction that moves funds.
+      await screenOrThrow(apiInstance, [signer.address]);
 
       // Signing material for the wallet resolved above — not a second lookup.
       // Resolving twice re-read the wallet file and, worse, could pick a

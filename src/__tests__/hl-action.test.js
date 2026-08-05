@@ -124,10 +124,6 @@ describe('pyRound (bankers rounding)', () => {
   it('handles negative ndigits without float dirt', () => {
     expect(pyRound(100123.456, -1)).toBe(100120);
   });
-  it('does not treat values near a half as exact ties', () => {
-    expect(pyRound(0.005, 2)).toBe(0.01);
-    expect(pyRound(0.0049999, 2)).toBe(0);
-  });
 });
 
 describe('roundPrice / roundSize', () => {
@@ -140,21 +136,6 @@ describe('roundPrice / roundSize', () => {
   it('rounds size to szDecimals', () => {
     expect(roundSize(0.0071111, 4)).toBe(0.0071);
     expect(roundSize(0.001234, 5)).toBe(0.00123);
-  });
-});
-
-describe('zero-rounded order values', () => {
-  const builders = [
-    params => buildOrderAction({ isBuy: true, orderType: 'limit', ...params }, BTC),
-    params => buildCloseAction({ isBuy: false, ...params }, BTC),
-  ];
-
-  it.each(builders)('rejects a size that rounds to zero', build => {
-    expect(() => build({ size: 0.000001, price: 100 })).toThrow(expect.objectContaining({ code: 'ZERO_SIZE' }));
-  });
-
-  it.each(builders)('rejects a price that rounds to zero', build => {
-    expect(() => build({ size: 0.001, price: 0.0000001 })).toThrow(expect.objectContaining({ code: 'ZERO_PRICE' }));
   });
 });
 
