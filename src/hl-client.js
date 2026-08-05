@@ -94,12 +94,18 @@ export async function submitExchange(
       signal: controller.signal,
     });
   } catch (err) {
-    const reason =
-      err.name === "AbortError"
-        ? `timed out after ${timeoutMs}ms`
-        : err.message;
+    // A timeout on a POST is indeterminate: the request may have reached
+    // Hyperliquid and been applied even though the response never arrived.
+    // Say so rather than implying nothing was sent, and point at the reads that
+    // resolve it.
+    if (err.name === "AbortError") {
+      throw new CommandError(
+        `Timed out after ${timeoutMs}ms waiting for Hyperliquid. The request may still have been received — the action may or may not have been applied. Check "nansen perp orders" and "nansen perp positions" before retrying.`,
+        "HL_TIMEOUT_INDETERMINATE"
+      );
+    }
     throw new CommandError(
-      `Could not reach Hyperliquid: ${reason}`,
+      `Could not reach Hyperliquid: ${err.message}`,
       "HL_NETWORK_ERROR"
     );
   } finally {

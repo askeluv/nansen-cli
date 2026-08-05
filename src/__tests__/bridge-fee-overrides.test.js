@@ -177,6 +177,32 @@ describe('bridge execute overrides', () => {
     expect(signEvmTransaction).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'base', 7);
   });
 
+  it('refuses a step whose txData.from is not the signing wallet', async () => {
+    // M2: the wallet==quote guard passes (walletAddress is the signer), but the
+    // per-step `from` the server returned points at a different account. Without
+    // the assertion the nonce is fetched for the wrong address and signed anyway.
+    const OTHER = '0x' + 'cd'.repeat(20);
+    const cmds = buildBridgeCommands({ log: () => {} });
+    writeQuote('bridge-mismatch', {
+      response: {
+        execution_type: 'evm_transaction',
+        request_id: 'r1',
+        steps: [
+          {
+            id: 'deposit',
+            kind: 'transaction',
+            items: [{ status: 'incomplete', data: { from: OTHER, to: ADDR, data: '0x', maxFeePerGas: '1000000' } }],
+          },
+        ],
+      },
+    });
+    await expect(
+      cmds.execute([], api, {}, { quote: 'bridge-mismatch', wallet: 'w' }),
+    ).rejects.toMatchObject({ code: 'SIGNER_MISMATCH' });
+    expect(getEvmNonce).not.toHaveBeenCalled();
+    expect(signEvmTransaction).not.toHaveBeenCalled();
+  });
+
   it('signs at --nonce, bypassing the pending reconciliation', async () => {
     // Replacing a stuck transaction means reusing its nonce, which is exactly
     // what getEvmNonce refuses to hand out.

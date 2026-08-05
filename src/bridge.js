@@ -425,10 +425,25 @@ export async function resolveEvmStepFees(chain, txData, overrides = {}) {
   return { gasPrice: await evmRpcCall(chain, 'eth_gasPrice') };
 }
 
-async function processEvmStep(step, { chain, privateKeyHex, log, onBroadcast, feeOverrides, nonceSequence }) {
+async function processEvmStep(step, { chain, privateKeyHex, signerAddress, log, onBroadcast, feeOverrides, nonceSequence }) {
   for (const item of step.items || []) {
     if (item.status === 'complete') continue;
     const txData = item.data;
+
+    // The nonce is fetched for txData.from, but the transaction is signed with
+    // our key — so a server-returned `from` that isn't our wallet would price
+    // the nonce against the wrong account and sign anyway. Assert it matches the
+    // signer before touching the nonce.
+    if (
+      signerAddress
+      && txData.from
+      && String(txData.from).toLowerCase() !== String(signerAddress).toLowerCase()
+    ) {
+      throw new CommandError(
+        `Bridge step "${step.id}" is addressed from ${txData.from}, but the signing wallet is ${signerAddress}. Request a new quote.`,
+        'SIGNER_MISMATCH',
+      );
+    }
 
     const fees = await resolveEvmStepFees(chain, txData, feeOverrides);
     // getEvmNonce returns a decimal number and reconciles pending against the
@@ -988,6 +1003,7 @@ from a quote are the same ones that got stuck. Check the stuck nonce with
           await processEvmStep(step, {
             chain: quoteData.originChain,
             privateKeyHex: creds.privateKey,
+            signerAddress: signer.address,
             log,
             onBroadcast,
             feeOverrides,

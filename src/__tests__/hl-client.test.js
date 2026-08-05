@@ -143,6 +143,22 @@ describe("submitExchange", () => {
     });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
+
+  it("reports a POST timeout as indeterminate, not clean non-delivery", async () => {
+    // M3: an aborted POST may still have been received and applied. The message
+    // must not imply nothing was sent, and must point at the reconciling reads.
+    const fetchImpl = vi.fn(async () => {
+      const err = new Error("The operation was aborted");
+      err.name = "AbortError";
+      throw err;
+    });
+    await expect(
+      submitExchange(SIGNED, { fetchImpl, baseUrl: "https://hl.test" })
+    ).rejects.toMatchObject({
+      code: "HL_TIMEOUT_INDETERMINATE",
+      message: expect.stringContaining("perp orders"),
+    });
+  });
 });
 
 describe("extractActionErrors", () => {
