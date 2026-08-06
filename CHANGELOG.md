@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.36.1
+
+### Patch Changes
+
+- [#476](https://github.com/nansen-ai/nansen-cli/pull/476) [`f480a49`](https://github.com/nansen-ai/nansen-cli/commit/f480a492a2ea142894a49f7a6e551d38e8aa4312) Thanks [@kome12](https://github.com/kome12)! - Add troubleshooting guidance for stale global installs.
+
 ## 1.36.0
 
 ### Minor Changes
