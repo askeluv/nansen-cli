@@ -349,6 +349,12 @@ export function buildOrderAction(
     grouping = 'normalTpsl';
     if (takeProfit != null) {
       const rtp = roundPrice(takeProfit, szDecimals);
+      // A trigger price that rounds to zero would encode triggerPx "0" and rest
+      // as a dead order that never fires — the parent position opens unprotected.
+      // Guard it like the parent leg rather than submitting a no-op.
+      if (rtp <= 0) {
+        throw new CommandError('Take-profit price rounds to zero.', 'ZERO_PRICE');
+      }
       wires.push(
         orderRequestToOrderWire(
           { isBuy: !isBuy, sz: roundedSize, limitPx: rtp, orderType: { trigger: { triggerPx: rtp, isMarket: true, tpsl: 'tp' } }, reduceOnly: true },
@@ -358,6 +364,9 @@ export function buildOrderAction(
     }
     if (stopLoss != null) {
       const rsl = roundPrice(stopLoss, szDecimals);
+      if (rsl <= 0) {
+        throw new CommandError('Stop-loss price rounds to zero.', 'ZERO_PRICE');
+      }
       wires.push(
         orderRequestToOrderWire(
           { isBuy: !isBuy, sz: roundedSize, limitPx: rsl, orderType: { trigger: { triggerPx: rsl, isMarket: true, tpsl: 'sl' } }, reduceOnly: true },

@@ -203,6 +203,29 @@ describe('bridge execute overrides', () => {
     expect(signEvmTransaction).not.toHaveBeenCalled();
   });
 
+  it('resolves the nonce for the signer even when the step omits txData.from', async () => {
+    // The tx is signed with the local key regardless of `from`, so the nonce must
+    // be fetched for the signer — a quote missing `from` must not resolve a nonce
+    // for `undefined`.
+    const cmds = buildBridgeCommands({ log: () => {} });
+    writeQuote('bridge-nofrom', {
+      response: {
+        execution_type: 'evm_transaction',
+        request_id: 'r2',
+        steps: [
+          {
+            id: 'deposit',
+            kind: 'transaction',
+            items: [{ status: 'incomplete', data: { to: ADDR, data: '0x', maxFeePerGas: '1000000' } }],
+          },
+        ],
+      },
+    });
+    await cmds.execute([], api, {}, { quote: 'bridge-nofrom', wallet: 'w' });
+    expect(getEvmNonce).toHaveBeenCalledWith('base', ADDR);
+    expect(signEvmTransaction).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'base', 7);
+  });
+
   it('signs at --nonce, bypassing the pending reconciliation', async () => {
     // Replacing a stuck transaction means reusing its nonce, which is exactly
     // what getEvmNonce refuses to hand out.

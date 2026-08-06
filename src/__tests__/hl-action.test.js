@@ -156,6 +156,20 @@ describe('zero-rounded order values', () => {
   it.each(builders)('rejects a price that rounds to zero', build => {
     expect(() => build({ size: 0.001, price: 0.0000001 })).toThrow(expect.objectContaining({ code: 'ZERO_PRICE' }));
   });
+
+  // BTC szDecimals=5 -> price rounds to 1 decimal, so anything < 0.05 rounds to
+  // zero. The parent leg has a valid price; only the protective leg rounds away.
+  it('rejects a stop-loss that rounds to zero', () => {
+    expect(() => buildOrderAction(
+      { isBuy: true, orderType: 'limit', size: 0.001, price: 100, stopLoss: 0.03 }, BTC,
+    )).toThrow(expect.objectContaining({ code: 'ZERO_PRICE' }));
+  });
+
+  it('rejects a take-profit that rounds to zero', () => {
+    expect(() => buildOrderAction(
+      { isBuy: false, orderType: 'limit', size: 0.001, price: 100, takeProfit: 0.03 }, BTC,
+    )).toThrow(expect.objectContaining({ code: 'ZERO_PRICE' }));
+  });
 });
 
 describe('encodeMsgpack primitives', () => {

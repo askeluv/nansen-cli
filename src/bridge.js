@@ -450,9 +450,13 @@ async function processEvmStep(step, { chain, privateKeyHex, signerAddress, log, 
     // mined count. An explicit --nonce skips both: it is how an operator
     // deliberately re-signs at the nonce of a stuck transaction to replace it,
     // which is exactly the case the reconciliation refuses.
+    // Fetch the nonce for the signing wallet, not the server-returned `from`.
+    // The transaction is signed with our local key regardless of `from`, so its
+    // nonce must come from that account — and this stays correct even if a quote
+    // omits `from` (which would otherwise resolve a nonce for `undefined`).
     const nonce = nonceSequence
       ? nonceSequence.next++
-      : await getEvmNonce(chain, txData.from);
+      : await getEvmNonce(chain, signerAddress);
     if (nonceSequence) log(`  Nonce: ${nonce} (from --nonce)`);
 
     const signedTx = signEvmTransaction(
@@ -584,6 +588,15 @@ async function processSignatureStepPrivy(step, { privyClient, walletId, log, api
       };
     } else {
       throw new Error(`Unexpected signature step format for ${step.id}`);
+    }
+
+    // Same guard the local path gets in signEip712Local: an empty type list for
+    // the primary type produces a valid-looking signature that commits to none of
+    // the action's contents. Refuse rather than delegate the check to Privy.
+    if ((typedData.types?.[typedData.primaryType] || []).length === 0) {
+      throw new Error(
+        `Bridge step "${step.id}" is missing its EIP-712 type definition for "${typedData.primaryType}", so the signature would not cover the action. Refusing to sign.`,
+      );
     }
 
     log(`  Signing ${step.id} via Privy...`);
