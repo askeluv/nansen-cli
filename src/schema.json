@@ -1557,6 +1557,23 @@
             "aggregator": {
               "type": "string",
               "description": "Force a specific aggregator: lifi, relay, jupiter, or okx. Filters the returned quote list client-side; errors if no quote from that aggregator was returned."
+            },
+            "swap-mode": {
+              "type": "string",
+              "default": "exactIn",
+              "description": "\"exactIn\" (default) to spend exactly --amount of the sell token, or \"exactOut\" to receive exactly --amount of the buy token. Not supported together with --amount-unit percent."
+            },
+            "slippage": {
+              "type": "string",
+              "description": "Slippage tolerance as a decimal between 0 and 1 (e.g. 0.03 for 3%). Values outside that range are rejected."
+            },
+            "auto-slippage": {
+              "type": "boolean",
+              "description": "Let slippage be calculated automatically instead of using a fixed --slippage."
+            },
+            "max-auto-slippage": {
+              "type": "string",
+              "description": "Upper bound applied when --auto-slippage is enabled, as a decimal between 0 and 1 (e.g. 0.03 for 3%)."
             }
           },
           "prerequisites": [
@@ -1566,6 +1583,11 @@
         "execute": {
           "description": "Sign and broadcast a quoted trade",
           "options": {
+            "quote": {
+              "type": "string",
+              "required": true,
+              "description": "Quote ID returned by `nansen trade quote` (alias: --quote-id)."
+            },
             "chain": {
               "type": "string",
               "default": "base",
@@ -1578,6 +1600,14 @@
             "gasless": {
               "type": "boolean",
               "description": "Relay-only: have Relay's solver pay gas + broadcast (user signs only). Requires the selected quote's aggregator to be \"relay\". Not supported via WalletConnect."
+            },
+            "quote-index": {
+              "type": "string",
+              "description": "Pin a specific quote by 0-based index when the cached quote returned several. Must be within range; there is no fallback to the other quotes."
+            },
+            "no-simulate": {
+              "type": "boolean",
+              "description": "Skip the pre-broadcast simulation."
             }
           }
         },
