@@ -237,6 +237,7 @@ Any field may be absent or `null`, meaning unknown — never assume zero. A low-
 | Symptom | Fix |
 |---------|-----|
 | `command not found` | `npm install -g nansen-cli` |
+| Global install reports an older version | `npm i -g nansen-cli@latest --registry=https://registry.npmjs.org/ --prefer-online`, then check `which -a nansen` for stale binaries |
 | `UNAUTHORIZED` after login | `cat ~/.nansen/config.json` or set `NANSEN_API_KEY` |
 | Empty perp _research_ results | Use `--symbol BTC`, not `--token`. Perps are Hyperliquid-only. |
 | `perp` _trading_ prints the usage banner | Trading needs `--coin BTC` (`--symbol` also works); see the Perpetuals section. |
