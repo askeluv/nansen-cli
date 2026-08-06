@@ -80,7 +80,7 @@ export function resolveTokenAddress(symbolOrAddress, chainName) {
  * @returns {Promise<*>} Parsed result value
  * @throws {Error} If chain has no configured RPC or the RPC returns an error
  */
-async function evmRpcCall(chain, method, params = []) {
+export async function evmRpcCall(chain, method, params = []) {
   const rpcUrl = CHAIN_RPCS[chain];
   if (!rpcUrl) throw new Error(`No RPC URL configured for chain: ${chain}`);
   const res = await fetch(rpcUrl, {
@@ -99,13 +99,13 @@ async function evmRpcCall(chain, method, params = []) {
   return body.result;
 }
 
-function getQuotesDir() {
+export function getQuotesDir() {
   const configDir = path.join(process.env.HOME || process.env.USERPROFILE || '', '.nansen');
   return path.join(configDir, 'quotes');
 }
 
 // Resolve a filename inside the quotes dir, rejecting path traversal.
-function safeQuotesPath(filename) {
+export function safeQuotesPath(filename) {
   const base = path.resolve(getQuotesDir());
   const target = path.resolve(base, filename);
   if (path.relative(base, target).startsWith('..')) return null;
@@ -390,7 +390,7 @@ export function saveQuote(quoteResponse, chain, signerType = 'local', privyWalle
   const hash = crypto.randomBytes(4).toString('hex');
   const quoteId = `${timestamp}-${hash}`;
 
-  const data = { quoteId, chain, timestamp, signerType, response: quoteResponse };
+  const data = { quoteId, type: 'swap', chain, timestamp, signerType, response: quoteResponse };
   if (toChain) data.toChain = toChain;
   if (privyWalletIds) data.privyWalletIds = privyWalletIds;
 
@@ -411,6 +411,11 @@ export function loadQuote(quoteId) {
   if (Date.now() - data.timestamp > 3600000) {
     fs.unlinkSync(filePath);
     throw new Error('Quote has expired. Please request a new quote.');
+  }
+  // Guard against running a bridge quote through the swap path. Older swap
+  // quotes predate the `type` field, so only reject a known-mismatched type.
+  if (data.type && data.type !== 'swap') {
+    throw new Error(`Quote "${quoteId}" is a ${data.type} quote. Use the matching command (e.g. "nansen bridge execute" for a bridge quote).`);
   }
   return data;
 }
@@ -498,25 +503,29 @@ export function signSolanaTransaction(transactionBase64, privateKeyHex) {
  *   { to, data, value?, gas?, gasPrice? }
  *
  * The nonce must be fetched from the chain RPC.
- * Signs as a legacy (type 0) transaction with gasPrice (matching the e2e tests).
  *
- * @param {object} txData - Transaction fields from quote.transaction { to, data, value, gas, gasPrice }
+ * Emits an EIP-1559 (type 2) transaction when the quote supplies fee-cap
+ * fields, and a legacy (type 0) one otherwise. Quotes from the trading API and
+ * from Relay both carry maxFeePerGas/maxPriorityFeePerGas, so type 2 is the
+ * normal path; flattening those into a single legacy gasPrice — as this used to
+ * do — discards the fee cap the aggregator computed and leaves the transaction
+ * unincludable the moment the base fee rises past it.
+ *
+ * @param {object} txData - Transaction fields from a quote { to, data, value, gas, gasPrice | maxFeePerGas + maxPriorityFeePerGas }
  * @param {string} privateKeyHex - 64-char hex (32-byte secp256k1 private key)
  * @param {string} chain - Chain name
  * @param {number} nonce - Account nonce
  * @returns {string} 0x-prefixed signed transaction hex
  */
 // ⚠️ SECURITY: EVM transaction signing - requires thorough review before production use
-// TODO: Always signs as legacy (type 0) transactions. Do we need EIP-1559 (type 2) support?
 export function signEvmTransaction(txData, privateKeyHex, chain, nonce) {
   const chainConfig = CHAIN_MAP[chain];
   if (!chainConfig || chainConfig.type !== 'evm') {
     throw new Error(`Unsupported EVM chain: ${chain}`);
   }
 
-  const tx = {
+  const common = {
     nonce,
-    gasPrice: toHex(txData.gasPrice || txData.maxFeePerGas || '1'),
     gasLimit: toHex(txData.gas || txData.gasLimit || '210000'),
     to: txData.to,
     value: toHex(txData.value || '0'),
@@ -524,18 +533,82 @@ export function signEvmTransaction(txData, privateKeyHex, chain, nonce) {
     chainId: chainConfig.chainId,
   };
 
-  return signLegacyTransaction(tx, privateKeyHex);
+  if (txData.maxFeePerGas) {
+    return signEip1559Transaction({
+      ...common,
+      maxFeePerGas: toHex(txData.maxFeePerGas),
+      // A zero priority fee is a valid choice but not a sane default, so fall
+      // back to the fee cap rather than to nothing when the quote omits it.
+      maxPriorityFeePerGas: toHex(txData.maxPriorityFeePerGas || txData.maxFeePerGas),
+    }, privateKeyHex);
+  }
+
+  // Previously this fell back to a gasPrice of 1 wei, which signs a transaction
+  // that can never be mined and burns the nonce. Refuse instead: a quote with no
+  // fee information at all is a bug upstream, not something to sign through.
+  if (!txData.gasPrice) {
+    throw new Error(
+      'Quote supplied no gas price (expected gasPrice or maxFeePerGas), so any signed transaction would be unmineable. Refusing to sign.',
+    );
+  }
+
+  return signLegacyTransaction({ ...common, gasPrice: toHex(txData.gasPrice) }, privateKeyHex);
 }
 
+// How many queued-but-unmined transactions we are willing to sign past.
+//
+// `pending` counts mempool-queued transactions as well as mined ones, and that is
+// what callers want: the bridge signs its approve and deposit steps back to back,
+// so the second has to be numbered after the first while the first is still
+// pending. But a transaction that *cannot* be mined — priced below what the chain
+// is currently including — keeps the count elevated for as long as it sits there,
+// and every later signature is numbered behind it, unexecutable until it clears.
+//
+// One or two in flight is normal for a multi-step run. Beyond that, something is
+// wedged, and adding another transaction to the queue cannot help.
+const MAX_PENDING_NONCE_GAP = 2;
+
 /**
- * Fetch the pending nonce for an EVM address.
+ * Fetch the next nonce for an EVM address, reconciled against the mined count.
+ *
+ * Returns a DECIMAL number, not a hex string — callers must not decode it again.
+ * (bridge.js did, and `parseInt(20, 16)` is 32: a wallet at nonce 20 signed at
+ * 32, which no node can execute. It only showed up past nonce 9, where decimal
+ * and hex digits diverge.)
+ *
  * @param {string} chain - Chain name
  * @param {string} address - 0x address
- * @returns {Promise<number>} Nonce
+ * @returns {Promise<number>} Next nonce, decimal
  */
 export async function getEvmNonce(chain, address) {
-  const result = await evmRpcCall(chain, 'eth_getTransactionCount', [address, 'pending']);
-  return parseInt(result, 16);
+  const [pendingHex, latestHex] = await Promise.all([
+    evmRpcCall(chain, 'eth_getTransactionCount', [address, 'pending']),
+    evmRpcCall(chain, 'eth_getTransactionCount', [address, 'latest']),
+  ]);
+  const pending = parseInt(pendingHex, 16);
+  const latest = parseInt(latestHex, 16);
+  if (!Number.isInteger(pending) || !Number.isInteger(latest)) {
+    throw new Error(
+      `Could not read the nonce for ${address} on ${chain} (pending: ${pendingHex}, latest: ${latestHex}).`,
+    );
+  }
+
+  const gap = pending - latest;
+  if (gap > MAX_PENDING_NONCE_GAP) {
+    // Refuse rather than pile on. Signing at `pending` here produces a
+    // transaction that cannot execute until everything ahead of it does, and the
+    // symptom the operator sees is only "no receipt" — no indication that the
+    // real problem is a transaction from an earlier run.
+    throw new Error(
+      `${address} has ${gap} unmined transactions queued on ${chain} (next mined nonce ${latest}, next pending ${pending}). `
+      + `Signing another would queue behind them and stay unexecutable until they clear. `
+      + `Replace the transaction at nonce ${latest} with a higher fee first: request a fresh quote and run `
+      + `"nansen bridge execute --quote <id> --nonce ${latest} --priority-fee <gwei>". `
+      + `Note that a load-balanced public RPC may deny holding a transaction it does in fact hold, so do not diagnose from one endpoint.`,
+    );
+  }
+
+  return pending;
 }
 
 /**
@@ -544,11 +617,18 @@ export async function getEvmNonce(chain, address) {
  *
  * @param {string} chain - Chain name
  * @param {string} txHash - Transaction hash (0x...)
- * @param {number} [timeoutMs=30000] - Max wait time
+ * The default window is deliberately generous: by the time this is called the
+ * transaction is already broadcast, so giving up early converts "still
+ * confirming" into a hard failure the caller has to interpret, without undoing
+ * anything. A tight 30s window did exactly that during a real Base deposit.
+ *
+ * @param {string} chain - Chain name
+ * @param {string} txHash - Transaction hash (0x...)
+ * @param {number} [timeoutMs=180000] - Max wait time
  * @param {number} [pollMs=2000] - Poll interval
  * @returns {Promise<object>} Transaction receipt
  */
-export async function waitForReceipt(chain, txHash, timeoutMs = 30000, pollMs = 2000) {
+export async function waitForReceipt(chain, txHash, timeoutMs = 180000, pollMs = 2000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
@@ -739,6 +819,49 @@ export function signLegacyTransaction(tx, privateKeyHex) {
   ];
 
   return '0x' + rlpEncode(signedFields).toString('hex');
+}
+
+/**
+ * Sign an EIP-1559 (type 2) transaction.
+ *
+ * Envelope: 0x02 || RLP([chainId, nonce, maxPriorityFeePerGas, maxFeePerGas,
+ * gasLimit, to, value, data, accessList, yParity, r, s]).
+ *
+ * Type 2 exists here because a legacy transaction pays exactly `gasPrice`: once
+ * the base fee rises above it the transaction is not slow, it is permanently
+ * unincludable at that nonce. A type-2 transaction pays baseFee + priority
+ * capped at maxFeePerGas, so it rides fee movement instead of dying.
+ *
+ * Note yParity is the raw recovery bit (0/1), not EIP-155's chainId*2+35+bit —
+ * the chain id is already a first-class field in the payload.
+ */
+export function signEip1559Transaction(tx, privateKeyHex) {
+  const payloadFields = [
+    rlpNormalize(tx.chainId),
+    rlpNormalize(tx.nonce),
+    rlpNormalize(tx.maxPriorityFeePerGas),
+    rlpNormalize(tx.maxFeePerGas),
+    rlpNormalize(tx.gasLimit),
+    toBuffer(tx.to),
+    rlpNormalize(tx.value),
+    toBuffer(tx.data || '0x'),
+    [], // accessList — always empty; we never build access-listed transactions
+  ];
+
+  const msgHash = keccak256(Buffer.concat([Buffer.from([0x02]), rlpEncode(payloadFields)]));
+  const { r, s, v: recoveryBit } = signSecp256k1(msgHash, Buffer.from(privateKeyHex, 'hex'));
+
+  const signed = Buffer.concat([
+    Buffer.from([0x02]),
+    rlpEncode([
+      ...payloadFields,
+      rlpNormalize(recoveryBit),
+      stripLeadingZeros(r),
+      stripLeadingZeros(s),
+    ]),
+  ]);
+
+  return '0x' + signed.toString('hex');
 }
 
 export function toBuffer(v) {
@@ -1074,6 +1197,19 @@ export function buildTradingCommands(deps = {}) {
           'INVALID_AGGREGATOR'
         );
       }
+      // Slippage is a decimal fraction (0.03 = 3%). Reject non-numeric or
+      // out-of-range values so a percent-vs-decimal mix-up (e.g. "3" meaning 3%)
+      // can't become a 300% slippage tolerance.
+      for (const [optName, optVal] of [['slippage', slippage], ['max-auto-slippage', maxAutoSlippage]]) {
+        if (optVal == null) continue;
+        const n = Number(optVal);
+        if (!Number.isFinite(n) || n < 0 || n > 1) {
+          throw new CommandError(
+            `Invalid --${optName} "${optVal}". Use a decimal between 0 and 1 (e.g. 0.03 for 3%).`,
+            'INVALID_SLIPPAGE'
+          );
+        }
+      }
 
       if (!chain || !from || !to || !amount) {
         throw new CommandError(`
@@ -1399,7 +1535,16 @@ EXAMPLES:
         }
 
         // --quote-index pins a specific quote (no fallback)
-        const pinIndex = options['quote-index'] != null ? parseInt(options['quote-index'], 10) : null;
+        let pinIndex = null;
+        if (options['quote-index'] != null) {
+          pinIndex = parseInt(options['quote-index'], 10);
+          if (!Number.isInteger(pinIndex) || pinIndex < 0 || pinIndex >= allQuotes.length) {
+            throw new CommandError(
+              `❌ Invalid --quote-index "${options['quote-index']}". Must be an integer between 0 and ${allQuotes.length - 1}.`,
+              'INVALID_QUOTE_INDEX',
+            );
+          }
+        }
         const startIndex = pinIndex ?? 0;
         const endIndex = pinIndex != null ? startIndex + 1 : allQuotes.length;
 

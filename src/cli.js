@@ -5,6 +5,8 @@
 
 import { NansenAPI, NansenError, CommandError, ErrorCode, saveConfig, deleteConfig, getConfigFile, clearCache, getCacheDir, validateAddress, normalizeAddress, sleep } from './api.js';
 import { buildWalletCommands } from './wallet.js';
+import { buildBridgeCommands, formatBridgeRoutes } from './bridge.js';
+import { buildPerpCommands } from './perp.js';
 import { buildTradingCommands } from './trading.js';
 import { buildLimitOrderCommands } from './limit-order.js';
 import { formatAlertsTable, buildAlertsCommands } from './commands/alerts.js';
@@ -366,6 +368,19 @@ export function formatOutput(data, { pretty = false, table = false, csv = false 
   }
 }
 
+// Codes whose message is a usage banner written for a human to read: multi-line,
+// indented, with a blank line between sections. Serialising one into the error
+// envelope turns every newline into a literal \n and makes it unreadable, so an
+// interactive terminal gets the message as written instead. Piped or explicitly
+// formatted output still gets the envelope, so agents keep one shape to branch on.
+export const USAGE_ERROR_CODES = new Set(['MISSING_PARAM', 'MISSING_ARGS']);
+
+export function isUsageError(errorData, { pretty, table, csv, stream, isTTY }) {
+  if (!USAGE_ERROR_CODES.has(errorData.code)) return false;
+  if (pretty || table || csv || stream) return false;
+  return !!isTTY;
+}
+
 // Format error data (returns object, does not exit)
 export function formatError(error) {
   const details = error.details ?? error.data ?? null;
@@ -702,6 +717,8 @@ USAGE: nansen <command> [subcommand] [options]
 
 COMMANDS:
   trade       DEX swaps/bridges: quote, execute, bridge-status, limit-order
+  bridge      Hyperliquid bridge: quote, execute, status (EVM <-> HL)
+  perp        Hyperliquid perps: order, cancel, close, leverage, positions
   research    analytics: smart-money, profiler, token, search, perp, portfolio, points
   wallet      create, list, show, export, default, delete, forget-password
   agent       Ask the Nansen AI research agent (fast/expert modes)
@@ -725,6 +742,12 @@ TRADING:
   nansen trade limit-order create --from SOL --to USDC --amount 1.5 --trigger-mint SOL --trigger-condition below --trigger-price 80
   Supports Solana/Base DEX swaps, cross-chain bridges, and Solana limit orders.
 
+BRIDGE (Hyperliquid):
+  nansen bridge quote --from-chain base --to-chain hyperliquid --from-token USDC --amount 1000000
+  nansen bridge execute --quote <quoteId>
+  nansen bridge status --request-id <id>
+  Supports EVM chains (ethereum, base, arbitrum, polygon, bnb) <-> Hyperliquid.
+
 EXAMPLES:
   nansen trade quote --chain base --from ETH --to USDC --amount 1000000000000000000
   nansen trade quote --chain base --to-chain solana --from USDC --to USDC --amount 1000000
@@ -738,6 +761,7 @@ DEPRECATED ALIASES (still work, will be removed in a future version):
 
 Research chains: ethereum, solana, base, bnb, arbitrum, polygon, optimism, avalanche, linea, scroll, mantle, ronin, sei, plasma, sonic, monad, hyperevm, iotaevm
 Trade chains: solana, base
+Bridge chains: ethereum, base, arbitrum, polygon, bnb, hyperliquid
 Labels: Fund, Smart Trader, 30D/90D/180D Smart Trader, Smart HL Perps Trader
 
 Docs: https://docs.nansen.ai
@@ -1489,6 +1513,11 @@ export function buildCommands(deps = {}) {
   // 'research' delegates to the category handlers defined above
   const RESEARCH_CATEGORIES = new Set(['smart-money', 'profiler', 'token', 'search', 'perp', 'portfolio', 'points', 'prediction-market']);
 
+  // The analytics-only perp handler, captured before the trading wrapper below
+  // replaces cmds['perp']. Both the wrapper and the research dispatch route to
+  // it, so it has to be taken exactly once, here.
+  const perpAnalytics = cmds['perp'];
+
   const researchHistorical = buildResearchCommands(deps).research;
 
   cmds['research'] = async (args, apiInstance, flags, options) => {
@@ -1508,6 +1537,13 @@ export function buildCommands(deps = {}) {
     const category = RESEARCH_CATEGORY_ALIASES[rawCategory] || rawCategory;
     if (!RESEARCH_CATEGORIES.has(category)) {
       throw new NansenError(`Unknown research category: ${rawCategory}. Available: ${[...RESEARCH_CATEGORIES, ...RESEARCH_HISTORICAL_SUBCOMMANDS].join(', ')}`, ErrorCode.UNKNOWN);
+    }
+    // `research perp` reaches only the analytics half (screener/leaderboard) —
+    // the trading subcommands live at the top level. Routing its help through
+    // cmds['perp'] printed the trading help, advertising order/close/leverage
+    // from a command that can't run them.
+    if (category === 'perp' && (!args[1] || args[1] === 'help')) {
+      return perpAnalytics(['help'], apiInstance, flags, options);
     }
     return cmds[category](args.slice(1), apiInstance, flags, options);
   };
@@ -1590,11 +1626,83 @@ USAGE:
     return tradingCmds[sub](args.slice(1), apiInstance, flags, options);
   };
 
+  // 'bridge' delegates to quote/execute/status from buildBridgeCommands
+  const bridgeCmds = buildBridgeCommands(deps);
+  cmds['bridge'] = async (args, apiInstance, flags, options) => {
+    const sub = args[0];
+    if (!sub || sub === 'help') {
+      log(`nansen bridge — Hyperliquid bridge commands (EVM <-> Hyperliquid via Relay)
+
+SUBCOMMANDS:
+  quote     Get a bridge quote
+  execute   Execute a bridge quote (sign + broadcast)
+  status    Check bridge transaction status
+
+USAGE:
+  nansen bridge quote --from-chain base --to-chain hyperliquid --from-token USDC --amount 1000000
+  nansen bridge execute --quote <quoteId>
+  nansen bridge status --request-id <id>
+
+SUPPORTED ROUTES:
+  ${formatBridgeRoutes()}`);
+      return;
+    }
+    if (!bridgeCmds[sub]) {
+      throw new NansenError(`Unknown bridge subcommand: ${sub}. Available: quote, execute, status`, ErrorCode.UNKNOWN);
+    }
+    return bridgeCmds[sub](args.slice(1), apiInstance, flags, options);
+  };
+
+  // 'perp' delegates to buildPerpCommands. The trading subcommands are added on
+  // top of the pre-existing perp analytics command, so capture that handler and
+  // keep screener/leaderboard reachable instead of shadowing them — both
+  // `nansen perp screener` and `nansen research perp screener` route through here.
+  const perpCmds = buildPerpCommands(deps);
+  const PERP_ANALYTICS_SUBCOMMANDS = new Set(['screener', 'leaderboard']);
+  cmds['perp'] = async (args, apiInstance, flags, options) => {
+    const sub = args[0];
+    if (!sub || sub === 'help') {
+      log(`nansen perp — Hyperliquid perpetual trading
+
+SUBCOMMANDS:
+  order       Place a perp order (market/limit with optional TP/SL)
+  cancel      Cancel an open order
+  close       Close a position (reduce-only market order)
+  leverage    Set leverage and margin mode
+  transfer    Move USDC between Spot and Perps balances
+  approve-builder-fee  Authorize the Nansen builder fee (one-time; auto-fired on first trade)
+  positions   View open positions
+  orders      View open orders
+  account     View account state (balance, equity, margin, spot)
+  meta        View available assets
+  screener    Perp market screener (analytics)
+  leaderboard Perp trader leaderboard (analytics)
+
+USAGE:
+  nansen perp order --coin BTC --side buy --size 0.001 --price 50000 --type limit
+  nansen perp cancel --coin BTC --oid 12345
+  nansen perp close --coin BTC --size 0.001 --price 100000 --side sell
+  nansen perp leverage --coin BTC --leverage 10 --margin-type cross
+  nansen perp transfer --direction spot-to-perp --amount 25
+  nansen perp approve-builder-fee
+  nansen perp positions
+  nansen perp account`);
+      return;
+    }
+    if (!perpCmds[sub]) {
+      if (PERP_ANALYTICS_SUBCOMMANDS.has(sub)) {
+        return perpAnalytics(args, apiInstance, flags, options);
+      }
+      throw new NansenError(`Unknown perp subcommand: ${sub}. Available: order, cancel, close, leverage, transfer, approve-builder-fee, positions, orders, account, meta, screener, leaderboard`, ErrorCode.UNKNOWN);
+    }
+    return perpCmds[sub](args.slice(1), apiInstance, flags, options);
+  };
+
   return cmds;
 }
 
 // Categories that moved under 'research'
-export const DEPRECATED_TO_RESEARCH = new Set(['smart-money', 'profiler', 'token', 'search', 'perp', 'portfolio', 'points']);
+export const DEPRECATED_TO_RESEARCH = new Set(['smart-money', 'profiler', 'token', 'search', 'portfolio', 'points']);
 // Subcommands that moved under 'trade'
 export const DEPRECATED_TO_TRADE = new Set(['quote', 'execute']);
 
@@ -1671,7 +1779,10 @@ export async function runCLI(rawArgs, deps = {}) {
     errorOutput = console.error,
     exit = process.exit,
     NansenAPIClass = NansenAPI,
-    commandOverrides = {}
+    commandOverrides = {},
+    // Injectable so tests can exercise both renderings; defaults to the real
+    // terminal, which is false under a pipe or in CI.
+    isTTY = process.stdout.isTTY,
   } = deps;
 
   const { _: positional, flags, options } = parseArgs(rawArgs);
@@ -1853,6 +1964,15 @@ export async function runCLI(rawArgs, deps = {}) {
       defaultHeaders['Payment-Signature'] = options['x402-payment-signature'];
     }
     const api = new NansenAPIClass(undefined, undefined, { retry: retryOptions, cache: cacheOptions, defaultHeaders });
+
+    // Deprecated top-level aliases otherwise run silently (the notice was only
+    // shown in --help). Warn on stderr so it doesn't pollute parsed stdout.
+    if (DEPRECATED_TO_TRADE.has(command)) {
+      process.stderr.write(`Note: "nansen ${command}" is deprecated. Use "nansen trade ${command}" instead.\n`);
+    } else if (DEPRECATED_TO_RESEARCH.has(command)) {
+      process.stderr.write(`Note: "nansen ${command}" is deprecated. Use "nansen research ${command}" instead.\n`);
+    }
+
     let result = await commands[command](subArgs, api, flags, options);
 
     // Credit balance warning, from the headers on the call just made. Goes to
@@ -1907,12 +2027,15 @@ export async function runCLI(rawArgs, deps = {}) {
     await trackCommandSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, from_cache: !!result?.fromCache, flags: usedFlags, chain });
     return { type: csv ? 'csv' : 'success', data: result };
   } catch (error) {
-    let errorData;
-    if (error instanceof CommandError) {
-      output(error.data ? JSON.stringify(error.data) : error.message);
-      errorData = { error: error.message, code: error.code };
+    // Unified error envelope across all command families (perp/bridge/trade):
+    // every failure serializes through formatError as
+    // {success:false, error, code, status, details}. A CommandError's structured
+    // data (e.g. PASSWORD_REQUIRED resolution steps) is preserved under `details`,
+    // so agents get one consistent shape to branch on regardless of command.
+    const errorData = formatError(error);
+    if (isUsageError(errorData, { pretty, table, csv, stream, isTTY })) {
+      output(errorData.error);
     } else {
-      errorData = formatError(error);
       const formatted = formatOutput(errorData, { pretty, table, csv });
       output(formatted.text);
     }

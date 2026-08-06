@@ -19,17 +19,24 @@
  *                         working while new code uses the standardised NANSEN_BASE_RPC name.
  */
 
-const DEFAULT_EVM_RPC    = 'https://eth.public-rpc.com';
-const DEFAULT_BASE_RPC   = 'https://mainnet.base.org';
-const DEFAULT_BSC_RPC    = 'https://bsc-dataseed.binance.org';
-const DEFAULT_XLAYER_RPC = 'https://rpc.xlayer.tech';
-const DEFAULT_SOLANA_RPC = 'https://api.mainnet-beta.solana.com';
+const DEFAULT_EVM_RPC      = 'https://eth.public-rpc.com';
+const DEFAULT_BASE_RPC     = 'https://mainnet.base.org';
+const DEFAULT_BSC_RPC      = 'https://bsc-dataseed.binance.org';
+const DEFAULT_XLAYER_RPC   = 'https://rpc.xlayer.tech';
+const DEFAULT_SOLANA_RPC   = 'https://api.mainnet-beta.solana.com';
+const DEFAULT_ARBITRUM_RPC = 'https://arb1.arbitrum.io/rpc';
+const DEFAULT_POLYGON_RPC  = 'https://polygon-rpc.com';
+const DEFAULT_BNB_RPC      = 'https://bsc-dataseed.bnbchain.org';
 
+// `bsc` (x402.js) and `bnb` (bridge/perp) are both chain 56 — both keys are read.
 export const CHAIN_RPCS = {
-  ethereum: process.env.NANSEN_EVM_RPC    || DEFAULT_EVM_RPC,
-  evm:      process.env.NANSEN_EVM_RPC    || DEFAULT_EVM_RPC,   // generic EVM fallback
-  base:     process.env.NANSEN_BASE_RPC   || process.env.NANSEN_RPC_BASE || DEFAULT_BASE_RPC,
-  bsc:      process.env.NANSEN_BSC_RPC    || DEFAULT_BSC_RPC,
-  xlayer:   process.env.NANSEN_XLAYER_RPC || DEFAULT_XLAYER_RPC,
-  solana:   process.env.NANSEN_SOLANA_RPC || DEFAULT_SOLANA_RPC,
+  ethereum: process.env.NANSEN_EVM_RPC      || DEFAULT_EVM_RPC,
+  evm:      process.env.NANSEN_EVM_RPC      || DEFAULT_EVM_RPC,   // generic EVM fallback
+  base:     process.env.NANSEN_BASE_RPC     || process.env.NANSEN_RPC_BASE || DEFAULT_BASE_RPC,
+  bsc:      process.env.NANSEN_BSC_RPC      || DEFAULT_BSC_RPC,
+  xlayer:   process.env.NANSEN_XLAYER_RPC   || DEFAULT_XLAYER_RPC,
+  solana:   process.env.NANSEN_SOLANA_RPC   || DEFAULT_SOLANA_RPC,
+  arbitrum: process.env.NANSEN_ARBITRUM_RPC || DEFAULT_ARBITRUM_RPC,
+  polygon:  process.env.NANSEN_POLYGON_RPC  || DEFAULT_POLYGON_RPC,
+  bnb:      process.env.NANSEN_BNB_RPC      || DEFAULT_BNB_RPC,
 };

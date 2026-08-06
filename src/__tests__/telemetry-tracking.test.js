@@ -66,7 +66,6 @@ describe('telemetry tracking for all first-level commands', () => {
     { category: 'profiler',    sub: 'labels', extraOpts: ['--address', '0x1234'] },
     { category: 'token',       sub: 'screener' },
     { category: 'search',      sub: 'search', extraOpts: ['--query', 'bitcoin'] },
-    { category: 'perp',        sub: 'screener' },
     { category: 'portfolio',   sub: 'current', extraOpts: ['--address', '0x1234'] },
     { category: 'points',      sub: 'leaderboard' },
     { category: 'prediction-market', sub: 'market-screener' },
@@ -165,6 +164,20 @@ describe('telemetry tracking for all first-level commands', () => {
     expect(trackSucceeded.mock.calls[0][0].command).toBe('wallet');
   });
 
+  it('bridge (help subcommand)', async () => {
+    await runCLI(['bridge'], baseDeps());
+    expect(wasTracked()).toBe(1);
+    expect(trackSucceeded).toHaveBeenCalledOnce();
+    expect(trackSucceeded.mock.calls[0][0].command).toBe('bridge');
+  });
+
+  it('perp (help subcommand)', async () => {
+    await runCLI(['perp'], baseDeps());
+    expect(wasTracked()).toBe(1);
+    expect(trackSucceeded).toHaveBeenCalledOnce();
+    expect(trackSucceeded.mock.calls[0][0].command).toBe('perp');
+  });
+
   it('trade quote (missing args shows usage)', async () => {
     await runCLI(['trade', 'quote'], baseDeps());
     expect(wasTracked()).toBe(1);
@@ -233,8 +246,8 @@ describe('telemetry tracking for all first-level commands', () => {
       // operational
       'account', 'login', 'logout', 'schema', 'cache', 'changelog',
       'web',
-      // wallet & trading
-      'wallet', 'trade', 'quote', 'execute', 'bridge-status',
+      // wallet, trading, bridge & perp
+      'wallet', 'trade', 'quote', 'execute', 'bridge-status', 'bridge', 'perp',
       // help is a meta command, intentionally not tracked
       'help',
     ]);

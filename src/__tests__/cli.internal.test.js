@@ -4211,9 +4211,11 @@ describe('deprecation warnings', () => {
     expect(DEPRECATED_TO_RESEARCH.has('profiler')).toBe(true);
     expect(DEPRECATED_TO_RESEARCH.has('token')).toBe(true);
     expect(DEPRECATED_TO_RESEARCH.has('search')).toBe(true);
-    expect(DEPRECATED_TO_RESEARCH.has('perp')).toBe(true);
     expect(DEPRECATED_TO_RESEARCH.has('portfolio')).toBe(true);
     expect(DEPRECATED_TO_RESEARCH.has('points')).toBe(true);
+    // 'perp' is a top-level trading command (nansen perp order|close|...), not a
+    // deprecated alias for 'research perp', so it must not be in this set.
+    expect(DEPRECATED_TO_RESEARCH.has('perp')).toBe(false);
   });
 
   it('should include quote and execute in DEPRECATED_TO_TRADE', () => {
@@ -4298,9 +4300,17 @@ describe('SCHEMA structure', () => {
     expect(SCHEMA.commands.profiler).toBeUndefined();
     expect(SCHEMA.commands.token).toBeUndefined();
     expect(SCHEMA.commands.search).toBeUndefined();
-    expect(SCHEMA.commands.perp).toBeUndefined();
     expect(SCHEMA.commands.portfolio).toBeUndefined();
     expect(SCHEMA.commands.points).toBeUndefined();
+    // Note: `perp` IS a valid top-level command — Hyperliquid perp *trading*
+    // (nansen perp order/close/...). Perp *analytics* lives under `research perp`.
+  });
+
+  it('documents perp trading as a top-level command', () => {
+    expect(SCHEMA.commands.perp).toBeDefined();
+    expect(SCHEMA.commands.perp.subcommands.order).toBeDefined();
+    expect(SCHEMA.commands.perp.subcommands.close).toBeDefined();
+    expect(SCHEMA.commands.perp.subcommands.account.endpoint).toBe('/api/v1/perp/account');
   });
 });
 

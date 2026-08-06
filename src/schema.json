@@ -1,5 +1,414 @@
 {
   "commands": {
+    "perp": {
+      "description": "Hyperliquid perpetual trading commands",
+      "subcommands": {
+        "order": {
+          "submitsTo": "https://api.hyperliquid.xyz/exchange",
+          "apiEndpoints": [
+            "/api/v1/perp/meta",
+            "/api/v1/perp/builder-fee",
+            "/api/v1/sanctions/screen"
+          ],
+          "description": "Place a perp order (limit or market, with optional take-profit/stop-loss)",
+          "options": {
+            "coin": {
+              "type": "string",
+              "required": true,
+              "description": "Asset symbol, e.g. BTC, ETH (alias: --symbol)"
+            },
+            "side": {
+              "type": "string",
+              "required": true,
+              "enum": [
+                "buy",
+                "long",
+                "sell",
+                "short"
+              ],
+              "description": "buy/long opens a long, sell/short opens a short"
+            },
+            "size": {
+              "type": "string",
+              "required": true,
+              "description": "Position size in base asset units"
+            },
+            "price": {
+              "type": "string",
+              "required": true,
+              "description": "Limit price (or mark price for market orders)"
+            },
+            "type": {
+              "type": "string",
+              "default": "limit",
+              "enum": [
+                "limit",
+                "market"
+              ],
+              "description": "Order type"
+            },
+            "tif": {
+              "type": "string",
+              "default": "Gtc",
+              "enum": [
+                "Gtc",
+                "Ioc",
+                "Alo"
+              ],
+              "description": "Time-in-force"
+            },
+            "slippage": {
+              "type": "string",
+              "default": "0.03",
+              "description": "Slippage tolerance for market orders as a decimal in [0,1] (0.03 = 3%)"
+            },
+            "take-profit": {
+              "type": "string",
+              "description": "Take-profit trigger price"
+            },
+            "stop-loss": {
+              "type": "string",
+              "description": "Stop-loss trigger price"
+            },
+            "wallet": {
+              "type": "string",
+              "description": "Wallet name (defaults to the configured default wallet)"
+            }
+          }
+        },
+        "cancel": {
+          "submitsTo": "https://api.hyperliquid.xyz/exchange",
+          "apiEndpoints": [
+            "/api/v1/perp/meta",
+            "/api/v1/sanctions/screen"
+          ],
+          "description": "Cancel an open order by order id",
+          "options": {
+            "coin": {
+              "type": "string",
+              "required": true,
+              "description": "Asset symbol (alias: --symbol)"
+            },
+            "oid": {
+              "type": "string",
+              "required": true,
+              "description": "Order id to cancel"
+            },
+            "wallet": {
+              "type": "string",
+              "description": "Wallet name"
+            }
+          }
+        },
+        "close": {
+          "submitsTo": "https://api.hyperliquid.xyz/exchange",
+          "apiEndpoints": [
+            "/api/v1/perp/positions",
+            "/api/v1/perp/meta",
+            "/api/v1/perp/builder-fee",
+            "/api/v1/sanctions/screen"
+          ],
+          "description": "Close a position (reduce-only market order)",
+          "options": {
+            "coin": {
+              "type": "string",
+              "required": true,
+              "description": "Asset symbol (alias: --symbol)"
+            },
+            "size": {
+              "type": "string",
+              "required": true,
+              "description": "Size to close in base asset units"
+            },
+            "price": {
+              "type": "string",
+              "required": true,
+              "description": "Mark price"
+            },
+            "side": {
+              "type": "string",
+              "required": true,
+              "enum": [
+                "buy",
+                "sell"
+              ],
+              "description": "sell closes a long, buy closes a short"
+            },
+            "slippage": {
+              "type": "string",
+              "default": "0.03",
+              "description": "Slippage tolerance as a decimal in [0,1] (0.03 = 3%)"
+            },
+            "wallet": {
+              "type": "string",
+              "description": "Wallet name"
+            }
+          }
+        },
+        "leverage": {
+          "submitsTo": "https://api.hyperliquid.xyz/exchange",
+          "apiEndpoints": [
+            "/api/v1/perp/meta",
+            "/api/v1/sanctions/screen"
+          ],
+          "description": "Set leverage and margin mode for an asset",
+          "options": {
+            "coin": {
+              "type": "string",
+              "required": true,
+              "description": "Asset symbol (alias: --symbol)"
+            },
+            "leverage": {
+              "type": "string",
+              "required": true,
+              "description": "Leverage multiplier (positive integer, capped at the asset maximum)"
+            },
+            "margin-type": {
+              "type": "string",
+              "default": "cross",
+              "enum": [
+                "cross",
+                "isolated"
+              ],
+              "description": "Margin mode"
+            },
+            "wallet": {
+              "type": "string",
+              "description": "Wallet name"
+            }
+          }
+        },
+        "transfer": {
+          "submitsTo": "https://api.hyperliquid.xyz/exchange",
+          "apiEndpoints": [
+            "/api/v1/sanctions/screen"
+          ],
+          "description": "Move USDC between a wallet's Spot and Perps balances",
+          "options": {
+            "direction": {
+              "type": "string",
+              "required": true,
+              "enum": [
+                "spot-to-perp",
+                "perp-to-spot"
+              ],
+              "description": "Transfer direction"
+            },
+            "amount": {
+              "type": "string",
+              "required": true,
+              "description": "USDC amount to transfer"
+            },
+            "wallet": {
+              "type": "string",
+              "description": "Wallet name (defaults to the configured default wallet)"
+            }
+          }
+        },
+        "approve-builder-fee": {
+          "submitsTo": "https://api.hyperliquid.xyz/exchange",
+          "apiEndpoints": [
+            "/api/v1/perp/builder-fee",
+            "/api/v1/sanctions/screen"
+          ],
+          "description": "Authorize the Nansen builder fee (one-time; auto-fired on the first order/close)",
+          "options": {
+            "wallet": {
+              "type": "string",
+              "description": "Wallet name (defaults to the configured default wallet)"
+            }
+          }
+        },
+        "positions": {
+          "endpoint": "/api/v1/perp/positions",
+          "description": "View open positions",
+          "options": {
+            "wallet": {
+              "type": "string",
+              "description": "Wallet name"
+            }
+          }
+        },
+        "orders": {
+          "endpoint": "/api/v1/perp/orders",
+          "description": "View open/resting orders",
+          "options": {
+            "wallet": {
+              "type": "string",
+              "description": "Wallet name"
+            }
+          }
+        },
+        "account": {
+          "endpoint": "/api/v1/perp/account",
+          "description": "View account state (account value, unrealized PnL, margin, withdrawable)",
+          "options": {
+            "wallet": {
+              "type": "string",
+              "description": "Wallet name"
+            }
+          }
+        },
+        "meta": {
+          "endpoint": "/api/v1/perp/meta",
+          "description": "View available perp assets (id, size decimals, max leverage)",
+          "options": {
+            "filter": {
+              "type": "string",
+              "description": "Filter assets by name substring (also shows the full matching set)"
+            },
+            "all": {
+              "type": "boolean",
+              "description": "Show all assets instead of the first 20"
+            }
+          }
+        }
+      },
+      "notes": "Signed locally and submitted directly to Hyperliquid. apiEndpoints lists the Nansen API routes each command reads (compliance screening, market metadata, builder-fee status)."
+    },
+    "bridge": {
+      "description": "Move funds between Base and Hyperliquid",
+      "notes": "Supported routes: base -> hyperliquid (deposit); hyperliquid -> base, hyperliquid -> ethereum, hyperliquid -> arbitrum (withdrawal). Any other combination is rejected. Deposits broadcast an EVM transaction from the local wallet, so they require a locally signable origin chain; withdrawals sign a Hyperliquid action and never transact on the destination chain.",
+      "routes": [
+        {
+          "origin": "base",
+          "destination": "hyperliquid",
+          "direction": "deposit"
+        },
+        {
+          "origin": "hyperliquid",
+          "destination": "base",
+          "direction": "withdrawal"
+        },
+        {
+          "origin": "hyperliquid",
+          "destination": "ethereum",
+          "direction": "withdrawal"
+        },
+        {
+          "origin": "hyperliquid",
+          "destination": "arbitrum",
+          "direction": "withdrawal"
+        }
+      ],
+      "subcommands": {
+        "quote": {
+          "endpoint": "/api/v1/perp/bridge/quote",
+          "description": "Get a bridge quote and cache it locally for execute (quotes expire after 1 hour)",
+          "options": {
+            "from-chain": {
+              "type": "string",
+              "required": true,
+              "enum": [
+                "base",
+                "hyperliquid"
+              ],
+              "description": "Source chain (alias: --from)"
+            },
+            "to-chain": {
+              "type": "string",
+              "required": true,
+              "enum": [
+                "hyperliquid",
+                "base",
+                "ethereum",
+                "arbitrum"
+              ],
+              "description": "Destination chain (alias: --to)"
+            },
+            "from-token": {
+              "type": "string",
+              "required": true,
+              "description": "Source token symbol (USDC) or address (alias: --token)"
+            },
+            "to-token": {
+              "type": "string",
+              "default": "USDC",
+              "description": "Destination token symbol or address"
+            },
+            "amount": {
+              "type": "string",
+              "required": true,
+              "description": "Amount in base units by default. USDC is 6 decimals on EVM chains but 8 on Hyperliquid, so prefer --amount-unit to avoid the per-chain magnitude trap."
+            },
+            "amount-unit": {
+              "type": "string",
+              "enum": [
+                "token",
+                "usd"
+              ],
+              "description": "Interpret --amount as a human token amount or a USD amount. Omit for base units."
+            },
+            "slippage": {
+              "type": "number",
+              "default": 50,
+              "description": "Slippage in whole basis points, 0-10000 (50 = 0.5%)"
+            },
+            "recipient": {
+              "type": "string",
+              "description": "Destination wallet address (defaults to the signing wallet)"
+            },
+            "wallet": {
+              "type": "string",
+              "description": "Wallet name (defaults to the configured default wallet)"
+            }
+          },
+          "prerequisites": [
+            "A wallet must be configured. Run: nansen wallet create"
+          ]
+        },
+        "execute": {
+          "endpoint": "/api/v1/perp/bridge/execute",
+          "apiEndpoints": [
+            "/api/v1/perp/bridge/execute",
+            "/api/v1/perp/bridge/status",
+            "/api/v1/sanctions/screen"
+          ],
+          "description": "Execute a cached bridge quote. Screens the signing wallet, signs, submits, then polls to completion.",
+          "notes": "The wallet must match the one the quote was created for. A deposit broadcasts its EVM transaction straight to a public RPC rather than through the Nansen API; only the Hyperliquid signature legs are proxied. Quotes are single-use. If a deposit transaction is stuck in the mempool, replace it by requesting a fresh quote and executing it with --nonce set to the stuck nonce and a higher --priority-fee; a replacement must reuse the nonce and outbid the original by roughly 10%.",
+          "options": {
+            "quote": {
+              "type": "string",
+              "required": true,
+              "description": "Quote ID returned by bridge quote"
+            },
+            "wallet": {
+              "type": "string",
+              "description": "Wallet name (defaults to the configured default wallet)"
+            },
+            "priority-fee": {
+              "type": "string",
+              "description": "Priority fee in gwei, overriding the quoted one (EVM deposit legs only)"
+            },
+            "max-fee": {
+              "type": "string",
+              "description": "Fee cap in gwei, overriding the computed one (EVM deposit legs only)"
+            },
+            "nonce": {
+              "type": "string",
+              "description": "Sign at this nonce instead of the next one, to replace a stuck transaction (EVM deposit legs only)"
+            }
+          },
+          "prerequisites": [
+            "A wallet must be configured. Run: nansen wallet create"
+          ]
+        },
+        "status": {
+          "endpoint": "/api/v1/perp/bridge/status",
+          "description": "Check the status of a bridge transfer",
+          "options": {
+            "request-id": {
+              "type": "string",
+              "description": "Bridge request ID (required unless --tx-hash is given)"
+            },
+            "tx-hash": {
+              "type": "string",
+              "description": "Source chain transaction hash (required unless --request-id is given)"
+            }
+          }
+        }
+      }
+    },
     "research": {
       "description": "Research and analytics commands",
       "subcommands": {
@@ -936,7 +1345,7 @@
               "description": "Reference date for label and pricing resolution (YYYY-MM-DD)"
             },
             "block-timestamp": {
-              "description": "Block timestamp (YYYY-MM-DD HH:MM:SS) \u2014 skips slow hash-resolution step if provided"
+              "description": "Block timestamp (YYYY-MM-DD HH:MM:SS) — skips slow hash-resolution step if provided"
             },
             "chain": {
               "default": "ethereum",
@@ -965,7 +1374,7 @@
       }
     },
     "alerts": {
-      "description": "Smart alert management \u2014 create, update, toggle, delete alerts",
+      "description": "Smart alert management — create, update, toggle, delete alerts",
       "subcommands": {
         "list": {
           "description": "List all alerts",
@@ -1116,7 +1525,7 @@
             },
             "to-chain": {
               "type": "string",
-              "description": "Destination blockchain for cross-chain swap (solana or base). Omit for same-chain. At least one side must be USDC or a native token (ETH, SOL). Non-native to non-native is not supported \u2014 swap to USDC first, then bridge. Bridge providers (Li.Fi or Relay) are selected automatically based on best price. Sub-dollar swaps are supported via Relay."
+              "description": "Destination blockchain for cross-chain swap (solana or base). Omit for same-chain. At least one side must be USDC or a native token (ETH, SOL). Non-native to non-native is not supported — swap to USDC first, then bridge. Bridge providers (Li.Fi or Relay) are selected automatically based on best price. Sub-dollar swaps are supported via Relay."
             },
             "from": {
               "type": "string",
@@ -1139,7 +1548,7 @@
             },
             "wallet": {
               "type": "string",
-              "description": "Wallet name (or \"walletconnect\"/\"wc\" for WalletConnect, EVM only). A configured wallet is required \u2014 run `nansen wallet create` if you haven't set one up yet."
+              "description": "Wallet name (or \"walletconnect\"/\"wc\" for WalletConnect, EVM only). A configured wallet is required — run `nansen wallet create` if you haven't set one up yet."
             },
             "to-wallet": {
               "type": "string",
@@ -1192,7 +1601,7 @@
             },
             "aggregator": {
               "type": "string",
-              "description": "lifi or relay. Overrides auto-detection \u2014 use when polling from a different machine or after the 30-day local record TTL has expired."
+              "description": "lifi or relay. Overrides auto-detection — use when polling from a different machine or after the 30-day local record TTL has expired."
             }
           }
         },
@@ -1424,7 +1833,7 @@
       }
     },
     "agent": {
-      "description": "Nansen AI research agent \u2014 ask questions about wallets, tokens, and on-chain activity",
+      "description": "Nansen AI research agent — ask questions about wallets, tokens, and on-chain activity",
       "options": {
         "expert": {
           "type": "boolean",

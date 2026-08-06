@@ -73,7 +73,9 @@ function keychainRetrieve() {
         '-a', ACCOUNT,
         '-w',
       ], { timeout: TIMEOUT_MS, stdio: ['pipe', 'pipe', 'pipe'] });
-      const pw = result.toString().trim();
+      // Strip only the trailing newline the OS tool appends — trimming all
+      // whitespace would corrupt a password with leading/trailing spaces.
+      const pw = result.toString().replace(/\r?\n$/, '');
       return pw || null;
     }
 
@@ -83,7 +85,9 @@ function keychainRetrieve() {
         'service', SERVICE,
         'account', ACCOUNT,
       ], { timeout: TIMEOUT_MS, stdio: ['pipe', 'pipe', 'pipe'] });
-      const pw = result.toString().trim();
+      // Strip only the trailing newline the OS tool appends — trimming all
+      // whitespace would corrupt a password with leading/trailing spaces.
+      const pw = result.toString().replace(/\r?\n$/, '');
       return pw || null;
     }
 

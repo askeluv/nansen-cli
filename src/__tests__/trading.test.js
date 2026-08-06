@@ -250,6 +250,33 @@ describe('quote storage', () => {
     expect(loaded.chain).toBe('base');
     expect(loaded.toChain).toBeUndefined();
   });
+
+  it('tags saved quotes as swap and loads them', () => {
+    const quoteId = saveQuote(solanaQuoteResponse, 'solana');
+    expect(loadQuote(quoteId).type).toBe('swap');
+  });
+
+  it('rejects a bridge quote loaded through the swap path', () => {
+    const quotesDir = path.join(tempDir, '.nansen', 'quotes');
+    fs.mkdirSync(quotesDir, { recursive: true });
+    const quoteId = 'bridge-123-abc';
+    fs.writeFileSync(
+      path.join(quotesDir, `${quoteId}.json`),
+      JSON.stringify({ quoteId, type: 'bridge', timestamp: Date.now(), response: {} }),
+    );
+    expect(() => loadQuote(quoteId)).toThrow(/is a bridge quote/);
+  });
+
+  it('tolerates a legacy untyped swap quote', () => {
+    const quotesDir = path.join(tempDir, '.nansen', 'quotes');
+    fs.mkdirSync(quotesDir, { recursive: true });
+    const quoteId = 'legacy-123-abc';
+    fs.writeFileSync(
+      path.join(quotesDir, `${quoteId}.json`),
+      JSON.stringify({ quoteId, chain: 'base', timestamp: Date.now(), response: {} }),
+    );
+    expect(() => loadQuote(quoteId)).not.toThrow();
+  });
 });
 
 // ============= Compact-u16 (Solana wire format) =============
@@ -3218,6 +3245,24 @@ describe('Relay aggregator: --aggregator filter on trade quote', () => {
       amount: '1000',
       aggregator: 'pancake',
     })).rejects.toThrow(/Invalid --aggregator/);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+  });
+
+  it('rejects out-of-range --slippage on quote (M7)', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    // "3" is almost certainly meant as 3% but reads as 300% — reject it.
+    await expect(cmds.quote([], null, {}, {
+      chain: 'base',
+      'to-chain': 'solana',
+      from: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+      to: 'SOL',
+      amount: '1000',
+      slippage: '3',
+    })).rejects.toThrow(/Invalid --slippage/);
 
     delete process.env.NANSEN_WALLET_PASSWORD;
   });

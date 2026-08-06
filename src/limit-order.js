@@ -381,14 +381,20 @@ export function parseExpiry(expiryStr) {
   const match = expiryStr.match(/^(\d+)(h|d)$/i);
   if (match) {
     const value = parseInt(match[1], 10);
+    if (value <= 0) {
+      throw new Error(`Invalid expiry "${expiryStr}". Duration must be greater than 0.`);
+    }
     const unit = match[2].toLowerCase();
     const ms = unit === 'h' ? value * 3600 * 1000 : value * 24 * 3600 * 1000;
     return Date.now() + ms;
   }
 
-  // Try as raw epoch ms
+  // Try as raw epoch ms — must be in the future, or the order expires on arrival.
   const num = Number(expiryStr);
-  if (!isNaN(num) && num > Date.now() - 86400000) {
+  if (!isNaN(num)) {
+    if (num <= Date.now()) {
+      throw new Error(`Expiry "${expiryStr}" is in the past. Provide a future time (e.g. "24h", "7d", or a future epoch in ms).`);
+    }
     return num;
   }
 
@@ -432,8 +438,16 @@ function formatAmount(amount, mintAddress) {
   if (!amount) return '?';
   const info = KNOWN_SOLANA_TOKENS[mintAddress];
   if (!info) return `${amount} ${mintAddress || '?'}`;
-  const raw = BigInt(amount);
-  const divisor = BigInt(10 ** info.decimals);
+  // amount is backend-controlled; a float or scientific-notation string makes
+  // BigInt() throw. Fall back to the raw amount rather than aborting the whole
+  // list render.
+  let raw;
+  try {
+    raw = BigInt(amount);
+  } catch {
+    return `${amount} ${info.symbol}`;
+  }
+  const divisor = 10n ** BigInt(info.decimals);
   const whole = raw / divisor;
   const frac = raw % divisor;
   const fracStr = frac.toString().padStart(info.decimals, '0').replace(/0+$/, '');

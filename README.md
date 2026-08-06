@@ -93,6 +93,38 @@ nansen trade limit-order update --order <orderId> --trigger-price 85
 
 For EVM chains, there's no native limit-order surface — pair an external venue's resting order with a `common-token-transfer` smart alert on the settlement wallet as a best-effort fill signal. See the `nansen-limit-orders` skill for details.
 
+## Perpetuals
+
+Hyperliquid perpetual trading via `nansen perp`. Uses the same wallet and `NANSEN_WALLET_PASSWORD` as DEX trading (requires an EVM wallet). Select the asset with `--coin` (`--symbol` is accepted as an alias).
+
+```bash
+nansen perp meta --filter ETH                                  # list assets + max leverage
+nansen perp order --coin ETH --side buy --size 0.1 --price 1600 --type limit
+nansen perp order --coin BTC --side sell --size 0.001 --price 95000 --type market \
+  --take-profit 90000 --stop-loss 98000
+nansen perp close --coin ETH --size 0.1 --price 1600 --side sell   # sell closes a long
+nansen perp cancel --coin ETH --oid <orderId>
+nansen perp leverage --coin ETH --leverage 5 --margin-type cross   # or isolated
+nansen perp transfer --direction spot-to-perp --amount 25          # Spot<->Perps (or perp-to-spot)
+nansen perp positions
+nansen perp account                                            # value, unrealized PnL, margin, spot USDC
+```
+
+`--side` is `buy`/`long` or `sell`/`short` to open (`buy`/`sell` to close); `--tif` is `Gtc`/`Ioc`/`Alo`; `--slippage` is a decimal in `[0,1]`; `--leverage` is a whole integer capped at the asset max. Perp orders are irreversible once signed. USDC sent to a wallet via Hyperliquid's **Send** lands in the **Spot** balance (shown as `Spot USDC`); move it to Perps with `perp transfer` before trading. See the `nansen-trading` skill for details.
+
+## Bridge
+
+Move USDC between EVM chains and Hyperliquid via `nansen bridge`. Uses the same wallet and `NANSEN_WALLET_PASSWORD` as perps and DEX trading. Quotes are written to a local file and executed by id; execution signs and broadcasts.
+
+```bash
+nansen bridge quote --from-chain base --to-chain hyperliquid --from-token USDC --amount 1000000
+nansen bridge execute --quote <quoteId>
+nansen bridge execute --quote <quoteId> --nonce 20 --priority-fee 5   # replace a stuck EVM deposit
+nansen bridge status --request-id <id>
+```
+
+Supported routes: `base → hyperliquid` (deposit), and `hyperliquid → base`/`ethereum`/`arbitrum` (withdraw). Deposits broadcast an EVM transaction locally, so only Base is offered on the deposit side; run `nansen bridge help` for the current list. `--amount` is a base-unit integer by default; pass `--amount-unit token` for a human amount. `--recipient` defaults to the wallet's own EVM address. `--priority-fee`/`--max-fee` (gwei) and `--nonce` apply only to EVM deposit legs and let a stuck transaction be replaced. Bridge transfers are irreversible once signed.
+
 ## Wallet
 
 ```bash
@@ -206,7 +238,8 @@ Any field may be absent or `null`, meaning unknown — never assume zero. A low-
 |---------|-----|
 | `command not found` | `npm install -g nansen-cli` |
 | `UNAUTHORIZED` after login | `cat ~/.nansen/config.json` or set `NANSEN_API_KEY` |
-| Empty perp results | Use `--symbol BTC`, not `--token`. Perps are Hyperliquid-only. |
+| Empty perp _research_ results | Use `--symbol BTC`, not `--token`. Perps are Hyperliquid-only. |
+| `perp` _trading_ prints the usage banner | Trading needs `--coin BTC` (`--symbol` also works); see the Perpetuals section. |
 | `UNSUPPORTED_FILTER` on token holders | Remove `--smart-money` — not all tokens have that data. |
 | Huge JSON response | Use `--fields` to select columns. |
 

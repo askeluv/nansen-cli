@@ -68,11 +68,20 @@ describe('CLI Smoke Tests', () => {
 
   it('should show schema', () => {
     const { stdout, exitCode } = runCLI('schema');
-    
+
     expect(exitCode).toBe(0);
     const schema = JSON.parse(stdout);
     expect(schema.version).toBeDefined();
     expect(schema.commands).toBeDefined();
+  });
+
+  it('warns on stderr when running a deprecated alias (L3)', () => {
+    // "quote" is deprecated in favour of "trade quote"; running it (even when it
+    // then errors on missing args) should print the notice to stderr.
+    const { stdout, stderr } = runCLI('quote', { env: { NANSEN_API_KEY: 'invalid-key' } });
+    const combined = (stdout || '') + (stderr || '');
+    expect(combined).toContain('"nansen quote" is deprecated');
+    expect(combined).toContain('trade quote');
   });
 
   // =================== JSON Output Format ===================
