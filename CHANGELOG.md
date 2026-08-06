@@ -1,5 +1,85 @@
 # Changelog
 
+## 1.36.0
+
+### Minor Changes
+
+- [#467](https://github.com/nansen-ai/nansen-cli/pull/467) [`54386c0`](https://github.com/nansen-ai/nansen-cli/commit/54386c0f3280fcc06c8bb7a5d18956d45b2d3d63) Thanks [@kome12](https://github.com/kome12)! - **Output shape change:** every command failure now serializes through the same error envelope — `{success: false, error, code, status, details}`. Previously a `CommandError` printed its structured payload at the top level instead, so errors from `trade`, `limit-order` and the API-key flows (`NOT_A_TTY`, `API_KEY_REQUIRED`, `INVALID_API_KEY`, `VERIFICATION_FAILED`) came back in a different shape from everything else.
+
+  Nothing is lost — the previous top-level payload is preserved verbatim under `details` — but anything parsing those errors positionally needs to read `details` instead of the root object. The new `perp` and `bridge` commands raise `CommandError` throughout, so without this they would have been the third distinct error shape in the CLI.
+
+  One deliberate exception: a missing-argument usage banner (`MISSING_PARAM`, `MISSING_ARGS`) prints as plain text when stdout is an interactive terminal and no output format was requested, because those messages are multi-line help written to be read and serializing them renders every newline as a literal `\n`. Piped output, and any run with `--pretty`, `--table`, `--format csv` or `--stream`, still gets the envelope — so nothing consuming the CLI programmatically sees a different shape.
+
+### Patch Changes
+
+- [#467](https://github.com/nansen-ai/nansen-cli/pull/467) [`8ab8bb4`](https://github.com/nansen-ai/nansen-cli/commit/8ab8bb41a1fc89b7dfa804f5c2d601e6ae38c89b) Thanks [@kome12](https://github.com/kome12)! - `bridge execute` now re-screens the wallet against the compliance blocklist immediately before signing, and fails closed if the check can't be completed — matching what the perp commands already did. Bridge quotes stay valid for an hour and the EVM deposit leg broadcasts straight to a public RPC, so previously nothing re-checked the wallet between the quote and the transaction that moves funds.
+
+  It also refuses to execute a quote with a wallet other than the one the quote was created for. Previously the signing wallet was resolved from `--wallet` or the current default independently of the quote, so a changed default (or an explicit `--wallet`) could sign with a different wallet than the one screened.
+
+- [#467](https://github.com/nansen-ai/nansen-cli/pull/467) [`44805e2`](https://github.com/nansen-ai/nansen-cli/commit/44805e2cd0a002b38b32bd2818da89548c4974f0) Thanks [@kome12](https://github.com/kome12)! - `nansen schema` now describes the `bridge` command group — its three subcommands, their options, and the supported routes — so agents driving the CLI off the schema can discover it.
+
+  The mutating `perp` subcommands (`order`, `cancel`, `close`, `leverage`, `transfer`, `approve-builder-fee`) now declare `submitsTo: "https://api.hyperliquid.xyz/exchange"` in place of an `endpoint`, which is where they actually send a signed action, alongside an `apiEndpoints` list of the Nansen routes each one reads for compliance screening, market metadata and builder-fee status. Read-only subcommands keep their `endpoint` unchanged.
+
+- [#467](https://github.com/nansen-ai/nansen-cli/pull/467) [`7185359`](https://github.com/nansen-ai/nansen-cli/commit/7185359d3ce657df849c371b34f6d045a4dac653) Thanks [@kome12](https://github.com/kome12)! - `nansen bridge` supports `base -> hyperliquid` for deposits, and `hyperliquid -> base`, `hyperliquid -> ethereum`, `hyperliquid -> arbitrum` for withdrawals. Any other combination is rejected at quote time with the supported routes listed.
+
+  The route set is asymmetric because the two directions need different things from the client: a deposit broadcasts an EVM transaction and so needs a locally signable origin chain, while a withdrawal signs a Hyperliquid action and never touches the destination chain.
+
+- [#467](https://github.com/nansen-ai/nansen-cli/pull/467) [`19738dd`](https://github.com/nansen-ai/nansen-cli/commit/19738dd252dca12ce0e41d40fe4023ac96ff0213) Thanks [@kome12](https://github.com/kome12)! - EVM transactions are now signed as EIP-1559 (type 2) when the quote supplies fee caps, instead of being flattened into a legacy (type 0) transaction with a single gas price.
+
+  A legacy transaction pays exactly its `gasPrice`, so once the base fee rises above that value it is not merely slow — it can never be included at that nonce. A type-2 transaction pays base fee plus priority up to its cap, so it tolerates the fee moving between signing and inclusion. This affects `trade execute` and `bridge execute`, which share the signer.
+
+  `bridge execute` also stops discarding the fee fields the bridge quote provides. It previously overwrote them with a bare `eth_gasPrice` reading, producing a transaction priced at roughly the current base fee with almost no priority fee — which is what it takes to sit unmined on Base. Quoted fees are now kept, with the priority fee raised to a floor that Base will actually schedule and the cap lifted to cover both that and base-fee movement.
+
+  Two related robustness changes: signing now refuses outright when a quote carries no gas information at all, rather than falling back to a 1 wei gas price that produces a permanently unmineable transaction; and the receipt wait is longer, because by the time it runs the transaction is already broadcast, so giving up early reports a failure without undoing anything.
+
+- [#467](https://github.com/nansen-ai/nansen-cli/pull/467) [`f649eea`](https://github.com/nansen-ai/nansen-cli/commit/f649eeaf90b5666d51bc623aafdeaf4087bfe9f8) Thanks [@kome12](https://github.com/kome12)! - Add a client-side Hyperliquid action builder (`src/hl-action.js`), the groundwork for submitting perp trades straight to Hyperliquid instead of round-tripping through the Nansen backend to build them.
+
+  - msgpack encoder that reproduces the reference `msgpack.packb` output byte-for-byte (insertion-ordered maps, smallest-width ints, utf-8 strings), so an action's `connectionId` hash matches the known-good path.
+  - `actionHash` + `l1Eip712` reproduce the phantom-agent EIP-712 payload (Exchange domain, mainnet `source: "a"`) that the existing signer already knows how to sign.
+  - Order-wire assembly for market/limit orders, cancels, closes and leverage updates, including TP/SL (`normalTpsl`) grouping and the builder-code attachment.
+  - Price/size rounding (`roundPrice`/`roundSize`) ported with Python-parity banker's rounding, so over-precise values that Hyperliquid would reject are rounded identically to the server path.
+  - `approveBuilderFee` and `usdClassTransfer` user-signed payload builders.
+
+  Pinned against the live prepare endpoints with golden-vector tests that assert both the built action and its `connectionId` match byte-for-byte.
+
+- [#467](https://github.com/nansen-ai/nansen-cli/pull/467) [`3bd3909`](https://github.com/nansen-ai/nansen-cli/commit/3bd3909155d89b926ceabd506aaea44858d905f6) Thanks [@kome12](https://github.com/kome12)! - Add `src/hl-client.js`, the single direct-to-Hyperliquid submission path: `submitExchange()` POSTs a signed action straight to `api.hyperliquid.xyz/exchange` from the user's machine instead of routing it through the Nansen backend. Reads and market-data stay on the proxy.
+
+  It reproduces the backend proxy's failure handling that it replaces — throwing on a top-level `status: "err"` and on a per-action error nested in `response.data.statuses[].error` (a rejected order that Hyperliquid otherwise reports under a top-level `"ok"`) — so a rejected order can never be mistaken for a fill. The submit is deliberately not retried, since each carries a unique nonce and is not idempotent. The HL base URL is overridable via `NANSEN_HL_API_URL` (for testnet / tests).
+
+- [#467](https://github.com/nansen-ai/nansen-cli/pull/467) [`b5d6946`](https://github.com/nansen-ai/nansen-cli/commit/b5d6946b0380b30d5dc1a4bcc33dcbc18ad0f8ad) Thanks [@kome12](https://github.com/kome12)! - Harden perp, swap, and bridge command safety:
+
+  - `perp order`/`close` now reject an invalid `--side` instead of silently opening the opposite direction, and `perp leverage` rejects an invalid `--margin-type` instead of silently switching to isolated.
+  - Perp numeric args (`--size`, `--price`, `--leverage`, `--oid`) are validated as positive numbers, with specific error messages instead of a generic usage banner.
+  - Perp commands now require an EVM wallet, with a clear error instead of querying for an `"undefined"` address.
+  - `trade quote` validates `--quote-index`, `--slippage`, and `--max-auto-slippage`, rejecting out-of-range values (e.g. a percent-vs-decimal slippage mix-up).
+  - `bridge quote` now validates `--slippage` client-side (whole basis points in `[0, 10000]`), rejecting non-numeric or out-of-range values with a clear message instead of forwarding them to an opaque backend 422 (matching how `perp` validates `--slippage`).
+  - `perp order`/`close` warn before signing when `--size` (or `--price` for `order`) is finer than the asset's Hyperliquid precision, which the exchange silently rounds.
+  - `perp order`/`close` now report the size and price the order actually executes at (post-rounding, slippage-adjusted for market orders) instead of echoing the raw input, so the printed values match the fill.
+  - `limit-order list` no longer aborts the whole render when one order has a non-integer amount.
+  - Quote loaders reject a cross-type quote (a bridge quote sent to `trade execute`, or a swap quote sent to `bridge execute`).
+  - `bridge execute` now refuses a quote that has already been executed, preventing an accidental double-bridge on retry.
+  - `bridge quote` accepts human amounts via `--amount-unit token|usd` (default stays base units), resolving token decimals per chain so the same `5` isn't 100x off between chains (USDC is 6 decimals on EVM, 8 on Hyperliquid). Hyperliquid USDC is floored to the bridge's 6-decimal precision to avoid a round-up-past-balance rejection.
+  - `perp meta` supports `--all` and `--filter <text>` so assets past the first 20 (e.g. HYPE) are listable.
+  - Deprecated top-level aliases now print a deprecation notice on stderr when run, not only in `--help`.
+  - `limit-order` rejects a zero-duration or past expiry instead of creating an order that expires immediately.
+  - A password with leading/trailing whitespace is no longer mangled when read back from the OS keychain.
+  - Nested backend error messages containing an apostrophe are no longer truncated.
+
+- [#467](https://github.com/nansen-ai/nansen-cli/pull/467) [`b577954`](https://github.com/nansen-ai/nansen-cli/commit/b5779543c5a5bb714a3428bb80e3d8f5e3eb865e) Thanks [@kome12](https://github.com/kome12)! - `perp` and `bridge` no longer serve any API response from the `--cache` store, and `bridge execute` no longer retries its submission.
+
+  - **Compliance screening** is always a live check. Every mutating command re-screens the signing wallet immediately before signing; with `--cache` that verdict could previously come from a cache written up to five minutes earlier, which is exactly the window the check exists to close.
+  - **`bridge execute`** sets `retry: false`. It proxies to Relay's `/authorize` and Hyperliquid's `/exchange`, neither of which is idempotent, so an automatic re-send on a 500 or 502 could submit the same signed action twice.
+  - **Bridge status polling** now observes progress under `--cache`. The cache key is endpoint plus body, so every poll for a given request id hit the same key and the loop would re-read one stale verdict for the whole TTL.
+  - **Perp reads** (`positions`, `orders`, `account`, `meta`) and **bridge quotes** bypass the cache too: they either report live balances to the user or feed a signing decision — `close` sizes its order from the positions read, and asset ids come from `meta`.
+
+  `bridge execute` also refuses to sign a step whose EIP-712 type definition is missing or whose `primaryType` matches no entry in it. With an empty field list the digest is still well-formed but commits to none of the action's contents, so it would have produced a valid-looking signature over nothing.
+
+- [#467](https://github.com/nansen-ai/nansen-cli/pull/467) [`4c1d3aa`](https://github.com/nansen-ai/nansen-cli/commit/4c1d3aa16874b2d994ba0e57f52131fdc2dd0748) Thanks [@kome12](https://github.com/kome12)! - Close three residual safety gaps on the perp/bridge signing paths:
+
+  - `perp order` now rejects a take-profit or stop-loss price that rounds to zero at the asset's precision, instead of encoding a `triggerPx` of `0` and resting a dead protective order while the parent position opens unprotected. This extends the existing zero-price/size guard (which only covered the parent leg) to the TP/SL trigger legs.
+  - The Privy bridge signing path now refuses to sign an EIP-712 action whose primary type has no field definitions, matching the guard the local signing path already had. An empty type list produces a valid-looking signature that commits to none of the action's contents.
+  - The EVM bridge deposit leg resolves its nonce from the signing wallet's own address rather than the server-returned `txData.from`. The transaction is signed with the local key regardless of `from`, so the nonce must come from that account — and this stays correct even if a quote omits `from`.
+
 ## 1.35.0
 
 ### Minor Changes
