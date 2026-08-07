@@ -126,6 +126,7 @@ const SERVER_CODE_MAP = {
   unauthorized: ErrorCode.UNAUTHORIZED,
   forbidden: ErrorCode.FORBIDDEN,
   not_found: ErrorCode.NOT_FOUND,
+  unsupported_filter: ErrorCode.UNSUPPORTED_FILTER,
   validation_error: ErrorCode.INVALID_PARAMS,
   invalid_params: ErrorCode.INVALID_PARAMS,
 };
@@ -142,8 +143,9 @@ const SERVER_CODE_MAP = {
 export function statusToErrorCode(status, data = {}) {
   if (status === 402) return ErrorCode.PAYMENT_REQUIRED;
 
-  const rawCode = data?.code ?? data?.detail?.code;
-  if (typeof rawCode === 'string' && rawCode.trim() !== '') {
+  const rawCode = [data?.code, data?.detail?.code]
+    .find(value => typeof value === 'string' && value.trim() !== '');
+  if (rawCode !== undefined) {
     const serverCode = rawCode.trim();
     return SERVER_CODE_MAP[serverCode] ?? serverCode;
   }

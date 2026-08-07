@@ -117,9 +117,13 @@ describe('readResponseMeta', () => {
 
   it('reads zero as a value, not as absent', () => {
     const meta = readResponseMeta({
-      headers: headers({ 'x-nansen-credits-used': '0', 'x-nansen-credits-remaining': '0' }),
+      headers: headers({
+        'x-nansen-credits-used': '0',
+        'x-nansen-credits-remaining': '0',
+        'x-nansen-credits-cost': '0',
+      }),
     });
-    expect(meta.credits).toEqual({ used: 0, remaining: 0, cost: null });
+    expect(meta.credits).toEqual({ used: 0, remaining: 0, cost: 0 });
   });
 
   it('parses the authoritative cost header', () => {
@@ -152,7 +156,9 @@ describe('readResponseMeta', () => {
       headers: headers({
         'x-nansen-credits-used': 'abc',
         'x-nansen-credits-remaining': '',
+        'x-nansen-credits-cost': '7.5',
         'x-ratelimit-limit': '-1',
+        'x-ratelimit-remaining': '3credits',
       }),
     });
     expect(meta).toBeNull();
@@ -423,6 +429,27 @@ describe('NansenAPI response metadata', () => {
       },
     });
   });
+
+  it.each([
+    [401, null, 'unauthorized', ErrorCode.UNAUTHORIZED, 'Not logged in. Run: nansen login'],
+    [403, 'test-key', 'insufficient_credits', ErrorCode.CREDITS_EXHAUSTED, 'No retry will help'],
+    [422, 'test-key', 'unsupported_filter', ErrorCode.UNSUPPORTED_FILTER, 'not supported for this token/chain'],
+  ])('enhances messages for stable body code %s', async (status, apiKey, code, expectedCode, message) => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status,
+      json: async () => ({ message: 'Request rejected', code }),
+      headers: headers({}),
+    });
+
+    const api = new NansenAPI(apiKey, undefined, { retry: { maxRetries: 0 } });
+    const error = await api.smartMoneyNetflow({}).then(
+      () => { throw new Error('expected the call to reject'); },
+      value => value,
+    );
+    expect(error.code).toBe(expectedCode);
+    expect(error.message).toContain(message);
+  });
 });
 
 describe('statusToErrorCode', () => {
@@ -432,6 +459,7 @@ describe('statusToErrorCode', () => {
     expect(statusToErrorCode(401, { code: 'unauthorized' })).toBe(ErrorCode.UNAUTHORIZED);
     expect(statusToErrorCode(404, { code: 'not_found' })).toBe(ErrorCode.NOT_FOUND);
     expect(statusToErrorCode(403, { code: 'forbidden' })).toBe(ErrorCode.FORBIDDEN);
+    expect(statusToErrorCode(422, { code: 'unsupported_filter' })).toBe(ErrorCode.UNSUPPORTED_FILTER);
     expect(statusToErrorCode(422, { code: 'validation_error' })).toBe(ErrorCode.INVALID_PARAMS);
   });
 
@@ -466,5 +494,7 @@ describe('statusToErrorCode', () => {
     expect(statusToErrorCode(429, { code: '   ' })).toBe(ErrorCode.RATE_LIMITED);
     expect(statusToErrorCode(429, { code: 42 })).toBe(ErrorCode.RATE_LIMITED);
     expect(statusToErrorCode(400, { code: null, message: 'bad chain' })).toBe(ErrorCode.INVALID_CHAIN);
+    expect(statusToErrorCode(403, { code: '', detail: { code: 'insufficient_credits' } })).toBe(ErrorCode.CREDITS_EXHAUSTED);
+    expect(statusToErrorCode(422, { code: 42, detail: { code: 'unsupported_filter' } })).toBe(ErrorCode.UNSUPPORTED_FILTER);
   });
 });

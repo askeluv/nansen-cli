@@ -2312,6 +2312,26 @@ describe('runCLI', () => {
     expect(result.type).toBe('error');
     expect(exitCode).toBe(1);
   });
+
+  it('writes exactly one credits line to stderr after notices without changing stdout', async () => {
+    const deps = {
+      ...mockDeps(),
+      NansenAPIClass: function MockAPI() {
+        this.lastResponseMeta = {
+          credits: { used: 5, remaining: 100, cost: 7 },
+          notices: { planNotice: 'Plan notice' },
+        };
+        this.lastEndpoint = '/api/v1/smart-money/netflow';
+        this.smartMoneyNetflow = vi.fn().mockResolvedValue({ data: [] });
+      },
+    };
+
+    await runCLI(['smart-money', 'netflow'], deps);
+
+    expect(errors).toEqual(['ℹ️  Plan notice', 'Credits: 7 (this call)']);
+    expect(outputs).toHaveLength(1);
+    expect(JSON.parse(outputs[0])).toEqual({ success: true, data: { data: [] } });
+  });
 });
 
 // =================== P1: --table Output Formatting ===================

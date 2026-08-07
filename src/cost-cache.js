@@ -30,12 +30,12 @@ export function getCostForEndpoint(endpoint) {
 /**
  * What did (or would) this call cost?
  *
- * Prefers the authoritative charge from the response headers (cost, falling
- * back to used), then the spec-derived estimate for the endpoint, else null.
+ * Prefers the authoritative cost response header, then the spec-derived
+ * estimate for the endpoint, else null.
  * Returns { cost, source: 'header' } or { estimate: { free, pro }, source: 'estimate' }.
  */
 export function creditsCharged(meta, endpoint) {
-  const charged = meta?.credits?.cost ?? meta?.credits?.used;
+  const charged = meta?.credits?.cost;
   if (charged != null) return { cost: charged, source: 'header' };
   const estimate = endpoint ? getCostForEndpoint(endpoint) : null;
   if (estimate != null) return { estimate, source: 'estimate' };

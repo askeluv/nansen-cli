@@ -35,8 +35,8 @@ const REQUEST_ID = 'x-request-id';
 function intHeader(response, name) {
   const raw = stringHeader(response, name);
   if (raw === null) return null;
-  const value = Number.parseInt(raw, 10);
-  return Number.isInteger(value) && value >= 0 ? value : null;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
 /**
