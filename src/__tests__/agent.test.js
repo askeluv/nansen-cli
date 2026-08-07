@@ -256,6 +256,43 @@ describe('agent command', () => {
         expect(err.details.detail).toBe('Internal agent failure');
       }
     });
+
+    it('carries the x-request-id header into error details', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+        ok: false,
+        status: 500,
+        headers: new Headers({
+          'content-type': 'application/json',
+          'x-request-id': 'req-agent-123',
+        }),
+        json: async () => ({ detail: 'Internal agent failure' }),
+      });
+
+      try {
+        await cmd(['test'], mockApi(), {}, {});
+        expect.unreachable('should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(NansenError);
+        expect(err.details.requestId).toBe('req-agent-123');
+      }
+    });
+
+    it('uses the stable code field from the error body when present', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+        ok: false,
+        status: 429,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        json: async () => ({ detail: 'Too many requests', code: 'rate_limit_exceeded' }),
+      });
+
+      try {
+        await cmd(['test'], mockApi(), {}, {});
+        expect.unreachable('should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(NansenError);
+        expect(err.code).toBe(ErrorCode.RATE_LIMITED);
+      }
+    });
   });
 
   // ── Network error ──

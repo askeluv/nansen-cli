@@ -1687,6 +1687,22 @@ describe('formatError', () => {
     expect(result).not.toHaveProperty('details');
   });
 
+  it('hoists requestId to the top level so it survives details pruning', () => {
+    const error = new NansenError('Server error', 'SERVER_ERROR', 500, {
+      requestId: 'req-deadbeef',
+      attempt: 1,
+    });
+    const result = formatError(error);
+    expect(result.requestId).toBe('req-deadbeef');
+    expect(result.details.requestId).toBe('req-deadbeef');
+  });
+
+  it('omits top-level requestId when the error carries none', () => {
+    const error = new NansenError('Server error', 'SERVER_ERROR', 500, { attempt: 1 });
+    const result = formatError(error);
+    expect(result).not.toHaveProperty('requestId');
+  });
+
   it('should fall back to .data if .details is not set (backward compat)', () => {
     const error = new Error('legacy error');
     error.code = 'LEGACY';
@@ -2295,6 +2311,26 @@ describe('runCLI', () => {
     const result = await runCLI(['smart-money', 'netflow'], deps);
     expect(result.type).toBe('error');
     expect(exitCode).toBe(1);
+  });
+
+  it('writes exactly one credits line to stderr after notices without changing stdout', async () => {
+    const deps = {
+      ...mockDeps(),
+      NansenAPIClass: function MockAPI() {
+        this.lastResponseMeta = {
+          credits: { used: 5, remaining: 100, cost: 7 },
+          notices: { planNotice: 'Plan notice' },
+        };
+        this.lastEndpoint = '/api/v1/smart-money/netflow';
+        this.smartMoneyNetflow = vi.fn().mockResolvedValue({ data: [] });
+      },
+    };
+
+    await runCLI(['smart-money', 'netflow'], deps);
+
+    expect(errors).toEqual(['ℹ️  Plan notice', 'Credits: 7 (this call)']);
+    expect(outputs).toHaveLength(1);
+    expect(JSON.parse(outputs[0])).toEqual({ success: true, data: { data: [] } });
   });
 });
 

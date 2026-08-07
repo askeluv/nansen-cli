@@ -209,7 +209,7 @@ nansen research smart-money netflow --chain solana --fields token_symbol,net_flo
 
 ```json
 { "success": true,  "data": <api_response> }
-{ "success": false, "error": "message", "code": "ERROR_CODE", "status": 401, "details": { ... } }
+{ "success": false, "error": "message", "code": "ERROR_CODE", "status": 401, "requestId": "...", "details": { ... } }
 ```
 
 **Critical error codes:**
@@ -226,8 +226,8 @@ nansen research smart-money netflow --chain solana --fields token_symbol,net_flo
 
 | Field | Meaning |
 |-------|---------|
-| `requestId` | Identifies this call end to end. Quote it in any support report. Opaque — do not parse it. |
-| `credits` | `used`, `remaining` |
+| `requestId` | Identifies this call end to end. Quote it in any support report. Opaque — do not parse it. Also hoisted to the top level of the error envelope. |
+| `credits` | `used`, `remaining`, `cost` (the authoritative charge for this call) |
 | `rateLimit` | `limit`, `remaining`, `resetSeconds` |
 
 Any field may be absent or `null`, meaning unknown — never assume zero. A low-balance warning goes to **stderr**, so stdout stays pure JSON.
