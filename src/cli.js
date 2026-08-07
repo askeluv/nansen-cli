@@ -15,7 +15,7 @@ import { buildResearchCommands, RESEARCH_HISTORICAL_SUBCOMMANDS } from './comman
 import { resolveAddress, isEnsName } from './ens.js';
 import fs from 'fs';
 import { getUpdateNotification, getUpgradeNotice, scheduleUpdateCheck } from './update-check.js';
-import { refreshCostMapIfStale, getCostForEndpoint } from './cost-cache.js';
+import { refreshCostMapIfStale, getCostForEndpoint, creditsCharged } from './cost-cache.js';
 import { creditWarning, noticeWarnings } from './response-meta.js';
 import { trackCommandSucceeded, trackCommandFailed } from './telemetry.js';
 import { createRequire } from 'module';
@@ -390,6 +390,10 @@ export function formatError(error) {
     code: error.code || 'UNKNOWN',
     status: error.status || null,
   };
+  // Hoisted so the id survives even if details is omitted or later pruned.
+  if (details?.requestId) {
+    result.requestId = details.requestId;
+  }
   if (details != null && !(typeof details === 'object' && !Array.isArray(details) && Object.keys(details).length === 0)) {
     result.details = details;
   }
@@ -1982,6 +1986,15 @@ export async function runCLI(rawArgs, deps = {}) {
     const lowCredits = creditWarning(api.lastResponseMeta);
     if (lowCredits) errorOutput(lowCredits);
     for (const notice of noticeWarnings(api.lastResponseMeta)) errorOutput(notice);
+
+    // What this call cost — authoritative header when the API sent one, else
+    // the cached spec estimate. stderr only, so stdout JSON stays pure.
+    const charged = creditsCharged(api.lastResponseMeta, api.lastEndpoint);
+    if (charged?.source === 'header') {
+      errorOutput(`Credits: ${charged.cost} (this call)`);
+    } else if (charged?.source === 'estimate') {
+      errorOutput(`Credits: ~${charged.estimate.free} free / ${charged.estimate.pro} pro (estimated)`);
+    }
 
     // Commands that handle their own output return undefined
     if (result === undefined) {

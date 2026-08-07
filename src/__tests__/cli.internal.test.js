@@ -1687,6 +1687,22 @@ describe('formatError', () => {
     expect(result).not.toHaveProperty('details');
   });
 
+  it('hoists requestId to the top level so it survives details pruning', () => {
+    const error = new NansenError('Server error', 'SERVER_ERROR', 500, {
+      requestId: 'req-deadbeef',
+      attempt: 1,
+    });
+    const result = formatError(error);
+    expect(result.requestId).toBe('req-deadbeef');
+    expect(result.details.requestId).toBe('req-deadbeef');
+  });
+
+  it('omits top-level requestId when the error carries none', () => {
+    const error = new NansenError('Server error', 'SERVER_ERROR', 500, { attempt: 1 });
+    const result = formatError(error);
+    expect(result).not.toHaveProperty('requestId');
+  });
+
   it('should fall back to .data if .details is not set (backward compat)', () => {
     const error = new Error('legacy error');
     error.code = 'LEGACY';

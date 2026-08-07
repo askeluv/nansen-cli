@@ -71,7 +71,7 @@ describe('NansenAPI._x402Retry', () => {
     expect(result).toBe(responseData);
     expect(result[RESPONSE_META]).toEqual({
       requestId: 'req-paid',
-      credits: { used: null, remaining: 9 },
+      credits: { used: null, remaining: 9, cost: null },
     });
     expect(api.lastResponseMeta).toEqual(result[RESPONSE_META]);
   });

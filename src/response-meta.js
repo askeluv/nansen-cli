@@ -19,6 +19,7 @@
 /** Header names, as documented in the API reference. */
 const CREDITS_USED = 'x-nansen-credits-used';
 const CREDITS_REMAINING = 'x-nansen-credits-remaining';
+const CREDITS_COST = 'x-nansen-credits-cost';
 const RATE_LIMIT = 'x-ratelimit-limit';
 const RATE_REMAINING = 'x-ratelimit-remaining';
 const RATE_RESET = 'x-ratelimit-reset';
@@ -57,6 +58,7 @@ function stringHeader(response, name) {
 export function readResponseMeta(response) {
   const used = intHeader(response, CREDITS_USED);
   const remaining = intHeader(response, CREDITS_REMAINING);
+  const cost = intHeader(response, CREDITS_COST);
   const limit = intHeader(response, RATE_LIMIT);
   const rateRemaining = intHeader(response, RATE_REMAINING);
   const resetSeconds = intHeader(response, RATE_RESET);
@@ -71,8 +73,10 @@ export function readResponseMeta(response) {
     // never parse it or assume a format.
     meta.requestId = requestId;
   }
-  if (used !== null || remaining !== null) {
-    meta.credits = { used, remaining };
+  if (used !== null || remaining !== null || cost !== null) {
+    // cost is the server's authoritative pre-flight price for this call;
+    // used is what was actually deducted. They can disagree (e.g. free rails).
+    meta.credits = { used, remaining, cost };
   }
   if (limit !== null || rateRemaining !== null || resetSeconds !== null) {
     // resetSeconds is a delta in seconds — how long the tripped window needs to
@@ -111,13 +115,15 @@ export function noticeWarnings(meta) {
 export function creditWarning(meta) {
   const credits = meta?.credits;
   if (!credits) return null;
-  const { used, remaining } = credits;
+  const { used, remaining, cost } = credits;
   if (remaining === null) return null;
   if (remaining === 0) {
     return '⚠️  Out of API credits. Top up at https://app.nansen.ai/api';
   }
-  if (used !== null && used > 0 && remaining < used) {
-    return `⚠️  ${remaining} API credit${remaining === 1 ? '' : 's'} left — less than this call cost (${used}). Top up at https://app.nansen.ai/api`;
+  // The cost header is the authoritative charge; used is the fallback.
+  const charged = cost ?? used;
+  if (charged !== null && charged > 0 && remaining < charged) {
+    return `⚠️  ${remaining} API credit${remaining === 1 ? '' : 's'} left — less than this call cost (${charged}). Top up at https://app.nansen.ai/api`;
   }
   return null;
 }

@@ -116,12 +116,41 @@ export class NansenError extends Error {
 }
 
 /**
- * Map HTTP status codes to error codes
+ * Stable snake_case codes the server sends in error bodies, mapped to the
+ * ErrorCode values downstream consumers already key on.
+ */
+const SERVER_CODE_MAP = {
+  rate_limit_exceeded: ErrorCode.RATE_LIMITED,
+  insufficient_credits: ErrorCode.CREDITS_EXHAUSTED,
+  payment_required: ErrorCode.PAYMENT_REQUIRED,
+  unauthorized: ErrorCode.UNAUTHORIZED,
+  forbidden: ErrorCode.FORBIDDEN,
+  not_found: ErrorCode.NOT_FOUND,
+  validation_error: ErrorCode.INVALID_PARAMS,
+  invalid_params: ErrorCode.INVALID_PARAMS,
+};
+
+/**
+ * Map an error response to an error code.
+ *
+ * Order matters: a 402 is always PAYMENT_REQUIRED (the x402 auto-payment flow
+ * keys on it, whatever the body says); then a stable `code` field from the
+ * server body wins over prose matching — known codes map onto the ErrorCode
+ * enum, unknown ones pass through verbatim so new server codes are tolerated,
+ * never flattened; bodies without a code fall back to status + prose.
  */
 export function statusToErrorCode(status, data = {}) {
+  if (status === 402) return ErrorCode.PAYMENT_REQUIRED;
+
+  const rawCode = data?.code ?? data?.detail?.code;
+  if (typeof rawCode === 'string' && rawCode.trim() !== '') {
+    const serverCode = rawCode.trim();
+    return SERVER_CODE_MAP[serverCode] ?? serverCode;
+  }
+
   const message = data?.message || data?.error || '';
   const messageLower = message.toLowerCase();
-  
+
   switch (status) {
     case 400:
     case 422:
@@ -484,6 +513,8 @@ export class NansenAPI {
      * low-credit warning wants.
      */
     this.lastResponseMeta = null;
+    /** API path of the most recent request(), for pairing lastResponseMeta with a cost estimate. */
+    this.lastEndpoint = null;
   }
 
   static cleanBody(body) {
@@ -547,6 +578,7 @@ export class NansenAPI {
   }
 
   async request(endpoint, body = {}, options = {}) {
+    this.lastEndpoint = endpoint;
     const url = `${this.baseUrl}${endpoint}`;
     const { maxRetries, baseDelayMs, maxDelayMs, retryOnStatus } = this.retryOptions;
     const shouldRetry = options.retry !== false; // Allow disabling retry per-request

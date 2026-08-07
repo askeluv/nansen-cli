@@ -6,6 +6,7 @@
 import crypto from 'crypto';
 import { NansenError, ErrorCode, statusToErrorCode, telemetryHeaders, packageVersion } from '../api.js';
 import { getCostForEndpoint } from '../cost-cache.js';
+import { readResponseMeta } from '../response-meta.js';
 
 /**
  * Build standard request headers, matching apiInstance.request() conventions.
@@ -25,7 +26,7 @@ function buildHeaders(apiInstance) {
  * Throw a NansenError with the same structure as apiInstance.request() errors.
  * Includes `details` field for consistency with other commands.
  */
-function throwApiError(message, status, serverDetail) {
+function throwApiError(message, status, serverDetail, errData = null, requestId = null) {
   // Match the friendly wrapper messages from apiInstance.request()
   let friendlyMessage = message;
   if (status === 401) {
@@ -36,9 +37,14 @@ function throwApiError(message, status, serverDetail) {
 
   throw new NansenError(
     friendlyMessage,
-    statusToErrorCode(status),
+    statusToErrorCode(status, errData || {}),
     status,
-    { detail: serverDetail || message, attempt: 1, retryAfterMs: null },
+    {
+      detail: serverDetail || message,
+      attempt: 1,
+      retryAfterMs: null,
+      ...(requestId && { requestId }),
+    },
   );
 }
 
@@ -273,16 +279,20 @@ EXAMPLES:
       if (!response.ok) {
         clearTimeout(timer);
         let serverDetail;
+        let errData = null;
         if (response.headers.get('content-type')?.includes('application/json')) {
           try {
-            const errData = await response.json();
+            errData = await response.json();
             serverDetail = errData.detail || errData.message;
           } catch { /* ignore parse failure */ }
         }
+        const meta = readResponseMeta(response);
         throwApiError(
           serverDetail || `Agent returned ${response.status}`,
           response.status,
           serverDetail,
+          errData,
+          meta?.requestId,
         );
       }
 

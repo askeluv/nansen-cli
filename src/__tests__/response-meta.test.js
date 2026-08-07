@@ -6,7 +6,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readResponseMeta, creditWarning, noticeWarnings } from '../response-meta.js';
-import { NansenAPI, RESPONSE_META, ErrorCode } from '../api.js';
+import { NansenAPI, RESPONSE_META, ErrorCode, statusToErrorCode } from '../api.js';
 
 function headers(entries) {
   const map = new Map(Object.entries(entries));
@@ -29,7 +29,7 @@ describe('readResponseMeta', () => {
     });
 
     expect(meta).toEqual({
-      credits: { used: 5, remaining: 41230 },
+      credits: { used: 5, remaining: 41230, cost: null },
       rateLimit: { limit: 1500, remaining: 1499, resetSeconds: 60 },
       notices: {
         upgradeHint: 'Upgrade to Pro',
@@ -51,7 +51,7 @@ describe('readResponseMeta', () => {
     });
 
     expect(meta).toEqual({
-      credits: { used: 5, remaining: 41230 },
+      credits: { used: 5, remaining: 41230, cost: null },
       rateLimit: { limit: 1500, remaining: 1499, resetSeconds: 60 },
     });
   });
@@ -107,7 +107,7 @@ describe('readResponseMeta', () => {
     const creditsOnly = readResponseMeta({
       headers: headers({ 'x-nansen-credits-used': '5', 'x-nansen-credits-remaining': '0' }),
     });
-    expect(creditsOnly).toEqual({ credits: { used: 5, remaining: 0 } });
+    expect(creditsOnly).toEqual({ credits: { used: 5, remaining: 0, cost: null } });
     expect(creditsOnly.rateLimit).toBeUndefined();
 
     const rateOnly = readResponseMeta({ headers: headers({ 'x-ratelimit-remaining': '3' }) });
@@ -119,7 +119,32 @@ describe('readResponseMeta', () => {
     const meta = readResponseMeta({
       headers: headers({ 'x-nansen-credits-used': '0', 'x-nansen-credits-remaining': '0' }),
     });
-    expect(meta.credits).toEqual({ used: 0, remaining: 0 });
+    expect(meta.credits).toEqual({ used: 0, remaining: 0, cost: null });
+  });
+
+  it('parses the authoritative cost header', () => {
+    const meta = readResponseMeta({
+      headers: headers({
+        'x-nansen-credits-used': '5',
+        'x-nansen-credits-remaining': '100',
+        'x-nansen-credits-cost': '7',
+      }),
+    });
+    expect(meta.credits).toEqual({ used: 5, remaining: 100, cost: 7 });
+  });
+
+  it('reports cost as unknown when only used/remaining arrive', () => {
+    const meta = readResponseMeta({
+      headers: headers({ 'x-nansen-credits-used': '5', 'x-nansen-credits-remaining': '100' }),
+    });
+    expect(meta.credits.cost).toBeNull();
+  });
+
+  it('keeps the credits section when only the cost header arrives', () => {
+    const meta = readResponseMeta({
+      headers: headers({ 'x-nansen-credits-cost': '3' }),
+    });
+    expect(meta).toEqual({ credits: { used: null, remaining: null, cost: 3 } });
   });
 
   it('treats unparseable or negative values as unknown', () => {
@@ -162,6 +187,15 @@ describe('creditWarning', () => {
 
   it('stays silent for free endpoints, which charge nothing', () => {
     expect(creditWarning({ credits: { used: 0, remaining: 5 } })).toBeNull();
+  });
+
+  it('trusts the cost header over used when they disagree', () => {
+    // cost says the next call of this size needs 10; used says 2 was deducted.
+    const warning = creditWarning({ credits: { used: 2, remaining: 5, cost: 10 } });
+    expect(warning).toContain('less than this call cost (10)');
+    // And the reverse: an authoritative cheap cost silences the warning even
+    // if used alone would have tripped it.
+    expect(creditWarning({ credits: { used: 10, remaining: 5, cost: 2 } })).toBeNull();
   });
 });
 
@@ -234,7 +268,7 @@ describe('NansenAPI response metadata', () => {
 
     expect(result[RESPONSE_META]).toEqual({
       requestId: 'req-a1b2c3',
-      credits: { used: 5, remaining: 41230 },
+      credits: { used: 5, remaining: 41230, cost: null },
       rateLimit: { limit: 1500, remaining: 1499, resetSeconds: 60 },
     });
     expect(api.lastResponseMeta).toEqual(result[RESPONSE_META]);
@@ -266,6 +300,20 @@ describe('NansenAPI response metadata', () => {
     await expect(api.smartMoneyNetflow({ chains: ['solana'] })).rejects.toMatchObject({
       code: ErrorCode.CREDITS_EXHAUSTED,
       details: { credits: { used: 0, remaining: 2 } },
+    });
+  });
+
+  it('puts the authoritative cost on a 4xx error', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 403,
+      json: async () => ({ error: 'Insufficient credits' }),
+      headers: headers({ 'x-nansen-credits-cost': '7', 'x-nansen-credits-remaining': '2' }),
+    });
+
+    const api = new NansenAPI('test-key');
+    await expect(api.smartMoneyNetflow({ chains: ['solana'] })).rejects.toMatchObject({
+      details: { credits: { used: null, remaining: 2, cost: 7 } },
     });
   });
 
@@ -374,5 +422,49 @@ describe('NansenAPI response metadata', () => {
         rateLimit: { limit: 1500, remaining: 0, resetSeconds: 60 },
       },
     });
+  });
+});
+
+describe('statusToErrorCode', () => {
+  it('maps known server codes onto the ErrorCode enum', () => {
+    expect(statusToErrorCode(429, { code: 'rate_limit_exceeded' })).toBe(ErrorCode.RATE_LIMITED);
+    expect(statusToErrorCode(403, { code: 'insufficient_credits' })).toBe(ErrorCode.CREDITS_EXHAUSTED);
+    expect(statusToErrorCode(401, { code: 'unauthorized' })).toBe(ErrorCode.UNAUTHORIZED);
+    expect(statusToErrorCode(404, { code: 'not_found' })).toBe(ErrorCode.NOT_FOUND);
+    expect(statusToErrorCode(403, { code: 'forbidden' })).toBe(ErrorCode.FORBIDDEN);
+    expect(statusToErrorCode(422, { code: 'validation_error' })).toBe(ErrorCode.INVALID_PARAMS);
+  });
+
+  it('reads a nested detail.code', () => {
+    expect(statusToErrorCode(429, { detail: { code: 'rate_limit_exceeded' } })).toBe(ErrorCode.RATE_LIMITED);
+  });
+
+  it('passes unknown server codes through verbatim', () => {
+    // Growth contract: a code the CLI has never seen is tolerated, never
+    // thrown on, never flattened to INVALID_PARAMS.
+    expect(statusToErrorCode(400, { code: 'brand_new_code' })).toBe('brand_new_code');
+    expect(statusToErrorCode(400, { code: '  padded_code  ' })).toBe('padded_code');
+  });
+
+  it('keeps a 402 as PAYMENT_REQUIRED whatever the body says', () => {
+    // The x402 auto-payment flow keys on PAYMENT_REQUIRED; an unknown server
+    // code on a 402 must not break auto-pay.
+    expect(statusToErrorCode(402, { code: 'some_future_code' })).toBe(ErrorCode.PAYMENT_REQUIRED);
+    expect(statusToErrorCode(402, { code: 'insufficient_credits' })).toBe(ErrorCode.PAYMENT_REQUIRED);
+    expect(statusToErrorCode(402, {})).toBe(ErrorCode.PAYMENT_REQUIRED);
+  });
+
+  it('falls back to status + prose when no code field is present', () => {
+    expect(statusToErrorCode(400, { message: 'invalid address checksum' })).toBe(ErrorCode.INVALID_ADDRESS);
+    expect(statusToErrorCode(403, { message: 'Insufficient credits' })).toBe(ErrorCode.CREDITS_EXHAUSTED);
+    expect(statusToErrorCode(429, {})).toBe(ErrorCode.RATE_LIMITED);
+    expect(statusToErrorCode(500, {})).toBe(ErrorCode.SERVER_ERROR);
+  });
+
+  it('ignores empty or non-string code fields', () => {
+    expect(statusToErrorCode(429, { code: '' })).toBe(ErrorCode.RATE_LIMITED);
+    expect(statusToErrorCode(429, { code: '   ' })).toBe(ErrorCode.RATE_LIMITED);
+    expect(statusToErrorCode(429, { code: 42 })).toBe(ErrorCode.RATE_LIMITED);
+    expect(statusToErrorCode(400, { code: null, message: 'bad chain' })).toBe(ErrorCode.INVALID_CHAIN);
   });
 });
