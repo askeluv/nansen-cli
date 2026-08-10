@@ -1147,7 +1147,8 @@ export function buildCommands(deps = {}) {
       let ensName;
       if (address && isEnsName(address)) {
         try {
-          const resolved = await resolveAddress(address, chain);
+          const ensChain = subcommand === 'first-funder' ? 'ethereum' : chain;
+          const resolved = await resolveAddress(address, ensChain);
           address = resolved.address;
           ensName = resolved.ensName;
         } catch (err) {
