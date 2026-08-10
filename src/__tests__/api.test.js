@@ -130,6 +130,18 @@ const MOCK_RESPONSES = {
       { address: '0x456', relationship: 'funding_source' }
     ]
   },
+  addressFirstFunder: {
+    data: [
+      {
+        wallet_address: '0x28c6c06298d514db089934071355e5743bf21d60',
+        first_funder_address: '0x456',
+        first_funder_name: 'Binance',
+        transaction_hash: '0xabc',
+        block_timestamp: '2021-01-01T00:00:00Z',
+        chain: 'bsc'
+      }
+    ]
+  },
   addressCounterparties: {
     counterparties: [
       { address: '0x789', volume_usd: 100000 }
@@ -980,6 +992,34 @@ describe('NansenAPI', () => {
 
         const body = expectFetchCalledWith('/api/v1/profiler/address/related-wallets');
         expect(body.filters).toBeUndefined();
+      });
+    });
+
+    describe('addressFirstFunder', () => {
+      it('should fetch first funder with chain fixed to all', async () => {
+        setupMock(MOCK_RESPONSES.addressFirstFunder);
+
+        const result = await api.addressFirstFunder({
+          address: TEST_DATA.ethereum.address
+        });
+
+        const body = expectFetchCalledWith('/api/v1/profiler/address/first-funder');
+        expect(body.address).toBe(TEST_DATA.ethereum.address);
+        // Chain is fixed to 'all' regardless of caller input.
+        expect(body.chain).toBe('all');
+        // The endpoint forbids extra fields — send only address + chain.
+        expect(body.order_by).toBeUndefined();
+        expect(body.pagination).toBeUndefined();
+
+        expect(result.data[0]).toHaveProperty('first_funder_name', 'Binance');
+      });
+
+      it('should reject a non-EVM address', async () => {
+        setupMock(MOCK_RESPONSES.addressFirstFunder);
+
+        await expect(
+          api.addressFirstFunder({ address: TEST_DATA.solana.address })
+        ).rejects.toThrow();
       });
     });
 

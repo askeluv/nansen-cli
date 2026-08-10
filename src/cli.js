@@ -1173,6 +1173,7 @@ export function buildCommands(deps = {}) {
         'search': () => apiInstance.entitySearch({ query: options.query }),
         'historical-balances': () => apiInstance.addressHistoricalBalances({ address, chain, filters, orderBy, pagination, days }),
         'related-wallets': () => apiInstance.addressRelatedWallets({ address, chain, orderBy, pagination }),
+        'first-funder': () => apiInstance.addressFirstFunder({ address }),
         'counterparties': () => apiInstance.addressCounterparties({ address, chain, filters, orderBy, pagination, days }),
         'pnl-summary': () => apiInstance.addressPnlSummary({ address, chain, orderBy, pagination, days }),
         'perp-positions': () => apiInstance.addressPerpPositions({ address, filters, orderBy, pagination }),
@@ -1219,7 +1220,7 @@ export function buildCommands(deps = {}) {
           return compareWallets(apiInstance, { addresses: addrs, chain, days });
         },
         'help': () => ({
-          commands: ['balance', 'labels', 'transactions', 'pnl', 'search', 'historical-balances', 'related-wallets', 'counterparties', 'pnl-summary', 'perp-positions', 'perp-trades', 'dex-trades', 'batch', 'trace', 'compare'],
+          commands: ['balance', 'labels', 'transactions', 'pnl', 'search', 'historical-balances', 'related-wallets', 'first-funder', 'counterparties', 'pnl-summary', 'perp-positions', 'perp-trades', 'dex-trades', 'batch', 'trace', 'compare'],
           description: 'Wallet profiling endpoints',
           example: 'nansen research profiler compare --addresses "0xABC...,0xDEF..." --chain ethereum'
         })
