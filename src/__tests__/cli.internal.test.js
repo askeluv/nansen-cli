@@ -1960,6 +1960,32 @@ describe('buildCommands', () => {
         expect.objectContaining({ query: 'Vitalik' })
       );
     });
+
+    it('should resolve ENS names for first-funder using an EVM chain', async () => {
+      const ens = await import('../ens.js');
+      vi.spyOn(ens, 'isEnsName').mockReturnValue(true);
+      vi.spyOn(ens, 'resolveAddress').mockResolvedValue({
+        address: '0x0000000000000000000000000000000000000001',
+        ensName: 'vitalik.eth'
+      });
+
+      const mockApi = {
+        addressFirstFunder: vi.fn().mockResolvedValue({ data: [] })
+      };
+
+      const result = await commands['profiler'](['first-funder'], mockApi, {}, { address: 'vitalik.eth' });
+
+      expect(ens.resolveAddress).toHaveBeenCalledWith('vitalik.eth', 'ethereum');
+      expect(mockApi.addressFirstFunder).toHaveBeenCalledWith({
+        address: '0x0000000000000000000000000000000000000001'
+      });
+      expect(result._ens).toEqual({
+        name: 'vitalik.eth',
+        resolvedAddress: '0x0000000000000000000000000000000000000001'
+      });
+
+      vi.restoreAllMocks();
+    });
   });
 
   describe('token command', () => {

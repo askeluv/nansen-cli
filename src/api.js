@@ -1012,6 +1012,17 @@ export class NansenAPI {
     });
   }
 
+  async addressFirstFunder(params = {}) {
+    const { address } = params;
+    // EVM addresses only; the funder is resolved across chains server-side, so
+    // chain is fixed to 'all' and the endpoint forbids any extra fields.
+    if (address) requireValidAddress(address, 'ethereum');
+    return this.request('/api/v1/profiler/address/first-funder', {
+      address,
+      chain: 'all'
+    });
+  }
+
   async addressCounterparties(params = {}) {
     const { address, chain = 'ethereum', filters = {}, orderBy, pagination, days = 30 } = params;
     if (address) requireValidAddress(address, chain);

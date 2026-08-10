@@ -564,6 +564,15 @@
                 }
               }
             },
+            "first-funder": {
+              "endpoint": "/api/v1/profiler/address/first-funder",
+              "description": "Find the first wallet that funded an EVM address",
+              "options": {
+                "address": {
+                  "required": true
+                }
+              }
+            },
             "pnl": {
               "endpoint": "/api/v1/profiler/address/pnl",
               "description": "PnL and trade performance",
