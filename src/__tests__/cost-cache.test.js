@@ -65,3 +65,88 @@ describe('creditsCharged', () => {
     expect(creditsCharged({ rateLimit: { limit: 1, remaining: 1, resetSeconds: 1 } }, null)).toBeNull();
   });
 });
+
+describe('refreshCostMapIfStale', () => {
+  let tempDir;
+  let originalEnv;
+  let refreshCostMapIfStale;
+  let getCostForEndpoint;
+
+  const spec = {
+    paths: {
+      '/api/v1/foo': { get: { 'x-credit-cost': { free: 3, pro: 5 } } },
+    },
+  };
+
+  beforeEach(async () => {
+    originalEnv = { ...process.env };
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nansen-cost-refresh-test-'));
+    process.env.HOME = tempDir;
+    vi.resetModules();
+    vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => spec })));
+    ({ refreshCostMapIfStale, getCostForEndpoint } = await import('../cost-cache.js'));
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    vi.unstubAllGlobals();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const cacheDir = () => path.join(tempDir, '.nansen');
+  const cacheFile = () => path.join(cacheDir(), 'cost-map.json');
+
+  it('writes a valid, parseable cost map on a cold cache', async () => {
+    await refreshCostMapIfStale();
+    const parsed = JSON.parse(fs.readFileSync(cacheFile(), 'utf8'));
+    expect(parsed.costs).toEqual({ '/api/v1/foo': { free: 3, pro: 5 } });
+    expect(typeof parsed.fetchedAt).toBe('number');
+    expect(getCostForEndpoint('/api/v1/foo')).toEqual({ free: 3, pro: 5 });
+  });
+
+  it('writes atomically via rename, leaving no temp file behind', async () => {
+    const renameSpy = vi.spyOn(fs, 'renameSync');
+    const writeSpy = vi.spyOn(fs, 'writeFileSync');
+    await refreshCostMapIfStale();
+
+    // The payload is written to a temp path, then renamed onto the target —
+    // the target is never passed to writeFileSync directly.
+    expect(renameSpy).toHaveBeenCalledWith(expect.stringContaining('.tmp'), cacheFile());
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining('.tmp'), expect.any(String));
+    expect(writeSpy).not.toHaveBeenCalledWith(cacheFile(), expect.anything());
+
+    // No temp files linger in the config dir.
+    const leftovers = fs.readdirSync(cacheDir()).filter(f => f.includes('.tmp'));
+    expect(leftovers).toEqual([]);
+    renameSpy.mockRestore();
+    writeSpy.mockRestore();
+  });
+
+  it('cleans up the temp file when the rename fails', async () => {
+    const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
+      throw new Error('rename boom');
+    });
+    // Error is swallowed by refreshCostMapIfStale's catch.
+    await refreshCostMapIfStale();
+    const leftovers = fs.readdirSync(cacheDir()).filter(f => f.includes('.tmp'));
+    expect(leftovers).toEqual([]);
+    expect(fs.existsSync(cacheFile())).toBe(false);
+    renameSpy.mockRestore();
+  });
+
+  it('skips the fetch and write when the cache is fresh', async () => {
+    fs.mkdirSync(cacheDir(), { recursive: true });
+    fs.writeFileSync(cacheFile(), JSON.stringify({ costs: {}, fetchedAt: Date.now() }));
+    await refreshCostMapIfStale();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('refreshes when the cache is stale', async () => {
+    fs.mkdirSync(cacheDir(), { recursive: true });
+    const stale = Date.now() - 25 * 60 * 60 * 1000;
+    fs.writeFileSync(cacheFile(), JSON.stringify({ costs: {}, fetchedAt: stale }));
+    await refreshCostMapIfStale();
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(getCostForEndpoint('/api/v1/foo')).toEqual({ free: 3, pro: 5 });
+  });
+});
