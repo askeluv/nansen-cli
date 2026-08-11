@@ -241,8 +241,45 @@ async function signHlAction(eip712, { privateKeyHex, privyClient, privyWalletId,
 // { action, nonce, eip712, size?, price? } from an hl-action.js builder; the
 // vault is always null for a normal wallet (the CLI signs L1 actions with the
 // wallet key directly). submitExchange throws on any HL rejection.
+// Parse the per-order statuses HL returns for an `order` action so the oid and
+// fill are surfaced — the perp analogue of spot printing its quote id. HL replies:
+//   response.data.statuses[] = { resting:{oid} } | { filled:{oid,totalSz,avgPx} } | { error }
+// A rejected leg ({error}) has already thrown in submitExchange, so only
+// resting/filled legs reach here. A TP/SL bracket returns multiple legs; label
+// them the same way extractActionErrors does (parent / take-profit / stop-loss).
+// Gated on the SUBMITTED action being an order: leverage/transfer/builder-fee
+// actions (type "default") and cancels return no oids, so [] falls back to the
+// concise raw response line in buildScreenSignSubmit.
+export function summarizeOrderResult(result, action) {
+  if (action?.type !== 'order') return [];
+  const statuses = result?.response?.data?.statuses;
+  if (!Array.isArray(statuses)) return [];
+  const multiLeg = (action.orders?.length ?? 0) > 1;
+  const out = [];
+  for (const [index, entry] of statuses.entries()) {
+    if (!entry || typeof entry !== 'object') continue;
+    const tpsl = action.orders?.[index]?.t?.trigger?.tpsl;
+    const leg = tpsl === 'tp'
+      ? 'take-profit'
+      : tpsl === 'sl'
+        ? 'stop-loss'
+        : action.grouping === 'normalTpsl' && index === 0
+          ? 'parent'
+          : multiLeg
+            ? `leg ${index + 1}`
+            : 'parent';
+    if (entry.filled && entry.filled.oid !== undefined) {
+      const { oid, totalSz, avgPx } = entry.filled;
+      out.push({ leg, kind: 'filled', oid, totalSz, avgPx });
+    } else if (entry.resting && entry.resting.oid !== undefined) {
+      out.push({ leg, kind: 'resting', oid: entry.resting.oid });
+    }
+  }
+  return out;
+}
+
 async function buildScreenSignSubmit(apiInstance, prepared, ctx) {
-  const { action, nonce, eip712, size, price } = prepared;
+  const { action, nonce, eip712, size, price, coin } = prepared;
   const { walletAddress, log } = ctx;
 
   log('  Screening...');
@@ -262,7 +299,23 @@ async function buildScreenSignSubmit(apiInstance, prepared, ctx) {
 
   const status = result.status ?? 'ok';
   log(`  Status: ${status}`);
-  if (result.response) {
+
+  // Surface the order id(s) HL returned so the caller can track/cancel the
+  // order — mirrors how spot prints its quote id plus a ready-to-run follow-up.
+  const orders = summarizeOrderResult(result, action);
+  if (orders.length) {
+    for (const o of orders) {
+      const tag = o.leg === 'parent' ? '' : ` [${o.leg}]`;
+      if (o.kind === 'filled') {
+        log(`  Filled${tag}: ${o.totalSz} @ ${o.avgPx}  (oid ${o.oid})`);
+      } else {
+        log(`  Resting order${tag}: oid ${o.oid}`);
+        if (coin) log(`  Cancel:  nansen perp cancel --coin ${coin} --oid ${o.oid}`);
+      }
+    }
+  } else if (result.response) {
+    // Non-order actions (leverage, transfer, builder-fee approval) or a response
+    // shape without statuses: keep the concise raw line.
     const resp = typeof result.response === 'string' ? result.response : JSON.stringify(result.response);
     log(`  Response: ${resp}`);
   }
@@ -542,7 +595,7 @@ OPTIONS:
       const nonce = hlNonce();
       const eip712 = l1Eip712(action, null, nonce);
 
-      await buildScreenSignSubmit(apiInstance, { action, nonce, eip712, size: effSize, price: effPrice }, ctx);
+      await buildScreenSignSubmit(apiInstance, { action, nonce, eip712, size: effSize, price: effPrice, coin }, ctx);
       log('');
       return undefined;
     },
@@ -639,7 +692,7 @@ OPTIONS:
       const nonce = hlNonce();
       const eip712 = l1Eip712(action, null, nonce);
 
-      await buildScreenSignSubmit(apiInstance, { action, nonce, eip712, size: effSize, price: effPrice }, ctx);
+      await buildScreenSignSubmit(apiInstance, { action, nonce, eip712, size: effSize, price: effPrice, coin }, ctx);
       log('');
       return undefined;
     },

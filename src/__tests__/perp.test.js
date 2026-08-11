@@ -20,7 +20,7 @@ vi.mock('../hl-client.js', () => ({
 
 import { showWallet, getWalletConfig, exportWallet } from '../wallet.js';
 import { submitExchange } from '../hl-client.js';
-import { buildPerpCommands } from '../perp.js';
+import { buildPerpCommands, summarizeOrderResult } from '../perp.js';
 
 // These tests exercise client-side input validation only. Validation runs
 // before any wallet resolution or network call, so a rejected input throws
@@ -580,5 +580,88 @@ describe('perp direct-to-HL flow (Chunk 3/4/5)', () => {
     await cmds.transfer([], api, {}, { direction: 'spot-to-perp', amount: '25', wallet: 'x' });
     expect(submitExchange).toHaveBeenCalledTimes(1);
     expect(submitExchange.mock.calls[0][0].action.type).toBe('usdClassTransfer');
+  });
+
+  it('prints the resting order id and a ready-to-run cancel after a limit order', async () => {
+    const logs = [];
+    const capCmds = buildPerpCommands({ log: (m) => logs.push(m), warn: () => {} });
+    const api = mockApi({ screen: clean });
+    submitExchange.mockResolvedValueOnce({
+      status: 'ok',
+      response: { type: 'order', data: { statuses: [{ resting: { oid: 987654 } }] } },
+    });
+    await capCmds.order([], api, {}, { ...baseOrder, type: 'limit', tif: 'Gtc' });
+    const out = logs.join('\n');
+    expect(out).toMatch(/Resting order: oid 987654/);
+    expect(out).toMatch(/nansen perp cancel --coin ETH --oid 987654/);
+  });
+
+  it('prints the fill and order id (no cancel hint) after a market order', async () => {
+    const logs = [];
+    const capCmds = buildPerpCommands({ log: (m) => logs.push(m), warn: () => {} });
+    const api = mockApi({ screen: clean });
+    submitExchange.mockResolvedValueOnce({
+      status: 'ok',
+      response: { type: 'order', data: { statuses: [{ filled: { oid: 55, totalSz: '0.01', avgPx: '2000.5' } }] } },
+    });
+    await capCmds.order([], api, {}, baseOrder); // baseOrder.type === 'market'
+    const out = logs.join('\n');
+    expect(out).toMatch(/Filled: 0\.01 @ 2000\.5\s+\(oid 55\)/);
+    expect(out).not.toMatch(/perp cancel/);
+  });
+});
+
+describe('summarizeOrderResult', () => {
+  const order = (extra = {}) => ({ type: 'order', orders: [{}], ...extra });
+
+  it('extracts a resting order id', () => {
+    const r = summarizeOrderResult(
+      { response: { type: 'order', data: { statuses: [{ resting: { oid: 123 } }] } } },
+      order(),
+    );
+    expect(r).toEqual([{ leg: 'parent', kind: 'resting', oid: 123 }]);
+  });
+
+  it('extracts a fill with size and average price', () => {
+    const r = summarizeOrderResult(
+      { response: { type: 'order', data: { statuses: [{ filled: { oid: 456, totalSz: '0.01', avgPx: '2000.5' } }] } } },
+      order(),
+    );
+    expect(r).toEqual([{ leg: 'parent', kind: 'filled', oid: 456, totalSz: '0.01', avgPx: '2000.5' }]);
+  });
+
+  it('labels the legs of a TP/SL bracket', () => {
+    const action = order({
+      grouping: 'normalTpsl',
+      orders: [{}, { t: { trigger: { tpsl: 'tp' } } }, { t: { trigger: { tpsl: 'sl' } } }],
+    });
+    const r = summarizeOrderResult(
+      {
+        response: {
+          type: 'order',
+          data: { statuses: [{ filled: { oid: 1, totalSz: '1', avgPx: '2' } }, { resting: { oid: 2 } }, { resting: { oid: 3 } }] },
+        },
+      },
+      action,
+    );
+    expect(r.map((o) => [o.leg, o.kind, o.oid])).toEqual([
+      ['parent', 'filled', 1],
+      ['take-profit', 'resting', 2],
+      ['stop-loss', 'resting', 3],
+    ]);
+  });
+
+  it('returns [] for a non-order action (leverage/transfer/builder-fee)', () => {
+    expect(
+      summarizeOrderResult(
+        { response: { data: { statuses: [{ resting: { oid: 9 } }] } } },
+        { type: 'usdClassTransfer' },
+      ),
+    ).toEqual([]);
+  });
+
+  it('returns [] when the response carries no statuses', () => {
+    expect(summarizeOrderResult({ response: { type: 'default' } }, order())).toEqual([]);
+    expect(summarizeOrderResult({}, order())).toEqual([]);
   });
 });

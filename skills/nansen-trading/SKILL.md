@@ -216,6 +216,8 @@ nansen perp order --coin BTC --side sell --size 0.001 --price 95000 --type marke
 - `--type`: `limit` (default) or `market`. `--tif`: `Gtc` (default), `Ioc`, `Alo`.
 - `--slippage`: decimal in `[0,1]` for market orders (default `0.03` = 3%).
 
+On success the command prints the Hyperliquid order id (`oid`) and the fill (size @ avg price). A resting (unfilled) order also prints a ready-to-run `nansen perp cancel --coin <coin> --oid <oid>`. Attached take-profit/stop-loss legs are labelled and each print their own `oid`.
+
 ## Close / cancel
 
 ```bash
