@@ -22,6 +22,7 @@ import {
   userSignedEip712,
 } from './hl-action.js';
 import { submitExchange } from './hl-client.js';
+import { trackPerpOrderCompleted } from './telemetry.js';
 import { resolveEvmWallet, resolvePrivateKey } from './wallet-signing.js';
 import { hashTypedData } from './x402-evm.js';
 
@@ -278,8 +279,43 @@ export function summarizeOrderResult(result, action) {
   return out;
 }
 
+// Shape the parsed order summary into the perp_order_completed payload and fire
+// it via the injected tracker. `summary` is summarizeOrderResult's output — a
+// parent leg plus optional take-profit / stop-loss legs, each
+// { leg, kind, oid, totalSz?, avgPx? } (avgPx/totalSz are HL strings, present
+// only on a filled leg). The parent carries the top-level fill; the tp/sl legs
+// ride along as `tp_sl_legs` for bracket adoption/outcome analysis.
+function emitPerpOrderCompleted(telemetry, prepared, summary) {
+  const parent = summary.find((o) => o.leg === 'parent') ?? summary[0];
+  const legOutcome = (o) => ({
+    leg: o.leg,
+    status: o.kind,
+    oid: o.oid,
+    ...(o.kind === 'filled' && {
+      fill_price: Number(o.avgPx),
+      fill_size: Number(o.totalSz),
+    }),
+  });
+  return telemetry.track({
+    command: telemetry.command,
+    coin: prepared.coin,
+    side: telemetry.side,
+    order_type: telemetry.orderType,
+    oid: parent?.oid,
+    status: parent?.kind,
+    fill_price: parent?.kind === 'filled' ? Number(parent.avgPx) : null,
+    fill_size: parent?.kind === 'filled' ? Number(parent.totalSz) : null,
+    requested_price: prepared.price,
+    requested_size: prepared.size,
+    has_tp_sl: telemetry.hasTpSl,
+    tp_sl_legs: summary
+      .filter((o) => o.leg === 'take-profit' || o.leg === 'stop-loss')
+      .map(legOutcome),
+  });
+}
+
 async function buildScreenSignSubmit(apiInstance, prepared, ctx) {
-  const { action, nonce, eip712, size, price, coin } = prepared;
+  const { action, nonce, eip712, size, price, coin, telemetry } = prepared;
   const { walletAddress, log } = ctx;
 
   log('  Screening...');
@@ -319,6 +355,21 @@ async function buildScreenSignSubmit(apiInstance, prepared, ctx) {
     const resp = typeof result.response === 'string' ? result.response : JSON.stringify(result.response);
     log(`  Response: ${resp}`);
   }
+
+  // Emit the order OUTCOME to BI (oid, fill status/price/size, TP/SL legs) — the
+  // perp analogue of the command-level telemetry, which fires too early (before
+  // this HL response) to observe any of it. Order/close only: cancel / leverage
+  // / transfer / builder-fee actions carry no `telemetry` and also summarize to
+  // []. Guarded + swallowed so a telemetry failure can never downgrade a
+  // completed order into a cli_command_failed.
+  if (telemetry && orders.length) {
+    try {
+      await emitPerpOrderCompleted(telemetry, prepared, orders);
+    } catch {
+      // Best-effort; never surface a tracking error after a real fill.
+    }
+  }
+
   return result;
 }
 
@@ -521,7 +572,11 @@ function resolveCoin(options) {
 // ── Command builder ──────────────────────────────────────────────────
 
 export function buildPerpCommands(deps = {}) {
-  const { log = console.log, warn = (m) => process.stderr.write(`${m}\n`) } = deps;
+  const {
+    log = console.log,
+    warn = (m) => process.stderr.write(`${m}\n`),
+    track = trackPerpOrderCompleted,
+  } = deps;
 
   return {
     'order': async (args, apiInstance, flags, options) => {
@@ -595,7 +650,25 @@ OPTIONS:
       const nonce = hlNonce();
       const eip712 = l1Eip712(action, null, nonce);
 
-      await buildScreenSignSubmit(apiInstance, { action, nonce, eip712, size: effSize, price: effPrice, coin }, ctx);
+      await buildScreenSignSubmit(
+        apiInstance,
+        {
+          action,
+          nonce,
+          eip712,
+          size: effSize,
+          price: effPrice,
+          coin,
+          telemetry: {
+            command: 'order',
+            side: isBuy ? 'buy' : 'sell',
+            orderType,
+            hasTpSl: tp !== undefined || sl !== undefined,
+            track,
+          },
+        },
+        ctx,
+      );
       log('');
       return undefined;
     },
@@ -692,7 +765,25 @@ OPTIONS:
       const nonce = hlNonce();
       const eip712 = l1Eip712(action, null, nonce);
 
-      await buildScreenSignSubmit(apiInstance, { action, nonce, eip712, size: effSize, price: effPrice, coin }, ctx);
+      await buildScreenSignSubmit(
+        apiInstance,
+        {
+          action,
+          nonce,
+          eip712,
+          size: effSize,
+          price: effPrice,
+          coin,
+          telemetry: {
+            command: 'close',
+            side: isBuy ? 'buy' : 'sell',
+            orderType: 'market',
+            hasTpSl: false,
+            track,
+          },
+        },
+        ctx,
+      );
       log('');
       return undefined;
     },

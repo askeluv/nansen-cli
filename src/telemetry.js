@@ -245,3 +245,76 @@ export function trackCommandFailed({
     context: buildContext(),
   });
 }
+
+/**
+ * Track a completed Hyperliquid perp order (`nansen perp order` / `perp close`).
+ *
+ * Fired from `buildScreenSignSubmit` in perp.js AFTER the HL /exchange response
+ * is parsed (`summarizeOrderResult`). This is the only event that sees the order
+ * OUTCOME: `cli_command_succeeded` fires at the command wrapper, before the
+ * order path returns, so it captures command metadata but never the fill. Perp
+ * orders bypass the Nansen API on submit (CLI signs and posts straight to
+ * Hyperliquid — Decision D4), so the backend never sees the response either;
+ * this client-side event is the only way order outcomes reach BI.
+ *
+ * Fires on success only: a HL rejection throws in `submitExchange` and is
+ * captured by `cli_command_failed`, so no failed event is emitted here.
+ *
+ * @param {object} opts
+ * @param {'order'|'close'} opts.command      - Which perp command placed the order
+ * @param {string} opts.coin                  - Asset symbol (BTC, ETH, …)
+ * @param {'buy'|'sell'} opts.side            - Normalized trade side
+ * @param {'market'|'limit'} opts.order_type  - Order type
+ * @param {number} [opts.oid]                 - Parent leg's Hyperliquid order id
+ * @param {'filled'|'resting'} [opts.status]  - Parent leg fill status
+ * @param {number|null} [opts.fill_price]     - Parent avg fill price (null unless filled)
+ * @param {number|null} [opts.fill_size]      - Parent filled size (null unless filled)
+ * @param {number} opts.requested_price       - Price actually signed (rounded / slippage-adjusted)
+ * @param {number} opts.requested_size        - Size actually signed (rounded)
+ * @param {boolean} [opts.has_tp_sl]          - Whether a TP/SL bracket was attached
+ * @param {object[]} [opts.tp_sl_legs]        - Per-leg outcomes for a bracket
+ *   ({ leg, status, oid, fill_price?, fill_size? })
+ */
+export function trackPerpOrderCompleted({
+  command,
+  coin,
+  side,
+  order_type,
+  oid,
+  status,
+  fill_price = null,
+  fill_size = null,
+  requested_price,
+  requested_size,
+  has_tp_sl = false,
+  tp_sl_legs = [],
+}) {
+  return sendEvent({
+    event: 'perp_order_completed',
+    event_source: getEventSource(),
+    event_id: crypto.randomUUID(),
+    user_id: null,
+    anonymous_id: getAnonymousId(),
+    session_id: getSessionId(),
+    timestamp: new Date().toISOString(),
+    // Same path as the command's cli_command_succeeded ("/perp/order" |
+    // "/perp/close"), so BI can line the two events up per command.
+    path: commandToPath(`perp ${command}`),
+    properties: {
+      source: `nansen-cli/${cliVersion}`,
+      command,
+      coin,
+      side,
+      order_type,
+      ...(oid !== undefined && { oid }),
+      status,
+      fill_price,
+      fill_size,
+      requested_price,
+      requested_size,
+      has_tp_sl,
+      tp_sl_legs,
+    },
+    context: buildContext(),
+  });
+}

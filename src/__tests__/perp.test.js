@@ -18,6 +18,14 @@ vi.mock('../hl-client.js', () => ({
   submitExchange: vi.fn(async () => ({ status: 'ok', response: { data: { statuses: [{ resting: {} }] } } })),
 }));
 
+// Stub perp order-outcome telemetry so the full-flow order/close tests below
+// don't fire a real network event; the dedicated block asserts on an injected
+// spy instead. Spread the real module so its other exports keep resolving.
+vi.mock('../telemetry.js', async (importActual) => ({
+  ...(await importActual()),
+  trackPerpOrderCompleted: vi.fn(),
+}));
+
 import { showWallet, getWalletConfig, exportWallet } from '../wallet.js';
 import { submitExchange } from '../hl-client.js';
 import { buildPerpCommands, summarizeOrderResult } from '../perp.js';
@@ -608,6 +616,133 @@ describe('perp direct-to-HL flow (Chunk 3/4/5)', () => {
     const out = logs.join('\n');
     expect(out).toMatch(/Filled: 0\.01 @ 2000\.5\s+\(oid 55\)/);
     expect(out).not.toMatch(/perp cancel/);
+  });
+
+  describe('perp_order_completed telemetry', () => {
+    function trackingCmds() {
+      const track = vi.fn();
+      return { track, telCmds: buildPerpCommands({ log: () => {}, warn: () => {}, track }) };
+    }
+
+    it('fires perp_order_completed with the fill outcome after a market order', async () => {
+      const { track, telCmds } = trackingCmds();
+      const api = mockApi({ screen: clean });
+      submitExchange.mockResolvedValueOnce({
+        status: 'ok',
+        response: { type: 'order', data: { statuses: [{ filled: { oid: 55, totalSz: '0.01', avgPx: '2000.5' } }] } },
+      });
+      await telCmds.order([], api, {}, baseOrder); // baseOrder.type === 'market'
+      expect(track).toHaveBeenCalledTimes(1);
+      const props = track.mock.calls[0][0];
+      expect(props).toMatchObject({
+        command: 'order',
+        coin: 'ETH',
+        side: 'buy',
+        order_type: 'market',
+        oid: 55,
+        status: 'filled',
+        fill_price: 2000.5,
+        fill_size: 0.01,
+        has_tp_sl: false,
+        tp_sl_legs: [],
+      });
+      expect(props.requested_size).toBe(0.01);
+      expect(typeof props.requested_price).toBe('number');
+    });
+
+    it('reports a resting limit order with null fill price/size', async () => {
+      const { track, telCmds } = trackingCmds();
+      const api = mockApi({ screen: clean });
+      submitExchange.mockResolvedValueOnce({
+        status: 'ok',
+        response: { type: 'order', data: { statuses: [{ resting: { oid: 987654 } }] } },
+      });
+      await telCmds.order([], api, {}, { ...baseOrder, type: 'limit', tif: 'Gtc' });
+      expect(track).toHaveBeenCalledTimes(1);
+      expect(track.mock.calls[0][0]).toMatchObject({
+        order_type: 'limit',
+        oid: 987654,
+        status: 'resting',
+        fill_price: null,
+        fill_size: null,
+      });
+    });
+
+    it('captures a partial fill (filled size below requested)', async () => {
+      const { track, telCmds } = trackingCmds();
+      const api = mockApi({ screen: clean });
+      submitExchange.mockResolvedValueOnce({
+        status: 'ok',
+        response: { type: 'order', data: { statuses: [{ filled: { oid: 7, totalSz: '0.004', avgPx: '2000' } }] } },
+      });
+      await telCmds.order([], api, {}, { ...baseOrder, size: '0.01' });
+      const props = track.mock.calls[0][0];
+      expect(props.status).toBe('filled');
+      expect(props.fill_size).toBe(0.004);
+      expect(props.fill_size).toBeLessThan(props.requested_size);
+    });
+
+    it('includes each TP/SL bracket leg outcome and sets has_tp_sl', async () => {
+      const { track, telCmds } = trackingCmds();
+      const api = mockApi({ screen: clean });
+      submitExchange.mockResolvedValueOnce({
+        status: 'ok',
+        response: {
+          type: 'order',
+          data: {
+            statuses: [
+              { filled: { oid: 1, totalSz: '0.01', avgPx: '2000' } },
+              { resting: { oid: 2 } },
+              { resting: { oid: 3 } },
+            ],
+          },
+        },
+      });
+      await telCmds.order([], api, {}, { ...baseOrder, 'take-profit': '2500', 'stop-loss': '1500' });
+      const props = track.mock.calls[0][0];
+      expect(props.has_tp_sl).toBe(true);
+      expect(props.oid).toBe(1);
+      expect(props.status).toBe('filled');
+      expect(props.tp_sl_legs).toEqual([
+        { leg: 'take-profit', status: 'resting', oid: 2 },
+        { leg: 'stop-loss', status: 'resting', oid: 3 },
+      ]);
+    });
+
+    it('fires with command "close" from the close handler', async () => {
+      const { track, telCmds } = trackingCmds();
+      const api = mockApi({ screen: clean });
+      submitExchange.mockResolvedValueOnce({
+        status: 'ok',
+        response: { type: 'order', data: { statuses: [{ filled: { oid: 99, totalSz: '0.01', avgPx: '2000' } }] } },
+      });
+      await telCmds.close([], api, {}, { coin: 'ETH', side: 'sell', size: '0.01', price: '2000', wallet: 'x' });
+      expect(track).toHaveBeenCalledTimes(1);
+      expect(track.mock.calls[0][0]).toMatchObject({
+        command: 'close',
+        side: 'sell',
+        order_type: 'market',
+        oid: 99,
+        status: 'filled',
+        has_tp_sl: false,
+      });
+    });
+
+    it('does not fire for non-order actions (leverage / transfer)', async () => {
+      const { track, telCmds } = trackingCmds();
+      const api = mockApi({ screen: clean });
+      await telCmds.leverage([], api, {}, { coin: 'ETH', leverage: '5', wallet: 'x' });
+      await telCmds.transfer([], api, {}, { direction: 'spot-to-perp', amount: '25', wallet: 'x' });
+      expect(track).not.toHaveBeenCalled();
+    });
+
+    it('does not fire when the order is rejected', async () => {
+      const { track, telCmds } = trackingCmds();
+      const api = mockApi({ screen: clean });
+      submitExchange.mockRejectedValueOnce(new Error('order rejected by exchange'));
+      await expect(telCmds.order([], api, {}, baseOrder)).rejects.toThrow(/rejected/);
+      expect(track).not.toHaveBeenCalled();
+    });
   });
 });
 

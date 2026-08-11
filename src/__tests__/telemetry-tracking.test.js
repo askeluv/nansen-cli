@@ -15,6 +15,9 @@ const trackFailed = vi.fn();
 vi.mock('../telemetry.js', () => ({
   trackCommandSucceeded: trackSucceeded,
   trackCommandFailed: trackFailed,
+  // perp.js imports this for its default order-outcome tracker; the perp flow
+  // isn't exercised here, so a bare stub keeps the module import resolvable.
+  trackPerpOrderCompleted: vi.fn(),
   getAnonymousId: () => 'test-anon-id',
   getSessionId: () => 'test-session-id',
 }));

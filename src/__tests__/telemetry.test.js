@@ -16,14 +16,14 @@ async function freshImport() {
 }
 
 describe('telemetry', () => {
-  let trackCommandSucceeded, trackCommandFailed, getAnonymousId, getSessionId;
+  let trackCommandSucceeded, trackCommandFailed, trackPerpOrderCompleted, getAnonymousId, getSessionId;
 
   beforeEach(async () => {
     fetchMock.mockClear();
     delete process.env.NANSEN_BASE_URL;
     delete process.env.NANSEN_SESSION_ID;
     delete process.env.NANSEN_NO_TELEMETRY;
-    ({ trackCommandSucceeded, trackCommandFailed, getAnonymousId, getSessionId } = await freshImport());
+    ({ trackCommandSucceeded, trackCommandFailed, trackPerpOrderCompleted, getAnonymousId, getSessionId } = await freshImport());
   });
 
   describe('trackCommandSucceeded', () => {
@@ -287,6 +287,106 @@ describe('telemetry', () => {
       trackCommandSucceeded({ command: 'test', duration_ms: 0 });
       expect(fetchMock).not.toHaveBeenCalled();
       delete process.env.NANSEN_NO_TELEMETRY;
+    });
+  });
+
+  describe('trackPerpOrderCompleted', () => {
+    const baseOutcome = {
+      command: 'order',
+      coin: 'ETH',
+      side: 'buy',
+      order_type: 'market',
+      oid: 55,
+      status: 'filled',
+      fill_price: 2000.5,
+      fill_size: 0.01,
+      requested_price: 2060,
+      requested_size: 0.01,
+      has_tp_sl: false,
+      tp_sl_legs: [],
+    };
+
+    it('sends a perp_order_completed event with the order outcome', () => {
+      trackPerpOrderCompleted(baseOutcome);
+
+      expect(fetchMock).toHaveBeenCalledOnce();
+      const [url, opts] = fetchMock.mock.calls[0];
+      expect(url).toContain('bi-data-sources.nansen.ai');
+      const body = JSON.parse(opts.body);
+      expect(body.event).toBe('perp_order_completed');
+      expect(body.event_source).toBe('cli_prod');
+      expect(body.path).toBe('/perp/order');
+      expect(body.anonymous_id).toBeTruthy();
+      expect(body.session_id).toBeTruthy();
+      expect(body.event_id).toBeTruthy();
+      expect(body.timestamp).toBeTruthy();
+      expect(body.properties).toMatchObject({
+        source: expect.stringContaining('nansen-cli/'),
+        command: 'order',
+        coin: 'ETH',
+        side: 'buy',
+        order_type: 'market',
+        oid: 55,
+        status: 'filled',
+        fill_price: 2000.5,
+        fill_size: 0.01,
+        requested_price: 2060,
+        requested_size: 0.01,
+        has_tp_sl: false,
+        tp_sl_legs: [],
+      });
+      expect(body.context.client_type).toBe('nansen-cli');
+    });
+
+    it('maps the close command to path /perp/close', () => {
+      trackPerpOrderCompleted({ ...baseOutcome, command: 'close' });
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body.path).toBe('/perp/close');
+      expect(body.properties.command).toBe('close');
+    });
+
+    it('emits null fill price/size for a resting order and omits oid when absent', () => {
+      trackPerpOrderCompleted({
+        command: 'order',
+        coin: 'BTC',
+        side: 'sell',
+        order_type: 'limit',
+        status: 'resting',
+        requested_price: 95000,
+        requested_size: 0.001,
+      });
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body.properties.status).toBe('resting');
+      expect(body.properties.fill_price).toBeNull();
+      expect(body.properties.fill_size).toBeNull();
+      expect(body.properties).not.toHaveProperty('oid');
+      expect(body.properties.has_tp_sl).toBe(false);
+      expect(body.properties.tp_sl_legs).toEqual([]);
+    });
+
+    it('carries per-leg TP/SL bracket outcomes', () => {
+      trackPerpOrderCompleted({
+        ...baseOutcome,
+        has_tp_sl: true,
+        tp_sl_legs: [
+          { leg: 'take-profit', status: 'resting', oid: 2 },
+          { leg: 'stop-loss', status: 'resting', oid: 3 },
+        ],
+      });
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body.properties.has_tp_sl).toBe(true);
+      expect(body.properties.tp_sl_legs).toEqual([
+        { leg: 'take-profit', status: 'resting', oid: 2 },
+        { leg: 'stop-loss', status: 'resting', oid: 3 },
+      ]);
+    });
+
+    it('respects the DO_NOT_TRACK opt-out', async () => {
+      process.env.DO_NOT_TRACK = '1';
+      ({ trackPerpOrderCompleted } = await freshImport());
+      trackPerpOrderCompleted(baseOutcome);
+      expect(fetchMock).not.toHaveBeenCalled();
+      delete process.env.DO_NOT_TRACK;
     });
   });
 });
