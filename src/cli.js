@@ -774,6 +774,51 @@ Skills: npx skills add nansen-ai/nansen-cli (agent-optimised docs per command gr
 Telemetry: anonymous usage stats collected. Disable: DO_NOT_TRACK=1
 `;
 
+// Usage text for the `trade` command group. Shared by the trade handler and the
+// --help path in runCLI, so `nansen trade`, `nansen trade <sub> --help`, and the
+// deprecated top-level `quote`/`execute --help` all show the same usage.
+export const TRADE_USAGE = `nansen trade — DEX trading commands
+
+SUBCOMMANDS:
+  quote          Get a swap quote (price, route, fees)
+  execute        Sign and broadcast a quoted swap
+  bridge-status  Check cross-chain bridge transaction status
+  limit-order    Limit order management (Solana only)
+
+USAGE:
+  nansen trade quote --chain <chain> --from <token> --to <token> --amount <units> [--wallet <name>]
+  nansen trade quote --chain <chain> --to-chain <chain> --from <token> --to <token> --amount <units>
+  nansen trade execute --quote <quoteId> [--wallet <name>]
+  nansen trade bridge-status --tx-hash <hash> --from-chain <chain> --to-chain <chain>
+  nansen trade limit-order <create|list|cancel|update> [options]
+
+EXAMPLES:
+  nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000
+  nansen trade quote --chain base --from ETH --to USDC --amount 1000000000000000000
+  nansen trade quote --chain base --to-chain solana --from USDC --to USDC --amount 1000000
+  nansen trade execute --quote 1708900000000-abc123
+  nansen trade bridge-status --tx-hash 0xabc... --from-chain base --to-chain solana
+  nansen trade limit-order create --from SOL --to USDC --amount 1.5 --trigger-mint SOL --trigger-condition below --trigger-price 80
+  nansen trade limit-order list
+
+WALLET:
+  --wallet <name>   Use a named wallet, or "walletconnect" / "wc" for WalletConnect.
+                    Defaults to the default local wallet if omitted.
+
+SYMBOLS:
+  Common tokens resolve automatically: SOL, ETH, USDC, USDT, WETH
+  Raw addresses are also accepted.
+
+CROSS-CHAIN NOTES (when using --to-chain):
+  Supported combos:
+    native → native (ETH <-> SOL)
+    USDC → USDC (both directions)
+    USDC → native (USDC → ETH or SOL)
+    native → USDC (ETH/SOL → USDC)
+    non-native → non-native — not supported (use USDC as intermediate)
+  Bridge providers: Li.Fi or Relay (selected automatically based on best price)
+  Typical bridge time: 1-5 minutes`;
+
 // Helper to prompt for input (exported for mocking)
 export async function prompt(question, hidden = false) {
   return new Promise((resolve) => {
@@ -1560,47 +1605,7 @@ export function buildCommands(deps = {}) {
   cmds['trade'] = async (args, apiInstance, flags, options) => {
     const sub = args[0];
     if (!sub || sub === 'help') {
-      log(`nansen trade — DEX trading commands
-
-SUBCOMMANDS:
-  quote          Get a swap quote (price, route, fees)
-  execute        Sign and broadcast a quoted swap
-  bridge-status  Check cross-chain bridge transaction status
-  limit-order    Limit order management (Solana only)
-
-USAGE:
-  nansen trade quote --chain <chain> --from <token> --to <token> --amount <units> [--wallet <name>]
-  nansen trade quote --chain <chain> --to-chain <chain> --from <token> --to <token> --amount <units>
-  nansen trade execute --quote <quoteId> [--wallet <name>]
-  nansen trade bridge-status --tx-hash <hash> --from-chain <chain> --to-chain <chain>
-  nansen trade limit-order <create|list|cancel|update> [options]
-
-EXAMPLES:
-  nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000
-  nansen trade quote --chain base --from ETH --to USDC --amount 1000000000000000000
-  nansen trade quote --chain base --to-chain solana --from USDC --to USDC --amount 1000000
-  nansen trade execute --quote 1708900000000-abc123
-  nansen trade bridge-status --tx-hash 0xabc... --from-chain base --to-chain solana
-  nansen trade limit-order create --from SOL --to USDC --amount 1.5 --trigger-mint SOL --trigger-condition below --trigger-price 80
-  nansen trade limit-order list
-
-WALLET:
-  --wallet <name>   Use a named wallet, or "walletconnect" / "wc" for WalletConnect.
-                    Defaults to the default local wallet if omitted.
-
-SYMBOLS:
-  Common tokens resolve automatically: SOL, ETH, USDC, USDT, WETH
-  Raw addresses are also accepted.
-
-CROSS-CHAIN NOTES (when using --to-chain):
-  Supported combos:
-    native → native (ETH <-> SOL)
-    USDC → USDC (both directions)
-    USDC → native (USDC → ETH or SOL)
-    native → USDC (ETH/SOL → USDC)
-    non-native → non-native — not supported (use USDC as intermediate)
-  Bridge providers: Li.Fi or Relay (selected automatically based on best price)
-  Typical bridge time: 1-5 minutes`);
+      log(TRADE_USAGE);
       return;
     }
     if (sub === 'limit-order') {
@@ -1924,7 +1929,16 @@ export async function runCLI(rawArgs, deps = {}) {
         return { type: 'command-help', command };
       }
     }
-    // Commands with handlers (e.g. quote, execute) show their own usage
+    // The trade group (and the deprecated top-level quote/execute aliases) use
+    // handler-based usage rather than schema help. Show it and exit 0, instead of
+    // falling through to command execution, which would error on missing required
+    // args and exit 1.
+    if (command === 'trade' || DEPRECATED_TO_TRADE.has(command)) {
+      output(deprecationNote(command) + TRADE_USAGE);
+      notify();
+      return { type: 'command-help', command };
+    }
+    // 'help' and unknown commands: full banner + command list
     if (command === 'help' || !commands[command]) {
       output(BANNER + HELP);
       notify();
