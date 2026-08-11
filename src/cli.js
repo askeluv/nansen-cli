@@ -1955,8 +1955,15 @@ export async function runCLI(rawArgs, deps = {}) {
   const chain = options.chain || null;
 
   if (!commands[command]) {
+    // A command token containing whitespace almost always means a multi-word
+    // invocation was passed as a single argument — e.g. `nansen "trade --help"`,
+    // or an unquoted shell variable under zsh (which, unlike bash, does not
+    // word-split `$var`). Point the user straight at the cause instead of a bare
+    // "Unknown command" that reads like a spurious failure.
     const errorData = {
-      error: `Unknown command: ${command}`,
+      error: /\s/.test(command)
+        ? `Unknown command: "${command}". This looks like multiple words passed as one argument — check your shell quoting (use \`nansen trade --help\`, not \`nansen "trade --help"\`).`
+        : `Unknown command: ${command}`,
       available: Object.keys(commands)
     };
     const formatted = formatOutput(errorData, { pretty, table });

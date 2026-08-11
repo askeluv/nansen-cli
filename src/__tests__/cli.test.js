@@ -248,8 +248,33 @@ describe('CLI Smoke Tests', () => {
 
   it('should handle unknown subcommand gracefully', () => {
     const { stdout } = runCLI('smart-money unknown-subcommand');
-    
+
     const result = JSON.parse(stdout);
     expect(result.data.error).toContain('Unknown subcommand');
+  });
+
+  // Regression: trade-group commands must exit 0 when invoked back-to-back.
+  // A prior report saw intermittent exit 1 here; the real cause was shell
+  // word-splitting in the repro (zsh does not split an unquoted `$var`, so
+  // `node index.js $c` fed "trade --help" as a single unknown-command token).
+  // With correct argv, `trade --help` must reliably exit 0, including in rapid
+  // succession.
+  it('trade --help exits 0 on repeated rapid invocations', () => {
+    for (let i = 0; i < 5; i++) {
+      const { exitCode } = runCLI('trade --help');
+      expect(exitCode).toBe(0);
+    }
+  });
+
+  // A whole command passed as one argument (e.g. `nansen "trade --help"`) is
+  // genuinely unknown and must fail loudly with an actionable shell-quoting
+  // hint, not a silent-looking spurious exit.
+  it('gives an actionable error when a whole command is one argument', () => {
+    const { stdout, exitCode } = runCLI('"trade --help"');
+
+    expect(exitCode).toBe(1);
+    const result = JSON.parse(stdout);
+    expect(result.error).toContain('Unknown command');
+    expect(result.error).toContain('shell quoting');
   });
 });
