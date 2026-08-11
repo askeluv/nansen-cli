@@ -13,6 +13,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import http from 'http';
 import childProcess from 'child_process';
 
 // We need to test with a controlled cache file, so we'll write to
@@ -205,6 +206,69 @@ describe('scheduleUpdateCheck', () => {
     }
     fs.writeFileSync(CACHE_FILE, 'invalid');
     expect(() => scheduleUpdateCheck()).not.toThrow();
+  });
+});
+
+// =================== atomic write (buildCheckScript) ===================
+
+describe('scheduleUpdateCheck atomic write', () => {
+  let buildCheckScript;
+  let tempDir;
+
+  beforeEach(async () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nansen-update-atomic-test-'));
+    const mod = await import('../update-check.js');
+    buildCheckScript = mod.buildCheckScript;
+  });
+
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('writes via renameSync from a temp file, never directly to the target', () => {
+    const dir = path.join(tempDir, '.nansen');
+    const file = path.join(dir, 'update-check.json');
+    const script = buildCheckScript(dir, file, 'http://example.invalid/pkg');
+
+    // The payload lands on a temp path first, then is renamed onto the target.
+    expect(script).toContain('renameSync');
+    expect(script).toContain(".tmp'");
+    // The target file is never handed straight to writeFileSync.
+    expect(script).not.toMatch(/writeFileSync\(file\b/);
+    // Temp file is cleaned up if the rename throws.
+    expect(script).toContain('unlinkSync(tmp)');
+  });
+
+  // End-to-end: run the real child script against a local registry and assert
+  // the cache file it produces is complete and valid, with no temp file left.
+  it('produces a complete, parseable cache file with no temp leftover', async () => {
+    const server = http.createServer((_req, res) => {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ version: '99.0.0' }));
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address();
+
+    const dir = path.join(tempDir, '.nansen');
+    const file = path.join(dir, 'update-check.json');
+    const script = buildCheckScript(dir, file, `http://127.0.0.1:${port}/nansen-cli/latest`);
+
+    try {
+      await new Promise((resolve, reject) => {
+        const child = childProcess.spawn(process.execPath, ['-e', script], { stdio: 'ignore' });
+        child.on('exit', resolve);
+        child.on('error', reject);
+      });
+
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+      expect(parsed.latest).toBe('99.0.0');
+      expect(typeof parsed.checkedAt).toBe('number');
+
+      const leftovers = fs.readdirSync(dir).filter(f => f.includes('.tmp'));
+      expect(leftovers).toEqual([]);
+    } finally {
+      await new Promise(resolve => server.close(resolve));
+    }
   });
 });
 

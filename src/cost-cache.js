@@ -15,6 +15,24 @@ const STALE_MS = 24 * 60 * 60 * 1000; // 24 hours
 const OPENAPI_URL = 'https://api.nansen.ai/openapi.json';
 
 /**
+ * Write `data` to `file` atomically: write to a unique temp file in the same
+ * directory, then rename over the target. rename(2) is atomic on POSIX, so a
+ * concurrent reader always sees either the old file or the fully-written new
+ * one — never a truncated/empty file. The temp name includes the pid so
+ * concurrent writers don't clobber each other's temp files.
+ */
+function writeAtomic(file, data) {
+  const tmp = `${file}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(tmp, data);
+    fs.renameSync(tmp, file);
+  } catch (err) {
+    try { fs.unlinkSync(tmp); } catch { /* temp file may not exist */ }
+    throw err;
+  }
+}
+
+/**
  * Returns { free, pro } credit cost for the given API path, or null if unavailable.
  */
 export function getCostForEndpoint(endpoint) {
@@ -75,7 +93,7 @@ export async function refreshCostMapIfStale() {
     }
 
     if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { mode: 0o700, recursive: true });
-    fs.writeFileSync(CACHE_FILE, JSON.stringify({ costs, fetchedAt: Date.now() }));
+    writeAtomic(CACHE_FILE, JSON.stringify({ costs, fetchedAt: Date.now() }));
   } catch {
     // silent — network failure, parse error, write error
   }
