@@ -345,6 +345,16 @@ describe('telemetry', () => {
       expect(body.properties.command).toBe('close');
     });
 
+    it('sends nothing when telemetry is opted out (DO_NOT_TRACK contract)', async () => {
+      // The disclosure promises the same opt-out covers these trade-level events;
+      // opt-out is read at module load, so re-import with the env set.
+      process.env.NANSEN_NO_TELEMETRY = '1';
+      const mod = await freshImport();
+      mod.trackPerpOrderCompleted(baseOutcome);
+      expect(fetchMock).not.toHaveBeenCalled();
+      delete process.env.NANSEN_NO_TELEMETRY;
+    });
+
     it('emits null fill price/size for a resting order and omits oid when absent', () => {
       trackPerpOrderCompleted({
         command: 'order',

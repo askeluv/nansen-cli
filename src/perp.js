@@ -269,11 +269,16 @@ export function summarizeOrderResult(result, action) {
           : multiLeg
             ? `leg ${index + 1}`
             : 'parent';
+    // HL oids are uint64; JSON.parse already narrowed them to Number, so any id
+    // above 2^53 arrived rounded. Flag precision (oidSafe) so the caller can
+    // withhold a copy-paste cancel — and BI can drop the id — rather than act on
+    // a wrong oid presented as authoritative.
     if (entry.filled && entry.filled.oid !== undefined) {
       const { oid, totalSz, avgPx } = entry.filled;
-      out.push({ leg, kind: 'filled', oid, totalSz, avgPx });
+      out.push({ leg, kind: 'filled', oid, oidSafe: Number.isSafeInteger(oid), totalSz, avgPx });
     } else if (entry.resting && entry.resting.oid !== undefined) {
-      out.push({ leg, kind: 'resting', oid: entry.resting.oid });
+      const { oid } = entry.resting;
+      out.push({ leg, kind: 'resting', oid, oidSafe: Number.isSafeInteger(oid) });
     }
   }
   return out;
@@ -287,10 +292,12 @@ export function summarizeOrderResult(result, action) {
 // ride along as `tp_sl_legs` for bracket adoption/outcome analysis.
 function emitPerpOrderCompleted(telemetry, prepared, summary) {
   const parent = summary.find((o) => o.leg === 'parent') ?? summary[0];
+  // Never report an oid that arrived rounded past 2^53: omit the parent's and
+  // null the legs' so BI records "unknown" rather than a wrong id.
   const legOutcome = (o) => ({
     leg: o.leg,
     status: o.kind,
-    oid: o.oid,
+    oid: o.oidSafe ? o.oid : null,
     ...(o.kind === 'filled' && {
       fill_price: Number(o.avgPx),
       fill_size: Number(o.totalSz),
@@ -301,7 +308,7 @@ function emitPerpOrderCompleted(telemetry, prepared, summary) {
     coin: prepared.coin,
     side: telemetry.side,
     order_type: telemetry.orderType,
-    oid: parent?.oid,
+    oid: parent && parent.oidSafe ? parent.oid : undefined,
     status: parent?.kind,
     fill_price: parent?.kind === 'filled' ? Number(parent.avgPx) : null,
     fill_size: parent?.kind === 'filled' ? Number(parent.totalSz) : null,
@@ -342,11 +349,14 @@ async function buildScreenSignSubmit(apiInstance, prepared, ctx) {
   if (orders.length) {
     for (const o of orders) {
       const tag = o.leg === 'parent' ? '' : ` [${o.leg}]`;
+      // Withhold the exact id (and the copy-paste cancel) when it arrived rounded
+      // past 2^53 — a wrong oid presented as actionable is worse than none.
+      const oidText = o.oidSafe ? `oid ${o.oid}` : 'oid too large to display precisely';
       if (o.kind === 'filled') {
-        log(`  Filled${tag}: ${o.totalSz} @ ${o.avgPx}  (oid ${o.oid})`);
+        log(`  Filled${tag}: ${o.totalSz} @ ${o.avgPx}  (${oidText})`);
       } else {
-        log(`  Resting order${tag}: oid ${o.oid}`);
-        if (coin) log(`  Cancel:  nansen perp cancel --coin ${coin} --oid ${o.oid}`);
+        log(`  Resting order${tag}: ${oidText}`);
+        if (coin && o.oidSafe) log(`  Cancel:  nansen perp cancel --coin ${coin} --oid ${o.oid}`);
       }
     }
   } else if (result.response) {

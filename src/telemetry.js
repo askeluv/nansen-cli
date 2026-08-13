@@ -5,6 +5,11 @@
  * how long they take, and where errors occur.  Events are fire-and-forget —
  * failures are silently ignored and never block the CLI.
  *
+ * Perp `order`/`close` additionally emit a `perp_order_completed` event that
+ * carries trade-level detail — asset, side, order type, the requested and
+ * filled size/price, the Hyperliquid order id, and TP/SL leg outcomes — tied to
+ * the same random anonymous_id. All telemetry is opt-out via DO_NOT_TRACK=1 or
+ * NANSEN_NO_TELEMETRY=1.
  */
 
 import fs from 'fs';

@@ -618,6 +618,21 @@ describe('perp direct-to-HL flow (Chunk 3/4/5)', () => {
     expect(out).not.toMatch(/perp cancel/);
   });
 
+  it('withholds the exact id and cancel hint for an oid beyond safe precision', async () => {
+    const logs = [];
+    const capCmds = buildPerpCommands({ log: (m) => logs.push(m), warn: () => {} });
+    const api = mockApi({ screen: clean });
+    submitExchange.mockResolvedValueOnce({
+      status: 'ok',
+      response: { type: 'order', data: { statuses: [{ resting: { oid: Number.MAX_SAFE_INTEGER + 2 } }] } },
+    });
+    await capCmds.order([], api, {}, { ...baseOrder, type: 'limit', tif: 'Gtc' });
+    const out = logs.join('\n');
+    expect(out).toMatch(/too large to display precisely/);
+    expect(out).not.toMatch(/perp cancel/);
+    expect(out).not.toMatch(/9007199254740992/); // never present the rounded id
+  });
+
   describe('perp_order_completed telemetry', () => {
     function trackingCmds() {
       const track = vi.fn();
@@ -666,6 +681,19 @@ describe('perp direct-to-HL flow (Chunk 3/4/5)', () => {
         fill_price: null,
         fill_size: null,
       });
+    });
+
+    it('omits the oid from telemetry when it exceeds safe integer precision', async () => {
+      const { track, telCmds } = trackingCmds();
+      const api = mockApi({ screen: clean });
+      submitExchange.mockResolvedValueOnce({
+        status: 'ok',
+        response: { type: 'order', data: { statuses: [{ resting: { oid: Number.MAX_SAFE_INTEGER + 2 } }] } },
+      });
+      await telCmds.order([], api, {}, { ...baseOrder, type: 'limit', tif: 'Gtc' });
+      expect(track).toHaveBeenCalledTimes(1);
+      expect(track.mock.calls[0][0].oid).toBeUndefined();
+      expect(track.mock.calls[0][0].status).toBe('resting');
     });
 
     it('captures a partial fill (filled size below requested)', async () => {
@@ -754,7 +782,7 @@ describe('summarizeOrderResult', () => {
       { response: { type: 'order', data: { statuses: [{ resting: { oid: 123 } }] } } },
       order(),
     );
-    expect(r).toEqual([{ leg: 'parent', kind: 'resting', oid: 123 }]);
+    expect(r).toEqual([{ leg: 'parent', kind: 'resting', oid: 123, oidSafe: true }]);
   });
 
   it('extracts a fill with size and average price', () => {
@@ -762,7 +790,17 @@ describe('summarizeOrderResult', () => {
       { response: { type: 'order', data: { statuses: [{ filled: { oid: 456, totalSz: '0.01', avgPx: '2000.5' } }] } } },
       order(),
     );
-    expect(r).toEqual([{ leg: 'parent', kind: 'filled', oid: 456, totalSz: '0.01', avgPx: '2000.5' }]);
+    expect(r).toEqual([{ leg: 'parent', kind: 'filled', oid: 456, oidSafe: true, totalSz: '0.01', avgPx: '2000.5' }]);
+  });
+
+  it('flags an oid beyond safe integer precision as oidSafe:false', () => {
+    // A uint64 above 2^53 has already been rounded by JSON.parse; the guard
+    // detects it so callers can withhold a copy-paste cancel for a wrong id.
+    const r = summarizeOrderResult(
+      { response: { type: 'order', data: { statuses: [{ resting: { oid: Number.MAX_SAFE_INTEGER + 2 } }] } } },
+      order(),
+    );
+    expect(r[0].oidSafe).toBe(false);
   });
 
   it('labels the legs of a TP/SL bracket', () => {
