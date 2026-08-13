@@ -40,6 +40,7 @@ nansen agent "<question>" --expert    # deeper analysis (750 credits, Pro)
 nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000
 nansen trade execute --quote <quoteId>
 nansen wallet <subcommand> [options]
+nansen mcp install <client>           # add the Nansen MCP server to Claude Code/Desktop or Cursor
 nansen schema [command] [--pretty]    # full command reference (no API key needed)
 ```
 
@@ -50,6 +51,20 @@ nansen schema [command] [--pretty]    # full command reference (no API key neede
 **Wallet:** `create`, `list`, `show`, `export`, `default`, `delete`, `send` — local or Privy server-side wallets (EVM + Solana).
 
 Run `nansen schema --pretty` for the full subcommand and field reference.
+
+## MCP
+
+One-step install of the hosted [Nansen MCP server](https://docs.nansen.ai/mcp/overview) (`https://mcp.nansen.ai/ra/mcp`) into a local MCP client:
+
+```bash
+nansen mcp install claude-code       # ~/.claude.json (user scope)
+nansen mcp install claude-desktop    # macOS/Windows only; bridges via pinned mcp-remote
+nansen mcp install cursor            # ~/.cursor/mcp.json
+nansen mcp install cursor --dry-run  # print what would be written (key redacted)
+nansen mcp uninstall <client>        # remove the entry
+```
+
+Uses the API key from `nansen login` / `NANSEN_API_KEY`; re-run `install` after rotating your key. Installs are merge-only and atomic: existing servers and settings are preserved, a `.bak` copy is written first, and the CLI refuses to touch a config it can't parse. Note the client config stores the API key in plaintext — new files are created with `0600` permissions. Restart the client after installing. For other clients, see [docs.nansen.ai/mcp/connecting](https://docs.nansen.ai/mcp/connecting).
 
 ## Trading
 

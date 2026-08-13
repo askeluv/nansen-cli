@@ -11,6 +11,7 @@ import { buildTradingCommands } from './trading.js';
 import { buildLimitOrderCommands } from './limit-order.js';
 import { formatAlertsTable, buildAlertsCommands } from './commands/alerts.js';
 import { buildAgentCommands } from './commands/agent.js';
+import { buildMcpCommands } from './commands/mcp.js';
 import { buildResearchCommands, RESEARCH_HISTORICAL_SUBCOMMANDS } from './commands/research.js';
 import { resolveAddress, isEnsName } from './ens.js';
 import fs from 'fs';
@@ -190,7 +191,7 @@ export function parseArgs(args) {
       const key = arg.slice(2);
       const next = args[i + 1];
       
-      if (key === 'pretty' || key === 'help' || key === 'version' || key === 'table' || key === 'no-retry' || key === 'cache' || key === 'no-cache' || key === 'stream' || key === 'enrich' || key === 'full' || key === 'human' || key === 'enabled' || key === 'disabled' || key === 'expert' || key === 'json' || key === 'offline') {
+      if (key === 'pretty' || key === 'help' || key === 'version' || key === 'table' || key === 'no-retry' || key === 'cache' || key === 'no-cache' || key === 'stream' || key === 'enrich' || key === 'full' || key === 'human' || key === 'enabled' || key === 'disabled' || key === 'expert' || key === 'json' || key === 'offline' || key === 'dry-run') {
         result.flags[key] = true;
       } else if (next && (!next.startsWith('-') || /^-\d/.test(next))) {
         // Try to parse as JSON first (for objects/arrays/booleans),
@@ -729,6 +730,7 @@ COMMANDS:
   agent       Ask the Nansen AI research agent (fast/expert modes)
   alerts      list, create, update, toggle, delete
   web         search, fetch
+  mcp         install/uninstall the Nansen MCP server (claude-code, claude-desktop, cursor)
   account     Show API key status, plan, and remaining credits
   auth        status — offline auth status: key source, wallets (no network)
   login       Save API key (--api-key <key>, --human, or NANSEN_API_KEY env var)
@@ -1866,7 +1868,7 @@ export async function runCLI(rawArgs, deps = {}) {
     return '';
   };
 
-  const commands = { ...buildCommands(deps), ...buildWalletCommands(deps), ...buildTradingCommands(deps), ...buildAlertsCommands(deps), ...buildAgentCommands(deps), ...commandOverrides };
+  const commands = { ...buildCommands(deps), ...buildWalletCommands(deps), ...buildTradingCommands(deps), ...buildAlertsCommands(deps), ...buildAgentCommands(deps), ...buildMcpCommands(deps), ...commandOverrides };
 
   if (flags.version || flags.v) {
     output(VERSION);

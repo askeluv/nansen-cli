@@ -1949,6 +1949,30 @@
         "text",
         "tool_calls"
       ]
+    },
+    "mcp": {
+      "description": "Install the hosted Nansen MCP server (https://mcp.nansen.ai/ra/mcp) into a local MCP client's config",
+      "subcommands": {
+        "install": {
+          "description": "Add the Nansen MCP server to a client's config. Client (positional): claude-code, claude-desktop, or cursor. Uses the API key from `nansen login` / NANSEN_API_KEY; re-run after key rotation to update the entry.",
+          "options": {
+            "dry-run": {
+              "type": "boolean",
+              "description": "Print the target config path and entry (API key redacted) without writing"
+            }
+          },
+          "examples": [
+            "nansen mcp install claude-code",
+            "nansen mcp install cursor --dry-run"
+          ]
+        },
+        "uninstall": {
+          "description": "Remove the Nansen MCP server entry from a client's config. Client (positional): claude-code, claude-desktop, or cursor.",
+          "examples": [
+            "nansen mcp uninstall claude-code"
+          ]
+        }
+      }
     }
   },
   "globalOptions": {
