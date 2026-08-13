@@ -22,6 +22,7 @@ import {
   userSignedEip712,
 } from './hl-action.js';
 import { submitExchange } from './hl-client.js';
+import { trackPerpOrderCompleted } from './telemetry.js';
 import { resolveEvmWallet, resolvePrivateKey } from './wallet-signing.js';
 import { hashTypedData } from './x402-evm.js';
 
@@ -241,8 +242,66 @@ async function signHlAction(eip712, { privateKeyHex, privyClient, privyWalletId,
 // { action, nonce, eip712, size?, price? } from an hl-action.js builder; the
 // vault is always null for a normal wallet (the CLI signs L1 actions with the
 // wallet key directly). submitExchange throws on any HL rejection.
+// Parse the per-order statuses HL returns for an `order` action so the oid and
+// fill are surfaced — the perp analogue of spot printing its quote id. HL replies:
+//   response.data.statuses[] = { resting:{oid} } | { filled:{oid,totalSz,avgPx} } | { error }
+// A rejected leg ({error}) has already thrown in submitExchange, so only
+// resting/filled legs reach here. A TP/SL bracket returns multiple legs; label
+// them the same way extractActionErrors does (parent / take-profit / stop-loss).
+// Gated on the SUBMITTED action being an order: leverage/transfer/builder-fee
+// actions (type "default") and cancels return no oids, so [] falls back to the
+// concise raw response line in buildScreenSignSubmit.
+export function summarizeOrderResult(result, action) {
+  if (action?.type !== 'order') return [];
+  const statuses = result?.response?.data?.statuses;
+  if (!Array.isArray(statuses)) return [];
+  const multiLeg = (action.orders?.length ?? 0) > 1;
+  const out = [];
+  for (const [index, entry] of statuses.entries()) {
+    if (!entry || typeof entry !== 'object') continue;
+    const tpsl = action.orders?.[index]?.t?.trigger?.tpsl;
+    const leg = tpsl === 'tp'
+      ? 'take-profit'
+      : tpsl === 'sl'
+        ? 'stop-loss'
+        : action.grouping === 'normalTpsl' && index === 0
+          ? 'parent'
+          : multiLeg
+            ? `leg ${index + 1}`
+            : 'parent';
+    // HL oids are uint64; JSON.parse already narrowed them to Number, so any id
+    // above 2^53 arrived rounded. Flag precision (oidSafe) so the caller can
+    // withhold a copy-paste cancel — and BI can drop the id — rather than act on
+    // a wrong oid presented as authoritative.
+    if (entry.filled && entry.filled.oid !== undefined) {
+      const { oid, totalSz, avgPx } = entry.filled;
+      out.push({ leg, kind: 'filled', oid, oidSafe: Number.isSafeInteger(oid), totalSz, avgPx });
+    } else if (entry.resting && entry.resting.oid !== undefined) {
+      const { oid } = entry.resting;
+      out.push({ leg, kind: 'resting', oid, oidSafe: Number.isSafeInteger(oid) });
+    }
+  }
+  return out;
+}
+
+// Fire the perp_order_completed event via the injected tracker. Deliberately
+// minimal (privacy): only the trade side and the parent Hyperliquid order id —
+// no asset, price, size, or fill detail. The order-placement response carries no
+// trade/fill id (that exists only once the order fills, via the fills feed), so
+// side + oid is the reliable maximum here. The oid is omitted when it arrived
+// rounded past 2^53 (oidSafe false) so BI never records a wrong id. `summary` is
+// summarizeOrderResult's output; its parent leg carries the order id.
+function emitPerpOrderCompleted(telemetry, summary) {
+  const parent = summary.find((o) => o.leg === 'parent') ?? summary[0];
+  return telemetry.track({
+    command: telemetry.command,
+    side: telemetry.side,
+    oid: parent && parent.oidSafe ? parent.oid : undefined,
+  });
+}
+
 async function buildScreenSignSubmit(apiInstance, prepared, ctx) {
-  const { action, nonce, eip712, size, price } = prepared;
+  const { action, nonce, eip712, size, price, coin, telemetry } = prepared;
   const { walletAddress, log } = ctx;
 
   log('  Screening...');
@@ -262,10 +321,44 @@ async function buildScreenSignSubmit(apiInstance, prepared, ctx) {
 
   const status = result.status ?? 'ok';
   log(`  Status: ${status}`);
-  if (result.response) {
+
+  // Surface the order id(s) HL returned so the caller can track/cancel the
+  // order — mirrors how spot prints its quote id plus a ready-to-run follow-up.
+  const orders = summarizeOrderResult(result, action);
+  if (orders.length) {
+    for (const o of orders) {
+      const tag = o.leg === 'parent' ? '' : ` [${o.leg}]`;
+      // Withhold the exact id (and the copy-paste cancel) when it arrived rounded
+      // past 2^53 — a wrong oid presented as actionable is worse than none.
+      const oidText = o.oidSafe ? `oid ${o.oid}` : 'oid too large to display precisely';
+      if (o.kind === 'filled') {
+        log(`  Filled${tag}: ${o.totalSz} @ ${o.avgPx}  (${oidText})`);
+      } else {
+        log(`  Resting order${tag}: ${oidText}`);
+        if (coin && o.oidSafe) log(`  Cancel:  nansen perp cancel --coin ${coin} --oid ${o.oid}`);
+      }
+    }
+  } else if (result.response) {
+    // Non-order actions (leverage, transfer, builder-fee approval) or a response
+    // shape without statuses: keep the concise raw line.
     const resp = typeof result.response === 'string' ? result.response : JSON.stringify(result.response);
     log(`  Response: ${resp}`);
   }
+
+  // Emit the order OUTCOME to BI (oid, fill status/price/size, TP/SL legs) — the
+  // perp analogue of the command-level telemetry, which fires too early (before
+  // this HL response) to observe any of it. Order/close only: cancel / leverage
+  // / transfer / builder-fee actions carry no `telemetry` and also summarize to
+  // []. Guarded + swallowed so a telemetry failure can never downgrade a
+  // completed order into a cli_command_failed.
+  if (telemetry && orders.length) {
+    try {
+      await emitPerpOrderCompleted(telemetry, orders);
+    } catch {
+      // Best-effort; never surface a tracking error after a real fill.
+    }
+  }
+
   return result;
 }
 
@@ -468,7 +561,11 @@ function resolveCoin(options) {
 // ── Command builder ──────────────────────────────────────────────────
 
 export function buildPerpCommands(deps = {}) {
-  const { log = console.log, warn = (m) => process.stderr.write(`${m}\n`) } = deps;
+  const {
+    log = console.log,
+    warn = (m) => process.stderr.write(`${m}\n`),
+    track = trackPerpOrderCompleted,
+  } = deps;
 
   return {
     'order': async (args, apiInstance, flags, options) => {
@@ -542,7 +639,23 @@ OPTIONS:
       const nonce = hlNonce();
       const eip712 = l1Eip712(action, null, nonce);
 
-      await buildScreenSignSubmit(apiInstance, { action, nonce, eip712, size: effSize, price: effPrice }, ctx);
+      await buildScreenSignSubmit(
+        apiInstance,
+        {
+          action,
+          nonce,
+          eip712,
+          size: effSize,
+          price: effPrice,
+          coin,
+          telemetry: {
+            command: 'order',
+            side: isBuy ? 'buy' : 'sell',
+            track,
+          },
+        },
+        ctx,
+      );
       log('');
       return undefined;
     },
@@ -639,7 +752,23 @@ OPTIONS:
       const nonce = hlNonce();
       const eip712 = l1Eip712(action, null, nonce);
 
-      await buildScreenSignSubmit(apiInstance, { action, nonce, eip712, size: effSize, price: effPrice }, ctx);
+      await buildScreenSignSubmit(
+        apiInstance,
+        {
+          action,
+          nonce,
+          eip712,
+          size: effSize,
+          price: effPrice,
+          coin,
+          telemetry: {
+            command: 'close',
+            side: isBuy ? 'buy' : 'sell',
+            track,
+          },
+        },
+        ctx,
+      );
       log('');
       return undefined;
     },

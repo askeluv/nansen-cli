@@ -16,14 +16,14 @@ async function freshImport() {
 }
 
 describe('telemetry', () => {
-  let trackCommandSucceeded, trackCommandFailed, getAnonymousId, getSessionId;
+  let trackCommandSucceeded, trackCommandFailed, trackPerpOrderCompleted, getAnonymousId, getSessionId;
 
   beforeEach(async () => {
     fetchMock.mockClear();
     delete process.env.NANSEN_BASE_URL;
     delete process.env.NANSEN_SESSION_ID;
     delete process.env.NANSEN_NO_TELEMETRY;
-    ({ trackCommandSucceeded, trackCommandFailed, getAnonymousId, getSessionId } = await freshImport());
+    ({ trackCommandSucceeded, trackCommandFailed, trackPerpOrderCompleted, getAnonymousId, getSessionId } = await freshImport());
   });
 
   describe('trackCommandSucceeded', () => {
@@ -287,6 +287,56 @@ describe('telemetry', () => {
       trackCommandSucceeded({ command: 'test', duration_ms: 0 });
       expect(fetchMock).not.toHaveBeenCalled();
       delete process.env.NANSEN_NO_TELEMETRY;
+    });
+  });
+
+  describe('trackPerpOrderCompleted', () => {
+    const baseOutcome = { command: 'order', side: 'buy', oid: 55 };
+
+    it('sends a perp_order_completed event with only side and order id', () => {
+      trackPerpOrderCompleted(baseOutcome);
+
+      expect(fetchMock).toHaveBeenCalledOnce();
+      const [url, opts] = fetchMock.mock.calls[0];
+      expect(url).toContain('bi-data-sources.nansen.ai');
+      const body = JSON.parse(opts.body);
+      expect(body.event).toBe('perp_order_completed');
+      expect(body.event_source).toBe('cli_prod');
+      expect(body.path).toBe('/perp/order');
+      expect(body.anonymous_id).toBeTruthy();
+      expect(body.session_id).toBeTruthy();
+      expect(body.event_id).toBeTruthy();
+      expect(body.timestamp).toBeTruthy();
+      // Only side + oid (plus the standard version tag). No asset, price, size,
+      // fill status, or TP/SL detail — and `command` must not leak into properties.
+      expect(body.properties).toEqual({
+        source: expect.stringContaining('nansen-cli/'),
+        side: 'buy',
+        oid: 55,
+      });
+      expect(body.context.client_type).toBe('nansen-cli');
+    });
+
+    it('maps the close command to path /perp/close without leaking command', () => {
+      trackPerpOrderCompleted({ ...baseOutcome, command: 'close' });
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body.path).toBe('/perp/close');
+      expect(body.properties).not.toHaveProperty('command');
+    });
+
+    it('omits oid when it is not provided (imprecise / unknown)', () => {
+      trackPerpOrderCompleted({ command: 'order', side: 'sell' });
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body.properties.side).toBe('sell');
+      expect(body.properties).not.toHaveProperty('oid');
+    });
+
+    it('respects the DO_NOT_TRACK opt-out', async () => {
+      process.env.DO_NOT_TRACK = '1';
+      ({ trackPerpOrderCompleted } = await freshImport());
+      trackPerpOrderCompleted(baseOutcome);
+      expect(fetchMock).not.toHaveBeenCalled();
+      delete process.env.DO_NOT_TRACK;
     });
   });
 });

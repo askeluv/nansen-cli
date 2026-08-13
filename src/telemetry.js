@@ -5,6 +5,10 @@
  * how long they take, and where errors occur.  Events are fire-and-forget —
  * failures are silently ignored and never block the CLI.
  *
+ * Perp `order`/`close` additionally emit a `perp_order_completed` event that
+ * carries only the trade side and the Hyperliquid order id, tied to the same
+ * random anonymous_id. All telemetry is opt-out via DO_NOT_TRACK=1 or
+ * NANSEN_NO_TELEMETRY=1.
  */
 
 import fs from 'fs';
@@ -241,6 +245,52 @@ export function trackCommandFailed({
       status,
       flags,
       ...(chain ? { chain } : {}),
+    },
+    context: buildContext(),
+  });
+}
+
+/**
+ * Track a completed Hyperliquid perp order (`nansen perp order` / `perp close`).
+ *
+ * Fired from `buildScreenSignSubmit` in perp.js AFTER the HL /exchange response
+ * is parsed (`summarizeOrderResult`). This is the only event that sees the order
+ * OUTCOME: `cli_command_succeeded` fires at the command wrapper, before the
+ * order path returns, so it captures command metadata but never the fill. Perp
+ * orders bypass the Nansen API on submit (CLI signs and posts straight to
+ * Hyperliquid — Decision D4), so the backend never sees the response either;
+ * this client-side event is the only way order outcomes reach BI.
+ *
+ * Fires on success only: a HL rejection throws in `submitExchange` and is
+ * captured by `cli_command_failed`, so no failed event is emitted here.
+ *
+ * Deliberately minimal: only the trade side and the Hyperliquid order id — no
+ * asset, price, size, or fill detail. A trade (fill) id is not carried by the
+ * order-placement response (it exists only once the order fills, via the fills
+ * feed), so it is not available here. `oid` is omitted when it exceeded JS
+ * safe-integer precision at parse time (see summarizeOrderResult).
+ *
+ * @param {object} opts
+ * @param {'order'|'close'} opts.command  - Which perp command placed the order (routes `path`)
+ * @param {'buy'|'sell'} opts.side        - Normalized trade side
+ * @param {number} [opts.oid]             - Parent leg's Hyperliquid order id (omitted if imprecise)
+ */
+export function trackPerpOrderCompleted({ command, side, oid }) {
+  return sendEvent({
+    event: 'perp_order_completed',
+    event_source: getEventSource(),
+    event_id: crypto.randomUUID(),
+    user_id: null,
+    anonymous_id: getAnonymousId(),
+    session_id: getSessionId(),
+    timestamp: new Date().toISOString(),
+    // Same path as the command's cli_command_succeeded ("/perp/order" |
+    // "/perp/close"), so BI can line the two events up per command.
+    path: commandToPath(`perp ${command}`),
+    properties: {
+      source: `nansen-cli/${cliVersion}`,
+      side,
+      ...(oid !== undefined && { oid }),
     },
     context: buildContext(),
   });
