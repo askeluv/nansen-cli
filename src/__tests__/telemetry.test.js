@@ -291,22 +291,9 @@ describe('telemetry', () => {
   });
 
   describe('trackPerpOrderCompleted', () => {
-    const baseOutcome = {
-      command: 'order',
-      coin: 'ETH',
-      side: 'buy',
-      order_type: 'market',
-      oid: 55,
-      status: 'filled',
-      fill_price: 2000.5,
-      fill_size: 0.01,
-      requested_price: 2060,
-      requested_size: 0.01,
-      has_tp_sl: false,
-      tp_sl_legs: [],
-    };
+    const baseOutcome = { command: 'order', side: 'buy', oid: 55 };
 
-    it('sends a perp_order_completed event with the order outcome', () => {
+    it('sends a perp_order_completed event with only side and order id', () => {
       trackPerpOrderCompleted(baseOutcome);
 
       expect(fetchMock).toHaveBeenCalledOnce();
@@ -320,75 +307,28 @@ describe('telemetry', () => {
       expect(body.session_id).toBeTruthy();
       expect(body.event_id).toBeTruthy();
       expect(body.timestamp).toBeTruthy();
-      expect(body.properties).toMatchObject({
+      // Only side + oid (plus the standard version tag). No asset, price, size,
+      // fill status, or TP/SL detail — and `command` must not leak into properties.
+      expect(body.properties).toEqual({
         source: expect.stringContaining('nansen-cli/'),
-        command: 'order',
-        coin: 'ETH',
         side: 'buy',
-        order_type: 'market',
         oid: 55,
-        status: 'filled',
-        fill_price: 2000.5,
-        fill_size: 0.01,
-        requested_price: 2060,
-        requested_size: 0.01,
-        has_tp_sl: false,
-        tp_sl_legs: [],
       });
       expect(body.context.client_type).toBe('nansen-cli');
     });
 
-    it('maps the close command to path /perp/close', () => {
+    it('maps the close command to path /perp/close without leaking command', () => {
       trackPerpOrderCompleted({ ...baseOutcome, command: 'close' });
       const body = JSON.parse(fetchMock.mock.calls[0][1].body);
       expect(body.path).toBe('/perp/close');
-      expect(body.properties.command).toBe('close');
+      expect(body.properties).not.toHaveProperty('command');
     });
 
-    it('sends nothing when telemetry is opted out (DO_NOT_TRACK contract)', async () => {
-      // The disclosure promises the same opt-out covers these trade-level events;
-      // opt-out is read at module load, so re-import with the env set.
-      process.env.NANSEN_NO_TELEMETRY = '1';
-      const mod = await freshImport();
-      mod.trackPerpOrderCompleted(baseOutcome);
-      expect(fetchMock).not.toHaveBeenCalled();
-      delete process.env.NANSEN_NO_TELEMETRY;
-    });
-
-    it('emits null fill price/size for a resting order and omits oid when absent', () => {
-      trackPerpOrderCompleted({
-        command: 'order',
-        coin: 'BTC',
-        side: 'sell',
-        order_type: 'limit',
-        status: 'resting',
-        requested_price: 95000,
-        requested_size: 0.001,
-      });
+    it('omits oid when it is not provided (imprecise / unknown)', () => {
+      trackPerpOrderCompleted({ command: 'order', side: 'sell' });
       const body = JSON.parse(fetchMock.mock.calls[0][1].body);
-      expect(body.properties.status).toBe('resting');
-      expect(body.properties.fill_price).toBeNull();
-      expect(body.properties.fill_size).toBeNull();
+      expect(body.properties.side).toBe('sell');
       expect(body.properties).not.toHaveProperty('oid');
-      expect(body.properties.has_tp_sl).toBe(false);
-      expect(body.properties.tp_sl_legs).toEqual([]);
-    });
-
-    it('carries per-leg TP/SL bracket outcomes', () => {
-      trackPerpOrderCompleted({
-        ...baseOutcome,
-        has_tp_sl: true,
-        tp_sl_legs: [
-          { leg: 'take-profit', status: 'resting', oid: 2 },
-          { leg: 'stop-loss', status: 'resting', oid: 3 },
-        ],
-      });
-      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
-      expect(body.properties.has_tp_sl).toBe(true);
-      expect(body.properties.tp_sl_legs).toEqual([
-        { leg: 'take-profit', status: 'resting', oid: 2 },
-        { leg: 'stop-loss', status: 'resting', oid: 3 },
-      ]);
     });
 
     it('respects the DO_NOT_TRACK opt-out', async () => {

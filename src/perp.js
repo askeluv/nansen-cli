@@ -284,40 +284,19 @@ export function summarizeOrderResult(result, action) {
   return out;
 }
 
-// Shape the parsed order summary into the perp_order_completed payload and fire
-// it via the injected tracker. `summary` is summarizeOrderResult's output — a
-// parent leg plus optional take-profit / stop-loss legs, each
-// { leg, kind, oid, totalSz?, avgPx? } (avgPx/totalSz are HL strings, present
-// only on a filled leg). The parent carries the top-level fill; the tp/sl legs
-// ride along as `tp_sl_legs` for bracket adoption/outcome analysis.
-function emitPerpOrderCompleted(telemetry, prepared, summary) {
+// Fire the perp_order_completed event via the injected tracker. Deliberately
+// minimal (privacy): only the trade side and the parent Hyperliquid order id —
+// no asset, price, size, or fill detail. The order-placement response carries no
+// trade/fill id (that exists only once the order fills, via the fills feed), so
+// side + oid is the reliable maximum here. The oid is omitted when it arrived
+// rounded past 2^53 (oidSafe false) so BI never records a wrong id. `summary` is
+// summarizeOrderResult's output; its parent leg carries the order id.
+function emitPerpOrderCompleted(telemetry, summary) {
   const parent = summary.find((o) => o.leg === 'parent') ?? summary[0];
-  // Never report an oid that arrived rounded past 2^53: omit the parent's and
-  // null the legs' so BI records "unknown" rather than a wrong id.
-  const legOutcome = (o) => ({
-    leg: o.leg,
-    status: o.kind,
-    oid: o.oidSafe ? o.oid : null,
-    ...(o.kind === 'filled' && {
-      fill_price: Number(o.avgPx),
-      fill_size: Number(o.totalSz),
-    }),
-  });
   return telemetry.track({
     command: telemetry.command,
-    coin: prepared.coin,
     side: telemetry.side,
-    order_type: telemetry.orderType,
     oid: parent && parent.oidSafe ? parent.oid : undefined,
-    status: parent?.kind,
-    fill_price: parent?.kind === 'filled' ? Number(parent.avgPx) : null,
-    fill_size: parent?.kind === 'filled' ? Number(parent.totalSz) : null,
-    requested_price: prepared.price,
-    requested_size: prepared.size,
-    has_tp_sl: telemetry.hasTpSl,
-    tp_sl_legs: summary
-      .filter((o) => o.leg === 'take-profit' || o.leg === 'stop-loss')
-      .map(legOutcome),
   });
 }
 
@@ -374,7 +353,7 @@ async function buildScreenSignSubmit(apiInstance, prepared, ctx) {
   // completed order into a cli_command_failed.
   if (telemetry && orders.length) {
     try {
-      await emitPerpOrderCompleted(telemetry, prepared, orders);
+      await emitPerpOrderCompleted(telemetry, orders);
     } catch {
       // Best-effort; never surface a tracking error after a real fill.
     }
@@ -672,8 +651,6 @@ OPTIONS:
           telemetry: {
             command: 'order',
             side: isBuy ? 'buy' : 'sell',
-            orderType,
-            hasTpSl: tp !== undefined || sl !== undefined,
             track,
           },
         },
@@ -787,8 +764,6 @@ OPTIONS:
           telemetry: {
             command: 'close',
             side: isBuy ? 'buy' : 'sell',
-            orderType: 'market',
-            hasTpSl: false,
             track,
           },
         },

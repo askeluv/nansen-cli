@@ -6,9 +6,8 @@
  * failures are silently ignored and never block the CLI.
  *
  * Perp `order`/`close` additionally emit a `perp_order_completed` event that
- * carries trade-level detail — asset, side, order type, the requested and
- * filled size/price, the Hyperliquid order id, and TP/SL leg outcomes — tied to
- * the same random anonymous_id. All telemetry is opt-out via DO_NOT_TRACK=1 or
+ * carries only the trade side and the Hyperliquid order id, tied to the same
+ * random anonymous_id. All telemetry is opt-out via DO_NOT_TRACK=1 or
  * NANSEN_NO_TELEMETRY=1.
  */
 
@@ -265,35 +264,18 @@ export function trackCommandFailed({
  * Fires on success only: a HL rejection throws in `submitExchange` and is
  * captured by `cli_command_failed`, so no failed event is emitted here.
  *
+ * Deliberately minimal: only the trade side and the Hyperliquid order id — no
+ * asset, price, size, or fill detail. A trade (fill) id is not carried by the
+ * order-placement response (it exists only once the order fills, via the fills
+ * feed), so it is not available here. `oid` is omitted when it exceeded JS
+ * safe-integer precision at parse time (see summarizeOrderResult).
+ *
  * @param {object} opts
- * @param {'order'|'close'} opts.command      - Which perp command placed the order
- * @param {string} opts.coin                  - Asset symbol (BTC, ETH, …)
- * @param {'buy'|'sell'} opts.side            - Normalized trade side
- * @param {'market'|'limit'} opts.order_type  - Order type
- * @param {number} [opts.oid]                 - Parent leg's Hyperliquid order id
- * @param {'filled'|'resting'} [opts.status]  - Parent leg fill status
- * @param {number|null} [opts.fill_price]     - Parent avg fill price (null unless filled)
- * @param {number|null} [opts.fill_size]      - Parent filled size (null unless filled)
- * @param {number} opts.requested_price       - Price actually signed (rounded / slippage-adjusted)
- * @param {number} opts.requested_size        - Size actually signed (rounded)
- * @param {boolean} [opts.has_tp_sl]          - Whether a TP/SL bracket was attached
- * @param {object[]} [opts.tp_sl_legs]        - Per-leg outcomes for a bracket
- *   ({ leg, status, oid, fill_price?, fill_size? })
+ * @param {'order'|'close'} opts.command  - Which perp command placed the order (routes `path`)
+ * @param {'buy'|'sell'} opts.side        - Normalized trade side
+ * @param {number} [opts.oid]             - Parent leg's Hyperliquid order id (omitted if imprecise)
  */
-export function trackPerpOrderCompleted({
-  command,
-  coin,
-  side,
-  order_type,
-  oid,
-  status,
-  fill_price = null,
-  fill_size = null,
-  requested_price,
-  requested_size,
-  has_tp_sl = false,
-  tp_sl_legs = [],
-}) {
+export function trackPerpOrderCompleted({ command, side, oid }) {
   return sendEvent({
     event: 'perp_order_completed',
     event_source: getEventSource(),
@@ -307,18 +289,8 @@ export function trackPerpOrderCompleted({
     path: commandToPath(`perp ${command}`),
     properties: {
       source: `nansen-cli/${cliVersion}`,
-      command,
-      coin,
       side,
-      order_type,
       ...(oid !== undefined && { oid }),
-      status,
-      fill_price,
-      fill_size,
-      requested_price,
-      requested_size,
-      has_tp_sl,
-      tp_sl_legs,
     },
     context: buildContext(),
   });
