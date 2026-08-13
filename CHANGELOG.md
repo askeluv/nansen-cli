@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.37.0
+
+### Minor Changes
+
+- [#481](https://github.com/nansen-ai/nansen-cli/pull/481) [`ccaa40b`](https://github.com/nansen-ai/nansen-cli/commit/ccaa40beb570c2a6df5917ded308c3bb1722eb70) Thanks [@kome12](https://github.com/kome12)! - Add `research profiler first-funder` command to look up the first wallet that funded an EVM address. The funder is the earliest address to send native gas, resolved across chains, returned with its Nansen label and the funding transaction.
+
+- [#485](https://github.com/nansen-ai/nansen-cli/pull/485) [`b49c758`](https://github.com/nansen-ai/nansen-cli/commit/b49c75866379421c0738032e1f98a4a74b3fb5b4) Thanks [@MarcLlopart](https://github.com/MarcLlopart)! - `nansen perp order` and `perp close` now print the Hyperliquid order id (`oid`) and fill (size @ avg price) returned by the exchange, plus a ready-to-run `nansen perp cancel` command for any resting order — mirroring how spot trading surfaces its quote id. TP/SL bracket legs are labelled (parent / take-profit / stop-loss). Order ids are uint64; an id beyond JavaScript's safe integer range (2^53) is detected and its exact value and cancel hint are withheld rather than shown rounded, so a wrong id is never presented as actionable.
+
+### Patch Changes
+
+- [#483](https://github.com/nansen-ai/nansen-cli/pull/483) [`d0d10a2`](https://github.com/nansen-ai/nansen-cli/commit/d0d10a266e32aa086a8934acaa8e1d0b9ddff2e2) Thanks [@kome12](https://github.com/kome12)! - Unknown-command errors now detect when a whole multi-word command was passed as a single argument (a common shell-quoting mistake, e.g. `nansen "trade --help"` or an unquoted variable under zsh) and point at the likely cause instead of a bare "Unknown command".
+
+- [#484](https://github.com/nansen-ai/nansen-cli/pull/484) [`bc5f774`](https://github.com/nansen-ai/nansen-cli/commit/bc5f774165df7103eff9ba5cfcdc660bcec5d752) Thanks [@kome12](https://github.com/kome12)! - Write the cost-map and update-check cache files atomically (temp file + rename) so concurrent `nansen` processes can no longer observe an empty or truncated cache.
+
+- [#465](https://github.com/nansen-ai/nansen-cli/pull/465) [`4105193`](https://github.com/nansen-ai/nansen-cli/commit/41051932236a37121819e0d1bf47c8fb34422ec8) Thanks [@dobbydobap](https://github.com/dobbydobap)! - Fix `nansen quote --help`, `nansen trade quote --help`, and `nansen execute --help` to print the trade usage and exit with code 0 instead of erroring with exit code 1.
+
+- [#485](https://github.com/nansen-ai/nansen-cli/pull/485) [`c9aaf58`](https://github.com/nansen-ai/nansen-cli/commit/c9aaf58923819c014588cb2c068600ad9872276e) Thanks [@MarcLlopart](https://github.com/MarcLlopart)! - `nansen perp order` / `perp close` now emit an anonymous `perp_order_completed` telemetry event after the Hyperliquid `/exchange` response is parsed. Perp orders bypass the Nansen API on submit (the CLI signs and posts straight to Hyperliquid), so this client-side event is the only signal that an order was placed. The payload is deliberately minimal — only the trade side and the Hyperliquid order id (omitted when it exceeded JS safe-integer precision); no asset, price, size, or fill detail is sent. The telemetry disclosure (CLI help footer and module docs) names exactly these fields. Honours the existing `DO_NOT_TRACK` / `NANSEN_NO_TELEMETRY` opt-out; order rejections remain covered by `cli_command_failed`.
+
+- [#478](https://github.com/nansen-ai/nansen-cli/pull/478) [`758ce13`](https://github.com/nansen-ai/nansen-cli/commit/758ce13b7c65a5a88d20378ae1ad5cc7bba7d7ba) Thanks [@boleklebovski](https://github.com/boleklebovski)! - Document the missing `trade quote` and `trade execute` options in `src/schema.json`: `--swap-mode`, `--slippage`, `--auto-slippage`, `--max-auto-slippage`, `--quote`, `--quote-index` and `--no-simulate`. These options are already implemented and documented for humans, but were absent from the machine-readable schema.
+
+- [#488](https://github.com/nansen-ai/nansen-cli/pull/488) [`f653b37`](https://github.com/nansen-ai/nansen-cli/commit/f653b3761a4abc8e8a45d3ff42cedf0241a8ff20) Thanks [@gulshngill](https://github.com/gulshngill)! - Warn on logout when `NANSEN_API_KEY` remains active in the environment.
+
 ## 1.36.2
 
 ### Patch Changes
