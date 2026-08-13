@@ -31,24 +31,26 @@ Use this skill when a user already has a nansen-cli wallet set up with the
 ## Detect current state
 
 `wallet show` only displays addresses and does NOT load or check the password.
-To detect the actual password situation, check for stored password sources:
+To detect the actual password situation, check the stored password source directly:
 
 ```bash
-# 1. Check if a wallet exists at all
-nansen wallet list 2>&1
+# 1. Where is the password stored? Offline, decrypts nothing, prints no secrets
+nansen auth status --pretty     # → x402.password.source: "env" | "keychain" | "file" | null
 
-# 2. Check for insecure password stores
+# 2. Full setup check — flags the insecure .credentials file with a fix
+nansen doctor --offline
+
+# 3. Legacy pattern doctor does not cover: password written to ~/.nansen/.env
 ls -la ~/.nansen/.env 2>/dev/null && echo "FOUND: ~/.nansen/.env (insecure)"
-ls -la ~/.nansen/wallets/.credentials 2>/dev/null && echo "FOUND: .credentials file (insecure)"
-
-# 3. Try an operation that requires the password (without setting env var)
-nansen wallet export default 2>&1
 ```
 
-Interpret the `export` output:
-- `⚠ Password loaded from ~/.nansen/wallets/.credentials` on stderr → needs migration (Path B)
-- Export succeeds silently → password is in keychain, no migration needed
-- `PASSWORD_REQUIRED` JSON error → password not persisted anywhere (Path C or D)
+Interpret `x402.password.source`:
+- `"file"` → password in `.credentials` file, needs migration (Path B)
+- `"keychain"` → already secure, no migration needed
+- `null` → password not persisted anywhere (Path C or D)
+- `"env"` → `NANSEN_WALLET_PASSWORD` is set; check where it is being exported from (a `.env` file → Path A)
+
+Do NOT use `nansen wallet export` to probe the password state — it prints private keys.
 
 ## Migration paths
 

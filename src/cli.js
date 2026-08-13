@@ -15,6 +15,7 @@ import { buildResearchCommands, RESEARCH_HISTORICAL_SUBCOMMANDS } from './comman
 import { resolveAddress, isEnsName } from './ens.js';
 import fs from 'fs';
 import { getUpdateNotification, getUpgradeNotice, scheduleUpdateCheck } from './update-check.js';
+import { getAuthStatus, runDoctorChecks, runConnectivityChecks, formatDoctorReport } from './doctor.js';
 import { refreshCostMapIfStale, getCostForEndpoint, creditsCharged } from './cost-cache.js';
 import { creditWarning, noticeWarnings } from './response-meta.js';
 import { trackCommandSucceeded, trackCommandFailed } from './telemetry.js';
@@ -22,7 +23,7 @@ import { createRequire } from 'module';
 import * as readline from 'readline';
 
 const require = createRequire(import.meta.url);
-const { version: VERSION } = require('../package.json');
+const { version: VERSION, engines: ENGINES } = require('../package.json');
 
 // ============= Schema Definition =============
 
@@ -189,7 +190,7 @@ export function parseArgs(args) {
       const key = arg.slice(2);
       const next = args[i + 1];
       
-      if (key === 'pretty' || key === 'help' || key === 'version' || key === 'table' || key === 'no-retry' || key === 'cache' || key === 'no-cache' || key === 'stream' || key === 'enrich' || key === 'full' || key === 'human' || key === 'enabled' || key === 'disabled' || key === 'expert' || key === 'json') {
+      if (key === 'pretty' || key === 'help' || key === 'version' || key === 'table' || key === 'no-retry' || key === 'cache' || key === 'no-cache' || key === 'stream' || key === 'enrich' || key === 'full' || key === 'human' || key === 'enabled' || key === 'disabled' || key === 'expert' || key === 'json' || key === 'offline') {
         result.flags[key] = true;
       } else if (next && (!next.startsWith('-') || /^-\d/.test(next))) {
         // Try to parse as JSON first (for objects/arrays/booleans),
@@ -729,8 +730,10 @@ COMMANDS:
   alerts      list, create, update, toggle, delete
   web         search, fetch
   account     Show API key status, plan, and remaining credits
+  auth        status — offline auth status: key source, wallets (no network)
   login       Save API key (--api-key <key>, --human, or NANSEN_API_KEY env var)
   logout      Remove saved API key
+  doctor      Diagnostics: auth, wallets, caches, connectivity (--offline --json)
   schema      JSON schema for all commands (use "nansen schema <cmd>" for one)
   cache       clear
   changelog   --since <version> to filter
@@ -883,6 +886,31 @@ export function buildCommands(deps = {}) {
   const cmds = {
     'account': async (_args, apiInstance, _flags, _options) => {
       return apiInstance.getAccount();
+    },
+
+    'auth': async (args, _apiInstance, _flags, _options) => {
+      const subcommand = args[0] || 'status';
+      if (subcommand !== 'status') {
+        throw new NansenError(`Unknown auth subcommand: ${subcommand}. Available: status`, ErrorCode.UNKNOWN);
+      }
+      return getAuthStatus();
+    },
+
+    'doctor': async (_args, _apiInstance, flags, _options) => {
+      const checks = runDoctorChecks({ cliVersion: VERSION, engines: ENGINES });
+      if (!flags.offline) {
+        checks.push(...await runConnectivityChecks());
+      }
+      if (flags.json) {
+        return {
+          version: VERSION,
+          offline: Boolean(flags.offline),
+          checks,
+          errors: checks.filter(c => c.status === 'error').length,
+          warnings: checks.filter(c => c.status === 'warn').length,
+        };
+      }
+      log(formatDoctorReport(checks, { cliVersion: VERSION, offline: Boolean(flags.offline) }));
     },
 
     'web': async (args, apiInstance, flags, options) => {

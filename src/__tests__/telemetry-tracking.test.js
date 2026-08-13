@@ -157,6 +157,35 @@ describe('telemetry tracking for all first-level commands', () => {
     expect(trackSucceeded.mock.calls[0][0].command).toBe('changelog');
   });
 
+  // auth/doctor are offline but still read the wallet password source; pin the
+  // env var so retrievePassword() never touches the real OS keychain.
+  function withWalletPassword(fn) {
+    return async () => {
+      const prev = process.env.NANSEN_WALLET_PASSWORD;
+      process.env.NANSEN_WALLET_PASSWORD = 'test-pw';
+      try {
+        await fn();
+      } finally {
+        if (prev === undefined) delete process.env.NANSEN_WALLET_PASSWORD;
+        else process.env.NANSEN_WALLET_PASSWORD = prev;
+      }
+    };
+  }
+
+  it('auth status', withWalletPassword(async () => {
+    await runCLI(['auth', 'status'], baseDeps());
+    expect(wasTracked()).toBe(1);
+    expect(trackSucceeded).toHaveBeenCalledOnce();
+    expect(trackSucceeded.mock.calls[0][0].command).toBe('auth status');
+  }));
+
+  it('doctor (--offline keeps the test off the network)', withWalletPassword(async () => {
+    await runCLI(['doctor', '--offline'], baseDeps());
+    expect(wasTracked()).toBe(1);
+    expect(trackSucceeded).toHaveBeenCalledOnce();
+    expect(trackSucceeded.mock.calls[0][0].command).toBe('doctor');
+  }));
+
   it('wallet (help subcommand)', async () => {
     await runCLI(['wallet'], baseDeps());
     expect(wasTracked()).toBe(1);
@@ -244,7 +273,7 @@ describe('telemetry tracking for all first-level commands', () => {
       'smart-money', 'profiler', 'token', 'search', 'perp', 'portfolio', 'points', 'prediction-market',
       'research',
       // operational
-      'account', 'login', 'logout', 'schema', 'cache', 'changelog',
+      'account', 'auth', 'doctor', 'login', 'logout', 'schema', 'cache', 'changelog',
       'web',
       // wallet, trading, bridge & perp
       'wallet', 'trade', 'quote', 'execute', 'bridge-status', 'bridge', 'perp',
