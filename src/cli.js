@@ -15,6 +15,7 @@ import { buildResearchCommands, RESEARCH_HISTORICAL_SUBCOMMANDS } from './comman
 import { resolveAddress, isEnsName } from './ens.js';
 import fs from 'fs';
 import { getUpdateNotification, getUpgradeNotice, scheduleUpdateCheck } from './update-check.js';
+import { getAuthStatus, runDoctorChecks, runConnectivityChecks, formatDoctorReport } from './doctor.js';
 import { refreshCostMapIfStale, getCostForEndpoint, creditsCharged } from './cost-cache.js';
 import { creditWarning, noticeWarnings } from './response-meta.js';
 import { trackCommandSucceeded, trackCommandFailed } from './telemetry.js';
@@ -22,7 +23,7 @@ import { createRequire } from 'module';
 import * as readline from 'readline';
 
 const require = createRequire(import.meta.url);
-const { version: VERSION } = require('../package.json');
+const { version: VERSION, engines: ENGINES } = require('../package.json');
 
 // ============= Schema Definition =============
 
@@ -189,7 +190,7 @@ export function parseArgs(args) {
       const key = arg.slice(2);
       const next = args[i + 1];
       
-      if (key === 'pretty' || key === 'help' || key === 'version' || key === 'table' || key === 'no-retry' || key === 'cache' || key === 'no-cache' || key === 'stream' || key === 'enrich' || key === 'full' || key === 'human' || key === 'enabled' || key === 'disabled' || key === 'expert' || key === 'json') {
+      if (key === 'pretty' || key === 'help' || key === 'version' || key === 'table' || key === 'no-retry' || key === 'cache' || key === 'no-cache' || key === 'stream' || key === 'enrich' || key === 'full' || key === 'human' || key === 'enabled' || key === 'disabled' || key === 'expert' || key === 'json' || key === 'offline') {
         result.flags[key] = true;
       } else if (next && (!next.startsWith('-') || /^-\d/.test(next))) {
         // Try to parse as JSON first (for objects/arrays/booleans),
@@ -729,8 +730,10 @@ COMMANDS:
   alerts      list, create, update, toggle, delete
   web         search, fetch
   account     Show API key status, plan, and remaining credits
+  auth        status — offline auth status: key source, wallets (no network)
   login       Save API key (--api-key <key>, --human, or NANSEN_API_KEY env var)
   logout      Remove saved API key
+  doctor      Diagnostics: auth, wallets, caches, connectivity (--offline --json)
   schema      JSON schema for all commands (use "nansen schema <cmd>" for one)
   cache       clear
   changelog   --since <version> to filter
@@ -884,6 +887,31 @@ export function buildCommands(deps = {}) {
   const cmds = {
     'account': async (_args, apiInstance, _flags, _options) => {
       return apiInstance.getAccount();
+    },
+
+    'auth': async (args, _apiInstance, _flags, _options) => {
+      const subcommand = args[0] || 'status';
+      if (subcommand !== 'status') {
+        throw new NansenError(`Unknown auth subcommand: ${subcommand}. Available: status`, ErrorCode.UNKNOWN);
+      }
+      return getAuthStatus();
+    },
+
+    'doctor': async (_args, _apiInstance, flags, _options) => {
+      const checks = runDoctorChecks({ cliVersion: VERSION, engines: ENGINES });
+      if (!flags.offline) {
+        checks.push(...await runConnectivityChecks());
+      }
+      if (flags.json) {
+        return {
+          version: VERSION,
+          offline: Boolean(flags.offline),
+          checks,
+          errors: checks.filter(c => c.status === 'error').length,
+          warnings: checks.filter(c => c.status === 'warn').length,
+        };
+      }
+      log(formatDoctorReport(checks, { cliVersion: VERSION, offline: Boolean(flags.offline) }));
     },
 
     'web': async (args, apiInstance, flags, options) => {
@@ -1815,10 +1843,17 @@ export async function runCLI(rawArgs, deps = {}) {
   const stream = flags.stream || flags.s;
   const csv = options.format === 'csv';
 
+  // `auth` and `doctor --offline` promise zero network activity — that
+  // contract covers the background update-check fetch and telemetry too,
+  // not just the command's own requests.
+  const isOfflineCommand = command === 'auth' || (command === 'doctor' && flags.offline);
+  const trackSucceeded = isOfflineCommand ? async () => {} : trackCommandSucceeded;
+  const trackFailed = isOfflineCommand ? async () => {} : trackCommandFailed;
+
   // Update check (read cached result + schedule background refresh)
   const updateNotification = getUpdateNotification(VERSION);
   const upgradeNotice = getUpgradeNotice(VERSION);
-  scheduleUpdateCheck();
+  if (!isOfflineCommand) scheduleUpdateCheck();
   const notify = () => {
     if (upgradeNotice) errorOutput(upgradeNotice);
     if (updateNotification) errorOutput(updateNotification);
@@ -1839,7 +1874,9 @@ export async function runCLI(rawArgs, deps = {}) {
   }
 
   if (command === 'help' || flags.help || flags.h) {
-    await refreshCostMapIfStale();
+    // Help for an offline command still owes the zero-network contract: the
+    // cost-map refresh fetches the OpenAPI spec and writes ~/.nansen/cost-map.json.
+    if (!isOfflineCommand) await refreshCostMapIfStale();
     // Check for subcommand-specific help: nansen <command> <subcommand> --help
     if (flags.help || flags.h) {
       // Handle 'research <category> <sub> --help' (3-level)
@@ -1972,7 +2009,7 @@ export async function runCLI(rawArgs, deps = {}) {
     };
     const formatted = formatOutput(errorData, { pretty, table });
     output(formatted.text);
-    await trackCommandFailed({ command: fullCommand, duration_ms: Date.now() - startTime, error_code: 'UNKNOWN_COMMAND', flags: usedFlags, chain });
+    await trackFailed({ command: fullCommand, duration_ms: Date.now() - startTime, error_code: 'UNKNOWN_COMMAND', flags: usedFlags, chain });
     exit(1);
     return { type: 'error', data: errorData };
   }
@@ -2025,7 +2062,7 @@ export async function runCLI(rawArgs, deps = {}) {
 
     // Commands that handle their own output return undefined
     if (result === undefined) {
-      await trackCommandSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, flags: usedFlags, chain });
+      await trackSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, flags: usedFlags, chain });
       return { type: 'no-output', command };
     }
 
@@ -2033,7 +2070,7 @@ export async function runCLI(rawArgs, deps = {}) {
     if (command === 'schema') {
       const formatted = formatOutput(result, { pretty, table: false });
       output(formatted.text);
-      await trackCommandSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, flags: usedFlags, chain });
+      await trackSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, flags: usedFlags, chain });
       return { type: 'schema', data: result };
     }
 
@@ -2046,7 +2083,7 @@ export async function runCLI(rawArgs, deps = {}) {
     // Alerts list with --table uses custom table format
     if (command === 'alerts' && subcommand === 'list' && table) {
       output(formatAlertsTable(result));
-      await trackCommandSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, flags: usedFlags, chain });
+      await trackSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, flags: usedFlags, chain });
       return { type: 'success', data: result };
     }
 
@@ -2057,14 +2094,14 @@ export async function runCLI(rawArgs, deps = {}) {
       if (streamOutput) {
         output(streamOutput);
       }
-      await trackCommandSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, from_cache: !!result?.fromCache, flags: usedFlags, chain });
+      await trackSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, from_cache: !!result?.fromCache, flags: usedFlags, chain });
       return { type: 'stream', data: result };
     }
 
     const successData = { success: true, data: result };
     const formatted = formatOutput(successData, { pretty, table, csv });
     output(formatted.text);
-    await trackCommandSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, from_cache: !!result?.fromCache, flags: usedFlags, chain });
+    await trackSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, from_cache: !!result?.fromCache, flags: usedFlags, chain });
     return { type: csv ? 'csv' : 'success', data: result };
   } catch (error) {
     // Unified error envelope across all command families (perp/bridge/trade):
@@ -2079,7 +2116,7 @@ export async function runCLI(rawArgs, deps = {}) {
       const formatted = formatOutput(errorData, { pretty, table, csv });
       output(formatted.text);
     }
-    await trackCommandFailed({
+    await trackFailed({
       command: fullCommand,
       duration_ms: Date.now() - startTime,
       error_code: error.code || 'UNKNOWN',

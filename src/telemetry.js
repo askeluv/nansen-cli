@@ -30,8 +30,15 @@ const TIMEOUT_MS = 1000;
 
 // ─── opt-out ──────────────────────────────────────────────
 
-export const TELEMETRY_DISABLED =
-  process.env.DO_NOT_TRACK === '1' || process.env.NANSEN_NO_TELEMETRY === '1';
+/**
+ * The single source of truth for the opt-out predicate — only the literal '1'
+ * disables telemetry. Also used by `nansen doctor` to report telemetry state.
+ */
+export function isTelemetryDisabled(env = process.env) {
+  return env.DO_NOT_TRACK === '1' || env.NANSEN_NO_TELEMETRY === '1';
+}
+
+export const TELEMETRY_DISABLED = isTelemetryDisabled();
 
 // ─── environment ──────────────────────────────────────────
 

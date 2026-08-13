@@ -1831,6 +1831,56 @@
     "account": {
       "description": "Show API key status, plan, and remaining credits. Does not consume credits."
     },
+    "auth": {
+      "description": "Offline authentication status. Reports API key presence and source (env var vs config file), base URL, and x402 wallet readiness without any network call. Consumes no credits.",
+      "subcommands": {
+        "status": {
+          "description": "Show where credentials come from, entirely offline",
+          "returns": [
+            "logged_in",
+            "api_key.present",
+            "api_key.source",
+            "api_key.masked",
+            "config_file.path",
+            "config_file.exists",
+            "config_file.error",
+            "base_url.value",
+            "base_url.source",
+            "x402.configured",
+            "x402.wallets_dir",
+            "x402.wallets_dir_error",
+            "x402.wallet_count",
+            "x402.default_wallet",
+            "x402.default_wallet_provider",
+            "x402.password.available",
+            "x402.password.source",
+            "x402.password.keychain_available",
+            "offline"
+          ],
+          "examples": [
+            "nansen auth status --pretty"
+          ]
+        }
+      }
+    },
+    "doctor": {
+      "description": "Diagnostics for the CLI setup: Node version, auth config, wallet storage and password hygiene, keychain availability, caches, telemetry, plus a safe API connectivity probe (unauthenticated, consumes no credits). Local checks work with the API unavailable; --offline skips network entirely.",
+      "options": {
+        "json": {
+          "type": "boolean",
+          "description": "Return machine-readable checks ({id, status, message, fix?}) instead of formatted text"
+        },
+        "offline": {
+          "type": "boolean",
+          "description": "Skip the connectivity probe — no network access at all"
+        }
+      },
+      "examples": [
+        "nansen doctor",
+        "nansen doctor --offline",
+        "nansen doctor --json --pretty"
+      ]
+    },
     "web": {
       "description": "Web search and fetch commands",
       "subcommands": {

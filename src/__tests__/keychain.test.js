@@ -13,7 +13,7 @@ vi.mock('child_process', () => ({
 }));
 
 import { execFileSync } from 'child_process';
-import { storePassword, retrievePassword, deletePassword, deleteCredentialsFile, resolvePassword } from '../keychain.js';
+import { storePassword, retrievePassword, deletePassword, deleteCredentialsFile, resolvePassword, passwordSource } from '../keychain.js';
 
 describe('keychain', () => {
   let originalPlatform;
@@ -213,6 +213,48 @@ describe('keychain', () => {
       setPlatform('freebsd');
       delete process.env.NANSEN_WALLET_PASSWORD;
       expect(resolvePassword()).toBeNull();
+    });
+  });
+
+  describe('passwordSource (metadata-only)', () => {
+    it('reports env without touching the keychain', () => {
+      process.env.NANSEN_WALLET_PASSWORD = 'env-pw';
+      expect(passwordSource()).toBe('env');
+      expect(execFileSync).not.toHaveBeenCalled();
+    });
+
+    it('reports keychain on macOS without requesting the secret', () => {
+      setPlatform('darwin');
+      delete process.env.NANSEN_WALLET_PASSWORD;
+      execFileSync.mockReturnValue(Buffer.from(''));
+      expect(passwordSource()).toBe('keychain');
+      // Attribute lookup only — the -w flag (print password) must be absent
+      const args = execFileSync.mock.calls[0][1];
+      expect(args).toContain('find-generic-password');
+      expect(args).not.toContain('-w');
+    });
+
+    it('uses secret-tool search (attributes) rather than lookup (secret) on Linux', () => {
+      setPlatform('linux');
+      delete process.env.NANSEN_WALLET_PASSWORD;
+      execFileSync.mockReturnValue(Buffer.from('[/org/freedesktop/secrets/collection/login/1]\nlabel = nansen-cli\n'));
+      expect(passwordSource()).toBe('keychain');
+      expect(execFileSync.mock.calls[0][1][0]).toBe('search');
+    });
+
+    it('reports file by pattern-matching the credentials file without decoding it', () => {
+      setPlatform('freebsd');
+      delete process.env.NANSEN_WALLET_PASSWORD;
+      const walletsDir = path.join(tempDir, '.nansen', 'wallets');
+      fs.mkdirSync(walletsDir, { recursive: true });
+      fs.writeFileSync(path.join(walletsDir, '.credentials'), 'NANSEN_WALLET_PASSWORD_B64=cHc=\n');
+      expect(passwordSource()).toBe('file');
+    });
+
+    it('returns null when no source exists', () => {
+      setPlatform('freebsd');
+      delete process.env.NANSEN_WALLET_PASSWORD;
+      expect(passwordSource()).toBeNull();
     });
   });
 });
