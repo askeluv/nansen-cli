@@ -1870,7 +1870,9 @@ export async function runCLI(rawArgs, deps = {}) {
   }
 
   if (command === 'help' || flags.help || flags.h) {
-    await refreshCostMapIfStale();
+    // Help for an offline command still owes the zero-network contract: the
+    // cost-map refresh fetches the OpenAPI spec and writes ~/.nansen/cost-map.json.
+    if (!isOfflineCommand) await refreshCostMapIfStale();
     // Check for subcommand-specific help: nansen <command> <subcommand> --help
     if (flags.help || flags.h) {
       // Handle 'research <category> <sub> --help' (3-level)
