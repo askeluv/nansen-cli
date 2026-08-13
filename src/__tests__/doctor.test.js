@@ -121,12 +121,30 @@ describe('doctor', () => {
       expect(status.config_file.exists).toBe(false);
     });
 
-    it('survives a corrupt config file', () => {
+    it('surfaces a corrupt config file instead of a clean "not logged in"', () => {
       fs.mkdirSync(nansenDir(), { recursive: true });
       fs.writeFileSync(path.join(nansenDir(), 'config.json'), 'not json{');
       const status = getAuthStatus(deps());
       expect(status.logged_in).toBe(false);
       expect(status.config_file.exists).toBe(true);
+      expect(status.config_file.error).toBe('parse');
+    });
+
+    it('surfaces an unreadable config file distinctly', () => {
+      writeConfig({ apiKey: 'nk_1234567890abcdef' });
+      fs.chmodSync(path.join(nansenDir(), 'config.json'), 0o000);
+      try {
+        const status = getAuthStatus(deps());
+        expect(status.logged_in).toBe(false);
+        expect(status.config_file.error).toBe('unreadable');
+      } finally {
+        fs.chmodSync(path.join(nansenDir(), 'config.json'), 0o600);
+      }
+    });
+
+    it('reports no config error for a healthy config file', () => {
+      writeConfig({ apiKey: 'nk_1234567890abcdef' });
+      expect(getAuthStatus(deps()).config_file.error).toBeNull();
     });
 
     it('reports x402 wallet readiness', () => {
@@ -212,8 +230,39 @@ describe('doctor', () => {
     it('errors on a corrupt config file', () => {
       fs.mkdirSync(nansenDir(), { recursive: true });
       fs.writeFileSync(path.join(nansenDir(), 'config.json'), 'not json{');
-      const checks = runDoctorChecks(deps());
-      expect(findCheck(checks, 'config-file').status).toBe('error');
+      const check = findCheck(runDoctorChecks(deps()), 'config-file');
+      expect(check.status).toBe('error');
+      expect(check.message).toContain('not valid JSON');
+      expect(check.fix).toContain('nansen login');
+    });
+
+    it('distinguishes an unreadable config file from a corrupt one', () => {
+      writeConfig({ apiKey: 'nk_1234567890abcdef' });
+      fs.chmodSync(path.join(nansenDir(), 'config.json'), 0o000);
+      try {
+        const check = findCheck(runDoctorChecks(deps()), 'config-file');
+        expect(check.status).toBe('error');
+        expect(check.message).toContain('cannot be read');
+        // "nansen login" would not fix a permission problem
+        expect(check.fix).not.toContain('nansen login');
+      } finally {
+        fs.chmodSync(path.join(nansenDir(), 'config.json'), 0o600);
+      }
+    });
+
+    it('distinguishes unreadable wallet files from corrupt ones', () => {
+      writeWallet('good');
+      fs.writeFileSync(path.join(walletsDir(), 'corrupt.json'), 'not json{');
+      fs.writeFileSync(path.join(walletsDir(), 'locked.json'), JSON.stringify({ provider: 'local' }));
+      fs.chmodSync(path.join(walletsDir(), 'locked.json'), 0o000);
+      try {
+        const checks = runDoctorChecks(deps());
+        const fileChecks = checks.filter(c => c.id === 'wallet-file');
+        expect(fileChecks.find(c => c.message.includes('corrupt.json')).message).toContain('not valid JSON');
+        expect(fileChecks.find(c => c.message.includes('locked.json')).message).toContain('cannot be read');
+      } finally {
+        fs.chmodSync(path.join(walletsDir(), 'locked.json'), 0o600);
+      }
     });
 
     it('warns on insecure config file permissions', () => {

@@ -43,12 +43,27 @@ function getCredentialsFilePath(env) {
 
 // ============= Local Readers (never throw) =============
 
-function readJson(filePath) {
+/**
+ * Read + parse a JSON file, distinguishing "cannot read it" (permissions, IO)
+ * from "read it but it is not JSON" — the two need different diagnostics and
+ * different fixes.
+ */
+function readJsonDetailed(filePath) {
+  let raw;
   try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    raw = fs.readFileSync(filePath, 'utf8');
   } catch {
-    return null;
+    return { data: null, error: 'unreadable' };
   }
+  try {
+    return { data: JSON.parse(raw), error: null };
+  } catch {
+    return { data: null, error: 'parse' };
+  }
+}
+
+function readJson(filePath) {
+  return readJsonDetailed(filePath).data;
 }
 
 /**
@@ -73,12 +88,13 @@ function resolveAuthConfig(env, devConfigPath = DEV_CONFIG_PATH) {
 
   let config = null;
   let configPath = null;
-  let configParseError = false;
+  let configError = null;
 
   if (fs.existsSync(userConfigPath)) {
-    config = readJson(userConfigPath);
+    const result = readJsonDetailed(userConfigPath);
+    config = result.data;
     configPath = userConfigPath;
-    if (config === null) configParseError = true;
+    configError = result.error;
   }
   if (!config && fs.existsSync(devConfigPath)) {
     config = readJson(devConfigPath);
@@ -106,7 +122,7 @@ function resolveAuthConfig(env, devConfigPath = DEV_CONFIG_PATH) {
     baseUrlSource,
     configPath,
     configFileExists: fs.existsSync(userConfigPath),
-    configParseError,
+    configError,
   };
 }
 
@@ -122,25 +138,25 @@ function readWallets(env) {
     wallets: [],
     defaultWallet: null,
     passwordHashSet: false,
-    configParseError: false,
+    configError: null,
   };
   if (!result.dirExists) return result;
 
-  const walletConfig = readJson(path.join(dir, 'config.json'));
-  if (fs.existsSync(path.join(dir, 'config.json')) && walletConfig === null) {
-    result.configParseError = true;
-  }
-  result.defaultWallet = walletConfig?.defaultWallet || null;
-  result.passwordHashSet = Boolean(walletConfig?.passwordHash);
+  const configFilePath = path.join(dir, 'config.json');
+  const walletConfig = fs.existsSync(configFilePath) ? readJsonDetailed(configFilePath) : { data: null, error: null };
+  result.configError = walletConfig.error;
+  result.defaultWallet = walletConfig.data?.defaultWallet || null;
+  result.passwordHashSet = Boolean(walletConfig.data?.passwordHash);
 
   let entries = [];
   try { entries = fs.readdirSync(dir); } catch { /* unreadable dir */ }
   for (const entry of entries) {
     if (!entry.endsWith('.json') || entry === 'config.json') continue;
-    const wallet = readJson(path.join(dir, entry));
+    const wallet = readJsonDetailed(path.join(dir, entry));
     result.wallets.push({
       name: entry.replace(/\.json$/, ''),
-      provider: wallet?.provider || (wallet ? 'local' : 'unreadable'),
+      provider: wallet.data?.provider || (wallet.data ? 'local' : null),
+      error: wallet.error,
     });
   }
   return result;
@@ -203,6 +219,9 @@ export function getAuthStatus(deps = {}) {
     config_file: {
       path: getConfigFilePath(env),
       exists: auth.configFileExists,
+      // 'parse' (corrupt JSON) | 'unreadable' (permissions/IO) | null — without
+      // this, a broken config file is indistinguishable from "not logged in"
+      error: auth.configError,
     },
     base_url: {
       value: auth.baseUrl,
@@ -269,7 +288,9 @@ export function runDoctorChecks(deps = {}) {
 
   // --- auth ---
   const auth = resolveAuthConfig(env, devConfigPath);
-  if (auth.configParseError) {
+  if (auth.configError === 'unreadable') {
+    checks.push(check('config-file', 'error', `${getConfigFilePath(env)} exists but cannot be read — permission problem?`, `Check ownership and mode: ls -l ${getConfigFilePath(env)}`));
+  } else if (auth.configError === 'parse') {
     checks.push(check('config-file', 'error', `${getConfigFilePath(env)} exists but is not valid JSON`, 'Run: nansen login (re-saves the file)'));
   }
   if (auth.apiKey) {
@@ -277,7 +298,7 @@ export function runDoctorChecks(deps = {}) {
       ? 'NANSEN_API_KEY env var'
       : `config file ${auth.configPath}`;
     checks.push(check('api-key', 'ok', `API key found (${maskKey(auth.apiKey)}, source: ${sourceLabel})`));
-    if (auth.apiKeySource === 'env' && auth.configFileExists && !auth.configParseError) {
+    if (auth.apiKeySource === 'env' && auth.configFileExists && !auth.configError) {
       const fileKey = readJson(getConfigFilePath(env))?.apiKey;
       if (fileKey && fileKey !== auth.apiKey) {
         checks.push(check('api-key-shadow', 'warn', 'NANSEN_API_KEY env var overrides a different key saved in the config file'));
@@ -303,8 +324,9 @@ export function runDoctorChecks(deps = {}) {
     : check('keychain', 'info', 'No OS keychain on this platform — wallet passwords fall back to the .credentials file'));
 
   const walletInfo = readWallets(env);
-  if (walletInfo.configParseError) {
-    checks.push(check('wallet-config', 'error', `${path.join(walletInfo.dir, 'config.json')} exists but is not valid JSON`));
+  if (walletInfo.configError) {
+    const problem = walletInfo.configError === 'unreadable' ? 'cannot be read — permission problem?' : 'is not valid JSON';
+    checks.push(check('wallet-config', 'error', `${path.join(walletInfo.dir, 'config.json')} exists but ${problem}`));
   }
   if (!walletInfo.dirExists || walletInfo.wallets.length === 0) {
     checks.push(check('wallets', 'info', 'No local wallets (only needed for trading and x402 micropayments)', 'Run: nansen wallet create <name>'));
@@ -314,9 +336,9 @@ export function runDoctorChecks(deps = {}) {
     if (walletInfo.defaultWallet && !walletInfo.wallets.some(w => w.name === walletInfo.defaultWallet)) {
       checks.push(check('default-wallet', 'error', `Default wallet "${walletInfo.defaultWallet}" has no wallet file`, 'Run: nansen wallet default <name>'));
     }
-    const unreadable = walletInfo.wallets.filter(w => w.provider === 'unreadable');
-    for (const w of unreadable) {
-      checks.push(check('wallet-file', 'error', `Wallet file ${path.join(walletInfo.dir, `${w.name}.json`)} is not valid JSON`));
+    for (const w of walletInfo.wallets.filter(w => w.error)) {
+      const problem = w.error === 'unreadable' ? 'cannot be read — permission problem?' : 'is not valid JSON';
+      checks.push(check('wallet-file', 'error', `Wallet file ${path.join(walletInfo.dir, `${w.name}.json`)} ${problem}`));
     }
     if (posixModes) {
       const walletsDirMode = fileMode(walletInfo.dir);

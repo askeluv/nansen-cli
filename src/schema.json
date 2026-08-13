@@ -1843,6 +1843,7 @@
             "api_key.masked",
             "config_file.path",
             "config_file.exists",
+            "config_file.error",
             "base_url.value",
             "base_url.source",
             "x402.configured",
