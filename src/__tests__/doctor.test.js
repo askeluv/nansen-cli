@@ -1,7 +1,7 @@
 /**
  * Tests for src/doctor.js — offline auth status and doctor diagnostics.
  * All state lives in a temp HOME; the keychain is stubbed via the
- * retrievePasswordFn seam, so nothing touches the real machine or network.
+ * passwordSourceFn seam, so nothing touches the real machine or network.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -20,7 +20,7 @@ describe('doctor', () => {
   // env leaves unset), no repo-local dev config.json
   const deps = (overrides = {}) => ({
     env,
-    retrievePasswordFn: () => ({ password: null, source: null }),
+    passwordSourceFn: () => null,
     devConfigPath: path.join(tempDir, 'nonexistent-dev-config.json'),
     platform: 'linux',
     ...overrides,
@@ -111,6 +111,17 @@ describe('doctor', () => {
       expect(status.base_url).toEqual({ value: 'https://api.example.dev', source: 'env' });
     });
 
+    it('reports an unreadable wallets directory instead of "no wallets"', () => {
+      writeWallet('trading');
+      fs.chmodSync(walletsDir(), 0o000);
+      try {
+        const status = getAuthStatus(deps());
+        expect(status.x402.wallets_dir_error).toBe('unreadable');
+      } finally {
+        fs.chmodSync(walletsDir(), 0o700);
+      }
+    });
+
     it('reports dev-config as a distinct key source', () => {
       const devConfigPath = path.join(tempDir, 'dev-config.json');
       fs.writeFileSync(devConfigPath, JSON.stringify({ apiKey: 'nk_dev_key_123456' }));
@@ -152,7 +163,7 @@ describe('doctor', () => {
       writeWallet('privy-1', { provider: 'privy' });
       writeWalletConfig({ defaultWallet: 'trading', passwordHash: null });
       const status = getAuthStatus(deps({
-        retrievePasswordFn: () => ({ password: 'pw', source: 'keychain' }),
+        passwordSourceFn: () => 'keychain',
       }));
       expect(status.x402.configured).toBe(true);
       expect(status.x402.wallet_count).toBe(2);
@@ -201,6 +212,38 @@ describe('doctor', () => {
       const check = findCheck(checks, 'base-url');
       expect(check.status).toBe('warn');
       expect(check.message).toContain('https://api.example.dev');
+    });
+
+    it('warns on a non-default base URL from the config file', () => {
+      writeConfig({ apiKey: 'nk_1234567890abcdef', baseUrl: 'https://api.example.dev' });
+      const check = findCheck(runDoctorChecks(deps()), 'base-url');
+      expect(check.status).toBe('warn');
+      expect(check.message).toContain('https://api.example.dev');
+      expect(check.message).toContain('config.json');
+    });
+
+    it('reports ok for the default base URL saved in the config file', () => {
+      writeConfig({ apiKey: 'nk_1234567890abcdef', baseUrl: 'https://api.nansen.ai' });
+      expect(findCheck(runDoctorChecks(deps()), 'base-url').status).toBe('ok');
+    });
+
+    it('errors when the wallets directory cannot be read', () => {
+      writeWallet('trading');
+      fs.chmodSync(walletsDir(), 0o000);
+      try {
+        const check = findCheck(runDoctorChecks(deps()), 'wallets');
+        expect(check.status).toBe('error');
+        expect(check.message).toContain('cannot be read');
+      } finally {
+        fs.chmodSync(walletsDir(), 0o700);
+      }
+    });
+
+    it('quotes paths in suggested fix commands', () => {
+      writeConfig({ apiKey: 'nk_1234567890abcdef' });
+      fs.chmodSync(path.join(nansenDir(), 'config.json'), 0o644);
+      const check = findCheck(runDoctorChecks(deps()), 'config-perms');
+      expect(check.fix).toContain(`chmod 600 "${path.join(nansenDir(), 'config.json')}"`);
     });
 
     it('warns with a login fix when no API key is configured', () => {
@@ -290,7 +333,7 @@ describe('doctor', () => {
       writeWallet('trading');
       writeWalletConfig({ defaultWallet: 'trading' });
       const checks = runDoctorChecks(deps({
-        retrievePasswordFn: () => ({ password: 'pw', source: 'keychain' }),
+        passwordSourceFn: () => 'keychain',
       }));
       const check = findCheck(checks, 'wallets');
       expect(check.status).toBe('ok');
@@ -308,7 +351,7 @@ describe('doctor', () => {
     it('warns when the password lives in the insecure .credentials file', () => {
       writeWallet('trading');
       const checks = runDoctorChecks(deps({
-        retrievePasswordFn: () => ({ password: 'pw', source: 'file' }),
+        passwordSourceFn: () => 'file',
       }));
       const check = findCheck(checks, 'wallet-password');
       expect(check.status).toBe('warn');
@@ -328,7 +371,7 @@ describe('doctor', () => {
       writeWallet('trading');
       fs.writeFileSync(path.join(walletsDir(), '.credentials'), 'NANSEN_WALLET_PASSWORD_B64=cHc=\n', { mode: 0o600 });
       const checks = runDoctorChecks(deps({
-        retrievePasswordFn: () => ({ password: 'pw', source: 'keychain' }),
+        passwordSourceFn: () => 'keychain',
       }));
       expect(findCheck(checks, 'stale-credentials').status).toBe('warn');
     });

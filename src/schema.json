@@ -1847,6 +1847,8 @@
             "base_url.value",
             "base_url.source",
             "x402.configured",
+            "x402.wallets_dir",
+            "x402.wallets_dir_error",
             "x402.wallet_count",
             "x402.default_wallet",
             "x402.default_wallet_provider",

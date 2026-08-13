@@ -169,6 +169,52 @@ function credentialsFileDelete() {
   }
 }
 
+// ============= Metadata-Only Checks =============
+
+function keychainHasEntry() {
+  try {
+    if (process.platform === 'darwin') {
+      // Without -w this prints attributes only — the secret never leaves the keychain
+      execFileSync('/usr/bin/security', [
+        'find-generic-password',
+        '-s', SERVICE,
+        '-a', ACCOUNT,
+      ], { timeout: TIMEOUT_MS, stdio: 'pipe' });
+      return true;
+    }
+
+    if (process.platform === 'linux') {
+      // `search` prints attributes, unlike `lookup` which prints the secret
+      const result = execFileSync('secret-tool', [
+        'search',
+        'service', SERVICE,
+        'account', ACCOUNT,
+      ], { timeout: TIMEOUT_MS, stdio: ['pipe', 'pipe', 'pipe'] });
+      return result.toString().trim().length > 0;
+    }
+
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Where a wallet password is stored, without ever materializing the secret:
+ * env presence, keychain attribute search, and a regex test on the
+ * credentials file (the base64 value is never decoded).
+ * @returns {'env'|'keychain'|'file'|null}
+ */
+export function passwordSource() {
+  if (process.env.NANSEN_WALLET_PASSWORD) return 'env';
+  if (keychainHasEntry()) return 'keychain';
+  try {
+    const content = fs.readFileSync(getCredentialsPath(), 'utf8');
+    if (/^NANSEN_WALLET_PASSWORD(_B64)?=.+$/m.test(content)) return 'file';
+  } catch { /* missing or unreadable */ }
+  return null;
+}
+
 // ============= Public API =============
 
 /**

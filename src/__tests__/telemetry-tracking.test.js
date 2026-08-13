@@ -12,7 +12,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const trackSucceeded = vi.fn();
 const trackFailed = vi.fn();
 
-vi.mock('../telemetry.js', () => ({
+vi.mock('../telemetry.js', async (importOriginal) => ({
+  ...(await importOriginal()),
   trackCommandSucceeded: trackSucceeded,
   trackCommandFailed: trackFailed,
   getAnonymousId: () => 'test-anon-id',
@@ -172,18 +173,28 @@ describe('telemetry tracking for all first-level commands', () => {
     };
   }
 
-  it('auth status', withWalletPassword(async () => {
+  // `auth` and `doctor --offline` promise ZERO network activity, which
+  // includes telemetry — they are deliberately untracked.
+  it('auth status does not trigger telemetry (offline contract)', withWalletPassword(async () => {
     await runCLI(['auth', 'status'], baseDeps());
-    expect(wasTracked()).toBe(1);
-    expect(trackSucceeded).toHaveBeenCalledOnce();
-    expect(trackSucceeded.mock.calls[0][0].command).toBe('auth status');
+    expect(wasTracked()).toBe(0);
   }));
 
-  it('doctor (--offline keeps the test off the network)', withWalletPassword(async () => {
+  it('doctor --offline does not trigger telemetry (offline contract)', withWalletPassword(async () => {
     await runCLI(['doctor', '--offline'], baseDeps());
-    expect(wasTracked()).toBe(1);
-    expect(trackSucceeded).toHaveBeenCalledOnce();
-    expect(trackSucceeded.mock.calls[0][0].command).toBe('doctor');
+    expect(wasTracked()).toBe(0);
+  }));
+
+  it('doctor without --offline tracks normally', withWalletPassword(async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200 }));
+    try {
+      await runCLI(['doctor'], baseDeps());
+      expect(wasTracked()).toBe(1);
+      expect(trackSucceeded).toHaveBeenCalledOnce();
+      expect(trackSucceeded.mock.calls[0][0].command).toBe('doctor');
+    } finally {
+      vi.unstubAllGlobals();
+    }
   }));
 
   it('wallet (help subcommand)', async () => {
@@ -272,7 +283,8 @@ describe('telemetry tracking for all first-level commands', () => {
       // research sub-categories (tested via both `research <cat>` and deprecated alias)
       'smart-money', 'profiler', 'token', 'search', 'perp', 'portfolio', 'points', 'prediction-market',
       'research',
-      // operational
+      // operational ('auth' and 'doctor --offline' are tested as deliberately
+      // untracked — the offline contract covers telemetry)
       'account', 'auth', 'doctor', 'login', 'logout', 'schema', 'cache', 'changelog',
       'web',
       // wallet, trading, bridge & perp

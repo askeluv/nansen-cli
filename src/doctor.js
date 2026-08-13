@@ -12,7 +12,9 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { retrievePassword } from './keychain.js';
+import { passwordSource } from './keychain.js';
+import { isNewer } from './update-check.js';
+import { isTelemetryDisabled } from './telemetry.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -135,6 +137,7 @@ function readWallets(env) {
   const result = {
     dir,
     dirExists: fs.existsSync(dir),
+    dirError: null,
     wallets: [],
     defaultWallet: null,
     passwordHashSet: false,
@@ -149,7 +152,7 @@ function readWallets(env) {
   result.passwordHashSet = Boolean(walletConfig.data?.passwordHash);
 
   let entries = [];
-  try { entries = fs.readdirSync(dir); } catch { /* unreadable dir */ }
+  try { entries = fs.readdirSync(dir); } catch { result.dirError = 'unreadable'; }
   for (const entry of entries) {
     if (!entry.endsWith('.json') || entry === 'config.json') continue;
     const wallet = readJsonDetailed(path.join(dir, entry));
@@ -199,14 +202,14 @@ function isInsecureMode(mode) {
 export function getAuthStatus(deps = {}) {
   const {
     env = process.env,
-    retrievePasswordFn = retrievePassword,
+    passwordSourceFn = passwordSource,
     devConfigPath = DEV_CONFIG_PATH,
     platform = process.platform,
   } = deps;
 
   const auth = resolveAuthConfig(env, devConfigPath);
   const walletInfo = readWallets(env);
-  const password = retrievePasswordFn();
+  const pwSource = passwordSourceFn();
   const defaultEntry = walletInfo.wallets.find(w => w.name === walletInfo.defaultWallet) || null;
 
   return {
@@ -230,12 +233,13 @@ export function getAuthStatus(deps = {}) {
     x402: {
       configured: walletInfo.wallets.length > 0,
       wallets_dir: walletInfo.dir,
+      wallets_dir_error: walletInfo.dirError,
       wallet_count: walletInfo.wallets.length,
       default_wallet: walletInfo.defaultWallet,
       default_wallet_provider: defaultEntry?.provider || null,
       password: {
-        available: Boolean(password.password),
-        source: password.source,
+        available: pwSource !== null,
+        source: pwSource,
         keychain_available: isKeychainAvailable(platform, env),
       },
     },
@@ -263,7 +267,7 @@ function parseEngineMajor(requirement) {
 export function runDoctorChecks(deps = {}) {
   const {
     env = process.env,
-    retrievePasswordFn = retrievePassword,
+    passwordSourceFn = passwordSource,
     nodeVersion = process.version,
     cliVersion = null,
     engines = null,
@@ -272,6 +276,7 @@ export function runDoctorChecks(deps = {}) {
   } = deps;
 
   const checks = [];
+  const auth = resolveAuthConfig(env, devConfigPath);
 
   // --- environment ---
   const requiredMajor = parseEngineMajor(engines?.node) ?? 20;
@@ -280,16 +285,19 @@ export function runDoctorChecks(deps = {}) {
     ? check('node-version', 'ok', `Node ${nodeVersion} (>= ${requiredMajor} required)`)
     : check('node-version', 'error', `Node ${nodeVersion} is below the required major version ${requiredMajor}`, `Install Node >= ${requiredMajor}: https://nodejs.org`));
 
-  if (env.NANSEN_BASE_URL) {
-    checks.push(check('base-url', 'warn', `NANSEN_BASE_URL override active: ${env.NANSEN_BASE_URL}`, 'Unset NANSEN_BASE_URL to use https://api.nansen.ai'));
+  // Report the URL the CLI will actually use — a config file can set a
+  // non-default base URL too, not just the env var
+  if (auth.baseUrlSource === 'env') {
+    checks.push(check('base-url', 'warn', `NANSEN_BASE_URL override active: ${auth.baseUrl}`, `Unset NANSEN_BASE_URL to use ${DEFAULT_BASE_URL}`));
+  } else if (auth.baseUrl !== DEFAULT_BASE_URL) {
+    checks.push(check('base-url', 'warn', `Non-default API base URL in ${auth.configPath}: ${auth.baseUrl}`, 'Run: nansen login (re-saves the default)'));
   } else {
-    checks.push(check('base-url', 'ok', `API base URL: ${DEFAULT_BASE_URL}`));
+    checks.push(check('base-url', 'ok', `API base URL: ${auth.baseUrl}`));
   }
 
   // --- auth ---
-  const auth = resolveAuthConfig(env, devConfigPath);
   if (auth.configError === 'unreadable') {
-    checks.push(check('config-file', 'error', `${getConfigFilePath(env)} exists but cannot be read — permission problem?`, `Check ownership and mode: ls -l ${getConfigFilePath(env)}`));
+    checks.push(check('config-file', 'error', `${getConfigFilePath(env)} exists but cannot be read — permission problem?`, `Check ownership and mode: ls -l "${getConfigFilePath(env)}"`));
   } else if (auth.configError === 'parse') {
     checks.push(check('config-file', 'error', `${getConfigFilePath(env)} exists but is not valid JSON`, 'Run: nansen login (re-saves the file)'));
   }
@@ -313,7 +321,7 @@ export function runDoctorChecks(deps = {}) {
   if (posixModes) {
     const configMode = fileMode(getConfigFilePath(env));
     if (isInsecureMode(configMode)) {
-      checks.push(check('config-perms', 'warn', `${getConfigFilePath(env)} has insecure permissions (${configMode.toString(8)})`, `Run: chmod 600 ${getConfigFilePath(env)}`));
+      checks.push(check('config-perms', 'warn', `${getConfigFilePath(env)} has insecure permissions (${configMode.toString(8)})`, `Run: chmod 600 "${getConfigFilePath(env)}"`));
     }
   }
 
@@ -328,7 +336,9 @@ export function runDoctorChecks(deps = {}) {
     const problem = walletInfo.configError === 'unreadable' ? 'cannot be read — permission problem?' : 'is not valid JSON';
     checks.push(check('wallet-config', 'error', `${path.join(walletInfo.dir, 'config.json')} exists but ${problem}`));
   }
-  if (!walletInfo.dirExists || walletInfo.wallets.length === 0) {
+  if (walletInfo.dirError) {
+    checks.push(check('wallets', 'error', `${walletInfo.dir} exists but cannot be read — permission problem?`, `Check ownership and mode: ls -ld "${walletInfo.dir}"`));
+  } else if (!walletInfo.dirExists || walletInfo.wallets.length === 0) {
     checks.push(check('wallets', 'info', 'No local wallets (only needed for trading and x402 micropayments)', 'Run: nansen wallet create <name>'));
   } else {
     const defaultNote = walletInfo.defaultWallet ? `default: ${walletInfo.defaultWallet}` : 'no default set';
@@ -343,21 +353,22 @@ export function runDoctorChecks(deps = {}) {
     if (posixModes) {
       const walletsDirMode = fileMode(walletInfo.dir);
       if (isInsecureMode(walletsDirMode)) {
-        checks.push(check('wallets-perms', 'warn', `${walletInfo.dir} has insecure permissions (${walletsDirMode.toString(8)})`, `Run: chmod 700 ${walletInfo.dir}`));
+        checks.push(check('wallets-perms', 'warn', `${walletInfo.dir} has insecure permissions (${walletsDirMode.toString(8)})`, `Run: chmod 700 "${walletInfo.dir}"`));
       }
     }
 
-    // Password storage — only relevant once wallets exist
-    const password = retrievePasswordFn();
-    if (password.source === 'file') {
+    // Password storage — only relevant once wallets exist. Metadata-only:
+    // the secret itself is never retrieved.
+    const pwSource = passwordSourceFn();
+    if (pwSource === 'file') {
       checks.push(check('wallet-password', 'warn', 'Wallet password stored in the insecure .credentials file', 'Run: nansen wallet secure  (migrates it to the OS keychain)'));
-    } else if (password.source) {
-      checks.push(check('wallet-password', 'ok', `Wallet password available (source: ${password.source})`));
+    } else if (pwSource) {
+      checks.push(check('wallet-password', 'ok', `Wallet password available (source: ${pwSource})`));
     } else if (walletInfo.passwordHashSet) {
       checks.push(check('wallet-password', 'warn', 'Wallets are password-protected but no password is stored — x402 payments and trading will fail non-interactively', 'Set NANSEN_WALLET_PASSWORD, or store it: nansen wallet secure'));
     }
-    if (password.source !== 'file' && fs.existsSync(getCredentialsFilePath(env))) {
-      checks.push(check('stale-credentials', 'warn', `${getCredentialsFilePath(env)} still exists but is not the active password source`, `Delete it: rm ${getCredentialsFilePath(env)}`));
+    if (pwSource !== 'file' && fs.existsSync(getCredentialsFilePath(env))) {
+      checks.push(check('stale-credentials', 'warn', `${getCredentialsFilePath(env)} still exists but is not the active password source`, `Delete it: rm "${getCredentialsFilePath(env)}"`));
     }
 
     // Privy wallets need API credentials from the environment
@@ -385,17 +396,10 @@ export function runDoctorChecks(deps = {}) {
 
   if (cliVersion) {
     const updateCache = readJson(path.join(getConfigDir(env), 'update-check.json'));
-    if (updateCache?.latest && updateCache.latest !== cliVersion) {
-      const [lM, lm, lp] = updateCache.latest.split('.').map(Number);
-      const [cM, cm, cp] = cliVersion.split('.').map(Number);
-      const newer = lM > cM || (lM === cM && (lm > cm || (lm === cm && lp > cp)));
-      if (newer) {
-        checks.push(check('cli-version', 'warn', `Update available: ${cliVersion} → ${updateCache.latest}`, 'Run: npm i -g nansen-cli'));
-      } else {
-        checks.push(check('cli-version', 'ok', `nansen-cli ${cliVersion} is up to date`));
-      }
-    } else if (updateCache?.latest) {
-      checks.push(check('cli-version', 'ok', `nansen-cli ${cliVersion} is up to date`));
+    if (updateCache?.latest) {
+      checks.push(isNewer(updateCache.latest, cliVersion)
+        ? check('cli-version', 'warn', `Update available: ${cliVersion} → ${updateCache.latest}`, 'Run: npm i -g nansen-cli')
+        : check('cli-version', 'ok', `nansen-cli ${cliVersion} is up to date`));
     } else {
       checks.push(check('cli-version', 'info', `nansen-cli ${cliVersion} (no update-check cache yet)`));
     }
@@ -408,9 +412,7 @@ export function runDoctorChecks(deps = {}) {
   }
 
   // --- telemetry ---
-  // Same predicate as src/telemetry.js — only the literal '1' disables it
-  const telemetryOff = env.NANSEN_NO_TELEMETRY === '1' || env.DO_NOT_TRACK === '1';
-  checks.push(check('telemetry', 'info', telemetryOff ? 'Telemetry disabled' : 'Anonymous telemetry enabled (disable: DO_NOT_TRACK=1)'));
+  checks.push(check('telemetry', 'info', isTelemetryDisabled(env) ? 'Telemetry disabled' : 'Anonymous telemetry enabled (disable: DO_NOT_TRACK=1)'));
 
   return checks;
 }

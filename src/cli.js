@@ -1839,10 +1839,17 @@ export async function runCLI(rawArgs, deps = {}) {
   const stream = flags.stream || flags.s;
   const csv = options.format === 'csv';
 
+  // `auth` and `doctor --offline` promise zero network activity — that
+  // contract covers the background update-check fetch and telemetry too,
+  // not just the command's own requests.
+  const isOfflineCommand = command === 'auth' || (command === 'doctor' && flags.offline);
+  const trackSucceeded = isOfflineCommand ? async () => {} : trackCommandSucceeded;
+  const trackFailed = isOfflineCommand ? async () => {} : trackCommandFailed;
+
   // Update check (read cached result + schedule background refresh)
   const updateNotification = getUpdateNotification(VERSION);
   const upgradeNotice = getUpgradeNotice(VERSION);
-  scheduleUpdateCheck();
+  if (!isOfflineCommand) scheduleUpdateCheck();
   const notify = () => {
     if (upgradeNotice) errorOutput(upgradeNotice);
     if (updateNotification) errorOutput(updateNotification);
@@ -1996,7 +2003,7 @@ export async function runCLI(rawArgs, deps = {}) {
     };
     const formatted = formatOutput(errorData, { pretty, table });
     output(formatted.text);
-    await trackCommandFailed({ command: fullCommand, duration_ms: Date.now() - startTime, error_code: 'UNKNOWN_COMMAND', flags: usedFlags, chain });
+    await trackFailed({ command: fullCommand, duration_ms: Date.now() - startTime, error_code: 'UNKNOWN_COMMAND', flags: usedFlags, chain });
     exit(1);
     return { type: 'error', data: errorData };
   }
@@ -2049,7 +2056,7 @@ export async function runCLI(rawArgs, deps = {}) {
 
     // Commands that handle their own output return undefined
     if (result === undefined) {
-      await trackCommandSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, flags: usedFlags, chain });
+      await trackSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, flags: usedFlags, chain });
       return { type: 'no-output', command };
     }
 
@@ -2057,7 +2064,7 @@ export async function runCLI(rawArgs, deps = {}) {
     if (command === 'schema') {
       const formatted = formatOutput(result, { pretty, table: false });
       output(formatted.text);
-      await trackCommandSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, flags: usedFlags, chain });
+      await trackSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, flags: usedFlags, chain });
       return { type: 'schema', data: result };
     }
 
@@ -2070,7 +2077,7 @@ export async function runCLI(rawArgs, deps = {}) {
     // Alerts list with --table uses custom table format
     if (command === 'alerts' && subcommand === 'list' && table) {
       output(formatAlertsTable(result));
-      await trackCommandSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, flags: usedFlags, chain });
+      await trackSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, flags: usedFlags, chain });
       return { type: 'success', data: result };
     }
 
@@ -2081,14 +2088,14 @@ export async function runCLI(rawArgs, deps = {}) {
       if (streamOutput) {
         output(streamOutput);
       }
-      await trackCommandSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, from_cache: !!result?.fromCache, flags: usedFlags, chain });
+      await trackSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, from_cache: !!result?.fromCache, flags: usedFlags, chain });
       return { type: 'stream', data: result };
     }
 
     const successData = { success: true, data: result };
     const formatted = formatOutput(successData, { pretty, table, csv });
     output(formatted.text);
-    await trackCommandSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, from_cache: !!result?.fromCache, flags: usedFlags, chain });
+    await trackSucceeded({ command: fullCommand, duration_ms: Date.now() - startTime, from_cache: !!result?.fromCache, flags: usedFlags, chain });
     return { type: csv ? 'csv' : 'success', data: result };
   } catch (error) {
     // Unified error envelope across all command families (perp/bridge/trade):
@@ -2103,7 +2110,7 @@ export async function runCLI(rawArgs, deps = {}) {
       const formatted = formatOutput(errorData, { pretty, table, csv });
       output(formatted.text);
     }
-    await trackCommandFailed({
+    await trackFailed({
       command: fullCommand,
       duration_ms: Date.now() - startTime,
       error_code: error.code || 'UNKNOWN',
