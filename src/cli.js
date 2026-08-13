@@ -877,7 +877,8 @@ export function buildCommands(deps = {}) {
     saveConfigFn = saveConfig,
     deleteConfigFn = deleteConfig,
     getConfigFileFn = getConfigFile,
-    isTTY = process.stdin.isTTY
+    isTTY = process.stdin.isTTY,
+    env = process.env
   } = deps;
 
   const cmds = {
@@ -1048,6 +1049,9 @@ export function buildCommands(deps = {}) {
         log(`✓ Removed ${getConfigFileFn()}`);
       } else {
         log('No saved credentials found');
+      }
+      if (env.NANSEN_API_KEY) {
+        log('Warning: NANSEN_API_KEY remains active. Run: unset NANSEN_API_KEY');
       }
     },
 

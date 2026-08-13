@@ -1777,7 +1777,8 @@ describe('buildCommands', () => {
       deleteConfigFn: vi.fn(),
       getConfigFileFn: vi.fn(() => '/home/user/.nansen/config.json'),
       NansenAPIClass: vi.fn(),
-      isTTY: true
+      isTTY: true,
+      env: {}
     };
     commands = buildCommands(mockDeps);
   });
@@ -1793,13 +1794,26 @@ describe('buildCommands', () => {
     it('should report success when config deleted', async () => {
       mockDeps.deleteConfigFn.mockReturnValue(true);
       await commands.logout([], null, {}, {});
-      expect(logs[0]).toContain('Removed');
+      expect(logs).toEqual(['✓ Removed /home/user/.nansen/config.json']);
     });
 
     it('should report when no config found', async () => {
       mockDeps.deleteConfigFn.mockReturnValue(false);
       await commands.logout([], null, {}, {});
-      expect(logs[0]).toContain('No saved credentials');
+      expect(logs).toEqual(['No saved credentials found']);
+    });
+
+    it('should warn when NANSEN_API_KEY remains active', async () => {
+      mockDeps.env.NANSEN_API_KEY = 'test-key';
+      mockDeps.deleteConfigFn.mockReturnValue(true);
+
+      await commands.logout([], null, {}, {});
+
+      expect(logs).toEqual([
+        '✓ Removed /home/user/.nansen/config.json',
+        'Warning: NANSEN_API_KEY remains active. Run: unset NANSEN_API_KEY'
+      ]);
+      expect(mockDeps.NansenAPIClass).not.toHaveBeenCalled();
     });
   });
 
