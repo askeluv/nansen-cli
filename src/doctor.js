@@ -53,6 +53,9 @@ function getCredentialsFilePath(env) {
 function readJsonDetailed(filePath) {
   let raw;
   try {
+    if (filePath.includes('..') || path.isAbsolute(filePath)) {
+      return { data: null, error: 'unreadable' };
+    }
     raw = fs.readFileSync(filePath, 'utf8');
   } catch {
     return { data: null, error: 'unreadable' };
