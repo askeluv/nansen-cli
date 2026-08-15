@@ -512,6 +512,32 @@ describe('buildLimitOrderCommands', () => {
       expect(logs.some(l => l.includes('0 and 10000'))).toBe(true);
     });
 
+    it('accepts valid slippage-bps and forwards it to createOrder', async () => {
+      createTestWallet('lo-create-slip');
+      const logs = [];
+      const exit = vi.fn();
+      const cmds = buildLimitOrderCommands({ log: (m) => logs.push(m), exit });
+
+      mockFetchSequence([
+        { body: { challenge: 'sign this' } },
+        { body: { token: 'jwt-123' } },
+        { body: { vaultPubkey: 'vault123', userPubkey: 'pub1' } },
+        { body: { transaction: buildFakeBase64Tx(), requestId: 'dep-req-1' } },
+        { body: { id: 'order-slip', txSignature: 'sig-slip' }, status: 201 },
+      ]);
+
+      await cmds.create([], null, {}, {
+        from: 'SOL', to: 'USDC', amount: '1', 'trigger-mint': 'SOL',
+        'trigger-condition': 'below', 'trigger-price': '80',
+        'slippage-bps': '100', wallet: 'lo-create-slip',
+      });
+
+      expect(exit).not.toHaveBeenCalled();
+      expect(logs.some(l => l.includes('Limit order created'))).toBe(true);
+      const createBody = JSON.parse(global.fetch.mock.calls[4][1].body);
+      expect(createBody.slippageBps).toBe(100);
+    });
+
     it('rejects EVM token address for --from', async () => {
       const logs = [];
       const exit = vi.fn();
