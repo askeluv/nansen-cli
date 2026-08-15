@@ -1682,7 +1682,7 @@
                 },
                 "slippage-bps": {
                   "type": "number",
-                  "description": "Slippage tolerance in basis points (e.g. 50 = 0.5%)"
+                  "description": "Slippage in whole basis points, 0-10000 (50 = 0.5%), omit for auto"
                 },
                 "expires": {
                   "type": "string",

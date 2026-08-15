@@ -499,6 +499,19 @@ describe('buildLimitOrderCommands', () => {
       expect(logs.some(l => l.includes('"above" or "below"'))).toBe(true);
     });
 
+    it('validates slippage-bps range', async () => {
+      const logs = [];
+      const exit = vi.fn();
+      const cmds = buildLimitOrderCommands({ log: (m) => logs.push(m), exit });
+
+      await cmds.create([], null, {}, {
+        from: 'SOL', to: 'USDC', amount: '1', 'trigger-mint': 'SOL',
+        'trigger-price': '80', 'trigger-condition': 'below', 'slippage-bps': '15000',
+      });
+      expect(exit).toHaveBeenCalledWith(1);
+      expect(logs.some(l => l.includes('0 and 10000'))).toBe(true);
+    });
+
     it('rejects EVM token address for --from', async () => {
       const logs = [];
       const exit = vi.fn();
