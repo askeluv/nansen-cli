@@ -1428,7 +1428,14 @@ CROSS-CHAIN NOTES (when using --to-chain):
         if (maxInputError) {
           throw new CommandError(`Error: invalid --max-input: ${maxInputError} (--max-input is in base units of the sell token).`, 'INVALID_INPUT');
         }
-        maxInputOverride = BigInt(maxInputRaw).toString();
+        // validateBaseUnitAmount catches negatives/decimals but not non-numeric
+        // input (e.g. "abc"); guard the BigInt so it surfaces cleanly, not as a
+        // raw "Cannot convert … to a BigInt".
+        try {
+          maxInputOverride = BigInt(maxInputRaw).toString();
+        } catch {
+          throw new CommandError(`Error: invalid --max-input "${maxInputRaw}": must be an integer in base units of the sell token.`, 'INVALID_INPUT');
+        }
       }
 
       // Static input validation — catches common agent errors (wrong addresses,
