@@ -10,6 +10,7 @@
 
 import { wcExec } from './walletconnect-exec.js';
 import { base58Encode } from './wallet.js';
+import { encodeApproveCalldata } from './trade-validation.js';
 
 const SOLANA_MAINNET_CHAIN = 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
 
@@ -112,14 +113,14 @@ export async function sendTransactionViaWalletConnect(txData, timeoutMs = 120000
  * @param {string} spenderAddress - Approval target (e.g. DEX router)
  * @param {number} chainId - EIP-155 chain ID
  * @param {bigint|string|number} amount - Allowance to grant, in base units
+ * @param {bigint|string|number} [maxAllowance] - Hard cap from persisted request intent
  * @returns {{ txHash?: string, signedTransaction?: string }}
  */
-export async function sendApprovalViaWalletConnect(tokenAddress, spenderAddress, chainId, amount) {
-  // ERC-20 approve(address spender, uint256 amount) selector = 0x095ea7b3
-  const amountHex = BigInt(amount).toString(16).padStart(64, '0');
-  const data = '0x095ea7b3'
-    + spenderAddress.slice(2).toLowerCase().padStart(64, '0')
-    + amountHex;
+export async function sendApprovalViaWalletConnect(tokenAddress, spenderAddress, chainId, amount, maxAllowance) {
+  // encodeApproveCalldata enforces a valid 20-byte spender, a bounded (< MAX)
+  // amount within the request cap, and exactly-68-byte calldata — so a
+  // malformed or tampered spender/amount can't reshape the ABI word layout.
+  const data = encodeApproveCalldata(spenderAddress, amount, { maxAllowance });
 
   return sendTransactionViaWalletConnect({
     to: tokenAddress,

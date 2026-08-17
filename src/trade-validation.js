@@ -396,3 +396,219 @@ export async function fetchTokenBalance(chain, tokenAddress, walletAddress, deci
     return null;
   }
 }
+
+// ============= ERC-20 approval calldata (hardened) =============
+
+// uint256 ceiling. An allowance must be strictly below this: MAX_UINT256 itself
+// is the "unlimited" sentinel we refuse to sign, and anything larger cannot
+// encode in a 32-byte ABI word without overflowing into adjacent calldata.
+export const MAX_UINT256 = (1n << 256n) - 1n;
+
+// ERC-20 approve(address spender, uint256 amount) selector.
+const APPROVE_SELECTOR = '0x095ea7b3';
+
+/**
+ * Validate that an approval spender is a well-formed, non-zero 20-byte EVM
+ * address. A quote supplies this verbatim and it is concatenated into approval
+ * calldata; anything other than `0x` + exactly 40 hex chars must be rejected
+ * before encoding, because an over-length value would silently shift the ABI
+ * word layout (turning a scoped approval into `approve(attacker, huge)`).
+ *
+ * @param {string} spender
+ */
+export function assertValidApprovalSpender(spender) {
+  if (!spender || /^0x0+$/i.test(spender)) {
+    throw new Error(
+      `Approval spender is empty or the zero address (${spender ?? 'undefined'}). Refusing to sign an approval.`,
+    );
+  }
+  if (typeof spender !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(spender)) {
+    throw new Error(
+      `Approval spender is not a valid 20-byte address (${spender}). Refusing to sign an approval.`,
+    );
+  }
+}
+
+/**
+ * Encode `approve(spender, amount)` calldata with strict, defense-in-depth
+ * bounds. This is the single encoder every signing path (local, Privy,
+ * WalletConnect) must use, so no boundary can construct an under-validated
+ * approval.
+ *
+ * Guarantees on the returned string:
+ *   - spender is a valid 20-byte address (see assertValidApprovalSpender)
+ *   - amount is a positive integer strictly below MAX_UINT256 (never unlimited)
+ *   - amount does not exceed `maxAllowance` when the caller supplies one
+ *     (the user's persisted request intent — see assertQuoteMatchesRequest)
+ *   - the encoded calldata is exactly 68 bytes (4-byte selector + two 32-byte
+ *     words), asserted after encoding so any width surprise fails closed
+ *
+ * @param {string} spender - Approval target (quote.approvalAddress)
+ * @param {bigint|string|number} amount - Allowance in base units
+ * @param {object} [opts]
+ * @param {bigint|string|number} [opts.maxAllowance] - Hard cap from request intent
+ * @returns {string} 0x-prefixed approve() calldata (exactly 68 bytes)
+ */
+export function encodeApproveCalldata(spender, amount, { maxAllowance } = {}) {
+  assertValidApprovalSpender(spender);
+
+  let amt;
+  try {
+    amt = BigInt(amount);
+  } catch {
+    throw new Error(`Approval amount is not an integer (${amount}). Refusing to sign an approval.`);
+  }
+  if (amt <= 0n) {
+    throw new Error(`Approval amount must be positive (got ${amt}). Refusing to sign an approval.`);
+  }
+  if (amt >= MAX_UINT256) {
+    throw new Error(
+      `Approval amount ${amt} is at or above MAX_UINT256 (unlimited). Refusing to sign an unlimited approval.`,
+    );
+  }
+  if (maxAllowance != null) {
+    const cap = BigInt(maxAllowance);
+    if (amt > cap) {
+      throw new Error(
+        `Approval amount ${amt} exceeds the request's maximum input ${cap}. Refusing to sign.`,
+      );
+    }
+  }
+
+  const data = APPROVE_SELECTOR
+    + spender.slice(2).toLowerCase().padStart(64, '0')
+    + amt.toString(16).padStart(64, '0');
+
+  // 0x + 4-byte selector (8 hex) + two 32-byte words (128 hex) = 138 chars.
+  const EXPECTED_LEN = 2 + 8 + 64 + 64;
+  if (data.length !== EXPECTED_LEN) {
+    throw new Error(
+      `Encoded approval calldata is not 68 bytes (got ${(data.length - 2) / 2}). Refusing to sign.`,
+    );
+  }
+  return data;
+}
+
+// ============= Quote vs. request-intent revalidation =============
+
+/**
+ * Compare two token addresses for equality (case-insensitive on EVM, exact on
+ * Solana). Missing values never match.
+ */
+function tokensEqual(a, b, chain) {
+  if (!a || !b) return false;
+  if (chain === 'solana') return a === b;
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+/**
+ * Revalidate a quote against the immutable request intent that was persisted
+ * when the quote was fetched. The Trading API supplies the amounts, token
+ * pair, and transaction that the execute path signs; without this check a
+ * compromised or buggy API could inflate the input amount (and therefore the
+ * scoped approval and native value) and still pass the execute path's own
+ * self-consistent comparisons.
+ *
+ * Binds the fields we can verify from the quote:
+ *   - chain identity
+ *   - token pair (input == requested sell token, output == requested buy token)
+ *   - exactIn: input amount EQUALS the requested amount (the spend ceiling)
+ *   - exactOut: output amount EQUALS the requested amount (what you buy)
+ *
+ * exactOut input is not independently capped here (the CLI takes no explicit
+ * max-input flag); it stays bounded by the scoped, slippage-buffered approval.
+ * Persisting an explicit exactOut maximum is a tracked follow-up.
+ *
+ * Throws on a definitive mismatch. Callers run this inside the per-quote try so
+ * a mismatched quote falls through to the next candidate.
+ *
+ * @param {object|undefined} request - Persisted intent (quoteData.request)
+ * @param {object} quote - The quote being executed (allQuotes[i])
+ * @param {object} ctx
+ * @param {string} ctx.chain - Execute chain
+ * @returns {{ skipped: boolean }} skipped=true when no intent was persisted
+ */
+export function assertQuoteMatchesRequest(request, quote, { chain }) {
+  // Quotes saved by an older CLI version (pre-intent) legitimately lack a
+  // request block. Rather than brick an in-flight quote across an upgrade, we
+  // skip and let the caller warn; quotes expire in 1 hour so this is transient.
+  if (!request) return { skipped: true };
+
+  if (request.chain && request.chain.toLowerCase() !== String(chain).toLowerCase()) {
+    throw new Error(
+      `Quote chain (${chain}) does not match the requested chain (${request.chain}). Refusing to sign.`,
+    );
+  }
+
+  const tokenChain = String(chain).toLowerCase();
+  if (request.fromToken && !tokensEqual(quote.inputMint, request.fromToken, tokenChain)) {
+    throw new Error(
+      `Quote sell token (${quote.inputMint}) does not match the requested token (${request.fromToken}). Refusing to sign.`,
+    );
+  }
+  if (request.toToken && quote.outputMint && !tokensEqual(quote.outputMint, request.toToken, tokenChain)) {
+    throw new Error(
+      `Quote buy token (${quote.outputMint}) does not match the requested token (${request.toToken}). Refusing to sign.`,
+    );
+  }
+
+  if (request.amount != null) {
+    const requested = BigInt(request.amount);
+    if (request.swapMode === 'exactOut') {
+      const out = BigInt(quote.outAmount ?? quote.outputAmount ?? '0');
+      if (out !== requested) {
+        throw new Error(
+          `Quote output amount (${out}) does not match the requested output (${requested}). Refusing to sign.`,
+        );
+      }
+    } else {
+      const input = BigInt(quote.inputAmount ?? quote.inAmount ?? '0');
+      if (input !== requested) {
+        throw new Error(
+          `Quote input amount (${input}) does not match the requested input (${requested}). A larger input would enlarge the approval and native value beyond what you asked to spend. Refusing to sign.`,
+        );
+      }
+    }
+  }
+
+  return { skipped: false };
+}
+
+// ============= Swap-calldata shape guard (same-chain) =============
+
+// Bare ERC-20 methods a legitimate same-chain swap's OUTER call never uses. A
+// real swap routes through an aggregator/router (swap/execute/multicall); if the
+// quote's swap `transaction.data` starts with one of these selectors, the call
+// is a direct token transfer/approval disguised as a swap — the drain shape.
+//
+// Because the user's wallet is msg.sender, `transfer`/`transferFrom(from=user)`
+// move the user's own tokens with no prior allowance, and `approve` hands an
+// attacker a fresh allowance — so blocking these outer selectors closes the
+// direct sibling-token drain. It does NOT catch a custom contract exploiting a
+// pre-existing allowance; that needs outcome (balance-delta) simulation.
+//
+// Scoped to same-chain swaps by the caller: cross-chain/bridge routes can
+// legitimately encode a deposit as a plain `transfer`, so they are excluded.
+const BARE_ERC20_OUTER_SELECTORS = {
+  '0xa9059cbb': 'transfer(address,uint256)',
+  '0x095ea7b3': 'approve(address,uint256)',
+  '0x23b872dd': 'transferFrom(address,address,uint256)',
+};
+
+/**
+ * Reject a same-chain swap whose transaction calldata is a bare ERC-20
+ * transfer/approve/transferFrom rather than a router call. No-op when the
+ * calldata is absent or too short to carry a 4-byte selector.
+ *
+ * @param {string} data - The swap transaction's calldata (quote.transaction.data)
+ */
+export function assertSwapCalldataNotBareTransfer(data) {
+  if (!data || typeof data !== 'string' || data.length < 10) return;
+  const selector = data.slice(0, 10).toLowerCase();
+  const method = BARE_ERC20_OUTER_SELECTORS[selector];
+  if (method) {
+    throw new Error(
+      `Swap transaction is a bare ERC-20 ${method}, not a routed swap. A real swap routes through an aggregator, not a direct token transfer/approval. Refusing to sign.`,
+    );
+  }
+}
