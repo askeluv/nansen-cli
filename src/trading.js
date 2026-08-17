@@ -748,7 +748,9 @@ export function approvalAmountForSwap({ inputAmount, swapMode, slippage }) {
   const amt = BigInt(inputAmount ?? 0);
   if (amt <= 0n) return amt;
   if (swapMode === 'exactOut') {
-    const slip = Number.isFinite(slippage) && slippage > 0 ? slippage : 0.03;
+    // Honour an explicit slippage of 0 (tightest approval); only fall back to the
+    // 3% default when slippage wasn't provided (undefined/NaN) or is negative.
+    const slip = Number.isFinite(slippage) && slippage >= 0 ? slippage : 0.03;
     // Buffer by slippage using basis-point integer math to stay in BigInt.
     const bps = BigInt(Math.ceil((1 + slip) * 10000));
     return (amt * bps + 9999n) / 10000n; // ceil division

@@ -619,6 +619,10 @@ describe('approvalAmountForSwap', () => {
     expect(approvalAmountForSwap({ inputAmount: 1000000n, swapMode: 'exactOut' })).toBe(1030000n);
   });
 
+  it('honours an explicit slippage of 0 for exactOut (no buffer)', () => {
+    expect(approvalAmountForSwap({ inputAmount: 1000000n, swapMode: 'exactOut', slippage: 0 })).toBe(1000000n);
+  });
+
   it('returns non-positive amounts unchanged', () => {
     expect(approvalAmountForSwap({ inputAmount: 0n })).toBe(0n);
     expect(approvalAmountForSwap({ inputAmount: 0n, swapMode: 'exactOut' })).toBe(0n);
