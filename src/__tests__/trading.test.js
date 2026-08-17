@@ -2682,6 +2682,117 @@ describe('Swap target validation blocks a poisoned quote (security hardening)', 
     delete process.env.NANSEN_WALLET_PASSWORD;
     vi.unstubAllGlobals();
   });
+
+  it('rejects an ERC-20 poisoned target before broadcasting any approval', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const fetchCalls = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const body = opts?.body ? (() => { try { return JSON.parse(opts.body); } catch { return {}; } })() : {};
+      fetchCalls.push({ url: urlStr, method: body.method, body });
+      if (body.method === 'eth_getTransactionCount') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+      }
+      // Swap target is a codeless EOA.
+      if (body.method === 'eth_getCode') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' })) });
+      }
+      if (body.method === 'eth_call') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' })) });
+      }
+      if (urlStr.includes('trading-api')) {
+        return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: '0xShouldNotHappen', chainType: 'evm', broadcaster: 'test' })) });
+      }
+      return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    // ERC-20 swap (USDC in) requiring approval, but the swap target is an EOA.
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'lifi',
+        inputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', // USDC
+        outputMint: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+        inAmount: '5000000',
+        outAmount: '2000000000000000',
+        approvalAddress: '0x1231deb6f5749ef6ce6943a275a1d3e7486f4eae',
+        transaction: { to: '0x000000000000000000000000000000000000dEaD', data: '0xdeadbeef', value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
+        metadata: {},
+      }],
+    }, 'base', 'local');
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/All quotes failed/i);
+
+    // Nothing broadcast to the Trading API — crucially, NO approval tx either,
+    // which proves the target guard runs before the approval step.
+    const executeCalls = fetchCalls.filter(c => c.url.includes('trading-api') && c.url.endsWith('/execute'));
+    expect(executeCalls.length).toBe(0);
+    // No allowance check was even attempted (guard fired before the approval block).
+    const allowanceCalls = fetchCalls.filter(c => c.method === 'eth_call' && c.body?.params?.[0]?.data?.startsWith('0xdd62ed3e'));
+    expect(allowanceCalls.length).toBe(0);
+    expect(logs.some(l => l.includes('not a contract'))).toBe(true);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+    vi.unstubAllGlobals();
+  });
+
+  it('skips a malformed zero-input quote instead of broadcasting a zero-amount approval', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const fetchCalls = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const body = opts?.body ? (() => { try { return JSON.parse(opts.body); } catch { return {}; } })() : {};
+      fetchCalls.push({ url: urlStr, method: body.method, body });
+      if (body.method === 'eth_getTransactionCount') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+      }
+      // Target IS a contract (target check passes), so we reach the approval step.
+      if (body.method === 'eth_getCode') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      }
+      if (body.method === 'eth_call') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x0000000000000000000000000000000000000000000000000000000000000000' })) });
+      }
+      if (urlStr.includes('trading-api')) {
+        return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: '0xShouldNotHappen', chainType: 'evm', broadcaster: 'test' })) });
+      }
+      return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    // Malformed ERC-20 quote: no input amount.
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'lifi',
+        inputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', // USDC
+        outputMint: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+        inAmount: '0',
+        inputAmount: '0',
+        outAmount: '2000000000000000',
+        approvalAddress: '0x1231deb6f5749ef6ce6943a275a1d3e7486f4eae',
+        transaction: { to: '0x1231deb6f5749ef6ce6943a275a1d3e7486f4eae', data: '0xdeadbeef', value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
+        metadata: {},
+      }],
+    }, 'base', 'local');
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/All quotes failed/i);
+
+    // No zero-amount approve() broadcast.
+    const executeCalls = fetchCalls.filter(c => c.url.includes('trading-api') && c.url.endsWith('/execute'));
+    expect(executeCalls.length).toBe(0);
+    expect(logs.some(l => l.includes('zero input amount'))).toBe(true);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+    vi.unstubAllGlobals();
+  });
 });
 
 describe('Relay aggregator: --gasless flag dispatch', () => {

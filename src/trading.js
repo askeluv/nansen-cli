@@ -1768,6 +1768,10 @@ EXAMPLES:
               const walletResult = await privyClient.getWallet(evmWalletId);
               const walletAddress = walletResult.address;
 
+              // Guard the swap target before any RPC call, approval, or signing —
+              // whatever `to`/`data` the quote supplied gets signed verbatim.
+              await validateSwapTarget(chain, currentQuote.transaction.to, currentQuote.inputMint);
+
               // Validate transaction.value (same checks as local wallet)
               const isNative = isNativeToken(currentQuote.inputMint);
               const txValue = BigInt(currentQuote.transaction.value || '0');
@@ -1794,6 +1798,14 @@ EXAMPLES:
                 assertUsableSpender(currentQuote.approvalAddress);
                 const inputAmount = BigInt(currentQuote.inputAmount || currentQuote.inAmount || '0');
                 const approveAmt = approvalAmountForSwap({ inputAmount, swapMode: quoteData.swapMode, slippage: quoteData.slippage });
+                if (approveAmt === 0n) {
+                  // Malformed quote (no input amount): a zero-scoped approval would
+                  // waste gas and the swap would revert on insufficient allowance.
+                  log(`  ❌ ${quoteName} has a zero input amount — cannot scope approval, skipping.`);
+                  lastQuoteError = `${quoteName} has a zero input amount`;
+                  if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                  continue;
+                }
                 const existingAllowance = await checkErc20Allowance(
                   chain, currentQuote.inputMint, walletAddress, currentQuote.approvalAddress
                 );
@@ -1882,9 +1894,6 @@ EXAMPLES:
                 if (finalGas === 0) finalGas = 210000;
               }
 
-              // Guard the target before signing (see validateSwapTarget).
-              await validateSwapTarget(chain, txData.to, currentQuote.inputMint);
-
               log('  Fetching nonce...');
               const nonce = await getEvmNonce(chain, walletAddress);
 
@@ -1963,6 +1972,10 @@ EXAMPLES:
               const wcAddress = await getWalletConnectAddress(chainType);
               const isNative = isNativeToken(currentQuote.inputMint);
 
+              // Guard the swap target before any RPC call, approval, or signing —
+              // whatever `to`/`data` the quote supplied gets signed verbatim.
+              await validateSwapTarget(chain, currentQuote.transaction.to, currentQuote.inputMint);
+
               // Validate transaction.value (same checks as local wallet)
               const txValue = BigInt(currentQuote.transaction.value || '0');
               if (isNative) {
@@ -1988,6 +2001,14 @@ EXAMPLES:
                 assertUsableSpender(currentQuote.approvalAddress);
                 const inputAmount = BigInt(currentQuote.inputAmount || currentQuote.inAmount || '0');
                 const approveAmt = approvalAmountForSwap({ inputAmount, swapMode: quoteData.swapMode, slippage: quoteData.slippage });
+                if (approveAmt === 0n) {
+                  // Malformed quote (no input amount): a zero-scoped approval would
+                  // waste gas and the swap would revert on insufficient allowance.
+                  log(`  ❌ ${quoteName} has a zero input amount — cannot scope approval, skipping.`);
+                  lastQuoteError = `${quoteName} has a zero input amount`;
+                  if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                  continue;
+                }
                 const existingAllowance = await checkErc20Allowance(
                   chain, currentQuote.inputMint, wcAddress, currentQuote.approvalAddress
                 );
@@ -2056,9 +2077,6 @@ EXAMPLES:
               const apiGas = parseInt(currentQuote.gas || "0");
               const txGas = parseInt(txData.gas || txData.gasLimit || "0");
               const finalGas = apiGas > 0 ? apiGas : txGas;
-
-              // Guard the target before the wallet signs (see validateSwapTarget).
-              await validateSwapTarget(chain, txData.to, currentQuote.inputMint);
 
               // Send transaction via WalletConnect
               log('  Sending transaction via WalletConnect...');
@@ -2139,6 +2157,12 @@ EXAMPLES:
               // EVM: quote.transaction is { to, data, value, gas, gasPrice }
               const walletAddress = exported.evm.address;
 
+              // Guard the swap target before any RPC call, approval, or signing —
+              // whatever `to`/`data` the quote supplied gets signed verbatim, so
+              // reject an implausible target (zero, EOA, or the sold token itself)
+              // before spending gas on an approval.
+              await validateSwapTarget(chain, currentQuote.transaction.to, currentQuote.inputMint);
+
               // Handle approval if needed — skip for native ETH
               // Check existing allowance first to avoid unnecessary approve txs
               // (industry standard: LiFi SDK checkAllowance, 1inch Permit2)
@@ -2172,6 +2196,14 @@ EXAMPLES:
                 // Check if sufficient allowance already exists
                 const inputAmount = BigInt(currentQuote.inputAmount || currentQuote.inAmount || currentQuote.transaction?.value || '0');
                 const approveAmt = approvalAmountForSwap({ inputAmount, swapMode: quoteData.swapMode, slippage: quoteData.slippage });
+                if (approveAmt === 0n) {
+                  // Malformed quote (no input amount): a zero-scoped approval would
+                  // waste gas and the swap would revert on insufficient allowance.
+                  log(`  ❌ ${quoteName} has a zero input amount — cannot scope approval, skipping.`);
+                  lastQuoteError = `${quoteName} has a zero input amount`;
+                  if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                  continue;
+                }
                 const existingAllowance = await checkErc20Allowance(
                   chain, currentQuote.inputMint, walletAddress, currentQuote.approvalAddress
                 );
@@ -2254,11 +2286,6 @@ EXAMPLES:
               }
               if (txData.gasLimit) txData.gasLimit = String(finalGas);
               else txData.gas = String(finalGas);
-
-              // Guard the target before signing: whatever `to`/`data` the quote
-              // supplied gets signed verbatim, so reject a target that isn't a
-              // plausible router (zero, EOA, or the sold token itself).
-              await validateSwapTarget(chain, txData.to, currentQuote.inputMint);
 
               log('  Fetching nonce...');
               await new Promise(r => setTimeout(r, 1000));
