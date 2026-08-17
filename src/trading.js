@@ -784,6 +784,29 @@ export function approvalAmountForSwap({ inputAmount, swapMode, slippage }) {
 }
 
 /**
+ * The maximum allowance (spend ceiling, in the SELL token's base units) to hand
+ * the approval encoder for a saved quote. Centralised so every signing path
+ * shares one definition and a refactor can't reintroduce a wrong-unit cap.
+ *
+ * Returns the persisted `maxInputAmount` when present. Otherwise:
+ *   - exactIn: falls back to `request.amount`, which for exactIn IS the input
+ *     bound (covers quotes saved before maxInputAmount existed).
+ *   - exactOut: returns undefined — there is NO safe fallback, because
+ *     `request.amount` is the OUTPUT amount (a different token). The encoder
+ *     still bounds the amount below MAX_UINT256, and assertInputWithinMax fails
+ *     closed on a missing exactOut cap before any approval is built, so exactOut
+ *     never legitimately reaches here without a cap.
+ *
+ * @param {object} quoteData - The loaded quote record (with .swapMode, .request)
+ * @returns {string|number|undefined} allowance cap, or undefined for no cap
+ */
+export function approvalCapForQuote(quoteData) {
+  const cap = quoteData?.request?.maxInputAmount;
+  if (cap != null) return cap;
+  return quoteData?.swapMode === 'exactOut' ? undefined : quoteData?.request?.amount;
+}
+
+/**
  * Sanity-check the target of a swap transaction before signing it.
  *
  * This is a defensive gate, not a router allowlist. It rejects the crude cases
@@ -803,7 +826,7 @@ export function approvalAmountForSwap({ inputAmount, swapMode, slippage }) {
  * @param {string} to - Transaction target (quote.transaction.to)
  * @param {string} inputMint - The token being sold (quote.inputMint)
  */
-export async function validateSwapTarget(chain, to, inputMint) {
+export async function validateSwapTarget(chain, to, inputMint, { verifiedTargets } = {}) {
   if (!to || /^0x0+$/i.test(to)) {
     throw new Error(`Swap target address is empty or zero (${to ?? 'undefined'}). Refusing to sign.`);
   }
@@ -822,6 +845,14 @@ export async function validateSwapTarget(chain, to, inputMint) {
       `Swap target equals the token being sold (${to}). A swap routes through an aggregator, not the token itself. Refusing to sign.`,
     );
   }
+  // Skip the RPC round-trip (and its retries) for a target already confirmed to
+  // carry contract code earlier in this same execute run. Quote lists commonly
+  // share one router across all quotes, so this avoids re-verifying — and, on a
+  // flaky RPC, re-retrying — the same target N times. Only SUCCESSFUL checks are
+  // cached, so a transient failure still gets a fresh attempt on the next quote.
+  const targetKey = `${chain}:${to.toLowerCase()}`;
+  if (verifiedTargets?.has(targetKey)) return;
+
   // Fail CLOSED on an unverifiable target: retry a few times, then refuse rather
   // than sign against a target we couldn't confirm carries contract code. A
   // flaky — or hostile — RPC must not be able to silently disable this guard.
@@ -852,6 +883,7 @@ export async function validateSwapTarget(chain, to, inputMint) {
   if (!code || code === '0x' || code === '0x0') {
     throw new Error(`Swap target ${to} is not a contract (no code). Refusing to sign.`);
   }
+  verifiedTargets?.add(targetKey);
 }
 
 /**
@@ -1859,6 +1891,10 @@ EXAMPLES:
         }
 
         let lastQuoteError = null;
+        // Swap targets confirmed to carry contract code in this execute run, so a
+        // router shared across quotes is verified once, not per quote (see
+        // validateSwapTarget). Scoped to this run — never cached across processes.
+        const verifiedTargets = new Set();
 
         for (let qi = startIndex; qi < endIndex; qi++) {
           const currentQuote = allQuotes[qi];
@@ -1923,7 +1959,7 @@ EXAMPLES:
 
               // Guard the swap target before any RPC call, approval, or signing —
               // whatever `to`/`data` the quote supplied gets signed verbatim.
-              await validateSwapTarget(chain, currentQuote.transaction.to, currentQuote.inputMint);
+              await validateSwapTarget(chain, currentQuote.transaction.to, currentQuote.inputMint, { verifiedTargets });
 
               // Bind the quote to the immutable request intent persisted at quote
               // time, so a compromised API can't inflate the input (and therefore
@@ -1989,7 +2025,7 @@ EXAMPLES:
                   // encodeApproveCalldata enforces a valid 20-byte spender, a
                   // bounded (< MAX) amount within the request cap, and 68-byte calldata.
                   const approvalData = encodeApproveCalldata(currentQuote.approvalAddress, approveAmt, {
-                    maxAllowance: quoteData.request?.maxInputAmount ?? quoteData.request?.amount,
+                    maxAllowance: approvalCapForQuote(quoteData),
                   });
                   const approvalMaxFee = currentQuote.transaction?.maxFeePerGas || currentQuote.transaction?.gasPrice || '1000000';
                   const approvalPriorityFee = currentQuote.transaction?.maxPriorityFeePerGas || '1000000';
@@ -2152,7 +2188,7 @@ EXAMPLES:
 
               // Guard the swap target before any RPC call, approval, or signing —
               // whatever `to`/`data` the quote supplied gets signed verbatim.
-              await validateSwapTarget(chain, currentQuote.transaction.to, currentQuote.inputMint);
+              await validateSwapTarget(chain, currentQuote.transaction.to, currentQuote.inputMint, { verifiedTargets });
 
               // Bind the quote to the immutable request intent persisted at quote
               // time, so a compromised API can't inflate the input (and therefore
@@ -2220,7 +2256,7 @@ EXAMPLES:
                       currentQuote.approvalAddress,
                       chainConfig.chainId,
                       approveAmt,
-                      quoteData.request?.maxInputAmount ?? quoteData.request?.amount,
+                      approvalCapForQuote(quoteData),
                     );
                     let approvalTxHash = approvalResult.txHash;
                     if (!approvalTxHash && approvalResult.signedTransaction) {
@@ -2358,7 +2394,7 @@ EXAMPLES:
               // whatever `to`/`data` the quote supplied gets signed verbatim, so
               // reject an implausible target (zero, EOA, or the sold token itself)
               // before spending gas on an approval.
-              await validateSwapTarget(chain, currentQuote.transaction.to, currentQuote.inputMint);
+              await validateSwapTarget(chain, currentQuote.transaction.to, currentQuote.inputMint, { verifiedTargets });
 
               // Bind the quote to the immutable request intent persisted at quote
               // time, so a compromised API can't inflate the input (and therefore
@@ -2438,7 +2474,7 @@ EXAMPLES:
                     approvalNonce,
                     approvalGasPrice,
                     approveAmt,
-                    quoteData.request?.maxInputAmount ?? quoteData.request?.amount,
+                    approvalCapForQuote(quoteData),
                   );
 
                   const approvalResult = await executeTransaction({

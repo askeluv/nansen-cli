@@ -24,6 +24,7 @@ import {
   signEvmTransaction,
   buildApprovalTransaction,
   approvalAmountForSwap,
+  approvalCapForQuote,
   validateSwapTarget,
   assertUsableSpender,
   stripLeadingZeros,
@@ -660,6 +661,29 @@ describe('approvalAmountForSwap', () => {
 
 // ============= Swap target validation (security hardening) =============
 
+describe('approvalCapForQuote', () => {
+  it('returns the persisted maxInputAmount when present (both modes)', () => {
+    expect(approvalCapForQuote({ swapMode: 'exactIn', request: { maxInputAmount: '1000000', amount: '1000000' } })).toBe('1000000');
+    expect(approvalCapForQuote({ swapMode: 'exactOut', request: { maxInputAmount: '1030000', amount: '990000' } })).toBe('1030000');
+  });
+
+  it('falls back to request.amount ONLY for exactIn (the input bound)', () => {
+    expect(approvalCapForQuote({ swapMode: 'exactIn', request: { amount: '1000000' } })).toBe('1000000');
+  });
+
+  it('never falls back to request.amount for exactOut (that is the OUTPUT token amount)', () => {
+    // The wrong-unit fallback must not leak in: exactOut with no cap yields undefined,
+    // not the output amount. (assertInputWithinMax fails this path closed upstream.)
+    expect(approvalCapForQuote({ swapMode: 'exactOut', request: { amount: '990000' } })).toBeUndefined();
+  });
+
+  it('is undefined when no request/cap exists (pre-intent quotes)', () => {
+    expect(approvalCapForQuote({})).toBeUndefined();
+    expect(approvalCapForQuote({ swapMode: 'exactIn' })).toBeUndefined();
+    expect(approvalCapForQuote(undefined)).toBeUndefined();
+  });
+});
+
 describe('validateSwapTarget', () => {
   const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
   const ROUTER = '0xDef1C0ded9bec7F1a1670819833240f027b25EfF';
@@ -706,6 +730,34 @@ describe('validateSwapTarget', () => {
   it('re-throws a deterministic config error (no RPC URL) instead of skipping', async () => {
     // Unknown chain → evmRpcCall throws "No RPC URL configured…" before any fetch.
     await expect(validateSwapTarget('nosuchchain', ROUTER, USDC)).rejects.toThrow(/No RPC URL/i);
+  });
+
+  it('verifies a shared target only once when a run-scoped cache is passed', async () => {
+    // A quote list commonly shares one router; the cache avoids re-checking (and,
+    // on a flaky RPC, re-retrying) the same target for every quote.
+    let getCodeCalls = 0;
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const body = opts?.body ? JSON.parse(opts.body) : {};
+      if (body.method === 'eth_getCode') {
+        getCodeCalls++;
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      }
+      return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: null })) });
+    }));
+    const verifiedTargets = new Set();
+    await validateSwapTarget('base', ROUTER, USDC, { verifiedTargets });
+    await validateSwapTarget('base', ROUTER, USDC, { verifiedTargets });
+    expect(getCodeCalls).toBe(1);
+    // The cheap zero/self checks still run every call even when cached.
+    await expect(validateSwapTarget('base', USDC, USDC, { verifiedTargets })).rejects.toThrow(/token being sold/i);
+  });
+
+  it('does not cache a failed verification (transient failure gets a fresh attempt)', async () => {
+    // Only successful checks are cached, so a one-off outage doesn't poison later quotes.
+    mockGetCode(new Error('network down'));
+    const verifiedTargets = new Set();
+    await expect(validateSwapTarget('base', ROUTER, USDC, { verifiedTargets })).rejects.toThrow(/could not verify/i);
+    expect(verifiedTargets.size).toBe(0);
   });
 });
 
