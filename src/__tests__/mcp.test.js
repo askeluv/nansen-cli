@@ -101,6 +101,13 @@ describe('mergeNansenEntry / removeNansenEntry', () => {
     expect(() => removeNansenEntry({ mcpServers: 42 })).toThrow(/not an object/);
   });
 
+  it('refuses when the config root is not an object', () => {
+    for (const config of [null, [], 'nope']) {
+      expect(() => mergeNansenEntry(config, entry)).toThrow(/must contain a JSON object/);
+      expect(() => removeNansenEntry(config)).toThrow(/must contain a JSON object/);
+    }
+  });
+
   it('removeNansenEntry removes only nansen and reports not-found', () => {
     const { config, removed } = removeNansenEntry({ mcpServers: { nansen: entry, other: { command: 'foo' } } });
     expect(removed).toBe(true);
@@ -173,6 +180,35 @@ describe('mcp command handler', () => {
     await expect(run(['install', 'cursor'])).rejects.toThrow(/Could not parse/);
     expect(fs.readFileSync(cursorPath(), 'utf8')).toBe('{ not json'); // untouched
     expect(fs.existsSync(`${cursorPath()}.bak`)).toBe(false);
+  });
+
+  it('reports config read failures without calling them parse errors', async () => {
+    fs.mkdirSync(path.dirname(cursorPath()), { recursive: true });
+    fs.writeFileSync(cursorPath(), '{}');
+    const readError = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    const { mcp: unreadableMcp } = buildMcpCommands({
+      log: () => {},
+      fsOverride: { ...fs, readFileSync: () => { throw readError; } },
+      platform: 'linux',
+      homedirFn: () => tempDir,
+      env: {},
+    });
+
+    await expect(unreadableMcp(['install', 'cursor'], api, {}, {}))
+      .rejects.toThrow(/Could not read.*permission denied/);
+  });
+
+  it('removes the secret temp file when the atomic rename fails', async () => {
+    const { mcp: failingMcp } = buildMcpCommands({
+      log: () => {},
+      fsOverride: { ...fs, renameSync: () => { throw new Error('rename failed'); } },
+      platform: 'linux',
+      homedirFn: () => tempDir,
+      env: {},
+    });
+
+    await expect(failingMcp(['install', 'cursor'], api, {}, {})).rejects.toThrow('rename failed');
+    expect(fs.readdirSync(path.dirname(cursorPath()))).toEqual([]);
   });
 
   it('requires login and writes nothing without a key', async () => {
