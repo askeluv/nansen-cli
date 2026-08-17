@@ -745,10 +745,16 @@ export async function checkErc20Allowance(chain, tokenAddress, ownerAddress, spe
  * @returns {bigint} Allowance to approve, in base units
  */
 export function approvalAmountForSwap({ inputAmount, swapMode, slippage }) {
-  const amt = BigInt(inputAmount ?? 0);
-  // Clamp non-positive / malformed amounts (incl. a negative like "-5000000")
-  // to 0n, so callers can reject via a single `approveAmt <= 0n` check and a
-  // negative BigInt never reaches hex encoding (which would mangle the calldata).
+  // Clamp non-positive / malformed amounts to 0n — a negative like "-5000000",
+  // or a non-integer string like "1.5" / "1.5e6" that BigInt() rejects — so
+  // callers can reject via a single `approveAmt <= 0n` check and a negative or
+  // invalid value never reaches hex encoding (which would mangle the calldata).
+  let amt;
+  try {
+    amt = BigInt(inputAmount ?? 0);
+  } catch {
+    return 0n;
+  }
   if (amt <= 0n) return 0n;
   if (swapMode === 'exactOut') {
     // Honour an explicit slippage of 0 (tightest approval); only fall back to the
@@ -800,7 +806,10 @@ export async function validateSwapTarget(chain, to, inputMint) {
   let code;
   try {
     code = await evmRpcCall(chain, 'eth_getCode', [to, 'latest']);
-  } catch {
+  } catch (err) {
+    // A missing RPC config is a deterministic setup error, not a flaky network —
+    // surface it rather than mislabel it "unavailable" and skip the check.
+    if (err?.message?.startsWith('No RPC URL')) throw err;
     process.stderr.write(`  ⚠ Could not verify swap target ${to} is a contract (RPC unavailable); proceeding.\n`);
     return;
   }

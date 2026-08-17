@@ -629,6 +629,9 @@ describe('approvalAmountForSwap', () => {
     // Negative/malformed input must clamp to 0n, never a negative BigInt.
     expect(approvalAmountForSwap({ inputAmount: '-5000000' })).toBe(0n);
     expect(approvalAmountForSwap({ inputAmount: -5000000n, swapMode: 'exactOut' })).toBe(0n);
+    // Non-integer strings that BigInt() rejects must clamp, not throw.
+    expect(approvalAmountForSwap({ inputAmount: '1500000.5' })).toBe(0n);
+    expect(approvalAmountForSwap({ inputAmount: '1.5e6', swapMode: 'exactOut' })).toBe(0n);
   });
 
   it('is always bounded — never the unlimited MAX_UINT256', () => {
@@ -681,6 +684,11 @@ describe('validateSwapTarget', () => {
   it('is best-effort: proceeds when the code check RPC fails', async () => {
     mockGetCode(new Error('network down'));
     await expect(validateSwapTarget('base', ROUTER, USDC)).resolves.toBeUndefined();
+  });
+
+  it('re-throws a deterministic config error (no RPC URL) instead of skipping', async () => {
+    // Unknown chain → evmRpcCall throws "No RPC URL configured…" before any fetch.
+    await expect(validateSwapTarget('nosuchchain', ROUTER, USDC)).rejects.toThrow(/No RPC URL/i);
   });
 });
 
