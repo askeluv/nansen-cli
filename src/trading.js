@@ -1368,6 +1368,9 @@ OPTIONS:
   --auto-slippage           Enable auto slippage calculation
   --max-auto-slippage <pct> Max auto slippage when auto-slippage enabled
   --swap-mode <mode>        exactIn (default) or exactOut
+  --max-input <baseUnits>   exactOut only: hard ceiling on the sell-token input
+                            (base units). Enforced before signing. Defaults to a
+                            slippage-buffered ceiling derived from the quote.
   --aggregator <name>       Force a specific aggregator (lifi, relay, jupiter, okx).
                             Filters the quote list client-side; errors if none match.
 
@@ -1408,6 +1411,24 @@ CROSS-CHAIN NOTES (when using --to-chain):
       // an explicit cap so the approval is always bounded by a value we know.
       if (swapMode === 'exactOut' && autoSlippage && maxAutoSlippage == null) {
         throw new CommandError('Error: --swap-mode exactOut with --auto-slippage requires --max-auto-slippage so the approval can be scoped to a bounded input (e.g. --max-auto-slippage 0.05).', 'INVALID_INPUT');
+      }
+
+      // --max-input: an explicit ceiling (base units of the sell token) on how
+      // much may leave the wallet for an exactOut swap, persisted as intent and
+      // enforced before signing. exactIn is already capped at --amount (the
+      // input the user names), so the flag is exactOut-only. When omitted, a
+      // slippage-buffered ceiling is derived from the quotes below.
+      const maxInputRaw = options['max-input'];
+      let maxInputOverride = null;
+      if (maxInputRaw != null) {
+        if (swapMode !== 'exactOut') {
+          throw new CommandError('Error: --max-input only applies to --swap-mode exactOut (exactIn already caps spend at --amount).', 'INVALID_INPUT');
+        }
+        const maxInputError = validateBaseUnitAmount(maxInputRaw);
+        if (maxInputError) {
+          throw new CommandError(`Error: invalid --max-input: ${maxInputError} (--max-input is in base units of the sell token).`, 'INVALID_INPUT');
+        }
+        maxInputOverride = BigInt(maxInputRaw).toString();
       }
 
       // Static input validation — catches common agent errors (wrong addresses,
@@ -1623,12 +1644,37 @@ CROSS-CHAIN NOTES (when using --to-chain):
         const effectiveSlippage = slippage != null ? Number(slippage)
           : autoSlippage ? (maxAutoSlippage != null ? Number(maxAutoSlippage) : 0.05)
           : 0.03;
+        // The maximum input (spend ceiling, base units of the sell token) that
+        // the execute path will allow to leave the wallet. exactIn is the input
+        // the user named. exactOut takes the explicit --max-input when given,
+        // otherwise a slippage-buffered ceiling derived from the LARGEST input
+        // across the quotes shown here — any of which the user may pin, and
+        // above which a drifted/compromised quote is refused at execute time
+        // (see assertInputWithinMax). A malformed quote set (no valid inputs)
+        // yields null, which fails exactOut closed at execute.
+        let maxInputAmount;
+        if (swapMode === 'exactOut') {
+          if (maxInputOverride != null) {
+            maxInputAmount = maxInputOverride;
+          } else {
+            const maxQuoteInput = response.quotes.reduce((max, q) => {
+              let v;
+              try { v = BigInt(q.inputAmount ?? q.inAmount ?? '0'); } catch { v = 0n; }
+              return v > max ? v : max;
+            }, 0n);
+            const buffered = approvalAmountForSwap({ inputAmount: maxQuoteInput, swapMode: 'exactOut', slippage: effectiveSlippage });
+            maxInputAmount = buffered > 0n ? buffered.toString() : null;
+          }
+        } else {
+          maxInputAmount = String(resolvedAmount);
+        }
         const quoteId = saveQuote(response, chain, signerType, privyWalletIds, isCrossChain ? toChainRaw : null, {
           swapMode,
           slippage: effectiveSlippage,
           // Immutable record of what the user asked for; revalidated at execute
           // time so the API's quote can't drift beyond it. For exactIn `amount`
-          // is the input; for exactOut it is the requested output.
+          // is the input; for exactOut it is the requested output. `maxInputAmount`
+          // is the spend ceiling enforced in both modes before signing.
           request: {
             chain,
             toChain: isCrossChain ? toChainRaw : null,
@@ -1638,6 +1684,7 @@ CROSS-CHAIN NOTES (when using --to-chain):
             toToken: to,
             swapMode,
             amount: resolvedAmount,
+            maxInputAmount,
           },
         });
         log(`\n  Quote ID: ${quoteId}`);
@@ -1901,7 +1948,7 @@ EXAMPLES:
                   // encodeApproveCalldata enforces a valid 20-byte spender, a
                   // bounded (< MAX) amount within the request cap, and 68-byte calldata.
                   const approvalData = encodeApproveCalldata(currentQuote.approvalAddress, approveAmt, {
-                    maxAllowance: quoteData.swapMode === 'exactOut' ? undefined : quoteData.request?.amount,
+                    maxAllowance: quoteData.request?.maxInputAmount ?? quoteData.request?.amount,
                   });
                   const approvalMaxFee = currentQuote.transaction?.maxFeePerGas || currentQuote.transaction?.gasPrice || '1000000';
                   const approvalPriorityFee = currentQuote.transaction?.maxPriorityFeePerGas || '1000000';
@@ -2129,7 +2176,7 @@ EXAMPLES:
                       currentQuote.approvalAddress,
                       chainConfig.chainId,
                       approveAmt,
-                      quoteData.swapMode === 'exactOut' ? undefined : quoteData.request?.amount,
+                      quoteData.request?.maxInputAmount ?? quoteData.request?.amount,
                     );
                     let approvalTxHash = approvalResult.txHash;
                     if (!approvalTxHash && approvalResult.signedTransaction) {
@@ -2345,7 +2392,7 @@ EXAMPLES:
                     approvalNonce,
                     approvalGasPrice,
                     approveAmt,
-                    quoteData.swapMode === 'exactOut' ? undefined : quoteData.request?.amount,
+                    quoteData.request?.maxInputAmount ?? quoteData.request?.amount,
                   );
 
                   const approvalResult = await executeTransaction({

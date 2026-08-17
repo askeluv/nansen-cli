@@ -3833,3 +3833,131 @@ describe('Relay aggregator: bridge-status 502 handling', () => {
     global.fetch = origFetch;
   });
 });
+
+// ===========================================================================
+// exactOut maximum-input enforcement (adversarial)
+//
+// For an exactOut swap the API chooses the INPUT. Each test below crafts a
+// quote whose requested OUTPUT is exactly what was asked, but whose INPUT
+// (5,000,000) overshoots the persisted maximum input (1,000,000 — the spend
+// ceiling). The execute path must refuse to sign BEFORE any approval,
+// transaction signing, or broadcast — for native and ERC-20 inputs, across all
+// three EVM signing paths (local, Privy, WalletConnect).
+// ===========================================================================
+describe('exactOut max-input enforcement (adversarial)', () => {
+  const OUT_TOKEN = '0xdAC17F958D2ee523a2206206994597C13D831ec7';
+  const ERC20_IN = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'; // USDC on Base
+  const NATIVE_IN = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+  const ROUTER = '0x1111111254eeb25477b68fb85ed929f73a960582';
+
+  // Requested output is exactly 990000 (matches request.amount); input is 5x the cap.
+  function overpayingExactOutQuote(inputMint, native) {
+    const q = {
+      aggregator: 'test',
+      inputMint,
+      outputMint: OUT_TOKEN,
+      inAmount: '5000000',
+      inputAmount: '5000000',
+      outAmount: '990000',
+      transaction: { to: ROUTER, data: '0xdeadbeef', value: native ? '5000000' : '0', gas: '210000' },
+    };
+    if (!native) q.approvalAddress = ROUTER;
+    return q;
+  }
+
+  function exactOutRequestMeta(inputMint) {
+    return {
+      swapMode: 'exactOut',
+      slippage: 0.03,
+      request: {
+        chain: 'base', toChain: null, walletAddress: '0xWallet', recipient: null,
+        fromToken: inputMint, toToken: OUT_TOKEN,
+        swapMode: 'exactOut', amount: '990000', maxInputAmount: '1000000',
+      },
+    };
+  }
+
+  // Answers eth_getCode (so the target check passes and execution reaches the
+  // cap guard) and records every fetch so we can prove /execute (broadcast) and
+  // privy.io POST (sign) never happened. A /execute call would mean funds moved.
+  function trackingFetch(calls) {
+    return vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      calls.push({ url: urlStr, method: opts?.method });
+      let body = {};
+      try { body = opts?.body ? JSON.parse(opts.body) : {}; } catch { /* non-JSON */ }
+      if (urlStr.includes('privy.io') && opts?.method === 'GET') {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ id: 'wl_evm_1', address: '0xPrivyAddr', chain_type: 'ethereum' }) });
+      }
+      if (body.method === 'eth_getCode') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      }
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })), json: () => Promise.resolve({}) });
+    });
+  }
+
+  const noBroadcast = (calls) => expect(calls.some(c => c.url.includes('/execute'))).toBe(false);
+  const noPrivySign = (calls) => expect(calls.some(c => c.url.includes('privy.io') && c.method === 'POST')).toBe(false);
+
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); delete process.env.NANSEN_WALLET_PASSWORD; });
+
+  for (const native of [false, true]) {
+    const kind = native ? 'native' : 'ERC-20';
+    const inputMint = native ? NATIVE_IN : ERC20_IN;
+
+    it(`local wallet: refuses ${kind} exactOut when input exceeds the max, without signing or broadcasting`, async () => {
+      createWallet('default', 'testpass');
+      process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+      const calls = [];
+      vi.stubGlobal('fetch', trackingFetch(calls));
+
+      const quoteId = saveQuote({ success: true, quotes: [overpayingExactOutQuote(inputMint, native)] },
+        'base', 'local', null, null, exactOutRequestMeta(inputMint));
+
+      const logs = [];
+      const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+
+      await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/exceeds your maximum input/i);
+      noBroadcast(calls);
+      // Never reached the approval/broadcast stage.
+      expect(logs.some(l => /Approval required|Sending approval|Broadcasting/.test(l))).toBe(false);
+    });
+
+    it(`Privy: refuses ${kind} exactOut when input exceeds the max, without signing or broadcasting`, async () => {
+      process.env.PRIVY_APP_ID = 'test-app-id';
+      process.env.PRIVY_APP_SECRET = 'test-secret';
+      const calls = [];
+      vi.stubGlobal('fetch', trackingFetch(calls));
+
+      const quoteId = saveQuote({ success: true, quotes: [overpayingExactOutQuote(inputMint, native)] },
+        'base', 'privy', { evm: 'wl_evm_1', solana: 'wl_sol_1' }, null, exactOutRequestMeta(inputMint));
+
+      const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+
+      await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/exceeds your maximum input/i);
+      noPrivySign(calls); // no signEvmTransaction (privy.io POST)
+      noBroadcast(calls); // no /execute broadcast
+
+      delete process.env.PRIVY_APP_ID;
+      delete process.env.PRIVY_APP_SECRET;
+    });
+
+    it(`WalletConnect: refuses ${kind} exactOut when input exceeds the max, without approving or sending`, async () => {
+      vi.spyOn(wcTrading, 'getWalletConnectAddress').mockResolvedValue('0x742d35Cc6bF4F3f4e0e3a8DD7e37ff4e4Be4E4B4');
+      const approvalSpy = vi.spyOn(wcTrading, 'sendApprovalViaWalletConnect').mockResolvedValue({ txHash: '0xshouldnothappen' });
+      const sendSpy = vi.spyOn(wcTrading, 'sendTransactionViaWalletConnect').mockResolvedValue({ txHash: '0xshouldnothappen' });
+      const calls = [];
+      vi.stubGlobal('fetch', trackingFetch(calls));
+
+      const quoteId = saveQuote({ success: true, quotes: [overpayingExactOutQuote(inputMint, native)] },
+        'base', 'walletconnect', null, null, exactOutRequestMeta(inputMint));
+
+      const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+
+      await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/exceeds your maximum input/i);
+      expect(approvalSpy).not.toHaveBeenCalled();
+      expect(sendSpy).not.toHaveBeenCalled();
+      noBroadcast(calls);
+    });
+  }
+});

@@ -1583,6 +1583,10 @@
             "max-auto-slippage": {
               "type": "string",
               "description": "Upper bound applied when --auto-slippage is enabled, as a decimal between 0 and 1 (e.g. 0.03 for 3%)."
+            },
+            "max-input": {
+              "type": "string",
+              "description": "exactOut only: hard ceiling on the sell-token input, in base units. Persisted with the quote and enforced before any approval or signing — a quote whose input exceeds it is refused. When omitted, a slippage-buffered ceiling is derived from the quote."
             }
           },
           "prerequisites": [

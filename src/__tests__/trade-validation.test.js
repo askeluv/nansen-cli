@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { validateQuoteInput, fetchNativeBalance, fetchTokenBalance, validateBalance, resolvePercentAmount, validateGasBalance, GASLESS_MIN_TRADE_USD, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertSwapCalldataNotBareTransfer, MAX_UINT256 } from '../trade-validation.js';
+import { validateQuoteInput, fetchNativeBalance, fetchTokenBalance, validateBalance, resolvePercentAmount, validateGasBalance, GASLESS_MIN_TRADE_USD, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertInputWithinMax, assertSwapCalldataNotBareTransfer, MAX_UINT256 } from '../trade-validation.js';
 
 describe('validateQuoteInput', () => {
   const validSolana = {
@@ -1212,10 +1212,42 @@ describe('assertQuoteMatchesRequest', () => {
   });
 
   it('binds the requested output for exactOut', () => {
-    const req = { ...request, swapMode: 'exactOut', amount: '990000' };
+    // exactOut needs a persisted max input (the sole input cap) or it fails closed.
+    const req = { ...request, swapMode: 'exactOut', amount: '990000', maxInputAmount: '1000000' };
     expect(() => assertQuoteMatchesRequest(req, okQuote, { chain: 'base' })).not.toThrow();
     const inflatedOut = { ...okQuote, outAmount: '5000000' };
     expect(() => assertQuoteMatchesRequest(req, inflatedOut, { chain: 'base' })).toThrow(/output amount .* does not match/i);
+  });
+
+  it('fails closed on an exactOut quote with no persisted maximum input', () => {
+    const req = { ...request, swapMode: 'exactOut', amount: '990000' }; // no maxInputAmount
+    expect(() => assertQuoteMatchesRequest(req, okQuote, { chain: 'base' })).toThrow(/no persisted maximum input/i);
+  });
+
+  it('rejects an exactOut quote whose input exceeds the persisted maximum', () => {
+    const req = { ...request, swapMode: 'exactOut', amount: '990000', maxInputAmount: '1000000' };
+    // Requested output is correct, but the API demands a larger input than the cap.
+    const overpay = { ...okQuote, inputAmount: '1500000', inAmount: '1500000' };
+    expect(() => assertQuoteMatchesRequest(req, overpay, { chain: 'base' })).toThrow(/exceeds your maximum input/i);
+  });
+
+  it('enforces the maximum input for exactIn too (defense in depth)', () => {
+    // request.amount already binds exactIn, but a tighter maxInputAmount still holds.
+    const req = { ...request, maxInputAmount: '500000' };
+    expect(() => assertQuoteMatchesRequest(req, okQuote, { chain: 'base' })).toThrow(/exceeds your maximum input/i);
+  });
+
+  it('fails closed when a bound field is missing from the quote', () => {
+    // Missing sell token, buy token, or the bound amount must reject, not skip.
+    expect(() => assertQuoteMatchesRequest(request, { ...okQuote, inputMint: undefined }, { chain: 'base' }))
+      .toThrow(/missing the sell-token/i);
+    expect(() => assertQuoteMatchesRequest(request, { ...okQuote, outputMint: undefined }, { chain: 'base' }))
+      .toThrow(/missing the buy-token/i);
+    expect(() => assertQuoteMatchesRequest(request, { ...okQuote, inputAmount: undefined, inAmount: undefined }, { chain: 'base' }))
+      .toThrow(/missing the input amount/i);
+    const outReq = { ...request, swapMode: 'exactOut', amount: '990000', maxInputAmount: '1000000' };
+    expect(() => assertQuoteMatchesRequest(outReq, { ...okQuote, outAmount: undefined, outputAmount: undefined }, { chain: 'base' }))
+      .toThrow(/missing the output amount/i);
   });
 
   it('compares the output token with the destination chain rules for cross-chain quotes', () => {
@@ -1234,6 +1266,29 @@ describe('assertQuoteMatchesRequest', () => {
     // (would have wrongly passed under source-chain case-insensitive rules).
     const mangled = { ...q, outputMint: SOL_TOKEN.toLowerCase() };
     expect(() => assertQuoteMatchesRequest(xchain, mangled, { chain: 'base' })).toThrow(/buy token .* does not match/i);
+  });
+});
+
+describe('assertInputWithinMax', () => {
+  const base = { inputAmount: '1000000', inAmount: '1000000' };
+
+  it('is a no-op for exactIn with no cap (request.amount already binds it)', () => {
+    expect(() => assertInputWithinMax({ swapMode: 'exactIn' }, base)).not.toThrow();
+    expect(() => assertInputWithinMax(undefined, base)).not.toThrow();
+  });
+
+  it('fails closed for exactOut without a persisted cap', () => {
+    expect(() => assertInputWithinMax({ swapMode: 'exactOut' }, base)).toThrow(/no persisted maximum input/i);
+  });
+
+  it('passes when the input is at or below the cap and rejects above it', () => {
+    expect(() => assertInputWithinMax({ swapMode: 'exactOut', maxInputAmount: '1000000' }, base)).not.toThrow();
+    expect(() => assertInputWithinMax({ swapMode: 'exactOut', maxInputAmount: '999999' }, base)).toThrow(/exceeds your maximum input/i);
+  });
+
+  it('fails closed on a missing or non-integer quote input when a cap is set', () => {
+    expect(() => assertInputWithinMax({ maxInputAmount: '1000000' }, {})).toThrow(/missing the input amount/i);
+    expect(() => assertInputWithinMax({ maxInputAmount: '1000000' }, { inAmount: '1.5' })).toThrow(/not an integer/i);
   });
 });
 

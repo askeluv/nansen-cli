@@ -514,10 +514,15 @@ function tokensEqual(a, b, chain) {
  *   - token pair (input == requested sell token, output == requested buy token)
  *   - exactIn: input amount EQUALS the requested amount (the spend ceiling)
  *   - exactOut: output amount EQUALS the requested amount (what you buy)
+ *   - input <= request.maxInputAmount in BOTH modes (the spend ceiling). For
+ *     exactOut this cap is the ONLY thing bounding the input, so it is
+ *     mandatory — a quote with no persisted cap is refused (see
+ *     assertInputWithinMax).
  *
- * exactOut input is not independently capped here (the CLI takes no explicit
- * max-input flag); it stays bounded by the scoped, slippage-buffered approval.
- * Persisting an explicit exactOut maximum is a tracked follow-up.
+ * Fails closed on a quote that is missing a field this check needs (input or
+ * output token address, or the bound amount): the field can't silently skip
+ * its comparison, because a compromised API omitting it would otherwise
+ * bypass the very binding meant to constrain it.
  *
  * Throws on a definitive mismatch. Callers run this inside the per-quote try so
  * a mismatched quote falls through to the next candidate.
@@ -541,32 +546,65 @@ export function assertQuoteMatchesRequest(request, quote, { chain }) {
   }
 
   const tokenChain = String(chain).toLowerCase();
-  if (request.fromToken && !tokensEqual(quote.inputMint, request.fromToken, tokenChain)) {
-    throw new Error(
-      `Quote sell token (${quote.inputMint}) does not match the requested token (${request.fromToken}). Refusing to sign.`,
-    );
+  if (request.fromToken) {
+    // A missing sell-token address must fail closed: without it the token-pair
+    // binding below can't run, so we can't confirm the quote sells what was asked.
+    if (!quote.inputMint) {
+      throw new Error(
+        `Quote is missing the sell-token address (inputMint); cannot confirm it matches the requested ${request.fromToken}. Refusing to sign.`,
+      );
+    }
+    if (!tokensEqual(quote.inputMint, request.fromToken, tokenChain)) {
+      throw new Error(
+        `Quote sell token (${quote.inputMint}) does not match the requested token (${request.fromToken}). Refusing to sign.`,
+      );
+    }
   }
   // The output token lives on the destination chain, which differs from the
   // source chain for cross-chain swaps. Compare it with the destination chain's
   // case rules (Solana base58 is case-sensitive) to avoid false rejections.
   const outTokenChain = request.toChain ? String(request.toChain).toLowerCase() : tokenChain;
-  if (request.toToken && quote.outputMint && !tokensEqual(quote.outputMint, request.toToken, outTokenChain)) {
-    throw new Error(
-      `Quote buy token (${quote.outputMint}) does not match the requested token (${request.toToken}). Refusing to sign.`,
-    );
+  if (request.toToken) {
+    // Fail closed on a missing buy-token address for the same reason. Previously
+    // a missing outputMint silently skipped this comparison — a compromised API
+    // could omit it to route the output somewhere else undetected.
+    if (!quote.outputMint) {
+      throw new Error(
+        `Quote is missing the buy-token address (outputMint); cannot confirm it matches the requested ${request.toToken}. Refusing to sign.`,
+      );
+    }
+    if (!tokensEqual(quote.outputMint, request.toToken, outTokenChain)) {
+      throw new Error(
+        `Quote buy token (${quote.outputMint}) does not match the requested token (${request.toToken}). Refusing to sign.`,
+      );
+    }
   }
 
   if (request.amount != null) {
     const requested = BigInt(request.amount);
     if (request.swapMode === 'exactOut') {
-      const out = BigInt(quote.outAmount ?? quote.outputAmount ?? '0');
+      // Require the output amount to be present; a missing value must not
+      // default to 0 and coincidentally pass some other comparison.
+      const outRaw = quote.outAmount ?? quote.outputAmount;
+      if (outRaw == null) {
+        throw new Error(
+          `Quote is missing the output amount; cannot confirm it matches the requested output (${requested}). Refusing to sign.`,
+        );
+      }
+      const out = BigInt(outRaw);
       if (out !== requested) {
         throw new Error(
           `Quote output amount (${out}) does not match the requested output (${requested}). Refusing to sign.`,
         );
       }
     } else {
-      const input = BigInt(quote.inputAmount ?? quote.inAmount ?? '0');
+      const inRaw = quote.inputAmount ?? quote.inAmount;
+      if (inRaw == null) {
+        throw new Error(
+          `Quote is missing the input amount; cannot confirm it matches the requested input (${requested}). Refusing to sign.`,
+        );
+      }
+      const input = BigInt(inRaw);
       if (input !== requested) {
         throw new Error(
           `Quote input amount (${input}) does not match the requested input (${requested}). A larger input would enlarge the approval and native value beyond what you asked to spend. Refusing to sign.`,
@@ -575,7 +613,75 @@ export function assertQuoteMatchesRequest(request, quote, { chain }) {
     }
   }
 
+  // Independent spend ceiling on the input, enforced in both modes. This is the
+  // sole guard on exactOut input (which request.amount binds only on the output
+  // side), so it fails closed when an exactOut quote carries no persisted cap.
+  assertInputWithinMax(request, quote);
+
   return { skipped: false };
+}
+
+/**
+ * Enforce the maximum input (the spend ceiling) persisted in the request intent
+ * against the quote the execute path is about to sign. This bounds the tokens
+ * that can leave the wallet independently of the output binding, closing the
+ * exactOut gap where the API chooses the input and nothing capped it.
+ *
+ * Behaviour:
+ *   - exactOut with no persisted `maxInputAmount` → throws (fail closed). The
+ *     input is otherwise unbounded, so signing without a cap is refused.
+ *   - a persisted cap with a missing/invalid quote input → throws. A cap you
+ *     can't compare against is not a cap.
+ *   - quote input > cap → throws. A larger input would enlarge the approval and
+ *     the native value beyond what the user approved.
+ *   - exactIn with no cap → no-op (request.amount already binds the input).
+ *
+ * Applies to native and ERC-20 swaps alike; the caller runs it before any
+ * approval, transaction signing, or WalletConnect call.
+ *
+ * @param {object} request - Persisted intent (quoteData.request)
+ * @param {object} quote - The quote being executed
+ */
+export function assertInputWithinMax(request, quote) {
+  if (!request) return;
+  const swapMode = request.swapMode ?? 'exactIn';
+  if (request.maxInputAmount == null) {
+    if (swapMode === 'exactOut') {
+      throw new Error(
+        'exactOut quote has no persisted maximum input (maxInputAmount); the input is otherwise unbounded. Re-quote to enable the spend cap. Refusing to sign.',
+      );
+    }
+    return; // exactIn input is already bound by request.amount.
+  }
+
+  let cap;
+  try {
+    cap = BigInt(request.maxInputAmount);
+  } catch {
+    throw new Error(
+      `Persisted maximum input (${request.maxInputAmount}) is not an integer. Refusing to sign.`,
+    );
+  }
+
+  const inRaw = quote.inputAmount ?? quote.inAmount;
+  if (inRaw == null) {
+    throw new Error(
+      'Quote is missing the input amount; cannot enforce the maximum input. Refusing to sign.',
+    );
+  }
+  let input;
+  try {
+    input = BigInt(inRaw);
+  } catch {
+    throw new Error(
+      `Quote input amount (${inRaw}) is not an integer; cannot enforce the maximum input. Refusing to sign.`,
+    );
+  }
+  if (input > cap) {
+    throw new Error(
+      `Quote input amount (${input}) exceeds your maximum input (${cap}). A larger input would enlarge the approval and native value beyond what you approved. Refusing to sign.`,
+    );
+  }
 }
 
 // ============= Swap-calldata shape guard (same-chain) =============
