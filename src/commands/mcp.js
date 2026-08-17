@@ -93,6 +93,9 @@ export function buildServerEntry(client, apiKey) {
 }
 
 function assertMergeableServers(config, configPath) {
+  if (typeof config !== 'object' || config === null || Array.isArray(config)) {
+    throw new CommandError(`${configPath} must contain a JSON object. Fix or move the file, then re-run.`, 'INVALID_CONFIG');
+  }
   if (config.mcpServers !== undefined && (typeof config.mcpServers !== 'object' || config.mcpServers === null || Array.isArray(config.mcpServers))) {
     throw new CommandError(`"mcpServers" in ${configPath} is not an object. Fix or move the file, then re-run.`, 'INVALID_CONFIG');
   }
@@ -139,6 +142,10 @@ export function buildMcpCommands(deps = {}) {
     let raw;
     try {
       raw = fsx.readFileSync(configPath, 'utf8');
+    } catch (err) {
+      throw new CommandError(`Could not read ${configPath}: ${err.message}`, 'INVALID_CONFIG');
+    }
+    try {
       return { config: JSON.parse(raw), existed: true };
     } catch {
       throw new CommandError(`Could not parse ${configPath} as JSON. Fix or move the file, then re-run.`, 'INVALID_CONFIG');
@@ -152,8 +159,13 @@ export function buildMcpCommands(deps = {}) {
     const dir = path.dirname(configPath);
     if (!fsx.existsSync(dir)) fsx.mkdirSync(dir, { recursive: true, mode: 0o700 });
     const tmp = path.join(dir, `.${path.basename(configPath)}.tmp-${process.pid}`);
-    fsx.writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
-    fsx.renameSync(tmp, configPath);
+    try {
+      fsx.writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
+      fsx.renameSync(tmp, configPath);
+    } catch (err) {
+      try { fsx.unlinkSync(tmp); } catch { /* temp file may not exist */ }
+      throw err;
+    }
     try { fsx.chmodSync(configPath, 0o600); } catch { /* Windows / exotic fs */ }
   };
 
