@@ -42,7 +42,7 @@ CLIENTS:
   cursor           ~/.cursor/mcp.json
 
 OPTIONS:
-  --dry-run        Print the target file and entry (key redacted) without writing
+  --dry-run        Preview the change (key redacted) without writing
 
 The API key is taken from \`nansen login\` / NANSEN_API_KEY. Re-run install after
 rotating your key to update the entry. Other clients: https://docs.nansen.ai/mcp/connecting`;
@@ -84,7 +84,11 @@ export function buildServerEntry(client, apiKey) {
     case 'claude-desktop':
       // No space after the colon: Claude Desktop mis-splits args containing spaces.
       // No --allow-http: the URL is HTTPS.
-      return { command: 'npx', args: ['-y', MCP_REMOTE_PIN, NANSEN_MCP_URL, '--header', `NANSEN-API-KEY:${apiKey}`] };
+      return {
+        command: 'npx',
+        args: ['-y', MCP_REMOTE_PIN, NANSEN_MCP_URL, '--header', 'NANSEN-API-KEY:${NANSEN_API_KEY}'],
+        env: { NANSEN_API_KEY: apiKey },
+      };
     default:
       throw new CommandError(`Unknown client: ${client}. Supported: ${SUPPORTED_CLIENTS.join(', ')}`, 'INVALID_PARAMS');
   }
@@ -195,6 +199,10 @@ export function buildMcpCommands(deps = {}) {
         const { config: updated, removed } = removeNansenEntry(config, configPath);
         if (!existed || !removed) {
           log(`No Nansen MCP entry found in ${configPath}. Nothing to do.`);
+          return undefined;
+        }
+        if (flags['dry-run']) {
+          log(`Would remove "${SERVER_KEY}" entry from ${configPath} (no changes made).`);
           return undefined;
         }
         writeConfig(configPath, updated);

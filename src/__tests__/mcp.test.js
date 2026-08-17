@@ -72,7 +72,9 @@ describe('buildServerEntry', () => {
     expect(entry.args).toContain(MCP_REMOTE_PIN);
     expect(MCP_REMOTE_PIN).toMatch(/^mcp-remote@\d+\.\d+\.\d+$/); // exact pin, not a range
     // no space after the colon (Claude Desktop mis-splits spaced args)
-    expect(entry.args).toContain(`NANSEN-API-KEY:${API_KEY}`);
+    expect(entry.args).toContain('NANSEN-API-KEY:${NANSEN_API_KEY}');
+    expect(entry.args.join(' ')).not.toContain(API_KEY);
+    expect(entry.env).toEqual({ NANSEN_API_KEY: API_KEY });
     expect(entry.args).not.toContain('--allow-http');
   });
 });
@@ -238,6 +240,15 @@ describe('mcp command handler', () => {
     expect(readCursor().mcpServers).toEqual({ other: { command: 'foo' } });
   });
 
+  it('uninstall --dry-run leaves the config unchanged', async () => {
+    fs.mkdirSync(path.dirname(cursorPath()), { recursive: true });
+    const original = JSON.stringify({ mcpServers: { nansen: { url: 'x' } } });
+    fs.writeFileSync(cursorPath(), original);
+    await run(['uninstall', 'cursor'], { flags: { 'dry-run': true } });
+    expect(fs.readFileSync(cursorPath(), 'utf8')).toBe(original);
+    expect(logs.join('\n')).toContain('Would remove "nansen" entry');
+  });
+
   it('uninstall with no entry is a friendly no-op', async () => {
     await run(['uninstall', 'cursor']);
     expect(logs.join('\n')).toContain('Nothing to do');
@@ -280,6 +291,7 @@ describe('schema + CLI registration', () => {
       path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'schema.json'), 'utf8'));
     expect(Object.keys(schema.commands)).toContain('mcp');
     expect(Object.keys(schema.commands.mcp.subcommands).sort()).toEqual(['install', 'uninstall']);
+    expect(schema.commands.mcp.subcommands.uninstall.options['dry-run'].type).toBe('boolean');
   });
 
   it('runCLI routes `mcp` and parses --dry-run as a boolean flag', async () => {
