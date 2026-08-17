@@ -807,9 +807,16 @@ export async function validateSwapTarget(chain, to, inputMint) {
   if (!to || /^0x0+$/i.test(to)) {
     throw new Error(`Swap target address is empty or zero (${to ?? 'undefined'}). Refusing to sign.`);
   }
-  // A legit swap routes through an aggregator/router, never the sold token
-  // itself. (A WETH-style direct unwrap can trip this; re-quote or use the
-  // native sentinel 0xeee…eee if so — the drain protection is worth the edge.)
+  // A legit swap — same-chain OR cross-chain bridge — routes through an
+  // aggregator/router, never the sold token itself. This gate is intentionally
+  // NOT same-chain-scoped: a bare ERC-20 `transfer`/`approve` necessarily
+  // targets the token contract, so `to === inputMint` is the drain shape in both
+  // cases, and the bridge routes this CLI uses (Relay/Li.Fi) route deposits
+  // through a router (to != token), so this never fires on a legitimate bridge.
+  // Loosening it for cross-chain would let a compromised bridge quote encode a
+  // bare transfer to an attacker (the cross-chain path does not parse the
+  // calldata recipient/amount), so it fails closed here. (A WETH-style direct
+  // unwrap can trip this; re-quote or use the native sentinel 0xeee…eee if so.)
   if (inputMint && to.toLowerCase() === inputMint.toLowerCase()) {
     throw new Error(
       `Swap target equals the token being sold (${to}). A swap routes through an aggregator, not the token itself. Refusing to sign.`,
@@ -1925,10 +1932,12 @@ EXAMPLES:
                 log(`  ⚠ ${quoteName}: quote predates request-intent binding; re-quote to enable full validation.`);
               }
 
-              // Same-chain swaps only: a legit swap's outer call is a router
-              // method, never a bare ERC-20 transfer/approve. Reject that drain
-              // shape. Cross-chain/bridge routes (quoteData.toChain set) can
-              // legitimately encode a deposit as a transfer, so they're excluded.
+              // Same-chain only: a legit swap's outer call is a router method,
+              // never a bare ERC-20 transfer/approve. Reject that drain shape.
+              // Cross-chain routes skip THIS selector check, but a bare transfer
+              // still targets the token contract, so validateSwapTarget's
+              // `to === inputMint` gate above already refuses it on both paths —
+              // cross-chain bare transfers are not actually waved through here.
               if (!quoteData.toChain) {
                 assertSwapCalldataNotBareTransfer(currentQuote.transaction.data);
               }
@@ -2153,10 +2162,12 @@ EXAMPLES:
                 log(`  ⚠ ${quoteName}: quote predates request-intent binding; re-quote to enable full validation.`);
               }
 
-              // Same-chain swaps only: a legit swap's outer call is a router
-              // method, never a bare ERC-20 transfer/approve. Reject that drain
-              // shape. Cross-chain/bridge routes (quoteData.toChain set) can
-              // legitimately encode a deposit as a transfer, so they're excluded.
+              // Same-chain only: a legit swap's outer call is a router method,
+              // never a bare ERC-20 transfer/approve. Reject that drain shape.
+              // Cross-chain routes skip THIS selector check, but a bare transfer
+              // still targets the token contract, so validateSwapTarget's
+              // `to === inputMint` gate above already refuses it on both paths —
+              // cross-chain bare transfers are not actually waved through here.
               if (!quoteData.toChain) {
                 assertSwapCalldataNotBareTransfer(currentQuote.transaction.data);
               }
@@ -2356,10 +2367,12 @@ EXAMPLES:
                 log(`  ⚠ ${quoteName}: quote predates request-intent binding; re-quote to enable full validation.`);
               }
 
-              // Same-chain swaps only: a legit swap's outer call is a router
-              // method, never a bare ERC-20 transfer/approve. Reject that drain
-              // shape. Cross-chain/bridge routes (quoteData.toChain set) can
-              // legitimately encode a deposit as a transfer, so they're excluded.
+              // Same-chain only: a legit swap's outer call is a router method,
+              // never a bare ERC-20 transfer/approve. Reject that drain shape.
+              // Cross-chain routes skip THIS selector check, but a bare transfer
+              // still targets the token contract, so validateSwapTarget's
+              // `to === inputMint` gate above already refuses it on both paths —
+              // cross-chain bare transfers are not actually waved through here.
               if (!quoteData.toChain) {
                 assertSwapCalldataNotBareTransfer(currentQuote.transaction.data);
               }

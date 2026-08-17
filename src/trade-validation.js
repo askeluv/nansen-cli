@@ -719,8 +719,17 @@ export function assertInputWithinMax(request, quote) {
 // direct sibling-token drain. It does NOT catch a custom contract exploiting a
 // pre-existing allowance; that needs outcome (balance-delta) simulation.
 //
-// Scoped to same-chain swaps by the caller: cross-chain/bridge routes can
-// legitimately encode a deposit as a plain `transfer`, so they are excluded.
+// The caller runs this SELECTOR check on same-chain swaps only. Cross-chain
+// routes are excluded from THIS check because a bridge deposit can, in
+// principle, encode as a plain `transfer` — but that does NOT mean a cross-chain
+// bare transfer is waved through: a bare ERC-20 `transfer`/`approve` targets the
+// token contract itself, so `validateSwapTarget`'s `to === inputMint` gate still
+// refuses it, for cross-chain and same-chain alike (fail closed). In practice
+// the bridge routes this CLI uses (Relay/Li.Fi) route ERC-20 deposits through a
+// router contract (to != token), so neither guard fires on a legitimate bridge.
+// Safely supporting a genuine deposit-as-transfer bridge would require positive
+// recipient/amount validation (balance-delta outcome simulation), not a blanket
+// exemption — tracked as a follow-up.
 const BARE_ERC20_OUTER_SELECTORS = {
   '0xa9059cbb': 'transfer(address,uint256)',
   '0x095ea7b3': 'approve(address,uint256)',
