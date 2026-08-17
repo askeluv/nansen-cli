@@ -546,7 +546,11 @@ export function assertQuoteMatchesRequest(request, quote, { chain }) {
       `Quote sell token (${quote.inputMint}) does not match the requested token (${request.fromToken}). Refusing to sign.`,
     );
   }
-  if (request.toToken && quote.outputMint && !tokensEqual(quote.outputMint, request.toToken, tokenChain)) {
+  // The output token lives on the destination chain, which differs from the
+  // source chain for cross-chain swaps. Compare it with the destination chain's
+  // case rules (Solana base58 is case-sensitive) to avoid false rejections.
+  const outTokenChain = request.toChain ? String(request.toChain).toLowerCase() : tokenChain;
+  if (request.toToken && quote.outputMint && !tokensEqual(quote.outputMint, request.toToken, outTokenChain)) {
     throw new Error(
       `Quote buy token (${quote.outputMint}) does not match the requested token (${request.toToken}). Refusing to sign.`,
     );

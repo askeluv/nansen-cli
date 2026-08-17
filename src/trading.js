@@ -13,7 +13,7 @@ import { base58Decode } from './transfer.js';
 import { keccak256, signSecp256k1, rlpEncode } from './crypto.js';
 import { getWalletConnectAddress, sendTransactionViaWalletConnect, sendSolanaTransactionViaWalletConnect, sendApprovalViaWalletConnect } from './walletconnect-trading.js';
 import { retrievePassword } from './keychain.js';
-import { validateQuoteInput, validateBalance, resolvePercentAmount, validateGasBalance, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertSwapCalldataNotBareTransfer } from './trade-validation.js';
+import { validateQuoteInput, validateBalance, resolvePercentAmount, validateGasBalance, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertSwapCalldataNotBareTransfer, MAX_UINT256 } from './trade-validation.js';
 import { CHAIN_RPCS } from './rpc-urls.js';
 import { packageVersion, CommandError, telemetryHeaders } from './api.js';
 
@@ -772,7 +772,13 @@ export function approvalAmountForSwap({ inputAmount, swapMode, slippage }) {
     // the bps conversion and the division guarantees we never land below
     // (1 + slip) * amount.
     const bps = BigInt(Math.ceil((1 + slip) * 10000));
-    return (amt * bps + 9999n) / 10000n; // ceil division
+    const buffered = (amt * bps + 9999n) / 10000n; // ceil division
+    // Overflow guard: a huge input × slippage can exceed the uint256 ceiling,
+    // which encodeApproveCalldata would reject with a cryptic throw. Return 0n
+    // so the caller's `approveAmt <= 0n` check surfaces it as a clear
+    // zero/invalid-input skip instead.
+    if (buffered >= MAX_UINT256) return 0n;
+    return buffered;
   }
   return amt;
 }
@@ -785,9 +791,10 @@ export function approvalAmountForSwap({ inputAmount, swapMode, slippage }) {
  * null/zero target, or a call straight at the token being sold (which would
  * encode a transfer/approve of that token rather than a swap — the one
  * full-balance drain that needs no prior approval). It also confirms the target
- * carries contract code. The code check is best-effort: if the RPC is
- * unreachable we warn and proceed rather than block a real trade on a flaky
- * endpoint.
+ * carries contract code. The code check fails closed: it retries a few times
+ * and, if it still can't confirm the target is a contract, throws rather than
+ * signing against an unverified target — a flaky or hostile RPC must not be
+ * able to silently disable the guard. A missing RPC config throws immediately.
  *
  * Throws on a definitive rejection; returns nothing on pass. Callers run this
  * inside the per-quote try so a rejected quote falls through to the next one.
@@ -808,15 +815,32 @@ export async function validateSwapTarget(chain, to, inputMint) {
       `Swap target equals the token being sold (${to}). A swap routes through an aggregator, not the token itself. Refusing to sign.`,
     );
   }
+  // Fail CLOSED on an unverifiable target: retry a few times, then refuse rather
+  // than sign against a target we couldn't confirm carries contract code. A
+  // flaky — or hostile — RPC must not be able to silently disable this guard.
   let code;
-  try {
-    code = await evmRpcCall(chain, 'eth_getCode', [to, 'latest']);
-  } catch (err) {
-    // A missing RPC config is a deterministic setup error, not a flaky network —
-    // surface it rather than mislabel it "unavailable" and skip the check.
-    if (err?.message?.startsWith('No RPC URL')) throw err;
-    process.stderr.write(`  ⚠ Could not verify swap target ${to} is a contract (RPC unavailable); proceeding.\n`);
-    return;
+  let lastErr = null;
+  const MAX_ATTEMPTS = 3;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      code = await evmRpcCall(chain, 'eth_getCode', [to, 'latest']);
+      lastErr = null;
+      break;
+    } catch (err) {
+      // A missing RPC config is a deterministic setup error, not a flaky
+      // network — surface it immediately rather than burn retries on it.
+      if (err?.message?.startsWith('No RPC URL')) throw err;
+      lastErr = err;
+      if (attempt < MAX_ATTEMPTS) {
+        process.stderr.write(`  ⚠ Swap target check attempt ${attempt}/${MAX_ATTEMPTS} failed (${err.message}); retrying...\n`);
+        await new Promise(r => setTimeout(r, 300));
+      }
+    }
+  }
+  if (lastErr) {
+    throw new Error(
+      `Could not verify swap target ${to} is a contract after ${MAX_ATTEMPTS} attempts (${lastErr.message}). Refusing to sign — check RPC connectivity or configure a reliable RPC URL.`,
+    );
   }
   if (!code || code === '0x' || code === '0x0') {
     throw new Error(`Swap target ${to} is not a contract (no code). Refusing to sign.`);

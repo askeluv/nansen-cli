@@ -641,6 +641,21 @@ describe('approvalAmountForSwap', () => {
     expect(amt).toBe(7500000n); // 5,000,000 * 1.5
     expect(amt).toBeLessThan(MAX);
   });
+
+  it('clamps an exactOut buffer that would overflow uint256 to 0n (not a cryptic throw)', () => {
+    // A huge input × slippage can exceed the uint256 ceiling; returning 0n lets
+    // the caller's `approveAmt <= 0n` skip surface it cleanly instead of the
+    // encoder throwing "at or above MAX_UINT256" and falling through as a
+    // generic quote failure.
+    const MAX = (1n << 256n) - 1n;
+    expect(approvalAmountForSwap({ inputAmount: MAX - 1n, swapMode: 'exactOut', slippage: 0.03 })).toBe(0n);
+    expect(approvalAmountForSwap({ inputAmount: MAX, swapMode: 'exactOut', slippage: 0.5 })).toBe(0n);
+    // A large-but-non-overflowing buffer is returned as-is (no over-clamping):
+    // (MAX/2) * 1.5 = 0.75 * MAX, still below the ceiling.
+    const belowCeiling = approvalAmountForSwap({ inputAmount: MAX / 2n, swapMode: 'exactOut', slippage: 0.5 });
+    expect(belowCeiling).toBeGreaterThan(0n);
+    expect(belowCeiling).toBeLessThan(MAX);
+  });
 });
 
 // ============= Swap target validation (security hardening) =============
@@ -682,9 +697,10 @@ describe('validateSwapTarget', () => {
     await expect(validateSwapTarget('base', ROUTER, USDC)).resolves.toBeUndefined();
   });
 
-  it('is best-effort: proceeds when the code check RPC fails', async () => {
+  it('fails closed when the code check RPC keeps failing', async () => {
+    // A flaky or hostile RPC must not silently disable the target guard.
     mockGetCode(new Error('network down'));
-    await expect(validateSwapTarget('base', ROUTER, USDC)).resolves.toBeUndefined();
+    await expect(validateSwapTarget('base', ROUTER, USDC)).rejects.toThrow(/could not verify swap target .* refusing to sign/i);
   });
 
   it('re-throws a deterministic config error (no RPC URL) instead of skipping', async () => {
@@ -708,6 +724,10 @@ describe('assertUsableSpender', () => {
 // ============= CLI Command Validation =============
 
 describe('buildTradingCommands', () => {
+  // Some tests here stub global fetch (e.g. to make the fail-closed swap-target
+  // check pass); undo any such stub between tests so it never leaks.
+  afterEach(() => { vi.unstubAllGlobals(); });
+
   it('should show help when required params missing for quote', async () => {
     const cmds = buildTradingCommands({
       log: () => {},
@@ -753,6 +773,13 @@ describe('buildTradingCommands', () => {
     // A compromised API could attach ETH value to an ERC-20 swap to drain funds
     createWallet('default', 'testpass');
     process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    // Router carries code so the fail-closed target check passes; this test
+    // exercises the tx.value validation that runs after it.
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const body = opts?.body ? JSON.parse(opts.body) : {};
+      if (body.method === 'eth_getCode') return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
 
     const quoteId = saveQuote({
       success: true,
@@ -781,6 +808,11 @@ describe('buildTradingCommands', () => {
   it('should reject native ETH swap with missing inAmount but non-zero tx.value', async () => {
     createWallet('default', 'testpass');
     process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const body = opts?.body ? JSON.parse(opts.body) : {};
+      if (body.method === 'eth_getCode') return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
 
     const quoteId = saveQuote({
       success: true,
@@ -809,6 +841,11 @@ describe('buildTradingCommands', () => {
   it('should pass validation for ERC-20 swap with value 0', async () => {
     createWallet('default', 'testpass');
     process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const body = opts?.body ? JSON.parse(opts.body) : {};
+      if (body.method === 'eth_getCode') return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
 
     const quoteId = saveQuote({
       success: true,
@@ -840,6 +877,11 @@ describe('buildTradingCommands', () => {
   it('should pass validation for native ETH swap with matching value', async () => {
     createWallet('default', 'testpass');
     process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const body = opts?.body ? JSON.parse(opts.body) : {};
+      if (body.method === 'eth_getCode') return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
 
     const quoteId = saveQuote({
       success: true,
@@ -871,6 +913,11 @@ describe('buildTradingCommands', () => {
   it('should reject native ETH swap with mismatched tx.value', async () => {
     createWallet('default', 'testpass');
     process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const body = opts?.body ? JSON.parse(opts.body) : {};
+      if (body.method === 'eth_getCode') return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
 
     const quoteId = saveQuote({
       success: true,

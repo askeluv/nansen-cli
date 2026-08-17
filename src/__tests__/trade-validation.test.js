@@ -1217,6 +1217,24 @@ describe('assertQuoteMatchesRequest', () => {
     const inflatedOut = { ...okQuote, outAmount: '5000000' };
     expect(() => assertQuoteMatchesRequest(req, inflatedOut, { chain: 'base' })).toThrow(/output amount .* does not match/i);
   });
+
+  it('compares the output token with the destination chain rules for cross-chain quotes', () => {
+    // EVM→Solana: source chain is 'base' but the output token is a case-sensitive
+    // Solana base58 address, so it must be compared with Solana (exact) rules,
+    // not source-chain (EVM, case-insensitive) rules.
+    const SOL_TOKEN = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+    const xchain = {
+      chain: 'base', toChain: 'solana', walletAddress: '0xWallet',
+      fromToken: USDC, toToken: SOL_TOKEN, swapMode: 'exactIn', amount: '1000000',
+    };
+    const q = { inputMint: USDC, outputMint: SOL_TOKEN, inputAmount: '1000000', inAmount: '1000000' };
+    // Exact match on the Solana output token passes.
+    expect(() => assertQuoteMatchesRequest(xchain, q, { chain: 'base' })).not.toThrow();
+    // A case-mangled Solana address is a *different* token and must be rejected
+    // (would have wrongly passed under source-chain case-insensitive rules).
+    const mangled = { ...q, outputMint: SOL_TOKEN.toLowerCase() };
+    expect(() => assertQuoteMatchesRequest(xchain, mangled, { chain: 'base' })).toThrow(/buy token .* does not match/i);
+  });
 });
 
 // ---------------------------------------------------------------------------
