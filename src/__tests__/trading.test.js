@@ -25,6 +25,7 @@ import {
   buildApprovalTransaction,
   approvalAmountForSwap,
   validateSwapTarget,
+  assertUsableSpender,
   stripLeadingZeros,
   buildTradingCommands,
   getWrappedNativeFromWarning,
@@ -689,6 +690,18 @@ describe('validateSwapTarget', () => {
   it('re-throws a deterministic config error (no RPC URL) instead of skipping', async () => {
     // Unknown chain → evmRpcCall throws "No RPC URL configured…" before any fetch.
     await expect(validateSwapTarget('nosuchchain', ROUTER, USDC)).rejects.toThrow(/No RPC URL/i);
+  });
+});
+
+describe('assertUsableSpender', () => {
+  it('rejects an empty or zero-address approval spender', () => {
+    expect(() => assertUsableSpender('')).toThrow(/empty or the zero address/i);
+    expect(() => assertUsableSpender(undefined)).toThrow(/empty or the zero address/i);
+    expect(() => assertUsableSpender('0x0000000000000000000000000000000000000000')).toThrow(/zero address/i);
+  });
+
+  it('accepts a normal spender address', () => {
+    expect(() => assertUsableSpender('0x1231deb6f5749ef6ce6943a275a1d3e7486f4eae')).not.toThrow();
   });
 });
 
@@ -3545,6 +3558,18 @@ describe('Relay aggregator: --aggregator filter on trade quote', () => {
     })).rejects.toThrow(/Invalid --slippage/);
 
     delete process.env.NANSEN_WALLET_PASSWORD;
+  });
+
+  it('rejects exactOut with --auto-slippage but no --max-auto-slippage', async () => {
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    // Uncapped auto-slippage leaves the exactOut approval buffer unbounded → require a cap.
+    await expect(cmds.quote([], null, { 'auto-slippage': true }, {
+      chain: 'base',
+      from: 'USDC',
+      to: 'ETH',
+      amount: '1000000',
+      'swap-mode': 'exactOut',
+    })).rejects.toThrow(/max-auto-slippage/i);
   });
 });
 

@@ -823,7 +823,7 @@ export async function validateSwapTarget(chain, to, inputMint) {
  * aggregator spender is always a contract; a zero spender means the quote is
  * malformed or tampered, so we refuse rather than sign an approval to nowhere.
  */
-function assertUsableSpender(spenderAddress) {
+export function assertUsableSpender(spenderAddress) {
   if (!spenderAddress || /^0x0+$/i.test(spenderAddress)) {
     throw new Error(`Approval spender is empty or the zero address (${spenderAddress ?? 'undefined'}). Refusing to sign an approval.`);
   }
@@ -1371,6 +1371,14 @@ CROSS-CHAIN NOTES (when using --to-chain):
       // --amount-unit percent is only valid for exactIn (sell-side)
       if (amountUnit === 'percent' && swapMode === 'exactOut') {
         throw new CommandError('Error: --amount-unit percent is not supported with --swap-mode exactOut. Percentage is relative to your sell-token balance.', 'INVALID_INPUT');
+      }
+
+      // exactOut scopes the ERC-20 approval to a slippage-buffered max input. With
+      // uncapped auto-slippage the actual bound is server-side and unknown, so the
+      // buffer could be under-sized and the swap would revert on allowance. Require
+      // an explicit cap so the approval is always bounded by a value we know.
+      if (swapMode === 'exactOut' && autoSlippage && maxAutoSlippage == null) {
+        throw new CommandError('Error: --swap-mode exactOut with --auto-slippage requires --max-auto-slippage so the approval can be scoped to a bounded input (e.g. --max-auto-slippage 0.05).', 'INVALID_INPUT');
       }
 
       // Static input validation — catches common agent errors (wrong addresses,
@@ -2217,7 +2225,7 @@ EXAMPLES:
               if (currentQuote.approvalAddress && currentQuote.approvalAddress !== '' && !isNative) {
                 assertUsableSpender(currentQuote.approvalAddress);
                 // Check if sufficient allowance already exists
-                const inputAmount = BigInt(currentQuote.inputAmount || currentQuote.inAmount || currentQuote.transaction?.value || '0');
+                const inputAmount = BigInt(currentQuote.inputAmount || currentQuote.inAmount || '0');
                 const approveAmt = approvalAmountForSwap({ inputAmount, swapMode: quoteData.swapMode, slippage: quoteData.slippage });
                 if (approveAmt <= 0n) {
                   // Malformed quote (no/invalid input amount): a zero-scoped approval
