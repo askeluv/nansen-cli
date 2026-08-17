@@ -623,9 +623,12 @@ describe('approvalAmountForSwap', () => {
     expect(approvalAmountForSwap({ inputAmount: 1000000n, swapMode: 'exactOut', slippage: 0 })).toBe(1000000n);
   });
 
-  it('returns non-positive amounts unchanged', () => {
+  it('clamps non-positive / malformed amounts to 0n', () => {
     expect(approvalAmountForSwap({ inputAmount: 0n })).toBe(0n);
     expect(approvalAmountForSwap({ inputAmount: 0n, swapMode: 'exactOut' })).toBe(0n);
+    // Negative/malformed input must clamp to 0n, never a negative BigInt.
+    expect(approvalAmountForSwap({ inputAmount: '-5000000' })).toBe(0n);
+    expect(approvalAmountForSwap({ inputAmount: -5000000n, swapMode: 'exactOut' })).toBe(0n);
   });
 
   it('is always bounded — never the unlimited MAX_UINT256', () => {

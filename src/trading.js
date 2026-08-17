@@ -746,7 +746,10 @@ export async function checkErc20Allowance(chain, tokenAddress, ownerAddress, spe
  */
 export function approvalAmountForSwap({ inputAmount, swapMode, slippage }) {
   const amt = BigInt(inputAmount ?? 0);
-  if (amt <= 0n) return amt;
+  // Clamp non-positive / malformed amounts (incl. a negative like "-5000000")
+  // to 0n, so callers can reject via a single `approveAmt <= 0n` check and a
+  // negative BigInt never reaches hex encoding (which would mangle the calldata).
+  if (amt <= 0n) return 0n;
   if (swapMode === 'exactOut') {
     // Honour an explicit slippage of 0 (tightest approval); only fall back to the
     // 3% default when slippage wasn't provided (undefined/NaN) or is negative.
@@ -1803,9 +1806,9 @@ EXAMPLES:
                 assertUsableSpender(currentQuote.approvalAddress);
                 const inputAmount = BigInt(currentQuote.inputAmount || currentQuote.inAmount || '0');
                 const approveAmt = approvalAmountForSwap({ inputAmount, swapMode: quoteData.swapMode, slippage: quoteData.slippage });
-                if (approveAmt === 0n) {
-                  // Malformed quote (no input amount): a zero-scoped approval would
-                  // waste gas and the swap would revert on insufficient allowance.
+                if (approveAmt <= 0n) {
+                  // Malformed quote (no/invalid input amount): a zero-scoped approval
+                  // would waste gas and the swap would revert on insufficient allowance.
                   log(`  ❌ ${quoteName} has a zero input amount — cannot scope approval, skipping.`);
                   lastQuoteError = `${quoteName} has a zero input amount`;
                   if (qi + 1 < endIndex) log(`  Trying next quote...`);
@@ -2012,9 +2015,9 @@ EXAMPLES:
                 assertUsableSpender(currentQuote.approvalAddress);
                 const inputAmount = BigInt(currentQuote.inputAmount || currentQuote.inAmount || '0');
                 const approveAmt = approvalAmountForSwap({ inputAmount, swapMode: quoteData.swapMode, slippage: quoteData.slippage });
-                if (approveAmt === 0n) {
-                  // Malformed quote (no input amount): a zero-scoped approval would
-                  // waste gas and the swap would revert on insufficient allowance.
+                if (approveAmt <= 0n) {
+                  // Malformed quote (no/invalid input amount): a zero-scoped approval
+                  // would waste gas and the swap would revert on insufficient allowance.
                   log(`  ❌ ${quoteName} has a zero input amount — cannot scope approval, skipping.`);
                   lastQuoteError = `${quoteName} has a zero input amount`;
                   if (qi + 1 < endIndex) log(`  Trying next quote...`);
@@ -2207,9 +2210,9 @@ EXAMPLES:
                 // Check if sufficient allowance already exists
                 const inputAmount = BigInt(currentQuote.inputAmount || currentQuote.inAmount || currentQuote.transaction?.value || '0');
                 const approveAmt = approvalAmountForSwap({ inputAmount, swapMode: quoteData.swapMode, slippage: quoteData.slippage });
-                if (approveAmt === 0n) {
-                  // Malformed quote (no input amount): a zero-scoped approval would
-                  // waste gas and the swap would revert on insufficient allowance.
+                if (approveAmt <= 0n) {
+                  // Malformed quote (no/invalid input amount): a zero-scoped approval
+                  // would waste gas and the swap would revert on insufficient allowance.
                   log(`  ❌ ${quoteName} has a zero input amount — cannot scope approval, skipping.`);
                   lastQuoteError = `${quoteName} has a zero input amount`;
                   if (qi + 1 < endIndex) log(`  Trying next quote...`);
