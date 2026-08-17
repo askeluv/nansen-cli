@@ -752,6 +752,11 @@ export function approvalAmountForSwap({ inputAmount, swapMode, slippage }) {
     // 3% default when slippage wasn't provided (undefined/NaN) or is negative.
     const slip = Number.isFinite(slippage) && slippage >= 0 ? slippage : 0.03;
     // Buffer by slippage using basis-point integer math to stay in BigInt.
+    // Both steps round UP by design: this buffer must cover the router's max
+    // input for exactOut, so over-approving by a sub-token unit is harmless but
+    // under-approving by even 1 unit would revert the swap. Rounding up on both
+    // the bps conversion and the division guarantees we never land below
+    // (1 + slip) * amount.
     const bps = BigInt(Math.ceil((1 + slip) * 10000));
     return (amt * bps + 9999n) / 10000n; // ceil division
   }
@@ -1915,6 +1920,12 @@ EXAMPLES:
               signedTransaction = signResult.data?.signed_transaction || signResult.signed_transaction;
 
             } else if (chainType === 'solana') {
+              // NB: validateSwapTarget (the EVM `to`/`data` guard) intentionally does
+              // not apply here — Solana quotes are a pre-built serialized
+              // VersionedTransaction with no `to`/`data`/approval split to validate,
+              // and this path (including the WalletConnect sub-branch below) signs it
+              // as supplied. Deeper Solana inspection (e.g. checking instruction
+              // program IDs) is tracked as a follow-up, not an oversight.
               // Solana: transaction is either a base64 string (Jupiter) or an object
               // with a base58-encoded `data` field (OKX). Normalize to base64.
               let txBase64 = currentQuote.transaction;
