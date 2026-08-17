@@ -67,7 +67,7 @@ nansen mcp install claude-code       # ~/.claude.json (user scope)
 nansen mcp install claude-desktop    # macOS/Windows only; bridges via pinned mcp-remote
 nansen mcp install cursor            # ~/.cursor/mcp.json
 nansen mcp install cursor --dry-run  # print what would be written (key redacted)
-nansen mcp uninstall <client>        # remove the entry
+nansen mcp uninstall <client>        # remove the entry (add --dry-run to preview)
 ```
 
 Uses the API key from `nansen login` / `NANSEN_API_KEY`; re-run `install` after rotating your key. Installs are merge-only and atomic: existing servers and settings are preserved, a `.bak` copy is written first, and the CLI refuses to touch a config it can't parse. Note the client config stores the API key in plaintext — new files are created with `0600` permissions. Restart the client after installing. For other clients, see [docs.nansen.ai/mcp/connecting](https://docs.nansen.ai/mcp/connecting).

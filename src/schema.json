@@ -1981,8 +1981,15 @@
         },
         "uninstall": {
           "description": "Remove the Nansen MCP server entry from a client's config. Client (positional): claude-code, claude-desktop, or cursor.",
+          "options": {
+            "dry-run": {
+              "type": "boolean",
+              "description": "Report whether the Nansen entry would be removed without writing"
+            }
+          },
           "examples": [
-            "nansen mcp uninstall claude-code"
+            "nansen mcp uninstall claude-code",
+            "nansen mcp uninstall cursor --dry-run"
           ]
         }
       }
