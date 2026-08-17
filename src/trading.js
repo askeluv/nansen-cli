@@ -380,7 +380,7 @@ export function loadTxRecord(txHash) {
  * Save a quote response to disk for later execution.
  * @returns {string} Quote ID
  */
-export function saveQuote(quoteResponse, chain, signerType = 'local', privyWalletIds = null, toChain = null) {
+export function saveQuote(quoteResponse, chain, signerType = 'local', privyWalletIds = null, toChain = null, meta = {}) {
   const dir = getQuotesDir();
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -393,6 +393,10 @@ export function saveQuote(quoteResponse, chain, signerType = 'local', privyWalle
   const data = { quoteId, type: 'swap', chain, timestamp, signerType, response: quoteResponse };
   if (toChain) data.toChain = toChain;
   if (privyWalletIds) data.privyWalletIds = privyWalletIds;
+  // Persisted so the execute path can scope ERC-20 approvals to the trade
+  // (exactOut is buffered by the slippage that was actually used).
+  if (meta.swapMode) data.swapMode = meta.swapMode;
+  if (meta.slippage != null) data.slippage = meta.slippage;
 
   fs.writeFileSync(path.join(dir, `${quoteId}.json`), JSON.stringify(data, null, 2), { mode: 0o600 });
   cleanupQuotes();
@@ -727,6 +731,86 @@ export async function checkErc20Allowance(chain, tokenAddress, ownerAddress, spe
 }
 
 /**
+ * Compute the ERC-20 allowance to grant for a swap.
+ *
+ * Scoping the approval to the trade amount (instead of an unlimited MAX approval)
+ * means a malicious or buggy quote can consume at most this one swap's input,
+ * never the wallet's full token balance. exactIn pulls exactly the input amount;
+ * exactOut can pull up to a slippage-bounded maximum, so that mode is buffered.
+ *
+ * @param {object} p
+ * @param {bigint|string|number} p.inputAmount - The swap's input amount (base units)
+ * @param {string} [p.swapMode] - 'exactIn' (default) or 'exactOut'
+ * @param {number} [p.slippage] - Slippage fraction for the exactOut buffer (default 0.03)
+ * @returns {bigint} Allowance to approve, in base units
+ */
+export function approvalAmountForSwap({ inputAmount, swapMode, slippage }) {
+  const amt = BigInt(inputAmount ?? 0);
+  if (amt <= 0n) return amt;
+  if (swapMode === 'exactOut') {
+    const slip = Number.isFinite(slippage) && slippage > 0 ? slippage : 0.03;
+    // Buffer by slippage using basis-point integer math to stay in BigInt.
+    const bps = BigInt(Math.ceil((1 + slip) * 10000));
+    return (amt * bps + 9999n) / 10000n; // ceil division
+  }
+  return amt;
+}
+
+/**
+ * Sanity-check the target of a swap transaction before signing it.
+ *
+ * This is a defensive gate, not a router allowlist. It rejects the crude cases
+ * where the transaction clearly isn't a swap routed through an aggregator: a
+ * null/zero target, or a call straight at the token being sold (which would
+ * encode a transfer/approve of that token rather than a swap — the one
+ * full-balance drain that needs no prior approval). It also confirms the target
+ * carries contract code. The code check is best-effort: if the RPC is
+ * unreachable we warn and proceed rather than block a real trade on a flaky
+ * endpoint.
+ *
+ * Throws on a definitive rejection; returns nothing on pass. Callers run this
+ * inside the per-quote try so a rejected quote falls through to the next one.
+ *
+ * @param {string} chain - Chain name
+ * @param {string} to - Transaction target (quote.transaction.to)
+ * @param {string} inputMint - The token being sold (quote.inputMint)
+ */
+export async function validateSwapTarget(chain, to, inputMint) {
+  if (!to || /^0x0+$/i.test(to)) {
+    throw new Error(`Swap target address is empty or zero (${to ?? 'undefined'}). Refusing to sign.`);
+  }
+  // A legit swap routes through an aggregator/router, never the sold token
+  // itself. (A WETH-style direct unwrap can trip this; re-quote or use the
+  // native sentinel 0xeee…eee if so — the drain protection is worth the edge.)
+  if (inputMint && to.toLowerCase() === inputMint.toLowerCase()) {
+    throw new Error(
+      `Swap target equals the token being sold (${to}). A swap routes through an aggregator, not the token itself. Refusing to sign.`,
+    );
+  }
+  let code;
+  try {
+    code = await evmRpcCall(chain, 'eth_getCode', [to, 'latest']);
+  } catch {
+    process.stderr.write(`  ⚠ Could not verify swap target ${to} is a contract (RPC unavailable); proceeding.\n`);
+    return;
+  }
+  if (!code || code === '0x' || code === '0x0') {
+    throw new Error(`Swap target ${to} is not a contract (no code). Refusing to sign.`);
+  }
+}
+
+/**
+ * Reject an approval whose spender is empty or the zero address. A real
+ * aggregator spender is always a contract; a zero spender means the quote is
+ * malformed or tampered, so we refuse rather than sign an approval to nowhere.
+ */
+function assertUsableSpender(spenderAddress) {
+  if (!spenderAddress || /^0x0+$/i.test(spenderAddress)) {
+    throw new Error(`Approval spender is empty or the zero address (${spenderAddress ?? 'undefined'}). Refusing to sign an approval.`);
+  }
+}
+
+/**
  * Send an ERC-20 approval transaction.
  * Required before swapping non-native EVM tokens.
  *
@@ -735,19 +819,22 @@ export async function checkErc20Allowance(chain, tokenAddress, ownerAddress, spe
  * @param {string} privateKeyHex - Wallet private key
  * @param {string} chain - Chain name
  * @param {number} nonce - Account nonce
+ * @param {string|number} gasPrice - Legacy gas price
+ * @param {bigint|string|number} amount - Allowance to grant, in base units (see approvalAmountForSwap)
  * @returns {string} 0x-prefixed signed approval tx hex
  */
 // ⚠️ SECURITY: ERC-20 approval signing - requires thorough review
-export function buildApprovalTransaction(tokenAddress, spenderAddress, privateKeyHex, chain, nonce, gasPrice) {
+export function buildApprovalTransaction(tokenAddress, spenderAddress, privateKeyHex, chain, nonce, gasPrice, amount) {
   const chainConfig = CHAIN_MAP[chain];
   if (!chainConfig) throw new Error(`Unsupported chain: ${chain}`);
 
-  // ERC-20 approve(address spender, uint256 amount) selector = 0x095ea7b3
-  // Approve max uint256
-  const MAX_UINT256_HEX = 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff';
+  // ERC-20 approve(address spender, uint256 amount) selector = 0x095ea7b3.
+  // Scope the approval to the swap's input amount so a malicious or buggy quote
+  // can drain at most this one trade, never the wallet's full token balance.
+  const amountHex = BigInt(amount).toString(16).padStart(64, '0');
   const data = '0x095ea7b3'
     + spenderAddress.slice(2).toLowerCase().padStart(64, '0')
-    + MAX_UINT256_HEX;
+    + amountHex;
 
   const tx = {
     nonce,
@@ -1476,7 +1563,14 @@ CROSS-CHAIN NOTES (when using --to-chain):
         }
 
         const signerType = isWalletConnect ? 'walletconnect' : walletProvider;
-        const quoteId = saveQuote(response, chain, signerType, privyWalletIds, isCrossChain ? toChainRaw : null);
+        // Slippage actually in effect (for scoping exactOut approvals at execute time).
+        const effectiveSlippage = slippage != null ? Number(slippage)
+          : autoSlippage ? (maxAutoSlippage != null ? Number(maxAutoSlippage) : 0.05)
+          : 0.03;
+        const quoteId = saveQuote(response, chain, signerType, privyWalletIds, isCrossChain ? toChainRaw : null, {
+          swapMode,
+          slippage: effectiveSlippage,
+        });
         log(`\n  Quote ID: ${quoteId}`);
         log(`  Execute:  nansen trade execute --quote ${quoteId}`);
         if (response.quotes.length > 1) {
@@ -1695,20 +1789,22 @@ EXAMPLES:
               // Handle approval if needed
               // Empty-string approvalAddress is Relay's "no approval needed" sentinel — skip.
               if (currentQuote.approvalAddress && currentQuote.approvalAddress !== '' && !isNative) {
+                assertUsableSpender(currentQuote.approvalAddress);
                 const inputAmount = BigInt(currentQuote.inputAmount || currentQuote.inAmount || '0');
+                const approveAmt = approvalAmountForSwap({ inputAmount, swapMode: quoteData.swapMode, slippage: quoteData.slippage });
                 const existingAllowance = await checkErc20Allowance(
                   chain, currentQuote.inputMint, walletAddress, currentQuote.approvalAddress
                 );
 
-                if (existingAllowance >= inputAmount && existingAllowance > 0n) {
+                if (existingAllowance >= approveAmt && existingAllowance > 0n) {
                   log(`  ✓ Sufficient allowance exists for ${quoteName}, skipping approval`);
                 } else {
                   log(`  ⚠ Approval required → ${currentQuote.approvalAddress}`);
                   const approvalNonce = await getEvmNonce(chain, walletAddress);
-                  const MAX_UINT256 = 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff';
+                  // Scope the approval to this trade's input (see approvalAmountForSwap).
                   const approvalData = '0x095ea7b3'
                     + currentQuote.approvalAddress.slice(2).toLowerCase().padStart(64, '0')
-                    + MAX_UINT256;
+                    + approveAmt.toString(16).padStart(64, '0');
                   const approvalMaxFee = currentQuote.transaction?.maxFeePerGas || currentQuote.transaction?.gasPrice || '1000000';
                   const approvalPriorityFee = currentQuote.transaction?.maxPriorityFeePerGas || '1000000';
                   const approvalSignResult = await privyClient.signEvmTransaction(evmWalletId, {
@@ -1783,6 +1879,9 @@ EXAMPLES:
                 } catch { /* ignore */ }
                 if (finalGas === 0) finalGas = 210000;
               }
+
+              // Guard the target before signing (see validateSwapTarget).
+              await validateSwapTarget(chain, txData.to, currentQuote.inputMint);
 
               log('  Fetching nonce...');
               const nonce = await getEvmNonce(chain, walletAddress);
@@ -1884,12 +1983,14 @@ EXAMPLES:
               // Handle approval via WalletConnect if needed
               // Empty-string approvalAddress is Relay's "no approval needed" sentinel — skip.
               if (currentQuote.approvalAddress && currentQuote.approvalAddress !== '' && !isNative) {
+                assertUsableSpender(currentQuote.approvalAddress);
                 const inputAmount = BigInt(currentQuote.inputAmount || currentQuote.inAmount || '0');
+                const approveAmt = approvalAmountForSwap({ inputAmount, swapMode: quoteData.swapMode, slippage: quoteData.slippage });
                 const existingAllowance = await checkErc20Allowance(
                   chain, currentQuote.inputMint, wcAddress, currentQuote.approvalAddress
                 );
 
-                if (existingAllowance >= inputAmount && existingAllowance > 0n) {
+                if (existingAllowance >= approveAmt && existingAllowance > 0n) {
                   log(`  ✓ Sufficient allowance exists for ${quoteName}, skipping approval`);
                 } else {
                   log(`  ⚠ Approval required → ${currentQuote.approvalAddress}`);
@@ -1899,6 +2000,7 @@ EXAMPLES:
                       currentQuote.inputMint,
                       currentQuote.approvalAddress,
                       chainConfig.chainId,
+                      approveAmt,
                     );
                     let approvalTxHash = approvalResult.txHash;
                     if (!approvalTxHash && approvalResult.signedTransaction) {
@@ -1952,6 +2054,9 @@ EXAMPLES:
               const apiGas = parseInt(currentQuote.gas || "0");
               const txGas = parseInt(txData.gas || txData.gasLimit || "0");
               const finalGas = apiGas > 0 ? apiGas : txGas;
+
+              // Guard the target before the wallet signs (see validateSwapTarget).
+              await validateSwapTarget(chain, txData.to, currentQuote.inputMint);
 
               // Send transaction via WalletConnect
               log('  Sending transaction via WalletConnect...');
@@ -2061,13 +2166,15 @@ EXAMPLES:
 
               // Empty-string approvalAddress is Relay's "no approval needed" sentinel — skip.
               if (currentQuote.approvalAddress && currentQuote.approvalAddress !== '' && !isNative) {
+                assertUsableSpender(currentQuote.approvalAddress);
                 // Check if sufficient allowance already exists
                 const inputAmount = BigInt(currentQuote.inputAmount || currentQuote.inAmount || currentQuote.transaction?.value || '0');
+                const approveAmt = approvalAmountForSwap({ inputAmount, swapMode: quoteData.swapMode, slippage: quoteData.slippage });
                 const existingAllowance = await checkErc20Allowance(
                   chain, currentQuote.inputMint, walletAddress, currentQuote.approvalAddress
                 );
 
-                if (existingAllowance >= inputAmount && existingAllowance > 0n) {
+                if (existingAllowance >= approveAmt && existingAllowance > 0n) {
                   log(`  ✓ Sufficient allowance exists for ${quoteName}, skipping approval`);
                 } else {
                   log(`  ⚠ Approval required → ${currentQuote.approvalAddress}`);
@@ -2082,6 +2189,7 @@ EXAMPLES:
                     chain,
                     approvalNonce,
                     approvalGasPrice,
+                    approveAmt,
                   );
 
                   const approvalResult = await executeTransaction({
@@ -2144,6 +2252,11 @@ EXAMPLES:
               }
               if (txData.gasLimit) txData.gasLimit = String(finalGas);
               else txData.gas = String(finalGas);
+
+              // Guard the target before signing: whatever `to`/`data` the quote
+              // supplied gets signed verbatim, so reject a target that isn't a
+              // plausible router (zero, EOA, or the sold token itself).
+              await validateSwapTarget(chain, txData.to, currentQuote.inputMint);
 
               log('  Fetching nonce...');
               await new Promise(r => setTimeout(r, 1000));

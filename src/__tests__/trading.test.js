@@ -23,6 +23,8 @@ import {
   signSolanaTransaction,
   signEvmTransaction,
   buildApprovalTransaction,
+  approvalAmountForSwap,
+  validateSwapTarget,
   stripLeadingZeros,
   buildTradingCommands,
   getWrappedNativeFromWarning,
@@ -576,7 +578,7 @@ describe('signEvmTransaction (API response format)', () => {
 // ============= ERC-20 Approval Transaction =============
 
 describe('buildApprovalTransaction', () => {
-  it('should build a valid approval tx', () => {
+  it('should build a valid approval tx scoped to the given amount', () => {
     const wallet = generateEvmWallet();
     const signedHex = buildApprovalTransaction(
       '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // USDC on Base
@@ -584,14 +586,94 @@ describe('buildApprovalTransaction', () => {
       wallet.privateKey,
       'base',
       0,
+      '1000000', // gasPrice
+      1000000n,  // approve amount, scoped to the trade
     );
     expect(signedHex).toMatch(/^0x[0-9a-f]+$/);
+    // Approval is scoped to the trade amount, not unlimited MAX_UINT256.
+    expect(signedHex).toContain((1000000n).toString(16).padStart(64, '0'));
+    expect(signedHex).not.toContain('f'.repeat(64));
   });
 
   it('should reject unsupported chains', () => {
     const wallet = generateEvmWallet();
     expect(() => buildApprovalTransaction('0xabc', '0xdef', wallet.privateKey, 'polygon', 0))
       .toThrow('Unsupported chain');
+  });
+});
+
+// ============= Approval amount scoping (security hardening) =============
+
+describe('approvalAmountForSwap', () => {
+  it('approves exactly the input for exactIn (default)', () => {
+    expect(approvalAmountForSwap({ inputAmount: 1000000n })).toBe(1000000n);
+    expect(approvalAmountForSwap({ inputAmount: '2500000', swapMode: 'exactIn' })).toBe(2500000n);
+  });
+
+  it('buffers exactOut by the slippage (ceil)', () => {
+    // 1,000,000 * (1 + 0.03) = 1,030,000
+    expect(approvalAmountForSwap({ inputAmount: 1000000n, swapMode: 'exactOut', slippage: 0.03 })).toBe(1030000n);
+  });
+
+  it('defaults the exactOut buffer to 3% when slippage is missing', () => {
+    expect(approvalAmountForSwap({ inputAmount: 1000000n, swapMode: 'exactOut' })).toBe(1030000n);
+  });
+
+  it('returns non-positive amounts unchanged', () => {
+    expect(approvalAmountForSwap({ inputAmount: 0n })).toBe(0n);
+    expect(approvalAmountForSwap({ inputAmount: 0n, swapMode: 'exactOut' })).toBe(0n);
+  });
+
+  it('is always bounded — never the unlimited MAX_UINT256', () => {
+    const MAX = (1n << 256n) - 1n;
+    const amt = approvalAmountForSwap({ inputAmount: 5000000n, swapMode: 'exactOut', slippage: 0.5 });
+    expect(amt).toBe(7500000n); // 5,000,000 * 1.5
+    expect(amt).toBeLessThan(MAX);
+  });
+});
+
+// ============= Swap target validation (security hardening) =============
+
+describe('validateSwapTarget', () => {
+  const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+  const ROUTER = '0xDef1C0ded9bec7F1a1670819833240f027b25EfF';
+
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  function mockGetCode(result) {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const body = opts?.body ? JSON.parse(opts.body) : {};
+      if (body.method === 'eth_getCode') {
+        if (result instanceof Error) return Promise.reject(result);
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result })) });
+      }
+      return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: null })) });
+    }));
+  }
+
+  it('rejects an empty or zero-address target', async () => {
+    await expect(validateSwapTarget('base', '', USDC)).rejects.toThrow(/empty or zero/i);
+    await expect(validateSwapTarget('base', '0x0000000000000000000000000000000000000000', USDC)).rejects.toThrow(/zero/i);
+  });
+
+  it('rejects a target equal to the token being sold', async () => {
+    // to == inputMint would encode a transfer/approve of the sold token, not a swap.
+    await expect(validateSwapTarget('base', USDC, USDC)).rejects.toThrow(/token being sold/i);
+  });
+
+  it('rejects an EOA target (no contract code)', async () => {
+    mockGetCode('0x');
+    await expect(validateSwapTarget('base', ROUTER, USDC)).rejects.toThrow(/not a contract/i);
+  });
+
+  it('passes for a contract router', async () => {
+    mockGetCode('0x6080604052');
+    await expect(validateSwapTarget('base', ROUTER, USDC)).resolves.toBeUndefined();
+  });
+
+  it('is best-effort: proceeds when the code check RPC fails', async () => {
+    mockGetCode(new Error('network down'));
+    await expect(validateSwapTarget('base', ROUTER, USDC)).resolves.toBeUndefined();
   });
 });
 
@@ -1088,6 +1170,9 @@ describe('Privy execute support', () => {
         if (body.method === 'eth_getTransactionCount') {
           return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
         }
+        if (body.method === 'eth_getCode') {
+          return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+        }
         if (body.method === 'eth_call') {
           return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' })) });
         }
@@ -1212,6 +1297,9 @@ describe('Privy execute support', () => {
         rpcCalls.push(body.method);
         if (body.method === 'eth_getTransactionCount') {
           return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+        }
+        if (body.method === 'eth_getCode') {
+          return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
         }
         // eth_call for allowance check — return 0 (needs approval)
         if (body.method === 'eth_call') {
@@ -2471,6 +2559,9 @@ describe('Relay aggregator: empty approvalAddress', () => {
       if (body.method === 'eth_getTransactionCount') {
         return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
       }
+      if (body.method === 'eth_getCode') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      }
       if (body.method === 'eth_call') {
         // Should NOT be hit for empty approvalAddress (no allowance check); succeed in case simulation runs.
         return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' })) });
@@ -2526,6 +2617,63 @@ describe('Relay aggregator: empty approvalAddress', () => {
     const allowanceCalls = fetchCalls.filter(c => c.method === 'eth_call'
       && c.body?.params?.[0]?.data?.startsWith('0xdd62ed3e'));
     expect(allowanceCalls.length).toBe(0);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+    vi.unstubAllGlobals();
+  });
+});
+
+describe('Swap target validation blocks a poisoned quote (security hardening)', () => {
+  it('does not broadcast when the swap target is an EOA (no contract code)', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const fetchCalls = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const body = opts?.body ? (() => { try { return JSON.parse(opts.body); } catch { return {}; } })() : {};
+      fetchCalls.push({ url: urlStr, method: body.method, body });
+      if (body.method === 'eth_getTransactionCount') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+      }
+      // Target carries NO contract code → an EOA, never a legit router.
+      if (body.method === 'eth_getCode') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' })) });
+      }
+      if (body.method === 'eth_call') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' })) });
+      }
+      if (urlStr.includes('trading-api')) {
+        return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: '0xShouldNotHappen', chainType: 'evm', broadcaster: 'test' })) });
+      }
+      return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    // Native ETH swap (no approval step), so the target check is the only gate.
+    const inAmount = '1000000000000000000';
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'lifi',
+        inputMint: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', // native ETH
+        outputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', // USDC
+        inAmount,
+        outAmount: '2500000000',
+        approvalAddress: '',
+        transaction: { to: '0x000000000000000000000000000000000000dEaD', data: '0xdeadbeef', value: inAmount, gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
+        metadata: {},
+      }],
+    }, 'base', 'local');
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/All quotes failed/i);
+
+    // The swap was never broadcast.
+    const executeCalls = fetchCalls.filter(c => c.url.includes('trading-api') && c.url.endsWith('/execute'));
+    expect(executeCalls.length).toBe(0);
+    // The failure names the target check.
+    expect(logs.some(l => l.includes('not a contract'))).toBe(true);
 
     delete process.env.NANSEN_WALLET_PASSWORD;
     vi.unstubAllGlobals();
@@ -2837,6 +2985,9 @@ describe('Relay aggregator: EVM execute forwards requestId', () => {
       if (body.method === 'eth_getTransactionCount') {
         return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
       }
+      if (body.method === 'eth_getCode') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      }
       if (body.method === 'eth_call') {
         return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' })) });
       }
@@ -2901,6 +3052,9 @@ describe('Relay aggregator: EVM execute forwards requestId', () => {
       const body = opts?.body ? (() => { try { return JSON.parse(opts.body); } catch { return {}; } })() : {};
       if (body.method === 'eth_getTransactionCount') {
         return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+      }
+      if (body.method === 'eth_getCode') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
       }
       if (body.method === 'eth_call') {
         return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' })) });

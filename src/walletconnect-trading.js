@@ -104,19 +104,22 @@ export async function sendTransactionViaWalletConnect(txData, timeoutMs = 120000
 /**
  * Send an ERC-20 approval via WalletConnect.
  *
- * Builds approve(spender, MAX_UINT256) calldata and delegates to sendTransactionViaWalletConnect.
+ * Builds approve(spender, amount) calldata and delegates to sendTransactionViaWalletConnect.
+ * The amount is scoped to the swap's input (passed by the caller) so a bad quote
+ * can drain at most one trade, not the wallet's full token balance.
  *
  * @param {string} tokenAddress - ERC-20 token contract
  * @param {string} spenderAddress - Approval target (e.g. DEX router)
  * @param {number} chainId - EIP-155 chain ID
+ * @param {bigint|string|number} amount - Allowance to grant, in base units
  * @returns {{ txHash?: string, signedTransaction?: string }}
  */
-export async function sendApprovalViaWalletConnect(tokenAddress, spenderAddress, chainId) {
+export async function sendApprovalViaWalletConnect(tokenAddress, spenderAddress, chainId, amount) {
   // ERC-20 approve(address spender, uint256 amount) selector = 0x095ea7b3
-  const MAX_UINT256_HEX = 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff';
+  const amountHex = BigInt(amount).toString(16).padStart(64, '0');
   const data = '0x095ea7b3'
     + spenderAddress.slice(2).toLowerCase().padStart(64, '0')
-    + MAX_UINT256_HEX;
+    + amountHex;
 
   return sendTransactionViaWalletConnect({
     to: tokenAddress,
