@@ -1211,12 +1211,25 @@ describe('assertQuoteMatchesRequest', () => {
     expect(() => assertQuoteMatchesRequest(request, okQuote, { chain: 'solana' })).toThrow(/chain .* does not match/i);
   });
 
-  it('binds the requested output for exactOut', () => {
+  it('binds the requested output for exactOut (at-least, not exact)', () => {
     // exactOut needs a persisted max input (the sole input cap) or it fails closed.
     const req = { ...request, swapMode: 'exactOut', amount: '990000', maxInputAmount: '1000000' };
     expect(() => assertQuoteMatchesRequest(req, okQuote, { chain: 'base' })).not.toThrow();
-    const inflatedOut = { ...okQuote, outAmount: '5000000' };
-    expect(() => assertQuoteMatchesRequest(req, inflatedOut, { chain: 'base' })).toThrow(/output amount .* does not match/i);
+    // MORE output than requested is upside (input is capped separately) — allowed.
+    const moreOut = { ...okQuote, outAmount: '990001' };
+    expect(() => assertQuoteMatchesRequest(req, moreOut, { chain: 'base' })).not.toThrow();
+    // LESS output than requested is a shortfall — rejected.
+    const shortfall = { ...okQuote, outAmount: '989999' };
+    expect(() => assertQuoteMatchesRequest(req, shortfall, { chain: 'base' })).toThrow(/less than the requested output/i);
+  });
+
+  it('binds the signer to the wallet the quote was built for', () => {
+    const req = { ...request, walletAddress: '0xAaAa000000000000000000000000000000000001' };
+    // Same address (case-insensitive on EVM) passes; a different signer is refused.
+    expect(() => assertQuoteMatchesRequest(req, okQuote, { chain: 'base', walletAddress: '0xaaaa000000000000000000000000000000000001' })).not.toThrow();
+    expect(() => assertQuoteMatchesRequest(req, okQuote, { chain: 'base', walletAddress: '0xBBBB000000000000000000000000000000000002' })).toThrow(/built for wallet .* but the signer is/i);
+    // No signer supplied (address unknown) → the check is skipped, not failed.
+    expect(() => assertQuoteMatchesRequest(req, okQuote, { chain: 'base' })).not.toThrow();
   });
 
   it('fails closed on an exactOut quote with no persisted maximum input', () => {

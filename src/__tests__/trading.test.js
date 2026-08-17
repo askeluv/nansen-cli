@@ -2848,7 +2848,8 @@ describe('Swap target validation blocks a poisoned quote (security hardening)', 
       }],
     }, 'base', 'local', null, null, {
       swapMode: 'exactIn',
-      request: { chain: 'base', walletAddress: '0xwallet', recipient: null, fromToken: USDC, toToken: OUT, swapMode: 'exactIn', amount: '1000000' },
+      // walletAddress omitted so this test isolates its own guard; the signer-binding check is covered separately.
+      request: { chain: 'base', recipient: null, fromToken: USDC, toToken: OUT, swapMode: 'exactIn', amount: '1000000' },
     });
 
     const logs = [];
@@ -2902,7 +2903,8 @@ describe('Swap target validation blocks a poisoned quote (security hardening)', 
       }],
     }, 'base', 'local', null, null, {
       swapMode: 'exactIn',
-      request: { chain: 'base', walletAddress: '0xwallet', recipient: null, fromToken: USDC, toToken: OUT, swapMode: 'exactIn', amount: '1000000' },
+      // walletAddress omitted so this test isolates its own guard; the signer-binding check is covered separately.
+      request: { chain: 'base', recipient: null, fromToken: USDC, toToken: OUT, swapMode: 'exactIn', amount: '1000000' },
     });
 
     const logs = [];
@@ -2956,7 +2958,8 @@ describe('Swap target validation blocks a poisoned quote (security hardening)', 
       }],
     }, 'base', 'local', null, null, {
       swapMode: 'exactIn',
-      request: { chain: 'base', walletAddress: '0xwallet', recipient: null, fromToken: USDC, toToken: OUT, swapMode: 'exactIn', amount: '1000000' },
+      // walletAddress omitted so this test isolates its own guard; the signer-binding check is covered separately.
+      request: { chain: 'base', recipient: null, fromToken: USDC, toToken: OUT, swapMode: 'exactIn', amount: '1000000' },
     });
 
     const logs = [];
@@ -3865,12 +3868,14 @@ describe('exactOut max-input enforcement (adversarial)', () => {
     return q;
   }
 
+  // walletAddress is intentionally omitted so these tests isolate the input-cap
+  // guard (the signer-binding guard, which runs first, is covered separately).
   function exactOutRequestMeta(inputMint) {
     return {
       swapMode: 'exactOut',
       slippage: 0.03,
       request: {
-        chain: 'base', toChain: null, walletAddress: '0xWallet', recipient: null,
+        chain: 'base', toChain: null, recipient: null,
         fromToken: inputMint, toToken: OUT_TOKEN,
         swapMode: 'exactOut', amount: '990000', maxInputAmount: '1000000',
       },
@@ -3960,4 +3965,33 @@ describe('exactOut max-input enforcement (adversarial)', () => {
       noBroadcast(calls);
     });
   }
+
+  it('local wallet: refuses to sign a quote built for a different wallet (signer binding)', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    const calls = [];
+    vi.stubGlobal('fetch', trackingFetch(calls));
+
+    // request.walletAddress is a fixed address that will NOT match the freshly
+    // generated local wallet — as if the default wallet changed since quoting.
+    const quoteId = saveQuote(
+      { success: true, quotes: [{
+        aggregator: 'test', inputMint: ERC20_IN, outputMint: OUT_TOKEN,
+        inAmount: '1000000', inputAmount: '1000000', outAmount: '990000',
+        approvalAddress: ROUTER, transaction: { to: ROUTER, data: '0xdeadbeef', value: '0', gas: '210000' },
+      }] },
+      'base', 'local', null, null,
+      { swapMode: 'exactIn', slippage: 0.03, request: {
+        chain: 'base', toChain: null, walletAddress: '0x000000000000000000000000000000000000dEaD',
+        recipient: null, fromToken: ERC20_IN, toToken: OUT_TOKEN,
+        swapMode: 'exactIn', amount: '1000000', maxInputAmount: '1000000',
+      } });
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+
+    await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/built for wallet .* but the signer is/i);
+    noBroadcast(calls);
+    expect(logs.some(l => /Approval required|Sending approval|Broadcasting/.test(l))).toBe(false);
+  });
 });

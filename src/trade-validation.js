@@ -531,9 +531,14 @@ function tokensEqual(a, b, chain) {
  * @param {object} quote - The quote being executed (allQuotes[i])
  * @param {object} ctx
  * @param {string} ctx.chain - Execute chain
+ * @param {string} [ctx.walletAddress] - The address that will actually sign at
+ *   execute time. When both this and request.walletAddress are present they must
+ *   match: the quote's transaction was built for a specific sender, so signing it
+ *   from a different wallet (e.g. the default wallet changed since quoting) is
+ *   refused. Omit when the signer isn't known (the check is then skipped).
  * @returns {{ skipped: boolean }} skipped=true when no intent was persisted
  */
-export function assertQuoteMatchesRequest(request, quote, { chain }) {
+export function assertQuoteMatchesRequest(request, quote, { chain, walletAddress } = {}) {
   // Quotes saved by an older CLI version (pre-intent) legitimately lack a
   // request block. Rather than brick an in-flight quote across an upgrade, we
   // skip and let the caller warn; quotes expire in 1 hour so this is transient.
@@ -546,6 +551,20 @@ export function assertQuoteMatchesRequest(request, quote, { chain }) {
   }
 
   const tokenChain = String(chain).toLowerCase();
+
+  // Bind the signer to the wallet the quote was built for. The Trading API
+  // builds transaction `to`/`data` (and recipient) for a specific sender; a
+  // wallet swapped in between quote and execute would sign someone else's quote.
+  if (request.walletAddress && walletAddress) {
+    const addrsEqual = tokenChain === 'solana'
+      ? request.walletAddress === walletAddress
+      : request.walletAddress.toLowerCase() === walletAddress.toLowerCase();
+    if (!addrsEqual) {
+      throw new Error(
+        `Quote was built for wallet ${request.walletAddress} but the signer is ${walletAddress}. The default wallet may have changed since quoting. Re-quote with this wallet. Refusing to sign.`,
+      );
+    }
+  }
   if (request.fromToken) {
     // A missing sell-token address must fail closed: without it the token-pair
     // binding below can't run, so we can't confirm the quote sells what was asked.
@@ -592,9 +611,12 @@ export function assertQuoteMatchesRequest(request, quote, { chain }) {
         );
       }
       const out = BigInt(outRaw);
-      if (out !== requested) {
+      // Require AT LEAST the requested output. More output for a capped input
+      // (see assertInputWithinMax) is pure upside, so only a shortfall is a
+      // mismatch — enforcing strict equality would false-reject benign rounding.
+      if (out < requested) {
         throw new Error(
-          `Quote output amount (${out}) does not match the requested output (${requested}). Refusing to sign.`,
+          `Quote output amount (${out}) is less than the requested output (${requested}). Refusing to sign.`,
         );
       }
     } else {

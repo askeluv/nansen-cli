@@ -1634,6 +1634,31 @@ CROSS-CHAIN NOTES (when using --to-chain):
           response.quotes = matching;
         }
 
+        // Explicit --max-input: drop quotes whose input already exceeds the cap
+        // so we never print a Quote ID the execute path would refuse. (The
+        // derived default is computed from the max quote input below, so it can
+        // never exclude a quote — only an explicit cap can.)
+        if (maxInputOverride != null) {
+          const cap = BigInt(maxInputOverride);
+          const withinCap = response.quotes.filter((q) => {
+            let v;
+            try { v = BigInt(q.inputAmount ?? q.inAmount ?? '0'); } catch { return false; }
+            return v > 0n && v <= cap;
+          });
+          if (!withinCap.length) {
+            const cheapest = response.quotes.reduce((min, q) => {
+              let v;
+              try { v = BigInt(q.inputAmount ?? q.inAmount ?? '0'); } catch { return min; }
+              return v > 0n && (min == null || v < min) ? v : min;
+            }, null);
+            throw new CommandError(
+              `No quote fits --max-input ${cap}. The cheapest input available is ${cheapest ?? 'unknown'} base units. Raise --max-input or lower the requested output.`,
+              'MAX_INPUT_EXCEEDED'
+            );
+          }
+          response.quotes = withinCap;
+        }
+
         log('');
         response.quotes.forEach((q, i) => log(formatQuote(q, i)));
 
@@ -1896,7 +1921,7 @@ EXAMPLES:
               // Bind the quote to the immutable request intent persisted at quote
               // time, so a compromised API can't inflate the input (and therefore
               // the scoped approval and native value) past what the user asked to spend.
-              if (assertQuoteMatchesRequest(quoteData.request, currentQuote, { chain }).skipped) {
+              if (assertQuoteMatchesRequest(quoteData.request, currentQuote, { chain, walletAddress }).skipped) {
                 log(`  ⚠ ${quoteName}: quote predates request-intent binding; re-quote to enable full validation.`);
               }
 
@@ -2123,7 +2148,8 @@ EXAMPLES:
               // Bind the quote to the immutable request intent persisted at quote
               // time, so a compromised API can't inflate the input (and therefore
               // the scoped approval and native value) past what the user asked to spend.
-              if (assertQuoteMatchesRequest(quoteData.request, currentQuote, { chain }).skipped) {
+              // The connected WC address is the signer here.
+              if (assertQuoteMatchesRequest(quoteData.request, currentQuote, { chain, walletAddress: wcAddress }).skipped) {
                 log(`  ⚠ ${quoteName}: quote predates request-intent binding; re-quote to enable full validation.`);
               }
 
@@ -2326,7 +2352,7 @@ EXAMPLES:
               // Bind the quote to the immutable request intent persisted at quote
               // time, so a compromised API can't inflate the input (and therefore
               // the scoped approval and native value) past what the user asked to spend.
-              if (assertQuoteMatchesRequest(quoteData.request, currentQuote, { chain }).skipped) {
+              if (assertQuoteMatchesRequest(quoteData.request, currentQuote, { chain, walletAddress }).skipped) {
                 log(`  ⚠ ${quoteName}: quote predates request-intent binding; re-quote to enable full validation.`);
               }
 
