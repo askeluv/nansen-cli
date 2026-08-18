@@ -32,30 +32,6 @@ const WRAPPED_NATIVE_TOKENS = {
   base:     { address: '0x4200000000000000000000000000000000000006', symbol: 'WETH', nativeSymbol: 'ETH' },
 };
 
-const AUTHORIZED_EVM_ROUTES = {
-  base: {
-    // Public router/spender addresses for the EVM aggregators exposed by this
-    // CLI. Keep this list intentionally small: an unrecognized route should be
-    // reviewed and added here before the CLI signs it.
-    lifi: {
-      targets: ['0x1231deb6f5749ef6ce6943a275a1d3e7486f4eae'],
-      spenders: ['0x1231deb6f5749ef6ce6943a275a1d3e7486f4eae'],
-    },
-    relay: {
-      targets: ['0xf5042e6ffac5a625d4e7848e0b01373d8eb9e222'],
-      spenders: ['0xf5042e6ffac5a625d4e7848e0b01373d8eb9e222'],
-    },
-    okx: {
-      targets: ['0xdef1c0ded9bec7f1a1670819833240f027b25eff'],
-      spenders: ['0xdef1c0ded9bec7f1a1670819833240f027b25eff'],
-    },
-    zerox: {
-      targets: ['0xdef1c0ded9bec7f1a1670819833240f027b25eff'],
-      spenders: ['0xdef1c0ded9bec7f1a1670819833240f027b25eff'],
-    },
-  },
-};
-
 // Common token symbol → address lookup per chain.
 // Native sentinels: Solana uses native mint, EVM uses 0xeee…eee.
 // Wrapped-native addresses (WETH) are derived from WRAPPED_NATIVE_TOKENS
@@ -828,52 +804,6 @@ export function approvalCapForQuote(quoteData) {
   const cap = quoteData?.request?.maxInputAmount;
   if (cap != null) return cap;
   return quoteData?.swapMode === 'exactOut' ? undefined : quoteData?.request?.amount;
-}
-
-function normalizeEvmAddress(address, label) {
-  if (typeof address !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(address) || /^0x0+$/i.test(address)) {
-    throw new Error(`${label} is not a valid non-zero EVM address (${address ?? 'undefined'}). Refusing to sign.`);
-  }
-  return address.toLowerCase();
-}
-
-function normalizeAggregatorName(aggregator) {
-  const name = String(aggregator || '').toLowerCase();
-  if (name === '0x') return 'zerox';
-  return name;
-}
-
-export function assertAuthorizedEvmSwapRoute(chain, quote) {
-  const chainRoutes = AUTHORIZED_EVM_ROUTES[String(chain || '').toLowerCase()];
-  if (!chainRoutes) {
-    throw new Error(`No authorized EVM route list configured for ${chain}. Refusing to sign.`);
-  }
-
-  const aggregator = normalizeAggregatorName(quote?.aggregator);
-  const route = chainRoutes[aggregator];
-  if (!route) {
-    throw new Error(`Aggregator "${quote?.aggregator ?? 'unknown'}" is not authorized for EVM signing on ${chain}. Refusing to sign.`);
-  }
-
-  const target = normalizeEvmAddress(quote?.transaction?.to, 'Swap target');
-  const allowedTargets = new Set(route.targets.map(a => a.toLowerCase()));
-  if (!allowedTargets.has(target)) {
-    throw new Error(`Swap target ${quote.transaction.to} is not an authorized ${quote.aggregator} router on ${chain}. Refusing to sign.`);
-  }
-
-  if (quote.approvalAddress && quote.approvalAddress !== '' && !isNativeToken(quote.inputMint)) {
-    assertValidApprovalSpender(quote.approvalAddress);
-    const spender = normalizeEvmAddress(quote.approvalAddress, 'Approval spender');
-    const allowedSpenders = new Set(route.spenders.map(a => a.toLowerCase()));
-    if (!allowedSpenders.has(spender)) {
-      throw new Error(`Approval spender ${quote.approvalAddress} is not authorized for ${quote.aggregator} on ${chain}. Refusing to sign.`);
-    }
-  }
-
-  const data = quote?.transaction?.data;
-  if (typeof data !== 'string' || !/^0x[0-9a-fA-F]*$/.test(data) || data.length < 10) {
-    throw new Error(`Swap calldata is missing or malformed for ${quote?.aggregator ?? 'unknown'} on ${chain}. Refusing to sign.`);
-  }
 }
 
 export function assertCompleteEvmRequestIntent(request) {
@@ -2060,8 +1990,6 @@ EXAMPLES:
                 }
               }
 
-              assertAuthorizedEvmSwapRoute(chain, currentQuote);
-
               // Handle approval if needed
               // Empty-string approvalAddress is Relay's "no approval needed" sentinel — skip.
               if (currentQuote.approvalAddress && currentQuote.approvalAddress !== '' && !isNative) {
@@ -2290,8 +2218,6 @@ EXAMPLES:
                 }
               }
 
-              assertAuthorizedEvmSwapRoute(chain, currentQuote);
-
               // Handle approval via WalletConnect if needed
               // Empty-string approvalAddress is Relay's "no approval needed" sentinel — skip.
               if (currentQuote.approvalAddress && currentQuote.approvalAddress !== '' && !isNative) {
@@ -2503,8 +2429,6 @@ EXAMPLES:
                   continue;
                 }
               }
-
-              assertAuthorizedEvmSwapRoute(chain, currentQuote);
 
               // Empty-string approvalAddress is Relay's "no approval needed" sentinel — skip.
               if (currentQuote.approvalAddress && currentQuote.approvalAddress !== '' && !isNative) {

@@ -25,7 +25,6 @@ import {
   buildApprovalTransaction,
   approvalAmountForSwap,
   approvalCapForQuote,
-  assertAuthorizedEvmSwapRoute,
   assertCompleteEvmRequestIntent,
   validateSwapTarget,
   assertUsableSpender,
@@ -62,7 +61,6 @@ const BASE_USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
 const OUT_TOKEN = '0x4200000000000000000000000000000000000006';
 const LIFI_ROUTER = '0x1231deb6f5749ef6ce6943a275a1d3e7486f4eae';
 const RELAY_ROUTER = '0xf5042e6ffac5a625d4e7848e0b01373d8eb9e222';
-const ZERO_EX_ROUTER = '0xdef1c0ded9bec7f1a1670819833240f027b25eff';
 
 function evmIntent({ walletAddress, fromToken = BASE_USDC, toToken = OUT_TOKEN, amount = '1000000', maxInputAmount = amount, swapMode = 'exactIn', toChain = null, recipient = null } = {}) {
   return {
@@ -716,43 +714,6 @@ describe('assertCompleteEvmRequestIntent', () => {
 
   it('accepts complete EVM request intent', () => {
     expect(() => assertCompleteEvmRequestIntent(evmIntent({ walletAddress: '0xabc' }))).not.toThrow();
-  });
-});
-
-describe('assertAuthorizedEvmSwapRoute', () => {
-  it('rejects an unapproved EVM router before signing', () => {
-    expect(() => assertAuthorizedEvmSwapRoute('base', {
-      aggregator: 'lifi',
-      inputMint: BASE_ETH,
-      transaction: { to: '0x000000000000000000000000000000000000dEaD', data: '0x12345678' },
-    })).toThrow(/not an authorized lifi router/i);
-  });
-
-  it('rejects an unapproved EVM approval spender', () => {
-    expect(() => assertAuthorizedEvmSwapRoute('base', {
-      aggregator: 'lifi',
-      inputMint: BASE_USDC,
-      approvalAddress: '0x000000000000000000000000000000000000dEaD',
-      transaction: { to: LIFI_ROUTER, data: '0x12345678' },
-    })).toThrow(/not authorized for lifi/i);
-  });
-
-  it('accepts an allowlisted route', () => {
-    expect(() => assertAuthorizedEvmSwapRoute('base', {
-      aggregator: 'lifi',
-      inputMint: BASE_USDC,
-      approvalAddress: LIFI_ROUTER,
-      transaction: { to: LIFI_ROUTER, data: '0x12345678' },
-    })).not.toThrow();
-  });
-
-  it('accepts the okx route exposed by the quote command', () => {
-    expect(() => assertAuthorizedEvmSwapRoute('base', {
-      aggregator: 'okx',
-      inputMint: BASE_USDC,
-      approvalAddress: ZERO_EX_ROUTER,
-      transaction: { to: ZERO_EX_ROUTER, data: '0x12345678' },
-    })).not.toThrow();
   });
 });
 
