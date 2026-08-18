@@ -25,6 +25,8 @@ import {
   buildApprovalTransaction,
   approvalAmountForSwap,
   approvalCapForQuote,
+  assertAuthorizedEvmSwapRoute,
+  assertCompleteEvmRequestIntent,
   validateSwapTarget,
   assertUsableSpender,
   stripLeadingZeros,
@@ -48,11 +50,33 @@ import {
   generateEvmWallet,
   generateSolanaWallet,
   createWallet,
+  showWallet,
 } from '../wallet.js';
 import * as wcTrading from '../walletconnect-trading.js';
 
 let originalHome;
 let tempDir;
+
+const BASE_ETH = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+const BASE_USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
+const OUT_TOKEN = '0x4200000000000000000000000000000000000006';
+const LIFI_ROUTER = '0x1231deb6f5749ef6ce6943a275a1d3e7486f4eae';
+const RELAY_ROUTER = '0xf5042e6ffac5a625d4e7848e0b01373d8eb9e222';
+const ZERO_EX_ROUTER = '0xdef1c0ded9bec7f1a1670819833240f027b25eff';
+
+function evmIntent({ walletAddress, fromToken = BASE_USDC, toToken = OUT_TOKEN, amount = '1000000', maxInputAmount = amount, swapMode = 'exactIn', toChain = null, recipient = null } = {}) {
+  return {
+    chain: 'base',
+    toChain,
+    walletAddress,
+    recipient,
+    fromToken,
+    toToken,
+    swapMode,
+    amount,
+    maxInputAmount,
+  };
+}
 
 beforeEach(() => {
   originalHome = process.env.HOME;
@@ -684,6 +708,54 @@ describe('approvalCapForQuote', () => {
   });
 });
 
+describe('assertCompleteEvmRequestIntent', () => {
+  it('rejects missing or incomplete EVM request intent', () => {
+    expect(() => assertCompleteEvmRequestIntent(null)).toThrow(/missing request intent/i);
+    expect(() => assertCompleteEvmRequestIntent(evmIntent({ walletAddress: '' }))).toThrow(/walletAddress missing/i);
+  });
+
+  it('accepts complete EVM request intent', () => {
+    expect(() => assertCompleteEvmRequestIntent(evmIntent({ walletAddress: '0xabc' }))).not.toThrow();
+  });
+});
+
+describe('assertAuthorizedEvmSwapRoute', () => {
+  it('rejects an unapproved EVM router before signing', () => {
+    expect(() => assertAuthorizedEvmSwapRoute('base', {
+      aggregator: 'lifi',
+      inputMint: BASE_ETH,
+      transaction: { to: '0x000000000000000000000000000000000000dEaD', data: '0x12345678' },
+    })).toThrow(/not an authorized lifi router/i);
+  });
+
+  it('rejects an unapproved EVM approval spender', () => {
+    expect(() => assertAuthorizedEvmSwapRoute('base', {
+      aggregator: 'lifi',
+      inputMint: BASE_USDC,
+      approvalAddress: '0x000000000000000000000000000000000000dEaD',
+      transaction: { to: LIFI_ROUTER, data: '0x12345678' },
+    })).toThrow(/not authorized for lifi/i);
+  });
+
+  it('accepts an allowlisted route', () => {
+    expect(() => assertAuthorizedEvmSwapRoute('base', {
+      aggregator: 'lifi',
+      inputMint: BASE_USDC,
+      approvalAddress: LIFI_ROUTER,
+      transaction: { to: LIFI_ROUTER, data: '0x12345678' },
+    })).not.toThrow();
+  });
+
+  it('accepts the okx route exposed by the quote command', () => {
+    expect(() => assertAuthorizedEvmSwapRoute('base', {
+      aggregator: 'okx',
+      inputMint: BASE_USDC,
+      approvalAddress: ZERO_EX_ROUTER,
+      transaction: { to: ZERO_EX_ROUTER, data: '0x12345678' },
+    })).not.toThrow();
+  });
+});
+
 describe('validateSwapTarget', () => {
   const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
   const ROUTER = '0xDef1C0ded9bec7F1a1670819833240f027b25EfF';
@@ -836,14 +908,14 @@ describe('buildTradingCommands', () => {
     const quoteId = saveQuote({
       success: true,
       quotes: [{
-        aggregator: 'test',
-        inputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', // USDC (ERC-20)
-        outputMint: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+        aggregator: 'lifi',
+        inputMint: BASE_USDC, // USDC (ERC-20)
+        outputMint: BASE_ETH,
         inAmount: '1000000',
         outAmount: '500000000000000',
-        transaction: { to: '0xabc', data: '0x1234', value: '5000000000000000000', gas: '200000' },
+        transaction: { to: LIFI_ROUTER, data: '0x12345678', value: '5000000000000000000', gas: '200000' },
       }],
-    }, 'base');
+    }, 'base', 'local', null, null, { swapMode: 'exactIn', request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: BASE_USDC, toToken: BASE_ETH }) });
 
     const logs = [];
     const cmds = buildTradingCommands({
@@ -869,14 +941,14 @@ describe('buildTradingCommands', () => {
     const quoteId = saveQuote({
       success: true,
       quotes: [{
-        aggregator: 'test',
-        inputMint: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
-        outputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+        aggregator: 'lifi',
+        inputMint: BASE_ETH,
+        outputMint: BASE_USDC,
         // no inAmount or inputAmount — malformed quote
         outAmount: '3000000000',
-        transaction: { to: '0xabc', data: '0x1234', value: '5000000000000000000', gas: '200000' },
+        transaction: { to: LIFI_ROUTER, data: '0x12345678', value: '5000000000000000000', gas: '200000' },
       }],
-    }, 'base');
+    }, 'base', 'local', null, null, { swapMode: 'exactIn', request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: BASE_ETH, toToken: BASE_USDC, amount: '5000000000000000000', maxInputAmount: '5000000000000000000' }) });
 
     const logs = [];
     const cmds = buildTradingCommands({
@@ -885,7 +957,7 @@ describe('buildTradingCommands', () => {
     });
 
     await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/All quotes failed/);
-    expect(logs.some(l => l.includes('value mismatch'))).toBe(true);
+    expect(logs.some(l => l.includes('missing the input amount'))).toBe(true);
 
     delete process.env.NANSEN_WALLET_PASSWORD;
   });
@@ -902,14 +974,14 @@ describe('buildTradingCommands', () => {
     const quoteId = saveQuote({
       success: true,
       quotes: [{
-        aggregator: 'test',
-        inputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
-        outputMint: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+        aggregator: 'lifi',
+        inputMint: BASE_USDC,
+        outputMint: BASE_ETH,
         inAmount: '1000000',
         outAmount: '500000000000000',
-        transaction: { to: '0xabc', data: '0x1234', value: '0', gas: '200000' },
+        transaction: { to: LIFI_ROUTER, data: '0x12345678', value: '0', gas: '200000' },
       }],
-    }, 'base');
+    }, 'base', 'local', null, null, { swapMode: 'exactIn', request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: BASE_USDC, toToken: BASE_ETH }) });
 
     const logs = [];
     const cmds = buildTradingCommands({
@@ -938,14 +1010,14 @@ describe('buildTradingCommands', () => {
     const quoteId = saveQuote({
       success: true,
       quotes: [{
-        aggregator: 'test',
-        inputMint: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
-        outputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+        aggregator: 'lifi',
+        inputMint: BASE_ETH,
+        outputMint: BASE_USDC,
         inAmount: '1000000000000000000',
         outAmount: '3000000000',
-        transaction: { to: '0xabc', data: '0x1234', value: '1000000000000000000', gas: '200000' },
+        transaction: { to: LIFI_ROUTER, data: '0x12345678', value: '1000000000000000000', gas: '200000' },
       }],
-    }, 'base');
+    }, 'base', 'local', null, null, { swapMode: 'exactIn', request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: BASE_ETH, toToken: BASE_USDC, amount: '1000000000000000000', maxInputAmount: '1000000000000000000' }) });
 
     const logs = [];
     const cmds = buildTradingCommands({
@@ -974,14 +1046,14 @@ describe('buildTradingCommands', () => {
     const quoteId = saveQuote({
       success: true,
       quotes: [{
-        aggregator: 'test',
-        inputMint: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', // native ETH
-        outputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+        aggregator: 'lifi',
+        inputMint: BASE_ETH, // native ETH
+        outputMint: BASE_USDC,
         inAmount: '1000000000000000000', // 1 ETH
         outAmount: '3000000000',
-        transaction: { to: '0xabc', data: '0x1234', value: '5000000000000000000', gas: '200000' },
+        transaction: { to: LIFI_ROUTER, data: '0x12345678', value: '5000000000000000000', gas: '200000' },
       }],
-    }, 'base');
+    }, 'base', 'local', null, null, { swapMode: 'exactIn', request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: BASE_ETH, toToken: BASE_USDC, amount: '1000000000000000000', maxInputAmount: '1000000000000000000' }) });
 
     const logs = [];
     const cmds = buildTradingCommands({
@@ -1135,14 +1207,23 @@ describe('WalletConnect execute support', () => {
     const quoteId = saveQuote({
       success: true,
       quotes: [{
-        aggregator: 'test',
-        inputMint: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+        aggregator: 'lifi',
+        inputMint: BASE_ETH,
         outputMint: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
         inAmount: '1000000000000000000',
         outAmount: '3000000000',
-        transaction: { to: '0xabc', data: '0x1234', value: '1000000000000000000', gas: '200000' },
+        transaction: { to: LIFI_ROUTER, data: '0x12345678', value: '1000000000000000000', gas: '200000' },
       }],
-    }, 'base', 'walletconnect');
+    }, 'base', 'walletconnect', null, null, {
+      swapMode: 'exactIn',
+      request: evmIntent({
+        walletAddress: '0x742d35Cc6bF4F3f4e0e3a8DD7e37ff4e4Be4E4B4',
+        fromToken: BASE_ETH,
+        toToken: BASE_USDC,
+        amount: '1000000000000000000',
+        maxInputAmount: '1000000000000000000',
+      }),
+    });
 
     const logs = [];
     const cmds = buildTradingCommands({
@@ -1266,14 +1347,23 @@ describe('Privy execute support', () => {
     const quoteId = saveQuote({
       success: true,
       quotes: [{
-        aggregator: 'test',
-        inputMint: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+        aggregator: 'lifi',
+        inputMint: BASE_ETH,
         outputMint: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
         inAmount: '1000000000000000000',
         outAmount: '3000000000',
-        transaction: { to: '0xRouter', data: '0xSwapData', value: '1000000000000000000', gas: '210000' },
+        transaction: { to: LIFI_ROUTER, data: '0x12345678', value: '1000000000000000000', gas: '210000' },
       }],
-    }, 'base', 'privy', { evm: 'wl_evm_1', solana: 'wl_sol_1' });
+    }, 'base', 'privy', { evm: 'wl_evm_1', solana: 'wl_sol_1' }, null, {
+      swapMode: 'exactIn',
+      request: evmIntent({
+        walletAddress: '0xPrivyAddr',
+        fromToken: BASE_ETH,
+        toToken: BASE_USDC,
+        amount: '1000000000000000000',
+        maxInputAmount: '1000000000000000000',
+      }),
+    });
 
     vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
@@ -1383,23 +1473,26 @@ describe('Privy execute support', () => {
     const quoteId = saveQuote({
       success: true,
       quotes: [{
-        aggregator: 'test',
-        inputMint: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', // USDC (ERC-20, not native)
-        outputMint: '0xdAC17F958D2ee523a2206206994597C13D831ec7',
+        aggregator: 'lifi',
+        inputMint: BASE_USDC, // USDC (ERC-20, not native)
+        outputMint: OUT_TOKEN,
         inAmount: '1000000',
         outAmount: '990000',
         inputAmount: '1000000',
-        approvalAddress: '0x1111111254eeb25477b68fb85ed929f73a960582',
+        approvalAddress: LIFI_ROUTER,
         transaction: {
-          to: '0xRouter',
-          data: '0xSwapData',
+          to: LIFI_ROUTER,
+          data: '0x12345678',
           value: '0',
           gas: '210000',
           maxFeePerGas: '1000000',
           maxPriorityFeePerGas: '1000000',
         },
       }],
-    }, 'base', 'privy', { evm: 'wl_evm_1', solana: 'wl_sol_1' });
+    }, 'base', 'privy', { evm: 'wl_evm_1', solana: 'wl_sol_1' }, null, {
+      swapMode: 'exactIn',
+      request: evmIntent({ walletAddress: '0xPrivyAddr', fromToken: BASE_USDC, toToken: OUT_TOKEN }),
+    });
 
     const rpcCalls = [];
     vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
@@ -1757,6 +1850,7 @@ describe('quote command with --amount-unit token', () => {
       amount: '1',
       'amount-unit': 'token',
       'swap-mode': 'exactOut',
+      'max-input': '1100000000',
     });
 
     const quoteCall = fetchCalls.find(c => c.url.includes('quote'));
@@ -1900,6 +1994,7 @@ describe('quote command with --amount-unit usd', () => {
       amount: '50',
       'amount-unit': 'usd',
       'swap-mode': 'exactOut',
+      'max-input': '1100000000',
     });
 
     // Should have searched for USDC (the --to token), not SOL
@@ -2035,6 +2130,7 @@ describe('quote command with --amount-unit usd', () => {
       amount: '50',
       'amount-unit': 'usd',
       'swap-mode': 'exactOut',
+      'max-input': '1100000000',
     });
 
     // exactOut should skip balance check and succeed (reach quote API)
@@ -2718,15 +2814,18 @@ describe('Relay aggregator: empty approvalAddress', () => {
       success: true,
       quotes: [{
         aggregator: 'relay',
-        inputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', // USDC
+        inputMint: BASE_USDC, // USDC
         outputMint: '11111111111111111111111111111111',
         inAmount: '10000000',
         outAmount: '50000000',
         approvalAddress: '', // Relay says no approval needed
-        transaction: { to: '0xRelayRouter', data: '0xswap', value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
+        transaction: { to: RELAY_ROUTER, data: '0x12345678', value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
         metadata: { requestId: 'relay-req-empty', isCrossChain: true, bridgeTool: 'relay' },
       }],
-    }, 'base', 'local', null, 'solana');
+    }, 'base', 'local', null, 'solana', {
+      swapMode: 'exactIn',
+      request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: BASE_USDC, toToken: '11111111111111111111111111111111', toChain: 'solana', amount: '10000000', maxInputAmount: '10000000' }),
+    });
 
     const logs = [];
     const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
@@ -2737,7 +2836,7 @@ describe('Relay aggregator: empty approvalAddress', () => {
     expect(logs.some(l => l.includes('Approval confirmed'))).toBe(false);
 
     // /execute was called exactly once (the swap), not twice (no approval tx)
-    const executeCalls = fetchCalls.filter(c => c.url.includes('trading-api') && c.url.endsWith('/execute'));
+    const executeCalls = fetchCalls.filter(c => c.url.includes('trading-api') && c.url.includes('/execute'));
     expect(executeCalls.length).toBe(1);
 
     // No allowance check (eth_call with the allowance selector 0xdd62ed3e)
@@ -2836,7 +2935,7 @@ describe('Swap target validation blocks a poisoned quote (security hardening)', 
       success: true,
       quotes: [{
         aggregator: 'lifi',
-        inputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', // USDC
+        inputMint: BASE_USDC, // USDC
         outputMint: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
         inAmount: '5000000',
         outAmount: '2000000000000000',
@@ -2882,7 +2981,7 @@ describe('Swap target validation blocks a poisoned quote (security hardening)', 
 
     const USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
     const OUT = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
-    const ROUTER = '0x1111111254eeb25477b68fb85ed929f73a960582';
+    const ROUTER = LIFI_ROUTER;
     // The user asked to sell 1 USDC; the (compromised) quote claims 5 USDC of input,
     // which would enlarge both the scoped approval and any native value.
     const quoteId = saveQuote({
@@ -2900,8 +2999,7 @@ describe('Swap target validation blocks a poisoned quote (security hardening)', 
       }],
     }, 'base', 'local', null, null, {
       swapMode: 'exactIn',
-      // walletAddress omitted so this test isolates its own guard; the signer-binding check is covered separately.
-      request: { chain: 'base', recipient: null, fromToken: USDC, toToken: OUT, swapMode: 'exactIn', amount: '1000000' },
+      request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: USDC, toToken: OUT }),
     });
 
     const logs = [];
@@ -2937,7 +3035,7 @@ describe('Swap target validation blocks a poisoned quote (security hardening)', 
 
     const USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
     const OUT = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
-    const ROUTER = '0x1111111254eeb25477b68fb85ed929f73a960582';
+    const ROUTER = LIFI_ROUTER;
     // 0x + 128 hex chars: decodes to (attacker, MAX) if concatenated unchecked.
     const overlengthSpender = '0x' + '00'.repeat(12) + '22'.repeat(20) + 'f'.repeat(64);
     const quoteId = saveQuote({
@@ -2955,8 +3053,7 @@ describe('Swap target validation blocks a poisoned quote (security hardening)', 
       }],
     }, 'base', 'local', null, null, {
       swapMode: 'exactIn',
-      // walletAddress omitted so this test isolates its own guard; the signer-binding check is covered separately.
-      request: { chain: 'base', recipient: null, fromToken: USDC, toToken: OUT, swapMode: 'exactIn', amount: '1000000' },
+      request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: USDC, toToken: OUT }),
     });
 
     const logs = [];
@@ -3010,8 +3107,7 @@ describe('Swap target validation blocks a poisoned quote (security hardening)', 
       }],
     }, 'base', 'local', null, null, {
       swapMode: 'exactIn',
-      // walletAddress omitted so this test isolates its own guard; the signer-binding check is covered separately.
-      request: { chain: 'base', recipient: null, fromToken: USDC, toToken: OUT, swapMode: 'exactIn', amount: '1000000' },
+      request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: USDC, toToken: OUT }),
     });
 
     const logs = [];
@@ -3065,7 +3161,10 @@ describe('Swap target validation blocks a poisoned quote (security hardening)', 
         transaction: { to: '0x1231deb6f5749ef6ce6943a275a1d3e7486f4eae', data: '0xdeadbeef', value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
         metadata: {},
       }],
-    }, 'base', 'local');
+    }, 'base', 'local', null, null, {
+      swapMode: 'exactIn',
+      request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: BASE_USDC, toToken: BASE_ETH, amount: '0', maxInputAmount: '0' }),
+    });
 
     const logs = [];
     const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
@@ -3422,10 +3521,13 @@ describe('Relay aggregator: EVM execute forwards requestId', () => {
         inAmount: '10000000',
         outAmount: '50000000',
         approvalAddress: '', // skip approval
-        transaction: { to: '0xRelayRouter', data: '0xswap', value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
+        transaction: { to: RELAY_ROUTER, data: '0x12345678', value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
         metadata: { requestId: 'relay-evm-req', isCrossChain: true, bridgeTool: 'relay' },
       }],
-    }, 'base', 'local', null, 'solana');
+    }, 'base', 'local', null, 'solana', {
+      swapMode: 'exactIn',
+      request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: BASE_USDC, toToken: '11111111111111111111111111111111', toChain: 'solana', amount: '10000000', maxInputAmount: '10000000' }),
+    });
 
     const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
     try { await cmds.execute([], null, {}, { quote: quoteId }); } catch { /* may fail later, ok */ }
@@ -3484,15 +3586,18 @@ describe('Relay aggregator: EVM execute forwards requestId', () => {
       success: true,
       quotes: [{
         aggregator: 'relay',
-        inputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+        inputMint: BASE_USDC,
         outputMint: '11111111111111111111111111111111',
         inAmount: '10000000',
         outAmount: '50000000',
         approvalAddress: '',
-        transaction: { to: '0xRelayRouter', data: '0xswap', value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
+        transaction: { to: RELAY_ROUTER, data: '0x12345678', value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
         metadata: { requestId: 'relay-evm-gas-req', isCrossChain: true, bridgeTool: 'relay', steps: [{ kind: 'evm-tx' }] },
       }],
-    }, 'base', 'local', null, 'solana');
+    }, 'base', 'local', null, 'solana', {
+      swapMode: 'exactIn',
+      request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: BASE_USDC, toToken: '11111111111111111111111111111111', toChain: 'solana', amount: '10000000', maxInputAmount: '10000000' }),
+    });
 
     const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
     try { await cmds.execute([], null, { gasless: true }, { quote: quoteId }); } catch { /* ok */ }
@@ -3900,15 +4005,14 @@ describe('Relay aggregator: bridge-status 502 handling', () => {
 // three EVM signing paths (local, Privy, WalletConnect).
 // ===========================================================================
 describe('exactOut max-input enforcement (adversarial)', () => {
-  const OUT_TOKEN = '0xdAC17F958D2ee523a2206206994597C13D831ec7';
   const ERC20_IN = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'; // USDC on Base
-  const NATIVE_IN = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
-  const ROUTER = '0x1111111254eeb25477b68fb85ed929f73a960582';
+  const NATIVE_IN = BASE_ETH;
+  const ROUTER = LIFI_ROUTER;
 
   // Requested output is exactly 990000 (matches request.amount); input is 5x the cap.
   function overpayingExactOutQuote(inputMint, native) {
     const q = {
-      aggregator: 'test',
+      aggregator: 'lifi',
       inputMint,
       outputMint: OUT_TOKEN,
       inAmount: '5000000',
@@ -3920,14 +4024,12 @@ describe('exactOut max-input enforcement (adversarial)', () => {
     return q;
   }
 
-  // walletAddress is intentionally omitted so these tests isolate the input-cap
-  // guard (the signer-binding guard, which runs first, is covered separately).
-  function exactOutRequestMeta(inputMint) {
+  function exactOutRequestMeta(inputMint, walletAddress) {
     return {
       swapMode: 'exactOut',
       slippage: 0.03,
       request: {
-        chain: 'base', toChain: null, recipient: null,
+        chain: 'base', toChain: null, walletAddress, recipient: null,
         fromToken: inputMint, toToken: OUT_TOKEN,
         swapMode: 'exactOut', amount: '990000', maxInputAmount: '1000000',
       },
@@ -3969,7 +4071,7 @@ describe('exactOut max-input enforcement (adversarial)', () => {
       vi.stubGlobal('fetch', trackingFetch(calls));
 
       const quoteId = saveQuote({ success: true, quotes: [overpayingExactOutQuote(inputMint, native)] },
-        'base', 'local', null, null, exactOutRequestMeta(inputMint));
+        'base', 'local', null, null, exactOutRequestMeta(inputMint, showWallet('default').evm));
 
       const logs = [];
       const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
@@ -3987,7 +4089,7 @@ describe('exactOut max-input enforcement (adversarial)', () => {
       vi.stubGlobal('fetch', trackingFetch(calls));
 
       const quoteId = saveQuote({ success: true, quotes: [overpayingExactOutQuote(inputMint, native)] },
-        'base', 'privy', { evm: 'wl_evm_1', solana: 'wl_sol_1' }, null, exactOutRequestMeta(inputMint));
+        'base', 'privy', { evm: 'wl_evm_1', solana: 'wl_sol_1' }, null, exactOutRequestMeta(inputMint, '0xPrivyAddr'));
 
       const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
 
@@ -4007,7 +4109,7 @@ describe('exactOut max-input enforcement (adversarial)', () => {
       vi.stubGlobal('fetch', trackingFetch(calls));
 
       const quoteId = saveQuote({ success: true, quotes: [overpayingExactOutQuote(inputMint, native)] },
-        'base', 'walletconnect', null, null, exactOutRequestMeta(inputMint));
+        'base', 'walletconnect', null, null, exactOutRequestMeta(inputMint, '0x742d35Cc6bF4F3f4e0e3a8DD7e37ff4e4Be4E4B4'));
 
       const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
 
@@ -4028,7 +4130,7 @@ describe('exactOut max-input enforcement (adversarial)', () => {
     // generated local wallet — as if the default wallet changed since quoting.
     const quoteId = saveQuote(
       { success: true, quotes: [{
-        aggregator: 'test', inputMint: ERC20_IN, outputMint: OUT_TOKEN,
+        aggregator: 'lifi', inputMint: ERC20_IN, outputMint: OUT_TOKEN,
         inAmount: '1000000', inputAmount: '1000000', outAmount: '990000',
         approvalAddress: ROUTER, transaction: { to: ROUTER, data: '0xdeadbeef', value: '0', gas: '210000' },
       }] },
