@@ -489,6 +489,61 @@ export function encodeApproveCalldata(spender, amount, { maxAllowance } = {}) {
   return data;
 }
 
+/**
+ * Compute the ERC-20 allowance to grant for a swap — equivalently, the maximum
+ * number of sell-token base units that can leave the wallet for this trade.
+ *
+ * Scoping the approval to the trade amount (instead of an unlimited MAX approval)
+ * means a malicious or buggy quote can consume at most this one swap's input,
+ * never the wallet's full token balance. exactIn pulls exactly the input amount;
+ * exactOut can pull up to a slippage-bounded maximum, so that mode is buffered.
+ *
+ * This is the single definition of "what can leave the wallet": the approval
+ * encoder scopes ERC-20 approvals to it, and assertInputWithinMax validates it
+ * against the persisted spend ceiling. Keeping both on one function guarantees
+ * a quote that clears the ceiling check can always be signed (a refactor can't
+ * let the two drift onto different amounts).
+ *
+ * @param {object} p
+ * @param {bigint|string|number} p.inputAmount - The swap's input amount (base units)
+ * @param {string} [p.swapMode] - 'exactIn' (default) or 'exactOut'
+ * @param {number} [p.slippage] - Slippage fraction for the exactOut buffer (default 0.03)
+ * @returns {bigint} Allowance to approve, in base units
+ */
+export function approvalAmountForSwap({ inputAmount, swapMode, slippage }) {
+  // Clamp non-positive / malformed amounts to 0n — a negative like "-5000000",
+  // or a non-integer string like "1.5" / "1.5e6" that BigInt() rejects — so
+  // callers can reject via a single `approveAmt <= 0n` check and a negative or
+  // invalid value never reaches hex encoding (which would mangle the calldata).
+  let amt;
+  try {
+    amt = BigInt(inputAmount ?? 0);
+  } catch {
+    return 0n;
+  }
+  if (amt <= 0n) return 0n;
+  if (swapMode === 'exactOut') {
+    // Honour an explicit slippage of 0 (tightest approval); only fall back to the
+    // 3% default when slippage wasn't provided (undefined/NaN) or is negative.
+    const slip = Number.isFinite(slippage) && slippage >= 0 ? slippage : 0.03;
+    // Buffer by slippage using basis-point integer math to stay in BigInt.
+    // Both steps round UP by design: this buffer must cover the router's max
+    // input for exactOut, so over-approving by a sub-token unit is harmless but
+    // under-approving by even 1 unit would revert the swap. Rounding up on both
+    // the bps conversion and the division guarantees we never land below
+    // (1 + slip) * amount.
+    const bps = BigInt(Math.ceil((1 + slip) * 10000));
+    const buffered = (amt * bps + 9999n) / 10000n; // ceil division
+    // Overflow guard: a huge input × slippage can exceed the uint256 ceiling,
+    // which encodeApproveCalldata would reject with a cryptic throw. Return 0n
+    // so the caller's `approveAmt <= 0n` check surfaces it as a clear
+    // zero/invalid-input skip instead.
+    if (buffered >= MAX_UINT256) return 0n;
+    return buffered;
+  }
+  return amt;
+}
+
 // ============= Quote vs. request-intent revalidation =============
 
 /**
@@ -536,9 +591,12 @@ function tokensEqual(a, b, chain) {
  *   match: the quote's transaction was built for a specific sender, so signing it
  *   from a different wallet (e.g. the default wallet changed since quoting) is
  *   refused. Omit when the signer isn't known (the check is then skipped).
+ * @param {number} [ctx.slippage] - Slippage fraction in effect (quoteData.slippage),
+ *   forwarded to assertInputWithinMax so the exactOut spend ceiling is measured
+ *   against the buffered approval, not the raw quote input.
  * @returns {{ skipped: boolean }} skipped=true when no intent was persisted
  */
-export function assertQuoteMatchesRequest(request, quote, { chain, walletAddress } = {}) {
+export function assertQuoteMatchesRequest(request, quote, { chain, walletAddress, slippage } = {}) {
   // Quotes saved by an older CLI version (pre-intent) legitimately lack a
   // request block. Rather than brick an in-flight quote across an upgrade, we
   // skip and let the caller warn; quotes expire in 1 hour so this is transient.
@@ -638,7 +696,7 @@ export function assertQuoteMatchesRequest(request, quote, { chain, walletAddress
   // Independent spend ceiling on the input, enforced in both modes. This is the
   // sole guard on exactOut input (which request.amount binds only on the output
   // side), so it fails closed when an exactOut quote carries no persisted cap.
-  assertInputWithinMax(request, quote);
+  assertInputWithinMax(request, quote, slippage);
 
   return { skipped: false };
 }
@@ -649,13 +707,22 @@ export function assertQuoteMatchesRequest(request, quote, { chain, walletAddress
  * that can leave the wallet independently of the output binding, closing the
  * exactOut gap where the API chooses the input and nothing capped it.
  *
+ * The amount compared against the cap is the maximum that can actually leave the
+ * wallet — for exactOut that is the slippage-buffered approval, NOT the raw quote
+ * input. The approval encoder (encodeApproveCalldata) scopes the ERC-20 approval
+ * to that same buffered amount and caps it at maxInputAmount, so validating the
+ * raw input here would let a quote pass this check and then be refused at signing
+ * (a 1,000,000 input at 3% slippage needs a 1,030,000 approval, which a 1,000,000
+ * cap rejects). Comparing the same amount approvalAmountForSwap produces keeps
+ * this check and the encoder in lockstep.
+ *
  * Behaviour:
  *   - exactOut with no persisted `maxInputAmount` → throws (fail closed). The
  *     input is otherwise unbounded, so signing without a cap is refused.
  *   - a persisted cap with a missing/invalid quote input → throws. A cap you
  *     can't compare against is not a cap.
- *   - quote input > cap → throws. A larger input would enlarge the approval and
- *     the native value beyond what the user approved.
+ *   - buffered spend > cap → throws. A larger approval/native value would let
+ *     more than the user approved leave the wallet.
  *   - exactIn with no cap → no-op (request.amount already binds the input).
  *
  * Applies to native and ERC-20 swaps alike; the caller runs it before any
@@ -663,8 +730,11 @@ export function assertQuoteMatchesRequest(request, quote, { chain, walletAddress
  *
  * @param {object} request - Persisted intent (quoteData.request)
  * @param {object} quote - The quote being executed
+ * @param {number} [slippage] - Slippage fraction actually in effect (quoteData.slippage),
+ *   used to reconstruct the exactOut buffer. Defaults to approvalAmountForSwap's
+ *   3% when omitted, matching the approval the execute path would build.
  */
-export function assertInputWithinMax(request, quote) {
+export function assertInputWithinMax(request, quote, slippage) {
   if (!request) return;
   const swapMode = request.swapMode ?? 'exactIn';
   if (request.maxInputAmount == null) {
@@ -699,9 +769,23 @@ export function assertInputWithinMax(request, quote) {
       `Quote input amount (${inRaw}) is not an integer; cannot enforce the maximum input. Refusing to sign.`,
     );
   }
-  if (input > cap) {
+
+  // The tokens that can actually leave the wallet: exactIn pulls the raw input,
+  // exactOut pulls up to the slippage-buffered approval. Bound THAT against the
+  // cap so this check agrees with the approval encoder (see docstring).
+  const spend = approvalAmountForSwap({ inputAmount: input, swapMode, slippage });
+  if (spend <= 0n && input > 0n) {
+    // exactOut buffer overflowed the uint256 ceiling (approvalAmountForSwap
+    // returns 0n) — an unbounded approval, never signable.
     throw new Error(
-      `Quote input amount (${input}) exceeds your maximum input (${cap}). A larger input would enlarge the approval and native value beyond what you approved. Refusing to sign.`,
+      `Quote input amount (${input}) plus the slippage buffer overflows the uint256 approval ceiling; cannot enforce the maximum input. Refusing to sign.`,
+    );
+  }
+  if (spend > cap) {
+    throw new Error(
+      swapMode === 'exactOut'
+        ? `Quote needs an approval of ${spend} base units (input ${input} + slippage buffer) to guarantee the exact output, which exceeds your maximum input (${cap}). Raise --max-input or lower the requested output. Refusing to sign.`
+        : `Quote input amount (${input}) exceeds your maximum input (${cap}). A larger input would enlarge the approval and native value beyond what you approved. Refusing to sign.`,
     );
   }
 }

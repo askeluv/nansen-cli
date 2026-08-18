@@ -1213,14 +1213,28 @@ describe('assertQuoteMatchesRequest', () => {
 
   it('binds the requested output for exactOut (at-least, not exact)', () => {
     // exactOut needs a persisted max input (the sole input cap) or it fails closed.
+    // slippage:0 isolates this test from the input buffer — input==cap passes.
     const req = { ...request, swapMode: 'exactOut', amount: '990000', maxInputAmount: '1000000' };
-    expect(() => assertQuoteMatchesRequest(req, okQuote, { chain: 'base' })).not.toThrow();
+    expect(() => assertQuoteMatchesRequest(req, okQuote, { chain: 'base', slippage: 0 })).not.toThrow();
     // MORE output than requested is upside (input is capped separately) — allowed.
     const moreOut = { ...okQuote, outAmount: '990001' };
-    expect(() => assertQuoteMatchesRequest(req, moreOut, { chain: 'base' })).not.toThrow();
+    expect(() => assertQuoteMatchesRequest(req, moreOut, { chain: 'base', slippage: 0 })).not.toThrow();
     // LESS output than requested is a shortfall — rejected.
     const shortfall = { ...okQuote, outAmount: '989999' };
-    expect(() => assertQuoteMatchesRequest(req, shortfall, { chain: 'base' })).toThrow(/less than the requested output/i);
+    expect(() => assertQuoteMatchesRequest(req, shortfall, { chain: 'base', slippage: 0 })).toThrow(/less than the requested output/i);
+  });
+
+  it('measures the exactOut spend ceiling against the slippage-buffered approval', () => {
+    // Regression: a quote whose RAW input equals the cap still overflows it once
+    // the exactOut slippage buffer is applied (1,000,000 @ 3% → 1,030,000). It
+    // must be refused here rather than passing and then being rejected by the
+    // approval encoder at signing time.
+    const req = { ...request, swapMode: 'exactOut', amount: '990000', maxInputAmount: '1000000' };
+    expect(() => assertQuoteMatchesRequest(req, okQuote, { chain: 'base', slippage: 0.03 }))
+      .toThrow(/exceeds your maximum input/i);
+    // Raise the cap to cover the buffered approval and the same quote passes.
+    const roomy = { ...req, maxInputAmount: '1030000' };
+    expect(() => assertQuoteMatchesRequest(roomy, okQuote, { chain: 'base', slippage: 0.03 })).not.toThrow();
   });
 
   it('binds the signer to the wallet the quote was built for', () => {
@@ -1294,9 +1308,29 @@ describe('assertInputWithinMax', () => {
     expect(() => assertInputWithinMax({ swapMode: 'exactOut' }, base)).toThrow(/no persisted maximum input/i);
   });
 
-  it('passes when the input is at or below the cap and rejects above it', () => {
-    expect(() => assertInputWithinMax({ swapMode: 'exactOut', maxInputAmount: '1000000' }, base)).not.toThrow();
-    expect(() => assertInputWithinMax({ swapMode: 'exactOut', maxInputAmount: '999999' }, base)).toThrow(/exceeds your maximum input/i);
+  it('passes when the spend is at or below the cap and rejects above it', () => {
+    // slippage:0 → exactOut buffer is a no-op, so the raw input is the spend.
+    expect(() => assertInputWithinMax({ swapMode: 'exactOut', maxInputAmount: '1000000' }, base, 0)).not.toThrow();
+    expect(() => assertInputWithinMax({ swapMode: 'exactOut', maxInputAmount: '999999' }, base, 0)).toThrow(/exceeds your maximum input/i);
+  });
+
+  it('bounds the exactOut slippage-buffered approval, not the raw input', () => {
+    // Regression (exactOut ERC-20 + --max-input): raw input 1,000,000 at 3%
+    // slippage needs a 1,030,000 approval. A 1,000,000 cap must reject it here
+    // so it never reaches — and is rejected by — the approval encoder.
+    expect(() => assertInputWithinMax({ swapMode: 'exactOut', maxInputAmount: '1000000' }, base, 0.03))
+      .toThrow(/approval of 1030000 base units .* exceeds your maximum input \(1000000\)/i);
+    // A cap that covers the buffered approval passes.
+    expect(() => assertInputWithinMax({ swapMode: 'exactOut', maxInputAmount: '1030000' }, base, 0.03)).not.toThrow();
+    // With no slippage supplied it defaults to 3% (matching approvalAmountForSwap
+    // and the approval the execute path builds), so input==cap still overflows.
+    expect(() => assertInputWithinMax({ swapMode: 'exactOut', maxInputAmount: '1000000' }, base))
+      .toThrow(/exceeds your maximum input/i);
+  });
+
+  it('does not buffer exactIn — the raw input is the spend ceiling', () => {
+    expect(() => assertInputWithinMax({ swapMode: 'exactIn', maxInputAmount: '1000000' }, base, 0.03)).not.toThrow();
+    expect(() => assertInputWithinMax({ swapMode: 'exactIn', maxInputAmount: '999999' }, base, 0.03)).toThrow(/exceeds your maximum input/i);
   });
 
   it('fails closed on a missing or non-integer quote input when a cap is set', () => {

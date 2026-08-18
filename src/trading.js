@@ -13,7 +13,7 @@ import { base58Decode } from './transfer.js';
 import { keccak256, signSecp256k1, rlpEncode } from './crypto.js';
 import { getWalletConnectAddress, sendTransactionViaWalletConnect, sendSolanaTransactionViaWalletConnect, sendApprovalViaWalletConnect } from './walletconnect-trading.js';
 import { retrievePassword } from './keychain.js';
-import { validateQuoteInput, validateBalance, resolvePercentAmount, validateGasBalance, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertSwapCalldataNotBareTransfer, MAX_UINT256 } from './trade-validation.js';
+import { validateQuoteInput, validateBalance, resolvePercentAmount, validateGasBalance, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertSwapCalldataNotBareTransfer, approvalAmountForSwap } from './trade-validation.js';
 import { CHAIN_RPCS } from './rpc-urls.js';
 import { packageVersion, CommandError, telemetryHeaders } from './api.js';
 
@@ -735,53 +735,11 @@ export async function checkErc20Allowance(chain, tokenAddress, ownerAddress, spe
   }
 }
 
-/**
- * Compute the ERC-20 allowance to grant for a swap.
- *
- * Scoping the approval to the trade amount (instead of an unlimited MAX approval)
- * means a malicious or buggy quote can consume at most this one swap's input,
- * never the wallet's full token balance. exactIn pulls exactly the input amount;
- * exactOut can pull up to a slippage-bounded maximum, so that mode is buffered.
- *
- * @param {object} p
- * @param {bigint|string|number} p.inputAmount - The swap's input amount (base units)
- * @param {string} [p.swapMode] - 'exactIn' (default) or 'exactOut'
- * @param {number} [p.slippage] - Slippage fraction for the exactOut buffer (default 0.03)
- * @returns {bigint} Allowance to approve, in base units
- */
-export function approvalAmountForSwap({ inputAmount, swapMode, slippage }) {
-  // Clamp non-positive / malformed amounts to 0n — a negative like "-5000000",
-  // or a non-integer string like "1.5" / "1.5e6" that BigInt() rejects — so
-  // callers can reject via a single `approveAmt <= 0n` check and a negative or
-  // invalid value never reaches hex encoding (which would mangle the calldata).
-  let amt;
-  try {
-    amt = BigInt(inputAmount ?? 0);
-  } catch {
-    return 0n;
-  }
-  if (amt <= 0n) return 0n;
-  if (swapMode === 'exactOut') {
-    // Honour an explicit slippage of 0 (tightest approval); only fall back to the
-    // 3% default when slippage wasn't provided (undefined/NaN) or is negative.
-    const slip = Number.isFinite(slippage) && slippage >= 0 ? slippage : 0.03;
-    // Buffer by slippage using basis-point integer math to stay in BigInt.
-    // Both steps round UP by design: this buffer must cover the router's max
-    // input for exactOut, so over-approving by a sub-token unit is harmless but
-    // under-approving by even 1 unit would revert the swap. Rounding up on both
-    // the bps conversion and the division guarantees we never land below
-    // (1 + slip) * amount.
-    const bps = BigInt(Math.ceil((1 + slip) * 10000));
-    const buffered = (amt * bps + 9999n) / 10000n; // ceil division
-    // Overflow guard: a huge input × slippage can exceed the uint256 ceiling,
-    // which encodeApproveCalldata would reject with a cryptic throw. Return 0n
-    // so the caller's `approveAmt <= 0n` check surfaces it as a clear
-    // zero/invalid-input skip instead.
-    if (buffered >= MAX_UINT256) return 0n;
-    return buffered;
-  }
-  return amt;
-}
+// approvalAmountForSwap now lives in trade-validation.js alongside the approval
+// encoder and the spend-ceiling check that both consume it, so the "how much can
+// leave the wallet" math has a single definition. Re-exported here because the
+// execute paths below (and tests) import it from this module.
+export { approvalAmountForSwap };
 
 /**
  * The maximum allowance (spend ceiling, in the SELL token's base units) to hand
@@ -1421,9 +1379,10 @@ OPTIONS:
   --auto-slippage           Enable auto slippage calculation
   --max-auto-slippage <pct> Max auto slippage when auto-slippage enabled
   --swap-mode <mode>        exactIn (default) or exactOut
-  --max-input <baseUnits>   exactOut only: hard ceiling on the sell-token input
-                            (base units). Required with exactOut and enforced
-                            before signing.
+  --max-input <baseUnits>   exactOut only: hard ceiling on the sell-token spend
+                            (base units), measured against the slippage-buffered
+                            approval (input + slippage), not the bare quote input.
+                            Required with exactOut and enforced before signing.
   --aggregator <name>       Force a specific aggregator (lifi, relay, jupiter, okx).
                             Filters the quote list client-side; errors if none match.
 
@@ -1689,25 +1648,40 @@ CROSS-CHAIN NOTES (when using --to-chain):
           response.quotes = matching;
         }
 
-        // Explicit --max-input: drop quotes whose input already exceeds the cap
-        // so we never print a Quote ID the execute path would refuse. (The
-        // derived default is computed from the max quote input below, so it can
-        // never exclude a quote — only an explicit cap can.)
+        // Slippage actually in effect. Computed here (not just at save time) so
+        // the --max-input filter below measures the same buffered approval the
+        // execute path will build, keeping quote-time and execute-time in lockstep.
+        const effectiveSlippage = slippage != null ? Number(slippage)
+          : autoSlippage ? (maxAutoSlippage != null ? Number(maxAutoSlippage) : 0.05)
+          : 0.03;
+
+        // Explicit --max-input: drop quotes whose *buffered* input exceeds the cap
+        // so we never print a Quote ID the execute path would refuse. For exactOut
+        // the approval is slippage-buffered (approvalAmountForSwap), so a raw input
+        // at the cap still overflows it once buffered (1,000,000 @ 3% → 1,030,000);
+        // filtering on the raw input would save a quote the approval encoder later
+        // rejects for exceeding the cap. (max-input is exactOut-only. The derived
+        // default is computed from the max quote input below, so it can never
+        // exclude a quote — only an explicit cap can.)
         if (maxInputOverride != null) {
           const cap = BigInt(maxInputOverride);
+          // Max sell-token base units that can leave the wallet for this quote.
+          const spendFor = (q) => approvalAmountForSwap({
+            inputAmount: q.inputAmount ?? q.inAmount ?? '0',
+            swapMode,
+            slippage: effectiveSlippage,
+          });
           const withinCap = response.quotes.filter((q) => {
-            let v;
-            try { v = BigInt(q.inputAmount ?? q.inAmount ?? '0'); } catch { return false; }
-            return v > 0n && v <= cap;
+            const spend = spendFor(q);
+            return spend > 0n && spend <= cap;
           });
           if (!withinCap.length) {
             const cheapest = response.quotes.reduce((min, q) => {
-              let v;
-              try { v = BigInt(q.inputAmount ?? q.inAmount ?? '0'); } catch { return min; }
-              return v > 0n && (min == null || v < min) ? v : min;
+              const spend = spendFor(q);
+              return spend > 0n && (min == null || spend < min) ? spend : min;
             }, null);
             throw new CommandError(
-              `No quote fits --max-input ${cap}. The cheapest input available is ${cheapest ?? 'unknown'} base units. Raise --max-input or lower the requested output.`,
+              `No quote fits --max-input ${cap}. The cheapest fits within ${cheapest ?? 'unknown'} base units (input + ${effectiveSlippage} slippage buffer). Raise --max-input or lower the requested output.`,
               'MAX_INPUT_EXCEEDED'
             );
           }
@@ -1727,10 +1701,6 @@ CROSS-CHAIN NOTES (when using --to-chain):
         }
 
         const signerType = isWalletConnect ? 'walletconnect' : walletProvider;
-        // Slippage actually in effect (for scoping exactOut approvals at execute time).
-        const effectiveSlippage = slippage != null ? Number(slippage)
-          : autoSlippage ? (maxAutoSlippage != null ? Number(maxAutoSlippage) : 0.05)
-          : 0.03;
         const maxInputAmount = swapMode === 'exactOut' ? maxInputOverride : String(resolvedAmount);
         const quoteId = saveQuote(response, chain, signerType, privyWalletIds, isCrossChain ? toChainRaw : null, {
           swapMode,
@@ -1958,7 +1928,7 @@ EXAMPLES:
               // time, so a compromised API can't inflate the input (and therefore
               // the scoped approval and native value) past what the user asked to spend.
               assertCompleteEvmRequestIntent(quoteData.request);
-              assertQuoteMatchesRequest(quoteData.request, currentQuote, { chain, walletAddress });
+              assertQuoteMatchesRequest(quoteData.request, currentQuote, { chain, walletAddress, slippage: quoteData.slippage });
 
               // Same-chain only: a legit swap's outer call is a router method,
               // never a bare ERC-20 transfer/approve. Reject that drain shape.
@@ -2187,7 +2157,7 @@ EXAMPLES:
               // the scoped approval and native value) past what the user asked to spend.
               // The connected WC address is the signer here.
               assertCompleteEvmRequestIntent(quoteData.request);
-              assertQuoteMatchesRequest(quoteData.request, currentQuote, { chain, walletAddress: wcAddress });
+              assertQuoteMatchesRequest(quoteData.request, currentQuote, { chain, walletAddress: wcAddress, slippage: quoteData.slippage });
 
               // Same-chain only: a legit swap's outer call is a router method,
               // never a bare ERC-20 transfer/approve. Reject that drain shape.
@@ -2391,7 +2361,7 @@ EXAMPLES:
               // time, so a compromised API can't inflate the input (and therefore
               // the scoped approval and native value) past what the user asked to spend.
               assertCompleteEvmRequestIntent(quoteData.request);
-              assertQuoteMatchesRequest(quoteData.request, currentQuote, { chain, walletAddress });
+              assertQuoteMatchesRequest(quoteData.request, currentQuote, { chain, walletAddress, slippage: quoteData.slippage });
 
               // Same-chain only: a legit swap's outer call is a router method,
               // never a bare ERC-20 transfer/approve. Reject that drain shape.
