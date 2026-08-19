@@ -908,8 +908,9 @@ export class NansenAPI {
   async addressLabels(params = {}) {
     const { address, chain = 'ethereum', pagination = { page: 1, per_page: 100 } } = params;
     if (address) requireValidAddress(address, chain);
-    return this.request('/api/beta/profiler/address/labels', {
-      parameters: { address, chain },
+    return this.request('/api/v1/profiler/address/labels', {
+      address,
+      chain,
       pagination
     });
   }

@@ -3829,6 +3829,25 @@ describe('--enrich flag on token transfers', () => {
     expect(result.transfers[0].to_labels).toEqual(['Smart Trader']);
   });
 
+  it('should enrich transfers from the v1 labels response shape', async () => {
+    const mockApi = {
+      tokenTransfers: vi.fn().mockResolvedValue({
+        transfers: [
+          { from: '0xaaa', to: '0xbbb', amount_usd: 1000 }
+        ]
+      }),
+      addressLabels: vi.fn().mockResolvedValue({
+        pagination: { page: 1, per_page: 100, total: 1 },
+        data: [{ label: 'Smart Trader', category: 'behavioral' }]
+      })
+    };
+    const commands = buildCommands({});
+    const result = await commands['token'](['transfers'], mockApi, { enrich: true }, { token: '0xabc' });
+
+    expect(result.transfers[0].from_labels).toEqual(['Smart Trader']);
+    expect(result.transfers[0].to_labels).toEqual(['Smart Trader']);
+  });
+
   it('should not enrich when --enrich flag is not set', async () => {
     const mockApi = {
       tokenTransfers: vi.fn().mockResolvedValue({

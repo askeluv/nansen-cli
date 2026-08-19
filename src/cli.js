@@ -489,7 +489,9 @@ async function enrichTransfers(result, apiInstance, chain) {
   for (const addr of addrs) {
     try {
       const labelsResult = await apiInstance.addressLabels({ address: addr, chain });
-      labelMap[addr] = labelsResult?.labels || labelsResult?.data?.results || [];
+      labelMap[addr] = Array.isArray(labelsResult?.data)
+        ? labelsResult.data.map(item => item.label)
+        : labelsResult?.labels || [];
     } catch {
       labelMap[addr] = [];
     }

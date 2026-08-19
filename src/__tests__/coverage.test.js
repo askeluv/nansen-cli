@@ -20,7 +20,7 @@ const DOCUMENTED_ENDPOINTS = {
   ],
   profiler: [
     { name: 'balance', method: 'addressBalance', endpoint: '/api/v1/profiler/address/current-balance' },
-    { name: 'labels', method: 'addressLabels', endpoint: '/api/beta/profiler/address/labels' },
+    { name: 'labels', method: 'addressLabels', endpoint: '/api/v1/profiler/address/labels' },
     { name: 'transactions', method: 'addressTransactions', endpoint: '/api/v1/profiler/address/transactions' },
     { name: 'pnl', method: 'addressPnl', endpoint: '/api/v1/profiler/address/pnl-and-trade-performance' },
     { name: 'search', method: 'entitySearch', endpoint: '/api/beta/profiler/entity-name-search' },
