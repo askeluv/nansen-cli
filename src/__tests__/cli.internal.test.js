@@ -3829,6 +3829,25 @@ describe('--enrich flag on token transfers', () => {
     expect(result.transfers[0].to_labels).toEqual(['Smart Trader']);
   });
 
+  it('should enrich transfers from the v1 labels response shape', async () => {
+    const mockApi = {
+      tokenTransfers: vi.fn().mockResolvedValue({
+        transfers: [
+          { from: '0xaaa', to: '0xbbb', amount_usd: 1000 }
+        ]
+      }),
+      addressLabels: vi.fn().mockResolvedValue({
+        pagination: { page: 1, per_page: 100, total: 1 },
+        data: [{ label: 'Smart Trader', category: 'behavioral' }]
+      })
+    };
+    const commands = buildCommands({});
+    const result = await commands['token'](['transfers'], mockApi, { enrich: true }, { token: '0xabc' });
+
+    expect(result.transfers[0].from_labels).toEqual(['Smart Trader']);
+    expect(result.transfers[0].to_labels).toEqual(['Smart Trader']);
+  });
+
   it('should not enrich when --enrich flag is not set', async () => {
     const mockApi = {
       tokenTransfers: vi.fn().mockResolvedValue({
@@ -3954,6 +3973,26 @@ describe('batchProfile', () => {
     expect(result.results).toHaveLength(2);
     expect(result.results[0].labels).toBeDefined();
     expect(result.results[0].balance).toBeDefined();
+  });
+
+  it('should unwrap the v1 labels response into a labels array', async () => {
+    const mockApi = {
+      addressLabels: vi.fn().mockResolvedValue({
+        pagination: { page: 1, per_page: 100, is_last_page: true },
+        data: [{ label: 'Fund', category: 'fund', kind: ['entity/fund'] }]
+      }),
+    };
+
+    const result = await batchProfile(mockApi, {
+      addresses: ['0x0000000000000000000000000000000000000001'],
+      chain: 'ethereum',
+      include: ['labels'],
+      delayMs: 0,
+    });
+
+    expect(result.results[0].labels).toEqual([
+      { label: 'Fund', category: 'fund', kind: ['entity/fund'] }
+    ]);
   });
 
   it('should capture individual errors without failing batch', async () => {

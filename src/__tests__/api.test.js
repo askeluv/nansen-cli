@@ -63,7 +63,11 @@ const MOCK_RESPONSES = {
     ]
   },
   addressLabels: {
-    labels: ['Smart Trader', 'Fund']
+    pagination: { page: 1, per_page: 100, total: 2 },
+    data: [
+      { label: 'Smart Trader', category: 'behavioral' },
+      { label: 'Fund', category: 'others' }
+    ]
   },
   addressTransactions: {
     transactions: [
@@ -807,12 +811,13 @@ describe('NansenAPI', () => {
           chain: 'ethereum'
         });
         
-        const body = expectFetchCalledWith('/api/beta/profiler/address/labels');
-        expect(body.parameters.address).toBe(TEST_DATA.ethereum.address);
-        expect(body.parameters.chain).toBe('ethereum');
-        
-        expect(result.labels).toContain('Smart Trader');
-        expect(result.labels).toContain('Fund');
+        const body = expectFetchCalledWith('/api/v1/profiler/address/labels');
+        expect(body.address).toBe(TEST_DATA.ethereum.address);
+        expect(body.chain).toBe('ethereum');
+
+        const labels = result.data.map(item => item.label);
+        expect(labels).toContain('Smart Trader');
+        expect(labels).toContain('Fund');
       });
     });
 

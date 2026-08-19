@@ -19,7 +19,7 @@ allowed-tools: Bash(nansen:*)
 ADDRESSES="0xaddr1,0xaddr2,0xaddr3,..." CHAIN=ethereum
 nansen research profiler batch --addresses "$ADDRESSES" --chain $CHAIN --include labels,balance
 # → .data.{total, completed, results[]: {address, chain, labels[], balance, error}}
-# labels[]: {label, category ("smart_money","fund","social","behavioral","others"), fullname}
+# labels[]: {label, category ("smart_money","fund","social","behavioral","others"), kind[]}
 # balance: {data[]: {token_symbol, token_amount, price_usd, value_usd}}
 ```
 Check .error per result — invalid addresses return an error message, not a crash. Skip those.

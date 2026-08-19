@@ -489,7 +489,9 @@ async function enrichTransfers(result, apiInstance, chain) {
   for (const addr of addrs) {
     try {
       const labelsResult = await apiInstance.addressLabels({ address: addr, chain });
-      labelMap[addr] = labelsResult?.labels || labelsResult?.data?.results || [];
+      labelMap[addr] = Array.isArray(labelsResult?.data)
+        ? labelsResult.data.map(item => item.label)
+        : labelsResult?.labels || [];
     } catch {
       labelMap[addr] = [];
     }
@@ -568,7 +570,10 @@ export async function batchProfile(api, params = {}) {
     }
     try {
       if (include.includes('labels')) {
-        entry.labels = await api.addressLabels({ address, chain });
+        const labelsResult = await api.addressLabels({ address, chain });
+        entry.labels = Array.isArray(labelsResult?.data)
+          ? labelsResult.data
+          : labelsResult?.labels || [];
       }
       if (include.includes('balance')) {
         entry.balance = await api.addressBalance({ address, chain });
