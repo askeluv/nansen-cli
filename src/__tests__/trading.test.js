@@ -4215,4 +4215,15 @@ describe('verifySwapOutcome (execute-path wiring)', () => {
     expect(r.proceed).toBe(true);
     expect(global.fetch).not.toHaveBeenCalled();
   });
+
+  it('skips cross-chain bridge quotes', async () => {
+    // The bridge output settles on the destination chain, so it never appears in
+    // a source-chain simulation and the output-received assertion would always
+    // fail. The verifier must not run (and must not touch the sim endpoint).
+    global.fetch = vi.fn(); // must not be called
+    const crossChainData = { ...quoteData, chain: 'base', toChain: 'solana' };
+    const r = await verifySwapOutcome({ chain: 'base', from: WALLET, quote, quoteData: crossChainData });
+    expect(r.proceed).toBe(true);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
 });

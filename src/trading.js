@@ -707,10 +707,11 @@ export async function simulateEvmCall(chain, { from, to, data, value, gas }) {
  * guards: the cheap eth_call sim answers "will it revert", this answers "does the
  * outcome match intent" (see assertSwapOutcome in trade-validation.js).
  *
- * EVM-only, and on its own gate independent of --no-simulate/gasless. When no
- * simulation-capable endpoint is configured it DEGRADES — logs a warning, then
- * proceeds — so a simulation outage never blocks trading. --no-verify-outcome
- * skips it entirely.
+ * EVM-only, and on its own gate independent of --no-simulate/gasless. Skipped
+ * for cross-chain bridges (the output lands on the destination chain, so a
+ * source-chain simulation can't observe it). When no simulation-capable endpoint
+ * is configured it DEGRADES — logs a warning, then proceeds — so a simulation
+ * outage never blocks trading. --no-verify-outcome skips it entirely.
  *
  * Returns { proceed, reason }. proceed=false means this quote failed
  * verification: the caller should fall through to the next candidate WITHOUT
@@ -727,6 +728,11 @@ export async function simulateEvmCall(chain, { from, to, data, value, gas }) {
  */
 export async function verifySwapOutcome({ chain, from, quote, quoteData, apiKey = null, log = () => {} }) {
   if (CHAIN_MAP[chain?.toLowerCase()]?.type !== 'evm') return { proceed: true }; // EVM-only
+  // Cross-chain: the output token settles on the destination chain, so it can
+  // never appear in a source-chain simulation and the output-received assertion
+  // would always fail. The source-chain leg only spends/locks the input here;
+  // skip outcome verification for bridges (mirrors the bridge branch below).
+  if (quoteData?.toChain && quoteData.toChain !== quoteData.chain) return { proceed: true };
   if (!hasSimulationRpc(chain)) {
     log(`  ⚠ Swap-outcome verification unavailable (no simulation endpoint for ${chain}); proceeding without it.`);
     return { proceed: true };
