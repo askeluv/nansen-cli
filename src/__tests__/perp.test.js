@@ -260,6 +260,21 @@ describe('perp cancel validation', () => {
       cmds.cancel([], null, {}, { coin: 'ETH', oid: '0', wallet: 'x' }),
     ).rejects.toThrow(/Invalid --oid "0"/);
   });
+
+  it('rejects --oid above 2^53-1 to prevent silent rounding of large uint64 ids', async () => {
+    const unsafeOid = String(Number.MAX_SAFE_INTEGER + 1); // 9007199254740992
+    await expect(
+      cmds.cancel([], null, {}, { coin: 'ETH', oid: unsafeOid, wallet: 'x' }),
+    ).rejects.toThrow(/exceeds safe integer precision/);
+  });
+
+  it('accepts --oid exactly at 2^53-1 (MAX_SAFE_INTEGER)', async () => {
+    const safeOid = String(Number.MAX_SAFE_INTEGER); // 9007199254740991
+    // Should not throw on validation; will fail later on missing wallet — that's fine.
+    await expect(
+      cmds.cancel([], null, {}, { coin: 'ETH', oid: safeOid, wallet: 'x' }),
+    ).rejects.not.toThrow(/exceeds safe integer precision/);
+  });
 });
 
 describe('perp meta listing (L1)', () => {
