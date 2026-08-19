@@ -23,6 +23,11 @@ import {
   signSolanaTransaction,
   signEvmTransaction,
   buildApprovalTransaction,
+  approvalAmountForSwap,
+  approvalCapForQuote,
+  assertCompleteEvmRequestIntent,
+  validateSwapTarget,
+  assertUsableSpender,
   stripLeadingZeros,
   buildTradingCommands,
   getWrappedNativeFromWarning,
@@ -44,11 +49,32 @@ import {
   generateEvmWallet,
   generateSolanaWallet,
   createWallet,
+  showWallet,
 } from '../wallet.js';
 import * as wcTrading from '../walletconnect-trading.js';
 
 let originalHome;
 let tempDir;
+
+const BASE_ETH = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+const BASE_USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
+const OUT_TOKEN = '0x4200000000000000000000000000000000000006';
+const LIFI_ROUTER = '0x1231deb6f5749ef6ce6943a275a1d3e7486f4eae';
+const RELAY_ROUTER = '0xf5042e6ffac5a625d4e7848e0b01373d8eb9e222';
+
+function evmIntent({ walletAddress, fromToken = BASE_USDC, toToken = OUT_TOKEN, amount = '1000000', maxInputAmount = amount, swapMode = 'exactIn', toChain = null, recipient = null } = {}) {
+  return {
+    chain: 'base',
+    toChain,
+    walletAddress,
+    recipient,
+    fromToken,
+    toToken,
+    swapMode,
+    amount,
+    maxInputAmount,
+  };
+}
 
 beforeEach(() => {
   originalHome = process.env.HOME;
@@ -576,7 +602,7 @@ describe('signEvmTransaction (API response format)', () => {
 // ============= ERC-20 Approval Transaction =============
 
 describe('buildApprovalTransaction', () => {
-  it('should build a valid approval tx', () => {
+  it('should build a valid approval tx scoped to the given amount', () => {
     const wallet = generateEvmWallet();
     const signedHex = buildApprovalTransaction(
       '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // USDC on Base
@@ -584,8 +610,13 @@ describe('buildApprovalTransaction', () => {
       wallet.privateKey,
       'base',
       0,
+      '1000000', // gasPrice
+      1000000n,  // approve amount, scoped to the trade
     );
     expect(signedHex).toMatch(/^0x[0-9a-f]+$/);
+    // Approval is scoped to the trade amount, not unlimited MAX_UINT256.
+    expect(signedHex).toContain((1000000n).toString(16).padStart(64, '0'));
+    expect(signedHex).not.toContain('f'.repeat(64));
   });
 
   it('should reject unsupported chains', () => {
@@ -595,9 +626,193 @@ describe('buildApprovalTransaction', () => {
   });
 });
 
+// ============= Approval amount scoping (security hardening) =============
+
+describe('approvalAmountForSwap', () => {
+  it('approves exactly the input for exactIn (default)', () => {
+    expect(approvalAmountForSwap({ inputAmount: 1000000n })).toBe(1000000n);
+    expect(approvalAmountForSwap({ inputAmount: '2500000', swapMode: 'exactIn' })).toBe(2500000n);
+  });
+
+  it('buffers exactOut by the slippage (ceil)', () => {
+    // 1,000,000 * (1 + 0.03) = 1,030,000
+    expect(approvalAmountForSwap({ inputAmount: 1000000n, swapMode: 'exactOut', slippage: 0.03 })).toBe(1030000n);
+  });
+
+  it('defaults the exactOut buffer to 3% when slippage is missing', () => {
+    expect(approvalAmountForSwap({ inputAmount: 1000000n, swapMode: 'exactOut' })).toBe(1030000n);
+  });
+
+  it('honours an explicit slippage of 0 for exactOut (no buffer)', () => {
+    expect(approvalAmountForSwap({ inputAmount: 1000000n, swapMode: 'exactOut', slippage: 0 })).toBe(1000000n);
+  });
+
+  it('clamps non-positive / malformed amounts to 0n', () => {
+    expect(approvalAmountForSwap({ inputAmount: 0n })).toBe(0n);
+    expect(approvalAmountForSwap({ inputAmount: 0n, swapMode: 'exactOut' })).toBe(0n);
+    // Negative/malformed input must clamp to 0n, never a negative BigInt.
+    expect(approvalAmountForSwap({ inputAmount: '-5000000' })).toBe(0n);
+    expect(approvalAmountForSwap({ inputAmount: -5000000n, swapMode: 'exactOut' })).toBe(0n);
+    // Non-integer strings that BigInt() rejects must clamp, not throw.
+    expect(approvalAmountForSwap({ inputAmount: '1500000.5' })).toBe(0n);
+    expect(approvalAmountForSwap({ inputAmount: '1.5e6', swapMode: 'exactOut' })).toBe(0n);
+  });
+
+  it('is always bounded — never the unlimited MAX_UINT256', () => {
+    const MAX = (1n << 256n) - 1n;
+    const amt = approvalAmountForSwap({ inputAmount: 5000000n, swapMode: 'exactOut', slippage: 0.5 });
+    expect(amt).toBe(7500000n); // 5,000,000 * 1.5
+    expect(amt).toBeLessThan(MAX);
+  });
+
+  it('clamps an exactOut buffer that would overflow uint256 to 0n (not a cryptic throw)', () => {
+    // A huge input × slippage can exceed the uint256 ceiling; returning 0n lets
+    // the caller's `approveAmt <= 0n` skip surface it cleanly instead of the
+    // encoder throwing "at or above MAX_UINT256" and falling through as a
+    // generic quote failure.
+    const MAX = (1n << 256n) - 1n;
+    expect(approvalAmountForSwap({ inputAmount: MAX - 1n, swapMode: 'exactOut', slippage: 0.03 })).toBe(0n);
+    expect(approvalAmountForSwap({ inputAmount: MAX, swapMode: 'exactOut', slippage: 0.5 })).toBe(0n);
+    // A large-but-non-overflowing buffer is returned as-is (no over-clamping):
+    // (MAX/2) * 1.5 = 0.75 * MAX, still below the ceiling.
+    const belowCeiling = approvalAmountForSwap({ inputAmount: MAX / 2n, swapMode: 'exactOut', slippage: 0.5 });
+    expect(belowCeiling).toBeGreaterThan(0n);
+    expect(belowCeiling).toBeLessThan(MAX);
+  });
+});
+
+// ============= Swap target validation (security hardening) =============
+
+describe('approvalCapForQuote', () => {
+  it('returns the persisted maxInputAmount when present (both modes)', () => {
+    expect(approvalCapForQuote({ swapMode: 'exactIn', request: { maxInputAmount: '1000000', amount: '1000000' } })).toBe('1000000');
+    expect(approvalCapForQuote({ swapMode: 'exactOut', request: { maxInputAmount: '1030000', amount: '990000' } })).toBe('1030000');
+  });
+
+  it('falls back to request.amount ONLY for exactIn (the input bound)', () => {
+    expect(approvalCapForQuote({ swapMode: 'exactIn', request: { amount: '1000000' } })).toBe('1000000');
+  });
+
+  it('never falls back to request.amount for exactOut (that is the OUTPUT token amount)', () => {
+    // The wrong-unit fallback must not leak in: exactOut with no cap yields undefined,
+    // not the output amount. (assertInputWithinMax fails this path closed upstream.)
+    expect(approvalCapForQuote({ swapMode: 'exactOut', request: { amount: '990000' } })).toBeUndefined();
+  });
+
+  it('is undefined when no request/cap exists (pre-intent quotes)', () => {
+    expect(approvalCapForQuote({})).toBeUndefined();
+    expect(approvalCapForQuote({ swapMode: 'exactIn' })).toBeUndefined();
+    expect(approvalCapForQuote(undefined)).toBeUndefined();
+  });
+});
+
+describe('assertCompleteEvmRequestIntent', () => {
+  it('rejects missing or incomplete EVM request intent', () => {
+    expect(() => assertCompleteEvmRequestIntent(null)).toThrow(/missing request intent/i);
+    expect(() => assertCompleteEvmRequestIntent(evmIntent({ walletAddress: '' }))).toThrow(/walletAddress missing/i);
+  });
+
+  it('accepts complete EVM request intent', () => {
+    expect(() => assertCompleteEvmRequestIntent(evmIntent({ walletAddress: '0xabc' }))).not.toThrow();
+  });
+});
+
+describe('validateSwapTarget', () => {
+  const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+  const ROUTER = '0xDef1C0ded9bec7F1a1670819833240f027b25EfF';
+
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  function mockGetCode(result) {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const body = opts?.body ? JSON.parse(opts.body) : {};
+      if (body.method === 'eth_getCode') {
+        if (result instanceof Error) return Promise.reject(result);
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result })) });
+      }
+      return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: null })) });
+    }));
+  }
+
+  it('rejects an empty or zero-address target', async () => {
+    await expect(validateSwapTarget('base', '', USDC)).rejects.toThrow(/empty or zero/i);
+    await expect(validateSwapTarget('base', '0x0000000000000000000000000000000000000000', USDC)).rejects.toThrow(/zero/i);
+  });
+
+  it('rejects a target equal to the token being sold', async () => {
+    // to == inputMint would encode a transfer/approve of the sold token, not a swap.
+    await expect(validateSwapTarget('base', USDC, USDC)).rejects.toThrow(/token being sold/i);
+  });
+
+  it('rejects an EOA target (no contract code)', async () => {
+    mockGetCode('0x');
+    await expect(validateSwapTarget('base', ROUTER, USDC)).rejects.toThrow(/not a contract/i);
+  });
+
+  it('passes for a contract router', async () => {
+    mockGetCode('0x6080604052');
+    await expect(validateSwapTarget('base', ROUTER, USDC)).resolves.toBeUndefined();
+  });
+
+  it('fails closed when the code check RPC keeps failing', async () => {
+    // A flaky or hostile RPC must not silently disable the target guard.
+    mockGetCode(new Error('network down'));
+    await expect(validateSwapTarget('base', ROUTER, USDC)).rejects.toThrow(/could not verify swap target .* refusing to sign/i);
+  });
+
+  it('re-throws a deterministic config error (no RPC URL) instead of skipping', async () => {
+    // Unknown chain → evmRpcCall throws "No RPC URL configured…" before any fetch.
+    await expect(validateSwapTarget('nosuchchain', ROUTER, USDC)).rejects.toThrow(/No RPC URL/i);
+  });
+
+  it('verifies a shared target only once when a run-scoped cache is passed', async () => {
+    // A quote list commonly shares one router; the cache avoids re-checking (and,
+    // on a flaky RPC, re-retrying) the same target for every quote.
+    let getCodeCalls = 0;
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const body = opts?.body ? JSON.parse(opts.body) : {};
+      if (body.method === 'eth_getCode') {
+        getCodeCalls++;
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      }
+      return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: null })) });
+    }));
+    const verifiedTargets = new Set();
+    await validateSwapTarget('base', ROUTER, USDC, { verifiedTargets });
+    await validateSwapTarget('base', ROUTER, USDC, { verifiedTargets });
+    expect(getCodeCalls).toBe(1);
+    // The cheap zero/self checks still run every call even when cached.
+    await expect(validateSwapTarget('base', USDC, USDC, { verifiedTargets })).rejects.toThrow(/token being sold/i);
+  });
+
+  it('does not cache a failed verification (transient failure gets a fresh attempt)', async () => {
+    // Only successful checks are cached, so a one-off outage doesn't poison later quotes.
+    mockGetCode(new Error('network down'));
+    const verifiedTargets = new Set();
+    await expect(validateSwapTarget('base', ROUTER, USDC, { verifiedTargets })).rejects.toThrow(/could not verify/i);
+    expect(verifiedTargets.size).toBe(0);
+  });
+});
+
+describe('assertUsableSpender', () => {
+  it('rejects an empty or zero-address approval spender', () => {
+    expect(() => assertUsableSpender('')).toThrow(/empty or the zero address/i);
+    expect(() => assertUsableSpender(undefined)).toThrow(/empty or the zero address/i);
+    expect(() => assertUsableSpender('0x0000000000000000000000000000000000000000')).toThrow(/zero address/i);
+  });
+
+  it('accepts a normal spender address', () => {
+    expect(() => assertUsableSpender('0x1231deb6f5749ef6ce6943a275a1d3e7486f4eae')).not.toThrow();
+  });
+});
+
 // ============= CLI Command Validation =============
 
 describe('buildTradingCommands', () => {
+  // Some tests here stub global fetch (e.g. to make the fail-closed swap-target
+  // check pass); undo any such stub between tests so it never leaks.
+  afterEach(() => { vi.unstubAllGlobals(); });
+
   it('should show help when required params missing for quote', async () => {
     const cmds = buildTradingCommands({
       log: () => {},
@@ -643,18 +858,25 @@ describe('buildTradingCommands', () => {
     // A compromised API could attach ETH value to an ERC-20 swap to drain funds
     createWallet('default', 'testpass');
     process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    // Router carries code so the fail-closed target check passes; this test
+    // exercises the tx.value validation that runs after it.
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const body = opts?.body ? JSON.parse(opts.body) : {};
+      if (body.method === 'eth_getCode') return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
 
     const quoteId = saveQuote({
       success: true,
       quotes: [{
-        aggregator: 'test',
-        inputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', // USDC (ERC-20)
-        outputMint: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+        aggregator: 'lifi',
+        inputMint: BASE_USDC, // USDC (ERC-20)
+        outputMint: BASE_ETH,
         inAmount: '1000000',
         outAmount: '500000000000000',
-        transaction: { to: '0xabc', data: '0x1234', value: '5000000000000000000', gas: '200000' },
+        transaction: { to: LIFI_ROUTER, data: '0x12345678', value: '5000000000000000000', gas: '200000' },
       }],
-    }, 'base');
+    }, 'base', 'local', null, null, { swapMode: 'exactIn', request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: BASE_USDC, toToken: BASE_ETH }) });
 
     const logs = [];
     const cmds = buildTradingCommands({
@@ -671,18 +893,23 @@ describe('buildTradingCommands', () => {
   it('should reject native ETH swap with missing inAmount but non-zero tx.value', async () => {
     createWallet('default', 'testpass');
     process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const body = opts?.body ? JSON.parse(opts.body) : {};
+      if (body.method === 'eth_getCode') return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
 
     const quoteId = saveQuote({
       success: true,
       quotes: [{
-        aggregator: 'test',
-        inputMint: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
-        outputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+        aggregator: 'lifi',
+        inputMint: BASE_ETH,
+        outputMint: BASE_USDC,
         // no inAmount or inputAmount — malformed quote
         outAmount: '3000000000',
-        transaction: { to: '0xabc', data: '0x1234', value: '5000000000000000000', gas: '200000' },
+        transaction: { to: LIFI_ROUTER, data: '0x12345678', value: '5000000000000000000', gas: '200000' },
       }],
-    }, 'base');
+    }, 'base', 'local', null, null, { swapMode: 'exactIn', request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: BASE_ETH, toToken: BASE_USDC, amount: '5000000000000000000', maxInputAmount: '5000000000000000000' }) });
 
     const logs = [];
     const cmds = buildTradingCommands({
@@ -691,7 +918,7 @@ describe('buildTradingCommands', () => {
     });
 
     await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/All quotes failed/);
-    expect(logs.some(l => l.includes('value mismatch'))).toBe(true);
+    expect(logs.some(l => l.includes('missing the input amount'))).toBe(true);
 
     delete process.env.NANSEN_WALLET_PASSWORD;
   });
@@ -699,18 +926,23 @@ describe('buildTradingCommands', () => {
   it('should pass validation for ERC-20 swap with value 0', async () => {
     createWallet('default', 'testpass');
     process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const body = opts?.body ? JSON.parse(opts.body) : {};
+      if (body.method === 'eth_getCode') return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
 
     const quoteId = saveQuote({
       success: true,
       quotes: [{
-        aggregator: 'test',
-        inputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
-        outputMint: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+        aggregator: 'lifi',
+        inputMint: BASE_USDC,
+        outputMint: BASE_ETH,
         inAmount: '1000000',
         outAmount: '500000000000000',
-        transaction: { to: '0xabc', data: '0x1234', value: '0', gas: '200000' },
+        transaction: { to: LIFI_ROUTER, data: '0x12345678', value: '0', gas: '200000' },
       }],
-    }, 'base');
+    }, 'base', 'local', null, null, { swapMode: 'exactIn', request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: BASE_USDC, toToken: BASE_ETH }) });
 
     const logs = [];
     const cmds = buildTradingCommands({
@@ -730,18 +962,23 @@ describe('buildTradingCommands', () => {
   it('should pass validation for native ETH swap with matching value', async () => {
     createWallet('default', 'testpass');
     process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const body = opts?.body ? JSON.parse(opts.body) : {};
+      if (body.method === 'eth_getCode') return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
 
     const quoteId = saveQuote({
       success: true,
       quotes: [{
-        aggregator: 'test',
-        inputMint: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
-        outputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+        aggregator: 'lifi',
+        inputMint: BASE_ETH,
+        outputMint: BASE_USDC,
         inAmount: '1000000000000000000',
         outAmount: '3000000000',
-        transaction: { to: '0xabc', data: '0x1234', value: '1000000000000000000', gas: '200000' },
+        transaction: { to: LIFI_ROUTER, data: '0x12345678', value: '1000000000000000000', gas: '200000' },
       }],
-    }, 'base');
+    }, 'base', 'local', null, null, { swapMode: 'exactIn', request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: BASE_ETH, toToken: BASE_USDC, amount: '1000000000000000000', maxInputAmount: '1000000000000000000' }) });
 
     const logs = [];
     const cmds = buildTradingCommands({
@@ -761,18 +998,23 @@ describe('buildTradingCommands', () => {
   it('should reject native ETH swap with mismatched tx.value', async () => {
     createWallet('default', 'testpass');
     process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const body = opts?.body ? JSON.parse(opts.body) : {};
+      if (body.method === 'eth_getCode') return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
 
     const quoteId = saveQuote({
       success: true,
       quotes: [{
-        aggregator: 'test',
-        inputMint: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', // native ETH
-        outputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+        aggregator: 'lifi',
+        inputMint: BASE_ETH, // native ETH
+        outputMint: BASE_USDC,
         inAmount: '1000000000000000000', // 1 ETH
         outAmount: '3000000000',
-        transaction: { to: '0xabc', data: '0x1234', value: '5000000000000000000', gas: '200000' },
+        transaction: { to: LIFI_ROUTER, data: '0x12345678', value: '5000000000000000000', gas: '200000' },
       }],
-    }, 'base');
+    }, 'base', 'local', null, null, { swapMode: 'exactIn', request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: BASE_ETH, toToken: BASE_USDC, amount: '1000000000000000000', maxInputAmount: '1000000000000000000' }) });
 
     const logs = [];
     const cmds = buildTradingCommands({
@@ -926,14 +1168,23 @@ describe('WalletConnect execute support', () => {
     const quoteId = saveQuote({
       success: true,
       quotes: [{
-        aggregator: 'test',
-        inputMint: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+        aggregator: 'lifi',
+        inputMint: BASE_ETH,
         outputMint: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
         inAmount: '1000000000000000000',
         outAmount: '3000000000',
-        transaction: { to: '0xabc', data: '0x1234', value: '1000000000000000000', gas: '200000' },
+        transaction: { to: LIFI_ROUTER, data: '0x12345678', value: '1000000000000000000', gas: '200000' },
       }],
-    }, 'base', 'walletconnect');
+    }, 'base', 'walletconnect', null, null, {
+      swapMode: 'exactIn',
+      request: evmIntent({
+        walletAddress: '0x742d35Cc6bF4F3f4e0e3a8DD7e37ff4e4Be4E4B4',
+        fromToken: BASE_ETH,
+        toToken: BASE_USDC,
+        amount: '1000000000000000000',
+        maxInputAmount: '1000000000000000000',
+      }),
+    });
 
     const logs = [];
     const cmds = buildTradingCommands({
@@ -1057,14 +1308,23 @@ describe('Privy execute support', () => {
     const quoteId = saveQuote({
       success: true,
       quotes: [{
-        aggregator: 'test',
-        inputMint: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+        aggregator: 'lifi',
+        inputMint: BASE_ETH,
         outputMint: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
         inAmount: '1000000000000000000',
         outAmount: '3000000000',
-        transaction: { to: '0xRouter', data: '0xSwapData', value: '1000000000000000000', gas: '210000' },
+        transaction: { to: LIFI_ROUTER, data: '0x12345678', value: '1000000000000000000', gas: '210000' },
       }],
-    }, 'base', 'privy', { evm: 'wl_evm_1', solana: 'wl_sol_1' });
+    }, 'base', 'privy', { evm: 'wl_evm_1', solana: 'wl_sol_1' }, null, {
+      swapMode: 'exactIn',
+      request: evmIntent({
+        walletAddress: '0xPrivyAddr',
+        fromToken: BASE_ETH,
+        toToken: BASE_USDC,
+        amount: '1000000000000000000',
+        maxInputAmount: '1000000000000000000',
+      }),
+    });
 
     vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
@@ -1087,6 +1347,9 @@ describe('Privy execute support', () => {
         const body = opts?.body ? JSON.parse(opts.body) : {};
         if (body.method === 'eth_getTransactionCount') {
           return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+        }
+        if (body.method === 'eth_getCode') {
+          return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
         }
         if (body.method === 'eth_call') {
           return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' })) });
@@ -1171,23 +1434,26 @@ describe('Privy execute support', () => {
     const quoteId = saveQuote({
       success: true,
       quotes: [{
-        aggregator: 'test',
-        inputMint: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', // USDC (ERC-20, not native)
-        outputMint: '0xdAC17F958D2ee523a2206206994597C13D831ec7',
+        aggregator: 'lifi',
+        inputMint: BASE_USDC, // USDC (ERC-20, not native)
+        outputMint: OUT_TOKEN,
         inAmount: '1000000',
         outAmount: '990000',
         inputAmount: '1000000',
-        approvalAddress: '0xRouterApproval',
+        approvalAddress: LIFI_ROUTER,
         transaction: {
-          to: '0xRouter',
-          data: '0xSwapData',
+          to: LIFI_ROUTER,
+          data: '0x12345678',
           value: '0',
           gas: '210000',
           maxFeePerGas: '1000000',
           maxPriorityFeePerGas: '1000000',
         },
       }],
-    }, 'base', 'privy', { evm: 'wl_evm_1', solana: 'wl_sol_1' });
+    }, 'base', 'privy', { evm: 'wl_evm_1', solana: 'wl_sol_1' }, null, {
+      swapMode: 'exactIn',
+      request: evmIntent({ walletAddress: '0xPrivyAddr', fromToken: BASE_USDC, toToken: OUT_TOKEN }),
+    });
 
     const rpcCalls = [];
     vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
@@ -1212,6 +1478,9 @@ describe('Privy execute support', () => {
         rpcCalls.push(body.method);
         if (body.method === 'eth_getTransactionCount') {
           return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+        }
+        if (body.method === 'eth_getCode') {
+          return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
         }
         // eth_call for allowance check — return 0 (needs approval)
         if (body.method === 'eth_call') {
@@ -1359,6 +1628,39 @@ describe('quote handler rejects decimal amounts before API call', () => {
       chain: 'solana', from: 'So11111111111111111111111111111111111111112', to: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', amount: '0.005',
     })).rejects.toThrow('base units');
     expect(global.fetch).not.toHaveBeenCalled();
+
+    global.fetch = origFetch;
+  });
+});
+
+describe('exactOut --max-input requirement is EVM-only', () => {
+  it('base exactOut without --max-input is rejected before any API call', async () => {
+    const origFetch = global.fetch;
+    global.fetch = vi.fn();
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+
+    await expect(cmds.quote([], null, {}, {
+      chain: 'base', from: 'USDC', to: 'ETH', amount: '990000', 'swap-mode': 'exactOut',
+    })).rejects.toThrow(/requires --max-input/i);
+    expect(global.fetch).not.toHaveBeenCalled();
+
+    global.fetch = origFetch;
+  });
+
+  it('solana exactOut does NOT require --max-input (Solana has no EVM approval to scope)', async () => {
+    // The spend-ceiling guards live only in the EVM execute paths, so requiring
+    // the flag on Solana would break existing users for no security gain. The
+    // quote may still reject at a later stage (wallet/network), but it must not
+    // reject on the missing --max-input flag the way an EVM exactOut quote does.
+    const origFetch = global.fetch;
+    global.fetch = vi.fn().mockRejectedValue(new Error('network stubbed off'));
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+
+    await expect(cmds.quote([], null, {}, {
+      chain: 'solana', from: 'SOL', to: 'USDC', amount: '1000000', 'swap-mode': 'exactOut',
+    })).rejects.not.toThrow(/requires --max-input/i);
 
     global.fetch = origFetch;
   });
@@ -2471,6 +2773,9 @@ describe('Relay aggregator: empty approvalAddress', () => {
       if (body.method === 'eth_getTransactionCount') {
         return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
       }
+      if (body.method === 'eth_getCode') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      }
       if (body.method === 'eth_call') {
         // Should NOT be hit for empty approvalAddress (no allowance check); succeed in case simulation runs.
         return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' })) });
@@ -2500,15 +2805,18 @@ describe('Relay aggregator: empty approvalAddress', () => {
       success: true,
       quotes: [{
         aggregator: 'relay',
-        inputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', // USDC
+        inputMint: BASE_USDC, // USDC
         outputMint: '11111111111111111111111111111111',
         inAmount: '10000000',
         outAmount: '50000000',
         approvalAddress: '', // Relay says no approval needed
-        transaction: { to: '0xRelayRouter', data: '0xswap', value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
+        transaction: { to: RELAY_ROUTER, data: '0x12345678', value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
         metadata: { requestId: 'relay-req-empty', isCrossChain: true, bridgeTool: 'relay' },
       }],
-    }, 'base', 'local', null, 'solana');
+    }, 'base', 'local', null, 'solana', {
+      swapMode: 'exactIn',
+      request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: BASE_USDC, toToken: '11111111111111111111111111111111', toChain: 'solana', amount: '10000000', maxInputAmount: '10000000' }),
+    });
 
     const logs = [];
     const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
@@ -2519,13 +2827,344 @@ describe('Relay aggregator: empty approvalAddress', () => {
     expect(logs.some(l => l.includes('Approval confirmed'))).toBe(false);
 
     // /execute was called exactly once (the swap), not twice (no approval tx)
-    const executeCalls = fetchCalls.filter(c => c.url.includes('trading-api') && c.url.endsWith('/execute'));
+    const executeCalls = fetchCalls.filter(c => c.url.includes('trading-api') && c.url.includes('/execute'));
     expect(executeCalls.length).toBe(1);
 
     // No allowance check (eth_call with the allowance selector 0xdd62ed3e)
     const allowanceCalls = fetchCalls.filter(c => c.method === 'eth_call'
       && c.body?.params?.[0]?.data?.startsWith('0xdd62ed3e'));
     expect(allowanceCalls.length).toBe(0);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+    vi.unstubAllGlobals();
+  });
+});
+
+describe('Swap target validation blocks a poisoned quote (security hardening)', () => {
+  it('does not broadcast when the swap target is an EOA (no contract code)', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const fetchCalls = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const body = opts?.body ? (() => { try { return JSON.parse(opts.body); } catch { return {}; } })() : {};
+      fetchCalls.push({ url: urlStr, method: body.method, body });
+      if (body.method === 'eth_getTransactionCount') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+      }
+      // Target carries NO contract code → an EOA, never a legit router.
+      if (body.method === 'eth_getCode') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' })) });
+      }
+      if (body.method === 'eth_call') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' })) });
+      }
+      if (urlStr.includes('trading-api')) {
+        return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: '0xShouldNotHappen', chainType: 'evm', broadcaster: 'test' })) });
+      }
+      return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    // Native ETH swap (no approval step), so the target check is the only gate.
+    const inAmount = '1000000000000000000';
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'lifi',
+        inputMint: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', // native ETH
+        outputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', // USDC
+        inAmount,
+        outAmount: '2500000000',
+        approvalAddress: '',
+        transaction: { to: '0x000000000000000000000000000000000000dEaD', data: '0xdeadbeef', value: inAmount, gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
+        metadata: {},
+      }],
+    }, 'base', 'local');
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/All quotes failed/i);
+
+    // The swap was never broadcast.
+    const executeCalls = fetchCalls.filter(c => c.url.includes('trading-api') && c.url.endsWith('/execute'));
+    expect(executeCalls.length).toBe(0);
+    // The failure names the target check.
+    expect(logs.some(l => l.includes('not a contract'))).toBe(true);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+    vi.unstubAllGlobals();
+  });
+
+  it('rejects an ERC-20 poisoned target before broadcasting any approval', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const fetchCalls = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const body = opts?.body ? (() => { try { return JSON.parse(opts.body); } catch { return {}; } })() : {};
+      fetchCalls.push({ url: urlStr, method: body.method, body });
+      if (body.method === 'eth_getTransactionCount') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+      }
+      // Swap target is a codeless EOA.
+      if (body.method === 'eth_getCode') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' })) });
+      }
+      if (body.method === 'eth_call') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' })) });
+      }
+      if (urlStr.includes('trading-api')) {
+        return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: '0xShouldNotHappen', chainType: 'evm', broadcaster: 'test' })) });
+      }
+      return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    // ERC-20 swap (USDC in) requiring approval, but the swap target is an EOA.
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'lifi',
+        inputMint: BASE_USDC, // USDC
+        outputMint: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+        inAmount: '5000000',
+        outAmount: '2000000000000000',
+        approvalAddress: '0x1231deb6f5749ef6ce6943a275a1d3e7486f4eae',
+        transaction: { to: '0x000000000000000000000000000000000000dEaD', data: '0xdeadbeef', value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
+        metadata: {},
+      }],
+    }, 'base', 'local');
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/All quotes failed/i);
+
+    // Nothing broadcast to the Trading API — crucially, NO approval tx either,
+    // which proves the target guard runs before the approval step.
+    const executeCalls = fetchCalls.filter(c => c.url.includes('trading-api') && c.url.endsWith('/execute'));
+    expect(executeCalls.length).toBe(0);
+    // No allowance check was even attempted (guard fired before the approval block).
+    const allowanceCalls = fetchCalls.filter(c => c.method === 'eth_call' && c.body?.params?.[0]?.data?.startsWith('0xdd62ed3e'));
+    expect(allowanceCalls.length).toBe(0);
+    expect(logs.some(l => l.includes('not a contract'))).toBe(true);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+    vi.unstubAllGlobals();
+  });
+
+  it('does not broadcast when the quote input exceeds the persisted request intent', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const fetchCalls = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const body = opts?.body ? (() => { try { return JSON.parse(opts.body); } catch { return {}; } })() : {};
+      fetchCalls.push({ url: urlStr, method: body.method, body });
+      if (body.method === 'eth_getTransactionCount') return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+      // Target IS a real contract, so the target guard passes and the intent check is what fires.
+      if (body.method === 'eth_getCode') return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      if (body.method === 'eth_call') return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' })) });
+      if (urlStr.includes('trading-api')) return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: '0xShouldNotHappen', chainType: 'evm', broadcaster: 'test' })) });
+      return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    const USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
+    const OUT = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+    const ROUTER = LIFI_ROUTER;
+    // The user asked to sell 1 USDC; the (compromised) quote claims 5 USDC of input,
+    // which would enlarge both the scoped approval and any native value.
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'lifi',
+        inputMint: USDC,
+        outputMint: OUT,
+        inAmount: '5000000',
+        inputAmount: '5000000',
+        outAmount: '2000000000000000',
+        approvalAddress: ROUTER,
+        transaction: { to: ROUTER, data: '0xdeadbeef', value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
+        metadata: {},
+      }],
+    }, 'base', 'local', null, null, {
+      swapMode: 'exactIn',
+      request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: USDC, toToken: OUT }),
+    });
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/All quotes failed/i);
+
+    // Nothing broadcast, and no allowance check — the intent guard fired first.
+    const executeCalls = fetchCalls.filter(c => c.url.includes('trading-api') && c.url.endsWith('/execute'));
+    expect(executeCalls.length).toBe(0);
+    const allowanceCalls = fetchCalls.filter(c => c.method === 'eth_call' && c.body?.params?.[0]?.data?.startsWith('0xdd62ed3e'));
+    expect(allowanceCalls.length).toBe(0);
+    expect(logs.some(l => /does not match the requested input/i.test(l))).toBe(true);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+    vi.unstubAllGlobals();
+  });
+
+  it('does not broadcast an approval when the spender is an over-length (calldata-shifting) value', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const fetchCalls = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const body = opts?.body ? (() => { try { return JSON.parse(opts.body); } catch { return {}; } })() : {};
+      fetchCalls.push({ url: urlStr, method: body.method, body });
+      if (body.method === 'eth_getTransactionCount') return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+      if (body.method === 'eth_getCode') return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      if (body.method === 'eth_call') return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' })) });
+      if (urlStr.includes('trading-api')) return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: '0xShouldNotHappen', chainType: 'evm', broadcaster: 'test' })) });
+      return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    const USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
+    const OUT = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+    const ROUTER = LIFI_ROUTER;
+    // 0x + 128 hex chars: decodes to (attacker, MAX) if concatenated unchecked.
+    const overlengthSpender = '0x' + '00'.repeat(12) + '22'.repeat(20) + 'f'.repeat(64);
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'lifi',
+        inputMint: USDC,
+        outputMint: OUT,
+        inAmount: '1000000',
+        inputAmount: '1000000',
+        outAmount: '2000000000000000',
+        approvalAddress: overlengthSpender,
+        transaction: { to: ROUTER, data: '0xdeadbeef', value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
+        metadata: {},
+      }],
+    }, 'base', 'local', null, null, {
+      swapMode: 'exactIn',
+      request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: USDC, toToken: OUT }),
+    });
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/All quotes failed/i);
+
+    const executeCalls = fetchCalls.filter(c => c.url.includes('trading-api') && c.url.endsWith('/execute'));
+    expect(executeCalls.length).toBe(0);
+    expect(logs.some(l => /not a valid 20-byte address/i.test(l))).toBe(true);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+    vi.unstubAllGlobals();
+  });
+
+  it('does not broadcast a same-chain swap whose calldata is a bare ERC-20 transfer', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const fetchCalls = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const body = opts?.body ? (() => { try { return JSON.parse(opts.body); } catch { return {}; } })() : {};
+      fetchCalls.push({ url: urlStr, method: body.method, body });
+      if (body.method === 'eth_getTransactionCount') return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+      // Target IS a real contract (a sibling token), so target + intent guards pass
+      // and the bare-transfer calldata shape is what blocks it.
+      if (body.method === 'eth_getCode') return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      if (body.method === 'eth_call') return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' })) });
+      if (urlStr.includes('trading-api')) return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: '0xShouldNotHappen', chainType: 'evm', broadcaster: 'test' })) });
+      return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    const USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
+    const WETH = '0x4200000000000000000000000000000000000006'; // sibling token, != inputMint
+    const OUT = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+    // A poisoned quote: to = WETH, data = transfer(attacker, ...) — a direct
+    // drain of a token the wallet holds, disguised as a swap.
+    const transferCalldata = '0xa9059cbb' + '00'.repeat(12) + '22'.repeat(20) + 'f'.repeat(64);
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'lifi',
+        inputMint: USDC,
+        outputMint: OUT,
+        inAmount: '1000000',
+        inputAmount: '1000000',
+        outAmount: '2000000000000000',
+        approvalAddress: '', // native-style: no approval, so the calldata guard is the gate
+        transaction: { to: WETH, data: transferCalldata, value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
+        metadata: {},
+      }],
+    }, 'base', 'local', null, null, {
+      swapMode: 'exactIn',
+      request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: USDC, toToken: OUT }),
+    });
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/All quotes failed/i);
+
+    const executeCalls = fetchCalls.filter(c => c.url.includes('trading-api') && c.url.endsWith('/execute'));
+    expect(executeCalls.length).toBe(0);
+    expect(logs.some(l => /bare ERC-20 transfer/i.test(l))).toBe(true);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+    vi.unstubAllGlobals();
+  });
+
+  it('skips a malformed zero-input quote instead of broadcasting a zero-amount approval', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const fetchCalls = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const body = opts?.body ? (() => { try { return JSON.parse(opts.body); } catch { return {}; } })() : {};
+      fetchCalls.push({ url: urlStr, method: body.method, body });
+      if (body.method === 'eth_getTransactionCount') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+      }
+      // Target IS a contract (target check passes), so we reach the approval step.
+      if (body.method === 'eth_getCode') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      }
+      if (body.method === 'eth_call') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x0000000000000000000000000000000000000000000000000000000000000000' })) });
+      }
+      if (urlStr.includes('trading-api')) {
+        return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: '0xShouldNotHappen', chainType: 'evm', broadcaster: 'test' })) });
+      }
+      return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    // Malformed ERC-20 quote: no input amount.
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'lifi',
+        inputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', // USDC
+        outputMint: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+        inAmount: '0',
+        inputAmount: '0',
+        outAmount: '2000000000000000',
+        approvalAddress: '0x1231deb6f5749ef6ce6943a275a1d3e7486f4eae',
+        transaction: { to: '0x1231deb6f5749ef6ce6943a275a1d3e7486f4eae', data: '0xdeadbeef', value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
+        metadata: {},
+      }],
+    }, 'base', 'local', null, null, {
+      swapMode: 'exactIn',
+      request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: BASE_USDC, toToken: BASE_ETH, amount: '0', maxInputAmount: '0' }),
+    });
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/All quotes failed/i);
+
+    // No zero-amount approve() broadcast.
+    const executeCalls = fetchCalls.filter(c => c.url.includes('trading-api') && c.url.endsWith('/execute'));
+    expect(executeCalls.length).toBe(0);
+    expect(logs.some(l => l.includes('zero input amount'))).toBe(true);
 
     delete process.env.NANSEN_WALLET_PASSWORD;
     vi.unstubAllGlobals();
@@ -2837,6 +3476,9 @@ describe('Relay aggregator: EVM execute forwards requestId', () => {
       if (body.method === 'eth_getTransactionCount') {
         return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
       }
+      if (body.method === 'eth_getCode') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      }
       if (body.method === 'eth_call') {
         return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' })) });
       }
@@ -2870,10 +3512,13 @@ describe('Relay aggregator: EVM execute forwards requestId', () => {
         inAmount: '10000000',
         outAmount: '50000000',
         approvalAddress: '', // skip approval
-        transaction: { to: '0xRelayRouter', data: '0xswap', value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
+        transaction: { to: RELAY_ROUTER, data: '0x12345678', value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
         metadata: { requestId: 'relay-evm-req', isCrossChain: true, bridgeTool: 'relay' },
       }],
-    }, 'base', 'local', null, 'solana');
+    }, 'base', 'local', null, 'solana', {
+      swapMode: 'exactIn',
+      request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: BASE_USDC, toToken: '11111111111111111111111111111111', toChain: 'solana', amount: '10000000', maxInputAmount: '10000000' }),
+    });
 
     const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
     try { await cmds.execute([], null, {}, { quote: quoteId }); } catch { /* may fail later, ok */ }
@@ -2902,6 +3547,9 @@ describe('Relay aggregator: EVM execute forwards requestId', () => {
       if (body.method === 'eth_getTransactionCount') {
         return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
       }
+      if (body.method === 'eth_getCode') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      }
       if (body.method === 'eth_call') {
         return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' })) });
       }
@@ -2929,15 +3577,18 @@ describe('Relay aggregator: EVM execute forwards requestId', () => {
       success: true,
       quotes: [{
         aggregator: 'relay',
-        inputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+        inputMint: BASE_USDC,
         outputMint: '11111111111111111111111111111111',
         inAmount: '10000000',
         outAmount: '50000000',
         approvalAddress: '',
-        transaction: { to: '0xRelayRouter', data: '0xswap', value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
+        transaction: { to: RELAY_ROUTER, data: '0x12345678', value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
         metadata: { requestId: 'relay-evm-gas-req', isCrossChain: true, bridgeTool: 'relay', steps: [{ kind: 'evm-tx' }] },
       }],
-    }, 'base', 'local', null, 'solana');
+    }, 'base', 'local', null, 'solana', {
+      swapMode: 'exactIn',
+      request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: BASE_USDC, toToken: '11111111111111111111111111111111', toChain: 'solana', amount: '10000000', maxInputAmount: '10000000' }),
+    });
 
     const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
     try { await cmds.execute([], null, { gasless: true }, { quote: quoteId }); } catch { /* ok */ }
@@ -3266,6 +3917,18 @@ describe('Relay aggregator: --aggregator filter on trade quote', () => {
 
     delete process.env.NANSEN_WALLET_PASSWORD;
   });
+
+  it('rejects exactOut with --auto-slippage but no --max-auto-slippage', async () => {
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    // Uncapped auto-slippage leaves the exactOut approval buffer unbounded → require a cap.
+    await expect(cmds.quote([], null, { 'auto-slippage': true }, {
+      chain: 'base',
+      from: 'USDC',
+      to: 'ETH',
+      amount: '1000000',
+      'swap-mode': 'exactOut',
+    })).rejects.toThrow(/max-auto-slippage/i);
+  });
 });
 
 describe('Relay aggregator: bridge-status 502 handling', () => {
@@ -3319,5 +3982,161 @@ describe('Relay aggregator: bridge-status 502 handling', () => {
     expect(caught.details).toBeUndefined();
 
     global.fetch = origFetch;
+  });
+});
+
+// ===========================================================================
+// exactOut maximum-input enforcement (adversarial)
+//
+// For an exactOut swap the API chooses the INPUT. Each test below crafts a
+// quote whose requested OUTPUT is exactly what was asked, but whose INPUT
+// (5,000,000) overshoots the persisted maximum input (1,000,000 — the spend
+// ceiling). The execute path must refuse to sign BEFORE any approval,
+// transaction signing, or broadcast — for native and ERC-20 inputs, across all
+// three EVM signing paths (local, Privy, WalletConnect).
+// ===========================================================================
+describe('exactOut max-input enforcement (adversarial)', () => {
+  const ERC20_IN = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'; // USDC on Base
+  const NATIVE_IN = BASE_ETH;
+  const ROUTER = LIFI_ROUTER;
+
+  // Requested output is exactly 990000 (matches request.amount); input is 5x the cap.
+  function overpayingExactOutQuote(inputMint, native) {
+    const q = {
+      aggregator: 'lifi',
+      inputMint,
+      outputMint: OUT_TOKEN,
+      inAmount: '5000000',
+      inputAmount: '5000000',
+      outAmount: '990000',
+      transaction: { to: ROUTER, data: '0xdeadbeef', value: native ? '5000000' : '0', gas: '210000' },
+    };
+    if (!native) q.approvalAddress = ROUTER;
+    return q;
+  }
+
+  function exactOutRequestMeta(inputMint, walletAddress) {
+    return {
+      swapMode: 'exactOut',
+      slippage: 0.03,
+      request: {
+        chain: 'base', toChain: null, walletAddress, recipient: null,
+        fromToken: inputMint, toToken: OUT_TOKEN,
+        swapMode: 'exactOut', amount: '990000', maxInputAmount: '1000000',
+      },
+    };
+  }
+
+  // Answers eth_getCode (so the target check passes and execution reaches the
+  // cap guard) and records every fetch so we can prove /execute (broadcast) and
+  // privy.io POST (sign) never happened. A /execute call would mean funds moved.
+  function trackingFetch(calls) {
+    return vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      calls.push({ url: urlStr, method: opts?.method });
+      let body = {};
+      try { body = opts?.body ? JSON.parse(opts.body) : {}; } catch { /* non-JSON */ }
+      if (urlStr.includes('privy.io') && opts?.method === 'GET') {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ id: 'wl_evm_1', address: '0xPrivyAddr', chain_type: 'ethereum' }) });
+      }
+      if (body.method === 'eth_getCode') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      }
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })), json: () => Promise.resolve({}) });
+    });
+  }
+
+  const noBroadcast = (calls) => expect(calls.some(c => c.url.includes('/execute'))).toBe(false);
+  const noPrivySign = (calls) => expect(calls.some(c => c.url.includes('privy.io') && c.method === 'POST')).toBe(false);
+
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); delete process.env.NANSEN_WALLET_PASSWORD; });
+
+  for (const native of [false, true]) {
+    const kind = native ? 'native' : 'ERC-20';
+    const inputMint = native ? NATIVE_IN : ERC20_IN;
+
+    it(`local wallet: refuses ${kind} exactOut when input exceeds the max, without signing or broadcasting`, async () => {
+      createWallet('default', 'testpass');
+      process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+      const calls = [];
+      vi.stubGlobal('fetch', trackingFetch(calls));
+
+      const quoteId = saveQuote({ success: true, quotes: [overpayingExactOutQuote(inputMint, native)] },
+        'base', 'local', null, null, exactOutRequestMeta(inputMint, showWallet('default').evm));
+
+      const logs = [];
+      const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+
+      await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/exceeds your maximum input/i);
+      noBroadcast(calls);
+      // Never reached the approval/broadcast stage.
+      expect(logs.some(l => /Approval required|Sending approval|Broadcasting/.test(l))).toBe(false);
+    });
+
+    it(`Privy: refuses ${kind} exactOut when input exceeds the max, without signing or broadcasting`, async () => {
+      process.env.PRIVY_APP_ID = 'test-app-id';
+      process.env.PRIVY_APP_SECRET = 'test-secret';
+      const calls = [];
+      vi.stubGlobal('fetch', trackingFetch(calls));
+
+      const quoteId = saveQuote({ success: true, quotes: [overpayingExactOutQuote(inputMint, native)] },
+        'base', 'privy', { evm: 'wl_evm_1', solana: 'wl_sol_1' }, null, exactOutRequestMeta(inputMint, '0xPrivyAddr'));
+
+      const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+
+      await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/exceeds your maximum input/i);
+      noPrivySign(calls); // no signEvmTransaction (privy.io POST)
+      noBroadcast(calls); // no /execute broadcast
+
+      delete process.env.PRIVY_APP_ID;
+      delete process.env.PRIVY_APP_SECRET;
+    });
+
+    it(`WalletConnect: refuses ${kind} exactOut when input exceeds the max, without approving or sending`, async () => {
+      vi.spyOn(wcTrading, 'getWalletConnectAddress').mockResolvedValue('0x742d35Cc6bF4F3f4e0e3a8DD7e37ff4e4Be4E4B4');
+      const approvalSpy = vi.spyOn(wcTrading, 'sendApprovalViaWalletConnect').mockResolvedValue({ txHash: '0xshouldnothappen' });
+      const sendSpy = vi.spyOn(wcTrading, 'sendTransactionViaWalletConnect').mockResolvedValue({ txHash: '0xshouldnothappen' });
+      const calls = [];
+      vi.stubGlobal('fetch', trackingFetch(calls));
+
+      const quoteId = saveQuote({ success: true, quotes: [overpayingExactOutQuote(inputMint, native)] },
+        'base', 'walletconnect', null, null, exactOutRequestMeta(inputMint, '0x742d35Cc6bF4F3f4e0e3a8DD7e37ff4e4Be4E4B4'));
+
+      const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+
+      await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/exceeds your maximum input/i);
+      expect(approvalSpy).not.toHaveBeenCalled();
+      expect(sendSpy).not.toHaveBeenCalled();
+      noBroadcast(calls);
+    });
+  }
+
+  it('local wallet: refuses to sign a quote built for a different wallet (signer binding)', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    const calls = [];
+    vi.stubGlobal('fetch', trackingFetch(calls));
+
+    // request.walletAddress is a fixed address that will NOT match the freshly
+    // generated local wallet — as if the default wallet changed since quoting.
+    const quoteId = saveQuote(
+      { success: true, quotes: [{
+        aggregator: 'lifi', inputMint: ERC20_IN, outputMint: OUT_TOKEN,
+        inAmount: '1000000', inputAmount: '1000000', outAmount: '990000',
+        approvalAddress: ROUTER, transaction: { to: ROUTER, data: '0xdeadbeef', value: '0', gas: '210000' },
+      }] },
+      'base', 'local', null, null,
+      { swapMode: 'exactIn', slippage: 0.03, request: {
+        chain: 'base', toChain: null, walletAddress: '0x000000000000000000000000000000000000dEaD',
+        recipient: null, fromToken: ERC20_IN, toToken: OUT_TOKEN,
+        swapMode: 'exactIn', amount: '1000000', maxInputAmount: '1000000',
+      } });
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+
+    await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/built for wallet .* but the signer is/i);
+    noBroadcast(calls);
+    expect(logs.some(l => /Approval required|Sending approval|Broadcasting/.test(l))).toBe(false);
   });
 });

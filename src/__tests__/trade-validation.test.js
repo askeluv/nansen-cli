@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { validateQuoteInput, fetchNativeBalance, fetchTokenBalance, validateBalance, resolvePercentAmount, validateGasBalance, GASLESS_MIN_TRADE_USD } from '../trade-validation.js';
+import { validateQuoteInput, fetchNativeBalance, fetchTokenBalance, validateBalance, resolvePercentAmount, validateGasBalance, GASLESS_MIN_TRADE_USD, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertInputWithinMax, assertSwapCalldataNotBareTransfer, MAX_UINT256 } from '../trade-validation.js';
 
 describe('validateQuoteInput', () => {
   const validSolana = {
@@ -1062,5 +1062,314 @@ describe('quote handler gas validation integration', () => {
       'amount-unit': 'token',
       wallet: 'test-wallet',
     })).rejects.toThrow(/Insufficient SOL for gas/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ERC-20 approval calldata hardening
+//
+// A swap quote supplies the approval spender and (via the input amount) the
+// allowance verbatim. These are concatenated into approve() calldata, so an
+// over-length spender or an unbounded amount could reshape the ABI word layout
+// and turn a scoped approval into approve(attacker, MAX). encodeApproveCalldata
+// is the single choke point every signing path uses; it must fail closed.
+// ---------------------------------------------------------------------------
+
+const VALID_SPENDER = '0x1111111254eeb25477b68fb85ed929f73a960582';
+
+// Decode approve(address,uint256) calldata into its two 32-byte ABI words.
+function decodeApprove(data) {
+  expect(data.slice(0, 10)).toBe('0x095ea7b3');
+  const body = data.slice(10);
+  expect(body.length).toBe(128); // exactly two 32-byte words
+  const spenderWord = body.slice(0, 64);
+  const amountWord = body.slice(64, 128);
+  return {
+    spender: '0x' + spenderWord.slice(24), // low 20 bytes of the first word
+    spenderWord,
+    amount: BigInt('0x' + amountWord),
+  };
+}
+
+describe('assertValidApprovalSpender', () => {
+  it('accepts a well-formed 20-byte address', () => {
+    expect(() => assertValidApprovalSpender(VALID_SPENDER)).not.toThrow();
+  });
+
+  it('rejects empty / undefined / zero address', () => {
+    expect(() => assertValidApprovalSpender('')).toThrow(/empty or the zero address/i);
+    expect(() => assertValidApprovalSpender(undefined)).toThrow(/empty or the zero address/i);
+    expect(() => assertValidApprovalSpender('0x0000000000000000000000000000000000000000')).toThrow(/empty or the zero address/i);
+  });
+
+  it('rejects an over-length spender (the calldata-shifting attack vector)', () => {
+    // 0x + 128 hex chars: a crafted value that, left unchecked, would occupy two
+    // ABI words — attacker in word 0, MAX in word 1 — with the scoped amount
+    // pushed into ignored trailing calldata.
+    const attacker = '22'.repeat(20);
+    const oversized = '0x' + '00'.repeat(12) + attacker + 'f'.repeat(64);
+    expect(() => assertValidApprovalSpender(oversized)).toThrow(/not a valid 20-byte address/i);
+  });
+
+  it('rejects a too-short spender and non-hex chars', () => {
+    expect(() => assertValidApprovalSpender('0x1234')).toThrow(/not a valid 20-byte address/i);
+    expect(() => assertValidApprovalSpender('0xRouterApproval')).toThrow(/not a valid 20-byte address/i);
+  });
+});
+
+describe('encodeApproveCalldata', () => {
+  it('encodes a scoped approval to exactly 68 bytes with correct words', () => {
+    const data = encodeApproveCalldata(VALID_SPENDER, 1000000n);
+    expect(data.length).toBe(2 + 8 + 64 + 64); // 0x + selector + 2 words
+    const { spender, amount } = decodeApprove(data);
+    expect(spender.toLowerCase()).toBe(VALID_SPENDER.toLowerCase());
+    expect(amount).toBe(1000000n);
+  });
+
+  it('refuses an over-length spender rather than producing approve(attacker, MAX)', () => {
+    // The core exploit: a 130-char spender whose bytes decode to
+    // (attacker, MAX_UINT256), with the intended amount as trailing calldata.
+    const attacker = '0x' + '00'.repeat(12) + '22'.repeat(20);
+    const craftedSpender = attacker + 'f'.repeat(64); // 0x + 128 hex chars
+    expect(() => encodeApproveCalldata(craftedSpender, 1000000n)).toThrow(/not a valid 20-byte address/i);
+  });
+
+  it('refuses MAX_UINT256 (unlimited) and anything above it', () => {
+    expect(() => encodeApproveCalldata(VALID_SPENDER, MAX_UINT256)).toThrow(/unlimited/i);
+    expect(() => encodeApproveCalldata(VALID_SPENDER, MAX_UINT256 + 1n)).toThrow(/unlimited/i);
+    // Just below MAX is allowed (bounded) and still encodes to 68 bytes.
+    const data = encodeApproveCalldata(VALID_SPENDER, MAX_UINT256 - 1n);
+    expect(data.length).toBe(138);
+    expect(decodeApprove(data).amount).toBe(MAX_UINT256 - 1n);
+  });
+
+  it('refuses zero, negative, and non-integer amounts', () => {
+    expect(() => encodeApproveCalldata(VALID_SPENDER, 0n)).toThrow(/must be positive/i);
+    expect(() => encodeApproveCalldata(VALID_SPENDER, -5n)).toThrow(/must be positive/i);
+    expect(() => encodeApproveCalldata(VALID_SPENDER, '1.5')).toThrow(/not an integer/i);
+    expect(() => encodeApproveCalldata(VALID_SPENDER, '1.5e6')).toThrow(/not an integer/i);
+  });
+
+  it('enforces the request-intent cap (maxAllowance)', () => {
+    // exactly at the cap is fine
+    expect(() => encodeApproveCalldata(VALID_SPENDER, 1000n, { maxAllowance: 1000n })).not.toThrow();
+    // one unit over the cap is refused
+    expect(() => encodeApproveCalldata(VALID_SPENDER, 1001n, { maxAllowance: 1000n })).toThrow(/exceeds the request/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Quote vs. request-intent revalidation
+//
+// saveQuote persists what the user asked for; the execute path revalidates the
+// API's quote against it so a compromised quote can't inflate the input (and
+// therefore the scoped approval and native value) past the user's intent.
+// ---------------------------------------------------------------------------
+describe('assertQuoteMatchesRequest', () => {
+  const USDC = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
+  const USDT = '0xdAC17F958D2ee523a2206206994597C13D831ec7';
+
+  const request = {
+    chain: 'base',
+    walletAddress: '0xWallet',
+    fromToken: USDC,
+    toToken: USDT,
+    swapMode: 'exactIn',
+    amount: '1000000',
+  };
+  const okQuote = { inputMint: USDC, outputMint: USDT, inputAmount: '1000000', inAmount: '1000000', outAmount: '990000' };
+
+  it('passes when the quote matches the request', () => {
+    expect(assertQuoteMatchesRequest(request, okQuote, { chain: 'base' })).toEqual({ skipped: false });
+  });
+
+  it('skips (does not throw) when no request intent was persisted', () => {
+    expect(assertQuoteMatchesRequest(undefined, okQuote, { chain: 'base' })).toEqual({ skipped: true });
+  });
+
+  it('rejects an inflated exactIn input (the core spend-binding)', () => {
+    const inflated = { ...okQuote, inputAmount: '5000000', inAmount: '5000000' };
+    expect(() => assertQuoteMatchesRequest(request, inflated, { chain: 'base' })).toThrow(/input amount .* does not match/i);
+  });
+
+  it('is case-insensitive on EVM token addresses', () => {
+    const mixed = { ...okQuote, inputMint: USDC.toLowerCase(), outputMint: USDT.toLowerCase() };
+    expect(() => assertQuoteMatchesRequest(request, mixed, { chain: 'base' })).not.toThrow();
+  });
+
+  it('rejects a swapped-in sell token', () => {
+    const poisoned = { ...okQuote, inputMint: USDT };
+    expect(() => assertQuoteMatchesRequest(request, poisoned, { chain: 'base' })).toThrow(/sell token .* does not match/i);
+  });
+
+  it('rejects a mismatched buy token', () => {
+    const poisoned = { ...okQuote, outputMint: '0xBEEF00000000000000000000000000000000BEEF' };
+    expect(() => assertQuoteMatchesRequest(request, poisoned, { chain: 'base' })).toThrow(/buy token .* does not match/i);
+  });
+
+  it('rejects a chain mismatch', () => {
+    expect(() => assertQuoteMatchesRequest(request, okQuote, { chain: 'solana' })).toThrow(/chain .* does not match/i);
+  });
+
+  it('binds the requested output for exactOut (at-least, not exact)', () => {
+    // exactOut needs a persisted max input (the sole input cap) or it fails closed.
+    // slippage:0 isolates this test from the input buffer — input==cap passes.
+    const req = { ...request, swapMode: 'exactOut', amount: '990000', maxInputAmount: '1000000' };
+    expect(() => assertQuoteMatchesRequest(req, okQuote, { chain: 'base', slippage: 0 })).not.toThrow();
+    // MORE output than requested is upside (input is capped separately) — allowed.
+    const moreOut = { ...okQuote, outAmount: '990001' };
+    expect(() => assertQuoteMatchesRequest(req, moreOut, { chain: 'base', slippage: 0 })).not.toThrow();
+    // LESS output than requested is a shortfall — rejected.
+    const shortfall = { ...okQuote, outAmount: '989999' };
+    expect(() => assertQuoteMatchesRequest(req, shortfall, { chain: 'base', slippage: 0 })).toThrow(/less than the requested output/i);
+  });
+
+  it('measures the exactOut spend ceiling against the slippage-buffered approval', () => {
+    // Regression: a quote whose RAW input equals the cap still overflows it once
+    // the exactOut slippage buffer is applied (1,000,000 @ 3% → 1,030,000). It
+    // must be refused here rather than passing and then being rejected by the
+    // approval encoder at signing time.
+    const req = { ...request, swapMode: 'exactOut', amount: '990000', maxInputAmount: '1000000' };
+    expect(() => assertQuoteMatchesRequest(req, okQuote, { chain: 'base', slippage: 0.03 }))
+      .toThrow(/exceeds your maximum input/i);
+    // Raise the cap to cover the buffered approval and the same quote passes.
+    const roomy = { ...req, maxInputAmount: '1030000' };
+    expect(() => assertQuoteMatchesRequest(roomy, okQuote, { chain: 'base', slippage: 0.03 })).not.toThrow();
+  });
+
+  it('binds the signer to the wallet the quote was built for', () => {
+    const req = { ...request, walletAddress: '0xAaAa000000000000000000000000000000000001' };
+    // Same address (case-insensitive on EVM) passes; a different signer is refused.
+    expect(() => assertQuoteMatchesRequest(req, okQuote, { chain: 'base', walletAddress: '0xaaaa000000000000000000000000000000000001' })).not.toThrow();
+    expect(() => assertQuoteMatchesRequest(req, okQuote, { chain: 'base', walletAddress: '0xBBBB000000000000000000000000000000000002' })).toThrow(/built for wallet .* but the signer is/i);
+    // No signer supplied (address unknown) → the check is skipped, not failed.
+    expect(() => assertQuoteMatchesRequest(req, okQuote, { chain: 'base' })).not.toThrow();
+  });
+
+  it('fails closed on an exactOut quote with no persisted maximum input', () => {
+    const req = { ...request, swapMode: 'exactOut', amount: '990000' }; // no maxInputAmount
+    expect(() => assertQuoteMatchesRequest(req, okQuote, { chain: 'base' })).toThrow(/no persisted maximum input/i);
+  });
+
+  it('rejects an exactOut quote whose input exceeds the persisted maximum', () => {
+    const req = { ...request, swapMode: 'exactOut', amount: '990000', maxInputAmount: '1000000' };
+    // Requested output is correct, but the API demands a larger input than the cap.
+    const overpay = { ...okQuote, inputAmount: '1500000', inAmount: '1500000' };
+    expect(() => assertQuoteMatchesRequest(req, overpay, { chain: 'base' })).toThrow(/exceeds your maximum input/i);
+  });
+
+  it('enforces the maximum input for exactIn too (defense in depth)', () => {
+    // request.amount already binds exactIn, but a tighter maxInputAmount still holds.
+    const req = { ...request, maxInputAmount: '500000' };
+    expect(() => assertQuoteMatchesRequest(req, okQuote, { chain: 'base' })).toThrow(/exceeds your maximum input/i);
+  });
+
+  it('fails closed when a bound field is missing from the quote', () => {
+    // Missing sell token, buy token, or the bound amount must reject, not skip.
+    expect(() => assertQuoteMatchesRequest(request, { ...okQuote, inputMint: undefined }, { chain: 'base' }))
+      .toThrow(/missing the sell-token/i);
+    expect(() => assertQuoteMatchesRequest(request, { ...okQuote, outputMint: undefined }, { chain: 'base' }))
+      .toThrow(/missing the buy-token/i);
+    expect(() => assertQuoteMatchesRequest(request, { ...okQuote, inputAmount: undefined, inAmount: undefined }, { chain: 'base' }))
+      .toThrow(/missing the input amount/i);
+    const outReq = { ...request, swapMode: 'exactOut', amount: '990000', maxInputAmount: '1000000' };
+    expect(() => assertQuoteMatchesRequest(outReq, { ...okQuote, outAmount: undefined, outputAmount: undefined }, { chain: 'base' }))
+      .toThrow(/missing the output amount/i);
+  });
+
+  it('compares the output token with the destination chain rules for cross-chain quotes', () => {
+    // EVM→Solana: source chain is 'base' but the output token is a case-sensitive
+    // Solana base58 address, so it must be compared with Solana (exact) rules,
+    // not source-chain (EVM, case-insensitive) rules.
+    const SOL_TOKEN = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+    const xchain = {
+      chain: 'base', toChain: 'solana', walletAddress: '0xWallet',
+      fromToken: USDC, toToken: SOL_TOKEN, swapMode: 'exactIn', amount: '1000000',
+    };
+    const q = { inputMint: USDC, outputMint: SOL_TOKEN, inputAmount: '1000000', inAmount: '1000000' };
+    // Exact match on the Solana output token passes.
+    expect(() => assertQuoteMatchesRequest(xchain, q, { chain: 'base' })).not.toThrow();
+    // A case-mangled Solana address is a *different* token and must be rejected
+    // (would have wrongly passed under source-chain case-insensitive rules).
+    const mangled = { ...q, outputMint: SOL_TOKEN.toLowerCase() };
+    expect(() => assertQuoteMatchesRequest(xchain, mangled, { chain: 'base' })).toThrow(/buy token .* does not match/i);
+  });
+});
+
+describe('assertInputWithinMax', () => {
+  const base = { inputAmount: '1000000', inAmount: '1000000' };
+
+  it('is a no-op for exactIn with no cap (request.amount already binds it)', () => {
+    expect(() => assertInputWithinMax({ swapMode: 'exactIn' }, base)).not.toThrow();
+    expect(() => assertInputWithinMax(undefined, base)).not.toThrow();
+  });
+
+  it('fails closed for exactOut without a persisted cap', () => {
+    expect(() => assertInputWithinMax({ swapMode: 'exactOut' }, base)).toThrow(/no persisted maximum input/i);
+  });
+
+  it('passes when the spend is at or below the cap and rejects above it', () => {
+    // slippage:0 → exactOut buffer is a no-op, so the raw input is the spend.
+    expect(() => assertInputWithinMax({ swapMode: 'exactOut', maxInputAmount: '1000000' }, base, 0)).not.toThrow();
+    expect(() => assertInputWithinMax({ swapMode: 'exactOut', maxInputAmount: '999999' }, base, 0)).toThrow(/exceeds your maximum input/i);
+  });
+
+  it('bounds the exactOut slippage-buffered approval, not the raw input', () => {
+    // Regression (exactOut ERC-20 + --max-input): raw input 1,000,000 at 3%
+    // slippage needs a 1,030,000 approval. A 1,000,000 cap must reject it here
+    // so it never reaches — and is rejected by — the approval encoder.
+    expect(() => assertInputWithinMax({ swapMode: 'exactOut', maxInputAmount: '1000000' }, base, 0.03))
+      .toThrow(/approval of 1030000 base units .* exceeds your maximum input \(1000000\)/i);
+    // A cap that covers the buffered approval passes.
+    expect(() => assertInputWithinMax({ swapMode: 'exactOut', maxInputAmount: '1030000' }, base, 0.03)).not.toThrow();
+    // With no slippage supplied it defaults to 3% (matching approvalAmountForSwap
+    // and the approval the execute path builds), so input==cap still overflows.
+    expect(() => assertInputWithinMax({ swapMode: 'exactOut', maxInputAmount: '1000000' }, base))
+      .toThrow(/exceeds your maximum input/i);
+  });
+
+  it('does not buffer exactIn — the raw input is the spend ceiling', () => {
+    expect(() => assertInputWithinMax({ swapMode: 'exactIn', maxInputAmount: '1000000' }, base, 0.03)).not.toThrow();
+    expect(() => assertInputWithinMax({ swapMode: 'exactIn', maxInputAmount: '999999' }, base, 0.03)).toThrow(/exceeds your maximum input/i);
+  });
+
+  it('fails closed on a missing or non-integer quote input when a cap is set', () => {
+    expect(() => assertInputWithinMax({ maxInputAmount: '1000000' }, {})).toThrow(/missing the input amount/i);
+    expect(() => assertInputWithinMax({ maxInputAmount: '1000000' }, { inAmount: '1.5' })).toThrow(/not an integer/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Same-chain swap-calldata shape guard
+//
+// A legitimate same-chain swap's outer call is a router method; a bare ERC-20
+// transfer/approve/transferFrom as the swap tx is a disguised drain payload.
+// (Callers scope this to same-chain swaps — bridges are excluded.)
+// ---------------------------------------------------------------------------
+describe('assertSwapCalldataNotBareTransfer', () => {
+  it('rejects a bare transfer / approve / transferFrom as the swap calldata', () => {
+    // transfer(address,uint256)
+    expect(() => assertSwapCalldataNotBareTransfer('0xa9059cbb' + '0'.repeat(128))).toThrow(/bare ERC-20 transfer/i);
+    // approve(address,uint256)
+    expect(() => assertSwapCalldataNotBareTransfer('0x095ea7b3' + '0'.repeat(128))).toThrow(/bare ERC-20 approve/i);
+    // transferFrom(address,address,uint256)
+    expect(() => assertSwapCalldataNotBareTransfer('0x23b872dd' + '0'.repeat(192))).toThrow(/bare ERC-20 transferFrom/i);
+  });
+
+  it('is case-insensitive on the selector', () => {
+    expect(() => assertSwapCalldataNotBareTransfer('0xA9059CBB' + '0'.repeat(128))).toThrow(/bare ERC-20 transfer/i);
+  });
+
+  it('allows a router/aggregator swap selector', () => {
+    // e.g. an aggregator execute/swap selector — not on the denylist.
+    expect(() => assertSwapCalldataNotBareTransfer('0x12aa3caf' + '0'.repeat(200))).not.toThrow();
+    expect(() => assertSwapCalldataNotBareTransfer('0xdeadbeef' + '0'.repeat(8))).not.toThrow();
+  });
+
+  it('no-ops on absent or too-short calldata (e.g. a plain value transfer)', () => {
+    expect(() => assertSwapCalldataNotBareTransfer(undefined)).not.toThrow();
+    expect(() => assertSwapCalldataNotBareTransfer('')).not.toThrow();
+    expect(() => assertSwapCalldataNotBareTransfer('0x')).not.toThrow();
+    expect(() => assertSwapCalldataNotBareTransfer('0xa905')).not.toThrow(); // < 4 bytes
   });
 });

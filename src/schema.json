@@ -1583,6 +1583,10 @@
             "max-auto-slippage": {
               "type": "string",
               "description": "Upper bound applied when --auto-slippage is enabled, as a decimal between 0 and 1 (e.g. 0.03 for 3%)."
+            },
+            "max-input": {
+              "type": "string",
+              "description": "exactOut only: hard ceiling on the sell-token spend, in base units. Required for EVM (Base) exactOut and optional on Solana (which has no ERC-20 approval to scope). Measured against the slippage-buffered approval (input + slippage), not the bare quote input, so it matches the amount that can actually leave the wallet. Persisted with the quote and enforced before any approval or signing — a quote whose buffered approval exceeds it is refused."
             }
           },
           "prerequisites": [

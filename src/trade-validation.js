@@ -396,3 +396,444 @@ export async function fetchTokenBalance(chain, tokenAddress, walletAddress, deci
     return null;
   }
 }
+
+// ============= ERC-20 approval calldata (hardened) =============
+
+// uint256 ceiling. An allowance must be strictly below this: MAX_UINT256 itself
+// is the "unlimited" sentinel we refuse to sign, and anything larger cannot
+// encode in a 32-byte ABI word without overflowing into adjacent calldata.
+export const MAX_UINT256 = (1n << 256n) - 1n;
+
+// ERC-20 approve(address spender, uint256 amount) selector.
+const APPROVE_SELECTOR = '0x095ea7b3';
+
+/**
+ * Validate that an approval spender is a well-formed, non-zero 20-byte EVM
+ * address. A quote supplies this verbatim and it is concatenated into approval
+ * calldata; anything other than `0x` + exactly 40 hex chars must be rejected
+ * before encoding, because an over-length value would silently shift the ABI
+ * word layout (turning a scoped approval into `approve(attacker, huge)`).
+ *
+ * @param {string} spender
+ */
+export function assertValidApprovalSpender(spender) {
+  if (!spender || /^0x0+$/i.test(spender)) {
+    throw new Error(
+      `Approval spender is empty or the zero address (${spender ?? 'undefined'}). Refusing to sign an approval.`,
+    );
+  }
+  if (typeof spender !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(spender)) {
+    throw new Error(
+      `Approval spender is not a valid 20-byte address (${spender}). Refusing to sign an approval.`,
+    );
+  }
+}
+
+/**
+ * Encode `approve(spender, amount)` calldata with strict, defense-in-depth
+ * bounds. This is the single encoder every signing path (local, Privy,
+ * WalletConnect) must use, so no boundary can construct an under-validated
+ * approval.
+ *
+ * Guarantees on the returned string:
+ *   - spender is a valid 20-byte address (see assertValidApprovalSpender)
+ *   - amount is a positive integer strictly below MAX_UINT256 (never unlimited)
+ *   - amount does not exceed `maxAllowance` when the caller supplies one
+ *     (the user's persisted request intent — see assertQuoteMatchesRequest)
+ *   - the encoded calldata is exactly 68 bytes (4-byte selector + two 32-byte
+ *     words), asserted after encoding so any width surprise fails closed
+ *
+ * @param {string} spender - Approval target (quote.approvalAddress)
+ * @param {bigint|string|number} amount - Allowance in base units
+ * @param {object} [opts]
+ * @param {bigint|string|number} [opts.maxAllowance] - Hard cap from request intent
+ * @returns {string} 0x-prefixed approve() calldata (exactly 68 bytes)
+ */
+export function encodeApproveCalldata(spender, amount, { maxAllowance } = {}) {
+  assertValidApprovalSpender(spender);
+
+  let amt;
+  try {
+    amt = BigInt(amount);
+  } catch {
+    throw new Error(`Approval amount is not an integer (${amount}). Refusing to sign an approval.`);
+  }
+  if (amt <= 0n) {
+    throw new Error(`Approval amount must be positive (got ${amt}). Refusing to sign an approval.`);
+  }
+  if (amt >= MAX_UINT256) {
+    throw new Error(
+      `Approval amount ${amt} is at or above MAX_UINT256 (unlimited). Refusing to sign an unlimited approval.`,
+    );
+  }
+  if (maxAllowance != null) {
+    const cap = BigInt(maxAllowance);
+    if (amt > cap) {
+      throw new Error(
+        `Approval amount ${amt} exceeds the request's maximum input ${cap}. Refusing to sign.`,
+      );
+    }
+  }
+
+  const data = APPROVE_SELECTOR
+    + spender.slice(2).toLowerCase().padStart(64, '0')
+    + amt.toString(16).padStart(64, '0');
+
+  // 0x + 4-byte selector (8 hex) + two 32-byte words (128 hex) = 138 chars.
+  const EXPECTED_LEN = 2 + 8 + 64 + 64;
+  if (data.length !== EXPECTED_LEN) {
+    throw new Error(
+      `Encoded approval calldata is not 68 bytes (got ${(data.length - 2) / 2}). Refusing to sign.`,
+    );
+  }
+  return data;
+}
+
+/**
+ * Compute the ERC-20 allowance to grant for a swap — equivalently, the maximum
+ * number of sell-token base units that can leave the wallet for this trade.
+ *
+ * Scoping the approval to the trade amount (instead of an unlimited MAX approval)
+ * means a malicious or buggy quote can consume at most this one swap's input,
+ * never the wallet's full token balance. exactIn pulls exactly the input amount;
+ * exactOut can pull up to a slippage-bounded maximum, so that mode is buffered.
+ *
+ * This is the single definition of "what can leave the wallet": the approval
+ * encoder scopes ERC-20 approvals to it, and assertInputWithinMax validates it
+ * against the persisted spend ceiling. Keeping both on one function guarantees
+ * a quote that clears the ceiling check can always be signed (a refactor can't
+ * let the two drift onto different amounts).
+ *
+ * @param {object} p
+ * @param {bigint|string|number} p.inputAmount - The swap's input amount (base units)
+ * @param {string} [p.swapMode] - 'exactIn' (default) or 'exactOut'
+ * @param {number} [p.slippage] - Slippage fraction for the exactOut buffer (default 0.03)
+ * @returns {bigint} Allowance to approve, in base units
+ */
+export function approvalAmountForSwap({ inputAmount, swapMode, slippage }) {
+  // Clamp non-positive / malformed amounts to 0n — a negative like "-5000000",
+  // or a non-integer string like "1.5" / "1.5e6" that BigInt() rejects — so
+  // callers can reject via a single `approveAmt <= 0n` check and a negative or
+  // invalid value never reaches hex encoding (which would mangle the calldata).
+  let amt;
+  try {
+    amt = BigInt(inputAmount ?? 0);
+  } catch {
+    return 0n;
+  }
+  if (amt <= 0n) return 0n;
+  if (swapMode === 'exactOut') {
+    // Honour an explicit slippage of 0 (tightest approval); only fall back to the
+    // 3% default when slippage wasn't provided (undefined/NaN) or is negative.
+    const slip = Number.isFinite(slippage) && slippage >= 0 ? slippage : 0.03;
+    // Buffer by slippage using basis-point integer math to stay in BigInt.
+    // Both steps round UP by design: this buffer must cover the router's max
+    // input for exactOut, so over-approving by a sub-token unit is harmless but
+    // under-approving by even 1 unit would revert the swap. Rounding up on both
+    // the bps conversion and the division guarantees we never land below
+    // (1 + slip) * amount.
+    const bps = BigInt(Math.ceil((1 + slip) * 10000));
+    const buffered = (amt * bps + 9999n) / 10000n; // ceil division
+    // Overflow guard: a huge input × slippage can exceed the uint256 ceiling,
+    // which encodeApproveCalldata would reject with a cryptic throw. Return 0n
+    // so the caller's `approveAmt <= 0n` check surfaces it as a clear
+    // zero/invalid-input skip instead.
+    if (buffered >= MAX_UINT256) return 0n;
+    return buffered;
+  }
+  return amt;
+}
+
+// ============= Quote vs. request-intent revalidation =============
+
+/**
+ * Compare two token addresses for equality (case-insensitive on EVM, exact on
+ * Solana). Missing values never match.
+ */
+function tokensEqual(a, b, chain) {
+  if (!a || !b) return false;
+  if (chain === 'solana') return a === b;
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+/**
+ * Revalidate a quote against the immutable request intent that was persisted
+ * when the quote was fetched. The Trading API supplies the amounts, token
+ * pair, and transaction that the execute path signs; without this check a
+ * compromised or buggy API could inflate the input amount (and therefore the
+ * scoped approval and native value) and still pass the execute path's own
+ * self-consistent comparisons.
+ *
+ * Binds the fields we can verify from the quote:
+ *   - chain identity
+ *   - token pair (input == requested sell token, output == requested buy token)
+ *   - exactIn: input amount EQUALS the requested amount (the spend ceiling)
+ *   - exactOut: output amount EQUALS the requested amount (what you buy)
+ *   - input <= request.maxInputAmount in BOTH modes (the spend ceiling). For
+ *     exactOut this cap is the ONLY thing bounding the input, so it is
+ *     mandatory — a quote with no persisted cap is refused (see
+ *     assertInputWithinMax).
+ *
+ * Fails closed on a quote that is missing a field this check needs (input or
+ * output token address, or the bound amount): the field can't silently skip
+ * its comparison, because a compromised API omitting it would otherwise
+ * bypass the very binding meant to constrain it.
+ *
+ * Throws on a definitive mismatch. Callers run this inside the per-quote try so
+ * a mismatched quote falls through to the next candidate.
+ *
+ * @param {object|undefined} request - Persisted intent (quoteData.request)
+ * @param {object} quote - The quote being executed (allQuotes[i])
+ * @param {object} ctx
+ * @param {string} ctx.chain - Execute chain
+ * @param {string} [ctx.walletAddress] - The address that will actually sign at
+ *   execute time. When both this and request.walletAddress are present they must
+ *   match: the quote's transaction was built for a specific sender, so signing it
+ *   from a different wallet (e.g. the default wallet changed since quoting) is
+ *   refused. Omit when the signer isn't known (the check is then skipped).
+ * @param {number} [ctx.slippage] - Slippage fraction in effect (quoteData.slippage),
+ *   forwarded to assertInputWithinMax so the exactOut spend ceiling is measured
+ *   against the buffered approval, not the raw quote input.
+ * @returns {{ skipped: boolean }} skipped=true when no intent was persisted
+ */
+export function assertQuoteMatchesRequest(request, quote, { chain, walletAddress, slippage } = {}) {
+  // Quotes saved by an older CLI version (pre-intent) legitimately lack a
+  // request block. Rather than brick an in-flight quote across an upgrade, we
+  // skip and let the caller warn; quotes expire in 1 hour so this is transient.
+  if (!request) return { skipped: true };
+
+  if (request.chain && request.chain.toLowerCase() !== String(chain).toLowerCase()) {
+    throw new Error(
+      `Quote chain (${chain}) does not match the requested chain (${request.chain}). Refusing to sign.`,
+    );
+  }
+
+  const tokenChain = String(chain).toLowerCase();
+
+  // Bind the signer to the wallet the quote was built for. The Trading API
+  // builds transaction `to`/`data` (and recipient) for a specific sender; a
+  // wallet swapped in between quote and execute would sign someone else's quote.
+  if (request.walletAddress && walletAddress) {
+    const addrsEqual = tokenChain === 'solana'
+      ? request.walletAddress === walletAddress
+      : request.walletAddress.toLowerCase() === walletAddress.toLowerCase();
+    if (!addrsEqual) {
+      throw new Error(
+        `Quote was built for wallet ${request.walletAddress} but the signer is ${walletAddress}. The default wallet may have changed since quoting. Re-quote with this wallet. Refusing to sign.`,
+      );
+    }
+  }
+  if (request.fromToken) {
+    // A missing sell-token address must fail closed: without it the token-pair
+    // binding below can't run, so we can't confirm the quote sells what was asked.
+    if (!quote.inputMint) {
+      throw new Error(
+        `Quote is missing the sell-token address (inputMint); cannot confirm it matches the requested ${request.fromToken}. Refusing to sign.`,
+      );
+    }
+    if (!tokensEqual(quote.inputMint, request.fromToken, tokenChain)) {
+      throw new Error(
+        `Quote sell token (${quote.inputMint}) does not match the requested token (${request.fromToken}). Refusing to sign.`,
+      );
+    }
+  }
+  // The output token lives on the destination chain, which differs from the
+  // source chain for cross-chain swaps. Compare it with the destination chain's
+  // case rules (Solana base58 is case-sensitive) to avoid false rejections.
+  const outTokenChain = request.toChain ? String(request.toChain).toLowerCase() : tokenChain;
+  if (request.toToken) {
+    // Fail closed on a missing buy-token address for the same reason. Previously
+    // a missing outputMint silently skipped this comparison — a compromised API
+    // could omit it to route the output somewhere else undetected.
+    if (!quote.outputMint) {
+      throw new Error(
+        `Quote is missing the buy-token address (outputMint); cannot confirm it matches the requested ${request.toToken}. Refusing to sign.`,
+      );
+    }
+    if (!tokensEqual(quote.outputMint, request.toToken, outTokenChain)) {
+      throw new Error(
+        `Quote buy token (${quote.outputMint}) does not match the requested token (${request.toToken}). Refusing to sign.`,
+      );
+    }
+  }
+
+  if (request.amount != null) {
+    const requested = BigInt(request.amount);
+    if (request.swapMode === 'exactOut') {
+      // Require the output amount to be present; a missing value must not
+      // default to 0 and coincidentally pass some other comparison.
+      const outRaw = quote.outAmount ?? quote.outputAmount;
+      if (outRaw == null) {
+        throw new Error(
+          `Quote is missing the output amount; cannot confirm it matches the requested output (${requested}). Refusing to sign.`,
+        );
+      }
+      const out = BigInt(outRaw);
+      // Require AT LEAST the requested output. More output for a capped input
+      // (see assertInputWithinMax) is pure upside, so only a shortfall is a
+      // mismatch — enforcing strict equality would false-reject benign rounding.
+      if (out < requested) {
+        throw new Error(
+          `Quote output amount (${out}) is less than the requested output (${requested}). Refusing to sign.`,
+        );
+      }
+    } else {
+      const inRaw = quote.inputAmount ?? quote.inAmount;
+      if (inRaw == null) {
+        throw new Error(
+          `Quote is missing the input amount; cannot confirm it matches the requested input (${requested}). Refusing to sign.`,
+        );
+      }
+      const input = BigInt(inRaw);
+      if (input !== requested) {
+        throw new Error(
+          `Quote input amount (${input}) does not match the requested input (${requested}). A larger input would enlarge the approval and native value beyond what you asked to spend. Refusing to sign.`,
+        );
+      }
+    }
+  }
+
+  // Independent spend ceiling on the input, enforced in both modes. This is the
+  // sole guard on exactOut input (which request.amount binds only on the output
+  // side), so it fails closed when an exactOut quote carries no persisted cap.
+  assertInputWithinMax(request, quote, slippage);
+
+  return { skipped: false };
+}
+
+/**
+ * Enforce the maximum input (the spend ceiling) persisted in the request intent
+ * against the quote the execute path is about to sign. This bounds the tokens
+ * that can leave the wallet independently of the output binding, closing the
+ * exactOut gap where the API chooses the input and nothing capped it.
+ *
+ * The amount compared against the cap is the maximum that can actually leave the
+ * wallet — for exactOut that is the slippage-buffered approval, NOT the raw quote
+ * input. The approval encoder (encodeApproveCalldata) scopes the ERC-20 approval
+ * to that same buffered amount and caps it at maxInputAmount, so validating the
+ * raw input here would let a quote pass this check and then be refused at signing
+ * (a 1,000,000 input at 3% slippage needs a 1,030,000 approval, which a 1,000,000
+ * cap rejects). Comparing the same amount approvalAmountForSwap produces keeps
+ * this check and the encoder in lockstep.
+ *
+ * Behaviour:
+ *   - exactOut with no persisted `maxInputAmount` → throws (fail closed). The
+ *     input is otherwise unbounded, so signing without a cap is refused.
+ *   - a persisted cap with a missing/invalid quote input → throws. A cap you
+ *     can't compare against is not a cap.
+ *   - buffered spend > cap → throws. A larger approval/native value would let
+ *     more than the user approved leave the wallet.
+ *   - exactIn with no cap → no-op (request.amount already binds the input).
+ *
+ * Applies to native and ERC-20 swaps alike; the caller runs it before any
+ * approval, transaction signing, or WalletConnect call.
+ *
+ * @param {object} request - Persisted intent (quoteData.request)
+ * @param {object} quote - The quote being executed
+ * @param {number} [slippage] - Slippage fraction actually in effect (quoteData.slippage),
+ *   used to reconstruct the exactOut buffer. Defaults to approvalAmountForSwap's
+ *   3% when omitted, matching the approval the execute path would build.
+ */
+export function assertInputWithinMax(request, quote, slippage) {
+  if (!request) return;
+  const swapMode = request.swapMode ?? 'exactIn';
+  if (request.maxInputAmount == null) {
+    if (swapMode === 'exactOut') {
+      throw new Error(
+        'exactOut quote has no persisted maximum input (maxInputAmount); the input is otherwise unbounded. Re-quote to enable the spend cap. Refusing to sign.',
+      );
+    }
+    return; // exactIn input is already bound by request.amount.
+  }
+
+  let cap;
+  try {
+    cap = BigInt(request.maxInputAmount);
+  } catch {
+    throw new Error(
+      `Persisted maximum input (${request.maxInputAmount}) is not an integer. Refusing to sign.`,
+    );
+  }
+
+  const inRaw = quote.inputAmount ?? quote.inAmount;
+  if (inRaw == null) {
+    throw new Error(
+      'Quote is missing the input amount; cannot enforce the maximum input. Refusing to sign.',
+    );
+  }
+  let input;
+  try {
+    input = BigInt(inRaw);
+  } catch {
+    throw new Error(
+      `Quote input amount (${inRaw}) is not an integer; cannot enforce the maximum input. Refusing to sign.`,
+    );
+  }
+
+  // The tokens that can actually leave the wallet: exactIn pulls the raw input,
+  // exactOut pulls up to the slippage-buffered approval. Bound THAT against the
+  // cap so this check agrees with the approval encoder (see docstring).
+  const spend = approvalAmountForSwap({ inputAmount: input, swapMode, slippage });
+  if (spend <= 0n && input > 0n) {
+    // exactOut buffer overflowed the uint256 ceiling (approvalAmountForSwap
+    // returns 0n) — an unbounded approval, never signable.
+    throw new Error(
+      `Quote input amount (${input}) plus the slippage buffer overflows the uint256 approval ceiling; cannot enforce the maximum input. Refusing to sign.`,
+    );
+  }
+  if (spend > cap) {
+    throw new Error(
+      swapMode === 'exactOut'
+        ? `Quote needs an approval of ${spend} base units (input ${input} + slippage buffer) to guarantee the exact output, which exceeds your maximum input (${cap}). Raise --max-input or lower the requested output. Refusing to sign.`
+        : `Quote input amount (${input}) exceeds your maximum input (${cap}). A larger input would enlarge the approval and native value beyond what you approved. Refusing to sign.`,
+    );
+  }
+}
+
+// ============= Swap-calldata shape guard (same-chain) =============
+
+// Bare ERC-20 methods a legitimate same-chain swap's OUTER call never uses. A
+// real swap routes through an aggregator/router (swap/execute/multicall); if the
+// quote's swap `transaction.data` starts with one of these selectors, the call
+// is a direct token transfer/approval disguised as a swap — the drain shape.
+//
+// Because the user's wallet is msg.sender, `transfer`/`transferFrom(from=user)`
+// move the user's own tokens with no prior allowance, and `approve` hands an
+// attacker a fresh allowance — so blocking these outer selectors closes the
+// direct sibling-token drain. It does NOT catch a custom contract exploiting a
+// pre-existing allowance; that needs outcome (balance-delta) simulation.
+//
+// The caller runs this SELECTOR check on same-chain swaps only. Cross-chain
+// routes are excluded from THIS check because a bridge deposit can, in
+// principle, encode as a plain `transfer` — but that does NOT mean a cross-chain
+// bare transfer is waved through: a bare ERC-20 `transfer`/`approve` targets the
+// token contract itself, so `validateSwapTarget`'s `to === inputMint` gate still
+// refuses it, for cross-chain and same-chain alike (fail closed). In practice
+// the bridge routes this CLI uses (Relay/Li.Fi) route ERC-20 deposits through a
+// router contract (to != token), so neither guard fires on a legitimate bridge.
+// Safely supporting a genuine deposit-as-transfer bridge would require positive
+// recipient/amount validation (balance-delta outcome simulation), not a blanket
+// exemption — tracked as a follow-up.
+const BARE_ERC20_OUTER_SELECTORS = {
+  '0xa9059cbb': 'transfer(address,uint256)',
+  '0x095ea7b3': 'approve(address,uint256)',
+  '0x23b872dd': 'transferFrom(address,address,uint256)',
+};
+
+/**
+ * Reject a same-chain swap whose transaction calldata is a bare ERC-20
+ * transfer/approve/transferFrom rather than a router call. No-op when the
+ * calldata is absent or too short to carry a 4-byte selector.
+ *
+ * @param {string} data - The swap transaction's calldata (quote.transaction.data)
+ */
+export function assertSwapCalldataNotBareTransfer(data) {
+  if (!data || typeof data !== 'string' || data.length < 10) return;
+  const selector = data.slice(0, 10).toLowerCase();
+  const method = BARE_ERC20_OUTER_SELECTORS[selector];
+  if (method) {
+    throw new Error(
+      `Swap transaction is a bare ERC-20 ${method}, not a routed swap. A real swap routes through an aggregator, not a direct token transfer/approval. Refusing to sign.`,
+    );
+  }
+}
