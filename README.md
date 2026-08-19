@@ -62,9 +62,12 @@ nansen mcp install claude-desktop    # macOS/Windows only; bridges via pinned mc
 nansen mcp install cursor            # ~/.cursor/mcp.json
 nansen mcp install cursor --dry-run  # print what would be written (key redacted)
 nansen mcp uninstall <client>        # remove the entry (add --dry-run to preview)
+nansen mcp verify [client]           # prove the setup with one real authenticated data call
 ```
 
 Uses the API key from `nansen login` / `NANSEN_API_KEY`; re-run `install` after rotating your key. Installs are merge-only and atomic: existing servers and settings are preserved, a `.bak` copy is written first, and the CLI refuses to touch a config it can't parse. Note the client config stores the API key in plaintext — new files are created with `0600` permissions. Restart the client after installing. For other clients, see [docs.nansen.ai/mcp/connecting](https://docs.nansen.ai/mcp/connecting).
+
+`install` writes the config; `verify` proves it works. The MCP server answers `tools/list` — and even some free tools — without a key, so a broken credential only surfaces on the first real data call. `nansen mcp verify` makes that call (a `token_info` lookup, consuming a small number of API credits) and maps each failure to a fix. With a client argument (`nansen mcp verify cursor`) it checks the key actually stored in that client's config — catching stale keys after rotation and hand-edited entries; the key is only ever sent to the official server URL. Without one it checks the `nansen login` / `NANSEN_API_KEY` credential directly.
 
 ## Trading
 

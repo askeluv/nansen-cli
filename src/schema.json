@@ -1978,6 +1978,13 @@
             "nansen mcp uninstall claude-code",
             "nansen mcp uninstall cursor --dry-run"
           ]
+        },
+        "verify": {
+          "description": "Verify an authenticated MCP data-path call. Optional client positional argument: claude-code, claude-desktop, or cursor. Consumes a small number of API credits.",
+          "examples": [
+            "nansen mcp verify",
+            "nansen mcp verify cursor"
+          ]
         }
       }
     }

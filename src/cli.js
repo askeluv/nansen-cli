@@ -730,7 +730,7 @@ COMMANDS:
   agent       Ask the Nansen AI research agent (fast/expert modes)
   alerts      list, create, update, toggle, delete
   web         search, fetch
-  mcp         install/uninstall the Nansen MCP server (claude-code, claude-desktop, cursor)
+  mcp         install/uninstall/verify the Nansen MCP server (claude-code, claude-desktop, cursor)
   account     Show API key status, plan, and remaining credits
   auth        status — offline auth status: key source, wallets (no network)
   login       Save API key (--api-key <key>, --human, or NANSEN_API_KEY env var)

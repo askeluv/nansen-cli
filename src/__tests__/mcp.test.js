@@ -3,7 +3,7 @@
  * House pattern: real temp dir + injected deps, no fs mocking.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -15,9 +15,20 @@ import {
   buildMcpCommands,
   NANSEN_MCP_URL,
   MCP_REMOTE_PIN,
+  extractInstalledKey,
+  parseMcpResponse,
+  classifyVerifyResult,
 } from '../commands/mcp.js';
 
 const API_KEY = 'test-key-123';
+const TOKEN_ADDRESS = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
+
+const response = (body, status = 200) => ({ status, text: async () => body });
+const successBody = JSON.stringify({
+  jsonrpc: '2.0',
+  id: 1,
+  result: { content: [{ type: 'text', text: '{"token_symbol":"USDC"}' }] },
+});
 
 describe('resolveClientConfigPath', () => {
   const ctx = { platform: 'linux', homedir: '/home/u', env: {} };
@@ -119,10 +130,61 @@ describe('mergeNansenEntry / removeNansenEntry', () => {
   });
 });
 
+describe('MCP verify helpers', () => {
+  it('extracts keys only from exact installed entries', () => {
+    expect(extractInstalledKey('cursor', buildServerEntry('cursor', API_KEY))).toBe(API_KEY);
+    expect(extractInstalledKey('claude-code', buildServerEntry('claude-code', API_KEY))).toBe(API_KEY);
+    expect(extractInstalledKey('claude-desktop', buildServerEntry('claude-desktop', API_KEY))).toBe(API_KEY);
+
+    const drifted = buildServerEntry('cursor', API_KEY);
+    drifted.url = 'https://evil.example/mcp';
+    expect(extractInstalledKey('cursor', drifted)).toBeNull();
+    expect(extractInstalledKey('cursor', null)).toBeNull();
+    expect(extractInstalledKey('vscode', buildServerEntry('cursor', API_KEY))).toBeNull();
+  });
+
+  it('parses direct JSON and selects the matching SSE event', () => {
+    const direct = { jsonrpc: '2.0', id: 1, result: { content: [] } };
+    expect(parseMcpResponse(JSON.stringify(direct), 1)).toEqual(direct);
+
+    const sse = [
+      'event: message',
+      'data: {"jsonrpc":"2.0","id":99,"result":{"content":[]}}',
+      '',
+      'data: {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}]}}',
+      '',
+      'data: [DONE]',
+    ].join('\n');
+    expect(parseMcpResponse(sse, 1).id).toBe(1);
+    expect(() => parseMcpResponse('', 1)).toThrow(/Empty MCP response/);
+    expect(() => parseMcpResponse('data: nope', 1)).toThrow(/Unparseable MCP response/);
+  });
+
+  it('falls back to the last parseable SSE event', () => {
+    const sse = 'data: {"id":99,"result":{"content":[]}}\ndata: {"id":100,"result":{"content":[]}}';
+    expect(parseMcpResponse(sse, 1).id).toBe(100);
+  });
+
+  it('classifies authenticated, credential, tool, server, and JSON-RPC outcomes', () => {
+    expect(classifyVerifyResult(JSON.parse(successBody))).toMatchObject({ ok: true, reason: 'success' });
+    expect(classifyVerifyResult({ result: { isError: true, content: [{ type: 'text', text: 'NANSEN-API-KEY header is required' }] } }))
+      .toMatchObject({ ok: false, reason: 'missing-key' });
+    expect(classifyVerifyResult({ result: { isError: true, content: [{ type: 'text', text: 'Invalid API key' }] } }))
+      .toMatchObject({ ok: false, reason: 'invalid-key' });
+    expect(classifyVerifyResult({ result: { isError: true, content: [{ type: 'text', text: 'Unknown tool: token_info' }] } }))
+      .toMatchObject({ ok: false, reason: 'unknown-tool' });
+    expect(classifyVerifyResult({ result: { isError: true, content: [{ type: 'text', text: 'backend failed' }] } }))
+      .toMatchObject({ ok: false, reason: 'server-error', detail: expect.stringContaining('backend failed') });
+    expect(classifyVerifyResult({ error: { code: -32600, message: 'bad request' } }))
+      .toMatchObject({ ok: false, reason: 'server-error', detail: expect.stringContaining('bad request') });
+  });
+});
+
 describe('mcp command handler', () => {
   let tempDir;
   let logs;
   let mcp;
+  let fetchFn;
   const api = { apiKey: API_KEY };
 
   const run = (args, { flags = {}, apiInstance = api } = {}) => mcp(args, apiInstance, flags, {});
@@ -132,11 +194,13 @@ describe('mcp command handler', () => {
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nansen-mcp-test-'));
     logs = [];
+    fetchFn = vi.fn();
     ({ mcp } = buildMcpCommands({
       log: (...a) => logs.push(a.join(' ')),
       platform: 'linux',
       homedirFn: () => tempDir,
       env: {},
+      fetchFn,
     }));
   });
 
@@ -151,6 +215,7 @@ describe('mcp command handler', () => {
     expect(fs.statSync(cursorPath()).mode & 0o777).toBe(0o600);
     expect(logs.join('\n')).toContain('Installed Nansen MCP server');
     expect(logs.join('\n')).toContain('plaintext');
+    expect(logs.join('\n')).toContain('nansen mcp verify cursor');
   });
 
   it('install merges into an existing config and writes a backup first', async () => {
@@ -282,6 +347,143 @@ describe('mcp command handler', () => {
     expect(fs.lstatSync(cursorPath()).isSymbolicLink()).toBe(true); // link survives
     expect(JSON.parse(fs.readFileSync(realFile, 'utf8')).mcpServers.nansen.url).toBe(NANSEN_MCP_URL);
   });
+
+  it('verifies login credentials with the authenticated token_info request', async () => {
+    fetchFn.mockResolvedValue(response(successBody));
+
+    await run(['verify']);
+
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchFn.mock.calls[0];
+    expect(url).toBe(NANSEN_MCP_URL);
+    expect(init).toMatchObject({ method: 'POST', redirect: 'error' });
+    expect(init.headers).toEqual({
+      'NANSEN-API-KEY': API_KEY,
+      'Content-Type': 'application/json',
+      'Accept': 'application/json, text/event-stream',
+    });
+    expect(JSON.parse(init.body)).toEqual({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: {
+        name: 'token_info',
+        arguments: { request: { chain: 'ethereum', tokenAddress: TOKEN_ADDRESS } },
+      },
+    });
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(logs.join('\n')).toContain('Authenticated MCP data call succeeded');
+    expect(logs.join('\n')).toContain('consumes a small number of API credits');
+    expect(logs.join('\n')).not.toContain(API_KEY);
+  });
+
+  it('uses the installed cursor credential and claude-desktop env credential', async () => {
+    fetchFn.mockResolvedValue(response(successBody));
+    await run(['install', 'cursor']);
+    logs.length = 0;
+    fetchFn.mockClear();
+
+    await run(['verify', 'cursor']);
+    expect(fetchFn.mock.calls[0][1].headers['NANSEN-API-KEY']).toBe(API_KEY);
+
+    const desktopDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nansen-mcp-desktop-test-'));
+    try {
+      const desktopPath = resolveClientConfigPath('claude-desktop', { platform: 'darwin', homedir: desktopDir, env: {} });
+      fs.mkdirSync(path.dirname(desktopPath), { recursive: true });
+      fs.writeFileSync(desktopPath, JSON.stringify({ mcpServers: { nansen: buildServerEntry('claude-desktop', API_KEY) } }));
+      const { mcp: desktopMcp } = buildMcpCommands({
+        log: (...a) => logs.push(a.join(' ')),
+        platform: 'darwin',
+        homedirFn: () => desktopDir,
+        env: {},
+        fetchFn,
+      });
+
+      fetchFn.mockClear();
+      await desktopMcp(['verify', 'claude-desktop'], api, {}, {});
+      expect(fetchFn.mock.calls[0][1].headers['NANSEN-API-KEY']).toBe(API_KEY);
+    } finally {
+      fs.rmSync(desktopDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects missing and drifted client entries without a network call', async () => {
+    await expect(run(['verify', 'cursor'])).rejects.toThrow(/not installed.*nansen mcp install cursor/);
+    expect(fetchFn).not.toHaveBeenCalled();
+
+    for (const [client, entry] of [
+      ['cursor', { ...buildServerEntry('cursor', API_KEY), url: 'https://evil.example/mcp' }],
+      ['claude-code', { url: NANSEN_MCP_URL, headers: { 'NANSEN-API-KEY': API_KEY } }],
+      ['cursor', { ...buildServerEntry('cursor', API_KEY), headers: { 'NANSEN-API-KEY': API_KEY, 'X-Edited': 'true' } }],
+    ]) {
+      fs.mkdirSync(path.dirname(cursorPath()), { recursive: true });
+      const configPath = client === 'claude-code'
+        ? resolveClientConfigPath(client, { platform: 'linux', homedir: tempDir, env: {} })
+        : cursorPath();
+      fs.writeFileSync(configPath, JSON.stringify({ mcpServers: { nansen: entry } }));
+      await expect(run(['verify', client])).rejects.toThrow(/does not match.*re-run install/);
+      expect(fetchFn).not.toHaveBeenCalled();
+    }
+
+    const desktopDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nansen-mcp-drift-test-'));
+    try {
+      const desktopPath = resolveClientConfigPath('claude-desktop', { platform: 'darwin', homedir: desktopDir, env: {} });
+      const entry = buildServerEntry('claude-desktop', API_KEY);
+      entry.args[1] = 'mcp-remote@0.0.0';
+      fs.mkdirSync(path.dirname(desktopPath), { recursive: true });
+      fs.writeFileSync(desktopPath, JSON.stringify({ mcpServers: { nansen: entry } }));
+      const { mcp: desktopMcp } = buildMcpCommands({
+        log: () => {}, platform: 'darwin', homedirFn: () => desktopDir, env: {}, fetchFn,
+      });
+      await expect(desktopMcp(['verify', 'claude-desktop'], api, {}, {})).rejects.toThrow(/does not match.*re-run install/);
+      expect(fetchFn).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(desktopDir, { recursive: true, force: true });
+    }
+  });
+
+  it('requires login, rejects dry-run, and never exposes the key', async () => {
+    await expect(run(['verify'], { apiInstance: { apiKey: null } })).rejects.toThrow('Not logged in. Run: nansen login');
+    await expect(run(['verify'], { flags: { 'dry-run': true } })).rejects.toThrow(/real authenticated data call.*no dry run/);
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(logs.join('\n')).not.toContain(API_KEY);
+  });
+
+  it('handles SSE, plain JSON, and malformed successful responses', async () => {
+    const sse = [
+      'data: {"id":99,"result":{"content":[{"type":"text","text":"wrong"}]}}',
+      'data: {"id":1,"result":{"content":[{"type":"text","text":"right"}]}}',
+    ].join('\n');
+    fetchFn.mockResolvedValueOnce(response(sse)).mockResolvedValueOnce(response(successBody)).mockResolvedValueOnce(response('not json'));
+
+    await run(['verify']);
+    await run(['verify']);
+    await expect(run(['verify'])).rejects.toThrow(/Unexpected response from the MCP server/);
+    expect(logs.filter(log => log.includes('Authenticated MCP data call succeeded'))).toHaveLength(2);
+  });
+
+  it.each([
+    [401, /rejected the API key.*HTTP 401/],
+    [403, /rejected the API key.*HTTP 403/],
+    [429, /rate limited.*429/],
+    [500, /returned HTTP 500/],
+    [503, /returned HTTP 503/],
+    [400, /Unexpected response.*HTTP 400.*bad request/],
+  ])('maps HTTP %s to actionable guidance', async (status, expected) => {
+    fetchFn.mockResolvedValue(response(status === 400 ? 'bad request' : '', status));
+    await expect(run(['verify'])).rejects.toThrow(expected);
+    expect(logs).toEqual([]);
+  });
+
+  it('maps connectivity, redirect, and timeout failures without logging first', async () => {
+    fetchFn.mockRejectedValueOnce(new TypeError('redirect')).mockRejectedValueOnce(new DOMException('timed out', 'TimeoutError'));
+
+    await expect(run(['verify'])).rejects.toThrow(/Could not connect.*network\/proxy/);
+    await expect(run(['verify'])).rejects.toThrow(/timed out after 15 seconds/);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(fetchFn.mock.calls[0][1].redirect).toBe('error');
+    expect(logs).toEqual([]);
+  });
 });
 
 describe('schema + CLI registration', () => {
@@ -290,7 +492,9 @@ describe('schema + CLI registration', () => {
     const schema = JSON.parse(fs.readFileSync(
       path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'schema.json'), 'utf8'));
     expect(Object.keys(schema.commands)).toContain('mcp');
-    expect(Object.keys(schema.commands.mcp.subcommands).sort()).toEqual(['install', 'uninstall']);
+    expect(Object.keys(schema.commands.mcp.subcommands).sort()).toEqual(['install', 'uninstall', 'verify']);
+    expect(schema.commands.mcp.subcommands.verify.description).toContain('credits');
+    expect(schema.commands.mcp.subcommands.verify.examples).toContain('nansen mcp verify cursor');
     expect(schema.commands.mcp.subcommands.uninstall.options['dry-run'].type).toBe('boolean');
   });
 
@@ -308,5 +512,21 @@ describe('schema + CLI registration', () => {
     });
     expect(result.type).toBe('no-output');
     expect(logs.join('\n')).toContain('nansen mcp install <client>');
+  });
+
+  it('routes mcp verify and exposes it in top-level help', async () => {
+    const { runCLI, parseArgs, HELP } = await import('../cli.js');
+    expect(parseArgs(['mcp', 'verify', '--dry-run'])._).toEqual(['mcp', 'verify']);
+    expect(HELP).toContain('install/uninstall/verify the Nansen MCP server');
+
+    const outputs = [];
+    const result = await runCLI(['mcp', 'verify'], {
+      output: (m) => outputs.push(m),
+      log: () => {},
+      errorOutput: () => {},
+      exit: () => {},
+      commandOverrides: { mcp: async () => undefined },
+    });
+    expect(result.type).toBe('no-output');
   });
 });

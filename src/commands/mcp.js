@@ -10,6 +10,7 @@ import { CommandError } from '../api.js';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { isDeepStrictEqual } from 'util';
 
 // Hosted Nansen MCP server (streamable HTTP, auth via NANSEN-API-KEY header).
 // Deliberately a constant: a user-supplied URL would let `install` write the
@@ -35,6 +36,7 @@ const MCP_USAGE = `nansen mcp — Install the Nansen MCP server into a local MCP
 USAGE:
   nansen mcp install <client>     Add the Nansen MCP server to the client's config
   nansen mcp uninstall <client>   Remove the Nansen MCP server from the client's config
+  nansen mcp verify [client]      Verify setup with one authenticated data call
 
 CLIENTS:
   claude-code      ~/.claude.json (user scope)
@@ -45,7 +47,8 @@ OPTIONS:
   --dry-run        Preview the change (key redacted) without writing
 
 The API key is taken from \`nansen login\` / NANSEN_API_KEY. Re-run install after
-rotating your key to update the entry. Other clients: https://docs.nansen.ai/mcp/connecting`;
+rotating your key to update the entry. Verify performs one real authenticated data
+call and consumes a small number of API credits. Other clients: https://docs.nansen.ai/mcp/connecting`;
 
 /**
  * Resolve the client's config file path for this platform.
@@ -94,6 +97,170 @@ export function buildServerEntry(client, apiKey) {
   }
 }
 
+/**
+ * Extract a key only from the exact entry written by install.
+ * This prevents verify from sending a key to a hand-edited URL or command.
+ */
+export function extractInstalledKey(client, entry) {
+  if (!SUPPORTED_CLIENTS.includes(client)) return null;
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+  const apiKey = client === 'claude-desktop'
+    ? entry.env?.NANSEN_API_KEY
+    : entry.headers?.['NANSEN-API-KEY'];
+  if (typeof apiKey !== 'string' || apiKey.length === 0) return null;
+  return isDeepStrictEqual(entry, buildServerEntry(client, apiKey)) ? apiKey : null;
+}
+
+/**
+ * Parse either a normal JSON response or the JSON-RPC event from an SSE body.
+ */
+export function parseMcpResponse(bodyText, expectedId) {
+  const text = String(bodyText || '').trim();
+  if (!text) throw new Error('Empty MCP response');
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    let last;
+    for (const line of text.split(/\r\n|\r|\n/)) {
+      if (!line.startsWith('data:')) continue;
+      const payload = line.slice(5).trim();
+      if (!payload || payload === '[DONE]') continue;
+      try {
+        const message = JSON.parse(payload);
+        last = message;
+        if (message?.id === expectedId) return message;
+      } catch { /* Ignore non-JSON SSE data lines. */ }
+    }
+    if (last !== undefined) return last;
+  }
+
+  throw new Error('Unparseable MCP response');
+}
+
+function mcpMessageDetail(message) {
+  if (typeof message?.error?.message === 'string') return message.error.message;
+  if (typeof message?.error === 'string') return message.error;
+  const content = message?.result?.content;
+  if (Array.isArray(content)) {
+    const text = content
+      .map(item => typeof item?.text === 'string' ? item.text : JSON.stringify(item))
+      .filter(Boolean)
+      .join('\n');
+    if (text) return text;
+  }
+  return 'The MCP server returned an error.';
+}
+
+/**
+ * Map a parsed JSON-RPC response to the user-facing verification outcome.
+ */
+export function classifyVerifyResult(message) {
+  const detail = mcpMessageDetail(message);
+  const normalized = detail.toLowerCase();
+
+  if (message?.result?.isError) {
+    if (normalized.includes('nansen-api-key header is required')) {
+      return {
+        ok: false,
+        reason: 'missing-key',
+        detail: 'The MCP server received no API key. Re-run nansen mcp install <client> or nansen login.',
+      };
+    }
+    if (normalized.includes('invalid api key') || normalized.includes('status 401')) {
+      return {
+        ok: false,
+        reason: 'invalid-key',
+        detail: 'The API key was rejected. Check your key at https://app.nansen.ai/account?tab=api, then run nansen login and re-run nansen mcp install <client>.',
+      };
+    }
+    if (normalized.includes('unknown tool')) {
+      return {
+        ok: false,
+        reason: 'unknown-tool',
+        detail: 'The MCP server tool set changed. Update nansen-cli (npm i -g nansen-cli) or check https://docs.nansen.ai/mcp/connecting.',
+      };
+    }
+    return {
+      ok: false,
+      reason: 'server-error',
+      detail: `${detail}\nCheck https://docs.nansen.ai/mcp/connecting or contact support.`,
+    };
+  }
+
+  if (message?.error) {
+    if (normalized.includes('unknown tool')) {
+      return {
+        ok: false,
+        reason: 'unknown-tool',
+        detail: 'The MCP server tool set changed. Update nansen-cli (npm i -g nansen-cli) or check https://docs.nansen.ai/mcp/connecting.',
+      };
+    }
+    return {
+      ok: false,
+      reason: 'server-error',
+      detail: `${detail}\nCheck https://docs.nansen.ai/mcp/connecting or contact support.`,
+    };
+  }
+
+  if (Array.isArray(message?.result?.content) && message.result.content.length > 0 && !message.result.isError) {
+    return {
+      ok: true,
+      reason: 'success',
+      detail: '✓ Authenticated MCP data call succeeded\nA real authenticated data call was made (consumes a small number of API credits).',
+    };
+  }
+
+  return {
+    ok: false,
+    reason: 'unexpected-response',
+    detail: 'Unexpected response from the MCP server. Update nansen-cli (npm i -g nansen-cli) or contact support.',
+  };
+}
+
+const VERIFY_REQUEST_ID = 1;
+const VERIFY_TIMEOUT_MS = 15_000;
+const VERIFY_TOKEN_ADDRESS = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
+
+function redactSecret(text, secret) {
+  return typeof text === 'string' && typeof secret === 'string' && secret
+    ? text.split(secret).join('[redacted]')
+    : text;
+}
+
+function verifyConnectivityError() {
+  return new CommandError(
+    'Could not connect to the MCP server. Check your network/proxy; run: nansen doctor for the broader diagnostic.',
+    'NETWORK_ERROR',
+  );
+}
+
+function verifyHttpError(status, bodyText) {
+  if (status === 401 || status === 403) {
+    return new CommandError(
+      `The MCP server rejected the API key (HTTP ${status}). Check your key at https://app.nansen.ai/account?tab=api, then run nansen login and re-run nansen mcp install <client>.`,
+      'INVALID_API_KEY',
+    );
+  }
+  if (status === 429) {
+    return new CommandError(
+      'The MCP server rate limited verification (HTTP 429). Wait and retry; check your plan limits.',
+      'RATE_LIMITED',
+    );
+  }
+  if (status >= 500) {
+    return new CommandError(
+      `The MCP server returned HTTP ${status}. Retry later; check https://docs.nansen.ai/mcp/connecting or contact support.`,
+      'SERVER_ERROR',
+    );
+  }
+  const snippet = String(bodyText || '').trim().slice(0, 500) || '(empty body)';
+  return new CommandError(
+    `Unexpected response from the MCP server (HTTP ${status}): ${snippet}. Update nansen-cli (npm i -g nansen-cli) or contact support.`,
+    'MCP_VERIFY_FAILED',
+  );
+}
+
 function assertMergeableServers(config, configPath) {
   if (typeof config !== 'object' || config === null || Array.isArray(config)) {
     throw new CommandError(`${configPath} must contain a JSON object. Fix or move the file, then re-run.`, 'INVALID_CONFIG');
@@ -131,6 +298,7 @@ export function buildMcpCommands(deps = {}) {
     platform = process.platform,
     homedirFn = houseHomedir,
     env = process.env,
+    fetchFn = globalThis.fetch,
   } = deps;
 
   // Follow symlinks so dotfile-managed configs are edited in place instead of
@@ -171,9 +339,9 @@ export function buildMcpCommands(deps = {}) {
     try { fsx.chmodSync(configPath, 0o600); } catch { /* Windows / exotic fs */ }
   };
 
-  const requireClient = (client) => {
+  const requireClient = (client, subcommand = 'install') => {
     if (!client || !SUPPORTED_CLIENTS.includes(client)) {
-      throw new CommandError(`Usage: nansen mcp install <client>. Supported: ${SUPPORTED_CLIENTS.join(', ')}`, 'INVALID_PARAMS');
+      throw new CommandError(`Usage: nansen mcp ${subcommand} <client>. Supported: ${SUPPORTED_CLIENTS.join(', ')}`, 'INVALID_PARAMS');
     }
   };
 
@@ -187,8 +355,91 @@ export function buildMcpCommands(deps = {}) {
         return undefined;
       }
 
-      if (sub !== 'install' && sub !== 'uninstall') {
+      if (sub !== 'install' && sub !== 'uninstall' && sub !== 'verify') {
         throw new CommandError(`Unknown subcommand: ${sub}\n\n${MCP_USAGE}`, 'INVALID_PARAMS');
+      }
+
+      if (sub === 'verify') {
+        if (flags['dry-run']) {
+          throw new CommandError('verify performs one real authenticated data call; there is no dry run', 'INVALID_PARAMS');
+        }
+
+        let apiKey;
+        if (client) {
+          requireClient(client, 'verify');
+          const configPath = resolveReal(resolveClientConfigPath(client, { platform, homedir: homedirFn(), env }));
+          const { config } = readConfig(configPath);
+          const entry = config?.mcpServers?.[SERVER_KEY];
+          if (!entry) {
+            throw new CommandError(`Nansen MCP is not installed for ${client} — run: nansen mcp install ${client}`, 'NOT_INSTALLED');
+          }
+          apiKey = extractInstalledKey(client, entry);
+          if (!apiKey) {
+            throw new CommandError(`Nansen MCP entry does not match what nansen mcp install ${client} writes — re-run install`, 'INVALID_CONFIG');
+          }
+        } else {
+          apiKey = apiInstance?.apiKey;
+          if (!apiKey) {
+            throw new CommandError('Not logged in. Run: nansen login', 'NOT_LOGGED_IN');
+          }
+        }
+
+        const body = JSON.stringify({
+          jsonrpc: '2.0',
+          id: VERIFY_REQUEST_ID,
+          method: 'tools/call',
+          params: {
+            name: 'token_info',
+            arguments: {
+              request: { chain: 'ethereum', tokenAddress: VERIFY_TOKEN_ADDRESS },
+            },
+          },
+        });
+
+        let response;
+        let responseText;
+        try {
+          response = await fetchFn(NANSEN_MCP_URL, {
+            method: 'POST',
+            headers: {
+              'NANSEN-API-KEY': apiKey,
+              'Content-Type': 'application/json',
+              'Accept': 'application/json, text/event-stream',
+            },
+            body,
+            redirect: 'error',
+            signal: AbortSignal.timeout(VERIFY_TIMEOUT_MS),
+          });
+          responseText = redactSecret(await response.text(), apiKey);
+        } catch (error) {
+          if (error?.name === 'TimeoutError') {
+            throw new CommandError(
+              'MCP verification timed out after 15 seconds. Check your network/proxy; run: nansen doctor for the broader diagnostic.',
+              'TIMEOUT',
+            );
+          }
+          throw verifyConnectivityError();
+        }
+
+        if (response.status >= 300 && response.status < 400) throw verifyConnectivityError();
+        if (response.status < 200 || response.status >= 300) throw verifyHttpError(response.status, responseText);
+
+        let message;
+        try {
+          message = parseMcpResponse(responseText, VERIFY_REQUEST_ID);
+        } catch {
+          throw new CommandError(
+            'Unexpected response from the MCP server. Update nansen-cli (npm i -g nansen-cli) or contact support.',
+            'MCP_VERIFY_FAILED',
+          );
+        }
+
+        const outcome = classifyVerifyResult(message);
+        if (!outcome.ok) {
+          throw new CommandError(outcome.detail.replaceAll('<client>', client || '<client>'), 'MCP_VERIFY_FAILED');
+        }
+        log(outcome.detail);
+        return undefined;
       }
 
       requireClient(client);
@@ -243,6 +494,7 @@ export function buildMcpCommands(deps = {}) {
       log(`Note: your Nansen API key is stored in plaintext in ${configPath}.`);
       log('If this file is synced or backed up (settings sync, dotfiles), your key travels with it.');
       log(`Restart ${client} to pick up the change.`);
+      log(`Verify your setup: nansen mcp verify ${client}`);
       return undefined;
     },
   };
