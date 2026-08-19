@@ -152,10 +152,22 @@ nansen wallet send --to <addr> --amount 1.0 --chain evm --dry-run
 ## Export & Delete
 
 ```bash
-# Password auto-resolved from keychain
+# Default is REDACTED — shows addresses only, never private keys
 nansen wallet export <name>
+
+# Write private keys to a file only the owner can read (0600, refuses to overwrite)
+nansen wallet export <name> --file <path>
+
+# Print private keys in plaintext to stdout (explicit acknowledgement required;
+# warns on stderr when stdout is an interactive terminal)
+nansen wallet export <name> --reveal
+
+# Password auto-resolved from keychain (needed for --reveal / --file)
 nansen wallet delete <name>
 ```
+
+Prefer `--file` over `--reveal`: plaintext on stdout ends up in terminal
+scrollback, shell logs, and agent transcripts.
 
 ## Forget Password
 
@@ -182,6 +194,8 @@ For detailed migration steps (from `~/.nansen/.env`, `.credentials`, or env-var-
 | `--max` | Send entire balance |
 | `--dry-run` | Preview without broadcasting |
 | `--provider` | Wallet provider: `local` (default, encrypted on disk) or `privy` (server-side via Privy API) |
+| `--reveal` | Export only: print private keys in plaintext to stdout (required acknowledgement) |
+| `--file` | Export only: write private keys to this path (created 0600, refuses to overwrite) |
 | `--human` | Enable interactive prompts (human terminal use only — agents must NOT use this) |
 | `--unsafe-no-password` | Skip encryption (keys stored in plaintext — NOT recommended) |
 
