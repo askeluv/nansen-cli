@@ -904,6 +904,12 @@ export function assertSwapOutcome(request, quote, sim, { slippage, expectedSpend
   if (!inputToken || !outputToken) {
     throw fail('quote is missing the input or output token address.');
   }
+  // Fail closed on a same-token quote: assertion 3 skips the input token, so if
+  // output == input a drain of that token would slip past unverified. A real
+  // swap never sells and buys the same token (also rejected upstream).
+  if (inputToken === outputToken) {
+    throw fail(`quote input and output tokens are the same (${inputToken}); refusing to verify.`);
+  }
 
   // --- Assertion 1: input outflow within the spend ceiling ---
   if (request.maxInputAmount == null) {

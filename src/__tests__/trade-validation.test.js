@@ -1423,6 +1423,16 @@ describe('assertSwapOutcome', () => {
       .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*other than the one you are selling/i);
   });
 
+  it('fails closed when input and output tokens are the same', () => {
+    // Assertion 3 skips the input token, so a same-token quote could hide a
+    // drain of the "output" token. Refuse before the assertions run.
+    const req = { ...exactInRequest, toToken: USDC };
+    const quote = { inputMint: USDC, outputMint: USDC, inAmount: '1000000', outAmount: '1000000' };
+    const sim = { deltas: { [USDC]: -1000000n }, approvals: [] };
+    expect(() => assertSwapOutcome(req, quote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*input and output tokens are the same/i);
+  });
+
   it('rejects an approval to an unexpected spender (assertion 4)', () => {
     const sim = {
       deltas: { [USDC]: -1000000n, [DAI]: 1000000n },

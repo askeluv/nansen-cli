@@ -2021,10 +2021,6 @@ EXAMPLES:
               assertCompleteEvmRequestIntent(quoteData.request);
               assertQuoteMatchesRequest(quoteData.request, currentQuote, { chain, walletAddress, slippage: quoteData.slippage });
 
-              // Same-chain only: a legit swap's outer call is a router method,
-              // never a bare ERC-20 transfer/approve. Reject that drain shape.
-              // Cross-chain routes skip THIS selector check, but a bare transfer
-              // still targets the token contract, so validateSwapTarget's
               // Reject a bare ERC-20 transfer/approve/transferFrom as the outer
               // call: a real swap or bridge routes through an aggregator/router,
               // never a direct token method. Runs on cross-chain too — the
@@ -2275,10 +2271,6 @@ EXAMPLES:
               assertCompleteEvmRequestIntent(quoteData.request);
               assertQuoteMatchesRequest(quoteData.request, currentQuote, { chain, walletAddress: wcAddress, slippage: quoteData.slippage });
 
-              // Same-chain only: a legit swap's outer call is a router method,
-              // never a bare ERC-20 transfer/approve. Reject that drain shape.
-              // Cross-chain routes skip THIS selector check, but a bare transfer
-              // still targets the token contract, so validateSwapTarget's
               // Reject a bare ERC-20 transfer/approve/transferFrom as the outer
               // call: a real swap or bridge routes through an aggregator/router,
               // never a direct token method. Runs on cross-chain too — the
@@ -2386,8 +2378,10 @@ EXAMPLES:
                 }
               }
 
-              // Verify the swap's simulated on-chain outcome matches intent
-              // (own gate; degrades with a warning when no endpoint is set).
+              // Verify the swap's simulated on-chain outcome matches intent. Its
+              // own gate: runs even when --no-simulate/gasless skip the cheap
+              // eth_call revert check above; degrades with a warning when no
+              // simulation endpoint is set.
               if (!noVerifyOutcome) {
                 const outcome = await verifySwapOutcome({ chain, from: wcAddress, quote: currentQuote, quoteData, apiKey, log });
                 if (!outcome.proceed) {
@@ -2495,10 +2489,6 @@ EXAMPLES:
               assertCompleteEvmRequestIntent(quoteData.request);
               assertQuoteMatchesRequest(quoteData.request, currentQuote, { chain, walletAddress, slippage: quoteData.slippage });
 
-              // Same-chain only: a legit swap's outer call is a router method,
-              // never a bare ERC-20 transfer/approve. Reject that drain shape.
-              // Cross-chain routes skip THIS selector check, but a bare transfer
-              // still targets the token contract, so validateSwapTarget's
               // Reject a bare ERC-20 transfer/approve/transferFrom as the outer
               // call: a real swap or bridge routes through an aggregator/router,
               // never a direct token method. Runs on cross-chain too — the
@@ -2621,8 +2611,10 @@ EXAMPLES:
                 }
               }
 
-              // Verify the swap's simulated on-chain outcome matches intent
-              // (own gate; degrades with a warning when no endpoint is set).
+              // Verify the swap's simulated on-chain outcome matches intent. Its
+              // own gate: runs even when --no-simulate/gasless skip the cheap
+              // eth_call revert check above; degrades with a warning when no
+              // simulation endpoint is set.
               if (!noVerifyOutcome) {
                 const outcome = await verifySwapOutcome({ chain, from: walletAddress, quote: currentQuote, quoteData, apiKey, log });
                 if (!outcome.proceed) {
