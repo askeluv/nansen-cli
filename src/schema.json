@@ -1968,6 +1968,15 @@
       "type": "string",
       "description": "Comma-separated list of fields to include in output"
     },
+    "limit": {
+      "type": "number",
+      "description": "Maximum results per page for list-returning research commands; maps to pagination.per_page. General endpoints default to 10 (max 1000), while profiler address endpoints default to 20 (max 100). Supported by smart-money, profiler, token, perp, points, prediction-market, and supported research historical-* commands. Commands that declare their own limit option (search, token top-tokens, trade limit-order list) use those command-specific semantics instead; token ohlcv, profiler perp-positions, and historical-token-flow-summary do not support pagination. profiler labels defaults to 100 when omitted."
+    },
+    "page": {
+      "type": "number",
+      "default": 1,
+      "description": "1-based page number for list-returning research commands; maps to pagination.page. Supported by smart-money, profiler, token, perp, points, prediction-market, and supported research historical-* commands. Trade, wallet, and operational commands ignore it; token ohlcv, profiler perp-positions, and historical-token-flow-summary do not support pagination. profiler labels defaults to page 1 when omitted."
+    },
     "no-retry": {
       "type": "boolean",
       "description": "Disable automatic retry on rate limits/errors"
