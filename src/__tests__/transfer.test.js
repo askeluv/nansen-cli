@@ -335,6 +335,31 @@ describe('sendTokens integration', () => {
       expect(result.token).toBeNull();
     });
 
+    test('fetches nonce with both "pending" and "latest" for gap check', async () => {
+      mockEvmRpcSmart();
+      await sendTokens({ to: '0x742d35Cc6bF4F3f4e0e3a8DD7e37ff4e4Be4E4B4', amount: '0.01', chain: 'evm', password: 'test' });
+      const nonceCalls = fetch.mock.calls
+        .map(([, opts]) => JSON.parse(opts.body))
+        .filter(b => b.method === 'eth_getTransactionCount');
+      const tags = nonceCalls.map(b => b.params[1]);
+      expect(tags).toContain('pending');
+      expect(tags).toContain('latest');
+    });
+
+    test('rejects when too many transactions are already queued (stuck nonce guard)', async () => {
+      fetch.mockImplementation(async (url, opts) => {
+        const body = JSON.parse(opts.body);
+        if (body.method === 'eth_getTransactionCount') {
+          // pending = 5, latest = 2 → gap of 3 > MAX_PENDING_NONCE_GAP (2)
+          return { json: () => Promise.resolve({ result: body.params[1] === 'pending' ? '0x5' : '0x2' }) };
+        }
+        return { json: () => Promise.resolve({ result: '0x0' }) };
+      });
+      await expect(
+        sendTokens({ to: '0x742d35Cc6bF4F3f4e0e3a8DD7e37ff4e4Be4E4B4', amount: '0.01', chain: 'evm', password: 'test' }),
+      ).rejects.toThrow(/unmined transactions queued/);
+    });
+
     test('sends on Base chain', async () => {
       mockEvmRpcSmart();
       const result = await sendTokens({ to: '0x742d35Cc6bF4F3f4e0e3a8DD7e37ff4e4Be4E4B4', amount: '0.01', chain: 'base', password: 'test' });
