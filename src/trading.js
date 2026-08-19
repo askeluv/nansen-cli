@@ -1382,7 +1382,8 @@ OPTIONS:
   --max-input <baseUnits>   exactOut only: hard ceiling on the sell-token spend
                             (base units), measured against the slippage-buffered
                             approval (input + slippage), not the bare quote input.
-                            Required with exactOut and enforced before signing.
+                            Required for EVM (Base) exactOut and enforced before
+                            signing; optional on Solana (no ERC-20 approval to scope).
   --aggregator <name>       Force a specific aggregator (lifi, relay, jupiter, okx).
                             Filters the quote list client-side; errors if none match.
 
@@ -1417,11 +1418,19 @@ CROSS-CHAIN NOTES (when using --to-chain):
         throw new CommandError('Error: --amount-unit percent is not supported with --swap-mode exactOut. Percentage is relative to your sell-token balance.', 'INVALID_INPUT');
       }
 
+      // The exactOut spend-ceiling requirements below only guard the EVM signing
+      // path: the ERC-20 approval scoping, request-intent binding, and
+      // assertInputWithinMax checks are wired into the EVM execute paths only.
+      // Solana signs the API transaction verbatim (no approval to scope), so
+      // requiring --max-input there would break existing Solana exactOut users
+      // without buying any of that path a security guarantee. Gate on EVM source.
+      const isEvmSource = CHAIN_MAP[chain?.toLowerCase()]?.type === 'evm';
+
       // exactOut scopes the ERC-20 approval to a slippage-buffered max input. With
       // uncapped auto-slippage the actual bound is server-side and unknown, so the
       // buffer could be under-sized and the swap would revert on allowance. Require
       // an explicit cap so the approval is always bounded by a value we know.
-      if (swapMode === 'exactOut' && autoSlippage && maxAutoSlippage == null) {
+      if (isEvmSource && swapMode === 'exactOut' && autoSlippage && maxAutoSlippage == null) {
         throw new CommandError('Error: --swap-mode exactOut with --auto-slippage requires --max-auto-slippage so the approval can be scoped to a bounded input (e.g. --max-auto-slippage 0.05).', 'INVALID_INPUT');
       }
 
@@ -1448,7 +1457,7 @@ CROSS-CHAIN NOTES (when using --to-chain):
           throw new CommandError(`Error: invalid --max-input "${maxInputRaw}": must be an integer in base units of the sell token.`, 'INVALID_INPUT');
         }
       }
-      if (swapMode === 'exactOut' && maxInputOverride == null) {
+      if (isEvmSource && swapMode === 'exactOut' && maxInputOverride == null) {
         throw new CommandError('Error: --swap-mode exactOut requires --max-input (base units of the sell token) so the input is independently capped before signing.', 'INVALID_INPUT');
       }
 
@@ -2146,6 +2155,13 @@ EXAMPLES:
             } else if (isWalletConnect) {
               // EVM via WalletConnect: wallet signs and may broadcast
               const wcAddress = await getWalletConnectAddress(chainType);
+              // A session dropped mid-execute returns null here. Without this
+              // guard a null address would fall through to assertQuoteMatchesRequest,
+              // whose `request.walletAddress && walletAddress` condition would
+              // silently skip the signer-binding check. Fail closed instead.
+              if (!wcAddress) {
+                throw new CommandError('WalletConnect session lost during execute. Reconnect with `walletconnect connect` and retry.', 'NO_WALLET');
+              }
               const isNative = isNativeToken(currentQuote.inputMint);
 
               // Guard the swap target before any RPC call, approval, or signing —

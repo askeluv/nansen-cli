@@ -1633,6 +1633,39 @@ describe('quote handler rejects decimal amounts before API call', () => {
   });
 });
 
+describe('exactOut --max-input requirement is EVM-only', () => {
+  it('base exactOut without --max-input is rejected before any API call', async () => {
+    const origFetch = global.fetch;
+    global.fetch = vi.fn();
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+
+    await expect(cmds.quote([], null, {}, {
+      chain: 'base', from: 'USDC', to: 'ETH', amount: '990000', 'swap-mode': 'exactOut',
+    })).rejects.toThrow(/requires --max-input/i);
+    expect(global.fetch).not.toHaveBeenCalled();
+
+    global.fetch = origFetch;
+  });
+
+  it('solana exactOut does NOT require --max-input (Solana has no EVM approval to scope)', async () => {
+    // The spend-ceiling guards live only in the EVM execute paths, so requiring
+    // the flag on Solana would break existing users for no security gain. The
+    // quote may still reject at a later stage (wallet/network), but it must not
+    // reject on the missing --max-input flag the way an EVM exactOut quote does.
+    const origFetch = global.fetch;
+    global.fetch = vi.fn().mockRejectedValue(new Error('network stubbed off'));
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+
+    await expect(cmds.quote([], null, {}, {
+      chain: 'solana', from: 'SOL', to: 'USDC', amount: '1000000', 'swap-mode': 'exactOut',
+    })).rejects.not.toThrow(/requires --max-input/i);
+
+    global.fetch = origFetch;
+  });
+});
+
 // ============= Token Decimal Resolution =============
 
 describe('resolveTokenDecimals', () => {
@@ -1811,7 +1844,6 @@ describe('quote command with --amount-unit token', () => {
       amount: '1',
       'amount-unit': 'token',
       'swap-mode': 'exactOut',
-      'max-input': '1100000000',
     });
 
     const quoteCall = fetchCalls.find(c => c.url.includes('quote'));
@@ -1955,7 +1987,6 @@ describe('quote command with --amount-unit usd', () => {
       amount: '50',
       'amount-unit': 'usd',
       'swap-mode': 'exactOut',
-      'max-input': '1100000000',
     });
 
     // Should have searched for USDC (the --to token), not SOL
@@ -2091,7 +2122,6 @@ describe('quote command with --amount-unit usd', () => {
       amount: '50',
       'amount-unit': 'usd',
       'swap-mode': 'exactOut',
-      'max-input': '1100000000',
     });
 
     // exactOut should skip balance check and succeed (reach quote API)
