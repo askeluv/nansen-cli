@@ -118,12 +118,12 @@ export function creditWarning(meta) {
   const { used, remaining, cost } = credits;
   if (remaining === null) return null;
   if (remaining === 0) {
-    return '⚠️  Out of API credits. Top up at https://app.nansen.ai/api';
+    return '⚠️  Out of API credits. Top up at https://app.nansen.ai/auth/agent-setup';
   }
   // The cost header is the authoritative charge; used is the fallback.
   const charged = cost ?? used;
   if (charged !== null && charged > 0 && remaining < charged) {
-    return `⚠️  ${remaining} API credit${remaining === 1 ? '' : 's'} left — less than this call cost (${charged}). Top up at https://app.nansen.ai/api`;
+    return `⚠️  ${remaining} API credit${remaining === 1 ? '' : 's'} left — less than this call cost (${charged}). Top up at https://app.nansen.ai/auth/agent-setup`;
   }
   return null;
 }
