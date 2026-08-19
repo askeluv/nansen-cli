@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.38.0
+
+### Minor Changes
+
+- [#486](https://github.com/nansen-ai/nansen-cli/pull/486) [`b752d81`](https://github.com/nansen-ai/nansen-cli/commit/b752d81336a5d9bda3ad85e62a4d42d98c069e58) Thanks [@gulshngill](https://github.com/gulshngill)! - Add `nansen auth status` and `nansen doctor`. `auth status` is fully offline: it reports whether an API key is configured and where it comes from (env var vs config file, masked), the active base URL, x402 wallet readiness, and OS keychain availability. `doctor` runs health checks over the whole setup — Node version, config file validity and permissions, wallet storage and password hygiene (flags the insecure `.credentials` file), keychain availability, Privy env credentials, caches, and telemetry — with an actionable fix per finding, plus a safe unauthenticated connectivity probe (no credits consumed; skip it with `--offline`). `--json` returns machine-readable checks.
+
+- [#494](https://github.com/nansen-ai/nansen-cli/pull/494) [`67027e6`](https://github.com/nansen-ai/nansen-cli/commit/67027e6a0faefcc797ec9407f199bc985dbbfc56) Thanks [@kome12](https://github.com/kome12)! - Harden EVM swap signing: scope ERC-20 approvals to the trade amount instead of granting an unlimited allowance, and validate the swap target before signing (reject an empty/zero address, a non-contract target, or a target equal to the token being sold). As a result, ERC-20 sells on Base now include a per-swap approval transaction. Native ETH swaps and all Solana swaps are unaffected. Note: this scopes approvals granted from now on; a pre-existing unlimited approval from an earlier version is not automatically reduced.
+
+  Also tightens the input validation on the quote a swap is signed from. Every approval-signing path (local, Privy, WalletConnect) now shares one encoder that requires a well-formed 20-byte spender, keeps the approved amount bounded (never unlimited) and within the request cap, and produces fixed-width approval calldata. EVM execution now requires complete request intent persisted by the quote command and revalidates each quote against it (chain, wallet, token pair, mode, and amount), so the signed transaction remains bound to what was requested. A same-chain swap whose transaction is a bare ERC-20 transfer/approve rather than a routed swap is refused (bridge routes excluded).
+
+  The swap-target contract check now fails closed: it retries and, if it still can't confirm the target carries contract code, refuses to sign rather than proceeding on an unverified target.
+
+  EVM (Base) exactOut swaps now require an explicit maximum input (spend ceiling) via `--max-input` in base units of the sell token. The quote persists that `maxInputAmount`, and the execute path refuses to sign, approve, or broadcast any quote whose input exceeds it, for native and ERC-20 swaps across all three EVM signing paths. Solana exactOut is unaffected and does not require the flag (there is no ERC-20 approval to scope on that path). Quotes already above the cap are dropped at quote time (and, when none fit, a clear `MAX_INPUT_EXCEEDED` error is returned) rather than saved and rejected only at execute. Relatedly, a quote missing a field the request-intent check needs (sell/buy token address or the bound amount) is now rejected rather than skipped, and the exactOut output binding accepts more-than-requested output (only a shortfall is rejected, since the input is independently capped).
+
+  The execute path also binds the signer to the wallet the quote was built for: it now refuses to sign a quote whose persisted wallet doesn't match the current signer (e.g. the default wallet changed between quote and execute), since the quoted transaction is constructed for a specific sender.
+
+### Patch Changes
+
+- [#494](https://github.com/nansen-ai/nansen-cli/pull/494) [`54b9d41`](https://github.com/nansen-ai/nansen-cli/commit/54b9d41fc9f99cd68bce416b95a129fe9e858981) Thanks [@kome12](https://github.com/kome12)! - Fix exactOut `--max-input` so it bounds the slippage-buffered approval, not the bare quote input. Previously an exactOut ERC-20 quote whose raw input equalled the cap (e.g. 1,000,000 at 3% slippage) passed the max-input filter and was saved, but execution scoped a larger approval (1,030,000) that the approval encoder then rejected for exceeding the cap — bricking the trade across local, Privy, and WalletConnect flows. Both the quote-time filter and the execute-time spend check now measure the same buffered amount the approval encoder does, so a quote that clears the cap can always be signed.
+
 ## 1.37.0
 
 ### Minor Changes
