@@ -187,6 +187,27 @@ describe('swap-simulation', () => {
       expect(deltas[USDC]).toBe(5_000_000n);
     });
 
+    it('surfaces a silently-reverting sub-call as SIM_REVERTED (not an empty outcome)', async () => {
+      // eth_simulateV1 unavailable → debug_traceCall. The top-level frame has no
+      // error, but a sub-call reverted and nothing moved: report the revert
+      // rather than returning empty deltas that fail downstream as a mismatch.
+      global.fetch = vi.fn().mockImplementation((url, opts) => {
+        const req = JSON.parse(opts.body);
+        if (req.method === 'eth_simulateV1') {
+          return Promise.resolve({ status: 200, text: async () => JSON.stringify({ error: { code: -32601, message: 'not available' } }) });
+        }
+        return Promise.resolve({
+          status: 200,
+          text: async () => JSON.stringify({
+            result: { from: WALLET, to: ROUTER, value: '0x0', logs: [], calls: [{ from: ROUTER, to: USDC, value: '0x0', error: 'execution reverted', logs: [], calls: [] }] },
+          }),
+        });
+      });
+      await expect(
+        simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET }),
+      ).rejects.toMatchObject({ code: 'SIM_REVERTED' });
+    });
+
     it('surfaces NOT_SIM_CAPABLE when both methods are unavailable', async () => {
       global.fetch = vi.fn().mockResolvedValue({
         status: 200,

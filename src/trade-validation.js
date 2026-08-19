@@ -949,6 +949,12 @@ export function assertSwapOutcome(request, quote, sim, { slippage, expectedSpend
     } catch {
       throw fail(`quoted output amount (${quotedRaw}) is not an integer.`);
     }
+    // A zero quoted output makes minOut 0, so a sim receiving nothing would pass
+    // assertion 2 (0 < 0 is false). exactIn has no upstream non-zero-output guard
+    // (unlike exactOut), so a rogue outAmount:"0" would otherwise slip through.
+    if (quoted === 0n) {
+      throw fail('quote has a zero output amount; cannot compute a minimum acceptable output.');
+    }
     // Floor of quoted × (1 − slippage), in basis points to stay in BigInt. This
     // mirrors the slippage the user actually set (quoteData.slippage), defaulting
     // to 3% to match approvalAmountForSwap when it wasn't supplied.

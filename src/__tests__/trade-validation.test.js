@@ -1423,6 +1423,15 @@ describe('assertSwapOutcome', () => {
       .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*other than the one you are selling/i);
   });
 
+  it('rejects an exactIn quote with a zero quoted output', () => {
+    // outAmount "0" makes minOut 0, so a zero-output sim would pass assertion 2
+    // (0 < 0 is false). exactIn has no upstream non-zero-output guard.
+    const quote = { inputMint: USDC, outputMint: DAI, inAmount: '1000000', outAmount: '0' };
+    const sim = { deltas: { [USDC]: -1000000n }, approvals: [] };
+    expect(() => assertSwapOutcome(exactInRequest, quote, sim, { slippage: 0.03 }))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*zero output amount/i);
+  });
+
   it('fails closed when input and output tokens are the same', () => {
     // Assertion 3 skips the input token, so a same-token quote could hide a
     // drain of the "output" token. Refuse before the assertions run.

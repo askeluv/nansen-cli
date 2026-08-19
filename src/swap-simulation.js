@@ -281,6 +281,18 @@ async function simulateViaDebugTraceCall(rpcUrl, apiKey, { from, to, data, value
     deltas[EVM_NATIVE_SENTINEL] = (deltas[EVM_NATIVE_SENTINEL] || 0n) + native;
     if (deltas[EVM_NATIVE_SENTINEL] === 0n) delete deltas[EVM_NATIVE_SENTINEL];
   }
+
+  // callTracer only sets `error` on the frame that reverted; a top-level call can
+  // "succeed" while a sub-call reverts silently, moving nothing. If the trace
+  // yielded no deltas and no approvals but some frame errored, surface that as a
+  // revert — clearer than letting an all-zero outcome fail downstream as a
+  // mismatch. (The primary eth_simulateV1 path reports status directly.)
+  if (Object.keys(deltas).length === 0 && approvals.length === 0) {
+    const errored = frames.find((f) => f.error);
+    if (errored) {
+      throw new SwapSimulationError('SIM_REVERTED', `Swap reverts in simulation: ${errored.error}`);
+    }
+  }
   return { deltas, approvals, method: 'debug_traceCall' };
 }
 
