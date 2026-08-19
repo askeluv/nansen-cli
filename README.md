@@ -69,6 +69,38 @@ Uses the API key from `nansen login` / `NANSEN_API_KEY`; re-run `install` after 
 
 `install` writes the config; `verify` proves it works. The MCP server answers `tools/list` — and even some free tools — without a key, so a broken credential only surfaces on the first real data call. `nansen mcp verify` makes that call (a `token_info` lookup, consuming a small number of API credits) and maps each failure to a fix. With a client argument (`nansen mcp verify cursor`) it checks the key actually stored in that client's config — catching stale keys after rotation; hand-written entries are fine as long as they still target the official server URL/transport (other differences are warned about, not refused), and the key is only ever sent to the official server URL. Without one it checks the `nansen login` / `NANSEN_API_KEY` credential directly.
 
+### Cursor
+
+Recommended setup:
+
+```bash
+nansen login --api-key <key>       # or set NANSEN_API_KEY
+nansen mcp install cursor
+# Restart Cursor, then verify:
+nansen mcp verify cursor
+```
+
+To configure Cursor manually, create `~/.cursor/mcp.json` with this block and replace `YOUR_API_KEY` with your key from [app.nansen.ai/auth/agent-setup](https://app.nansen.ai/auth/agent-setup) before saving:
+
+```json
+{
+  "mcpServers": {
+    "nansen": {
+      "url": "https://mcp.nansen.ai/ra/mcp",
+      "headers": {
+        "NANSEN-API-KEY": "YOUR_API_KEY"
+      }
+    }
+  }
+}
+```
+
+Paste the whole block only into a new file. If `mcp.json` already exists, add only the `nansen` entry under its existing `mcpServers`. On macOS/Linux, run `chmod 600 ~/.cursor/mcp.json` because the file contains a secret; on Windows, or to have permissions and merging handled automatically, use `nansen mcp install cursor`.
+
+For the manual path, ask Cursor's agent to run a paid Nansen tool, such as token info for a known token, and confirm that real data is returned. `tools/list` and some free tools work without a key, so visible tools do not verify authentication. If you have the CLI, `nansen mcp verify cursor` is the authoritative end-to-end check.
+
+Cursor deep links are retired: their opaque base64 payload embeds an uneditable placeholder key, so use the CLI installer or the explicit configuration above instead.
+
 ## Trading
 
 DEX swaps on `solana` and `base`. Two-step: quote then execute.
