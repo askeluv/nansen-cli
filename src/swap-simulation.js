@@ -287,6 +287,14 @@ async function simulateViaDebugTraceCall(rpcUrl, apiKey, { from, to, data, value
   // yielded no deltas and no approvals but some frame errored, surface that as a
   // revert — clearer than letting an all-zero outcome fail downstream as a
   // mismatch. (The primary eth_simulateV1 path reports status directly.)
+  //
+  // Deliberately scoped to the moved-nothing case: DO NOT widen this to throw on
+  // any errored frame. Aggregators routinely make sub-calls that revert and are
+  // caught (probe pool A, revert, fall back to pool B) inside an otherwise
+  // successful swap, so those frame errors are normal. When tokens actually
+  // moved, assertSwapOutcome judges the real outcome (a partial swap that failed
+  // to deliver the output still fails assertion 2), so an errored frame there is
+  // not a reliable revert signal and would false-positive on legitimate swaps.
   if (Object.keys(deltas).length === 0 && approvals.length === 0) {
     const errored = frames.find((f) => f.error);
     if (errored) {

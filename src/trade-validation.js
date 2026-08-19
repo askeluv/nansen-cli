@@ -821,9 +821,11 @@ const BARE_ERC20_OUTER_SELECTORS = {
 };
 
 /**
- * Reject a same-chain swap whose transaction calldata is a bare ERC-20
- * transfer/approve/transferFrom rather than a router call. No-op when the
- * calldata is absent or too short to carry a 4-byte selector.
+ * Reject a swap or bridge whose transaction calldata is a bare ERC-20
+ * transfer/approve/transferFrom rather than a router call. Applies to both
+ * same-chain and cross-chain EVM quotes (a legit bridge also routes through a
+ * router). No-op when the calldata is absent or too short to carry a 4-byte
+ * selector.
  *
  * @param {string} data - The swap transaction's calldata (quote.transaction.data)
  */
@@ -912,6 +914,12 @@ export function assertSwapOutcome(request, quote, sim, { slippage, expectedSpend
   }
 
   // --- Assertion 1: input outflow within the spend ceiling ---
+  // This bounds the outflow by maxInputAmount (the slippage-buffered ceiling),
+  // NOT the exact expected input: for exactOut the aggregator may legitimately
+  // pull anywhere up to that ceiling. The tighter exactIn bound (outflow ==
+  // request.amount) is enforced by assertQuoteMatchesRequest, which the execute
+  // paths run earlier in the same iteration. Keep that call ahead of this one on
+  // any new signing path — Assertion 1 alone does not re-check exactIn inflation.
   if (request.maxInputAmount == null) {
     throw fail('request has no maximum input to bound the outflow against.');
   }
