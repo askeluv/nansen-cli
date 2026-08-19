@@ -37,11 +37,13 @@ import {
   convertToBaseUnits,
   formatQuote,
   simulateEvmCall,
+  verifySwapOutcome,
   getBridgeStatus,
   pollBridgeStatus,
   saveTxRecord,
   loadTxRecord,
 } from '../trading.js';
+import { SIMULATION_RPCS } from '../rpc-urls.js';
 import { keccak256, rlpEncode } from '../crypto.js';
 import { base58Decode } from '../transfer.js';
 import {
@@ -4138,5 +4140,79 @@ describe('exactOut max-input enforcement (adversarial)', () => {
     await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/built for wallet .* but the signer is/i);
     noBroadcast(calls);
     expect(logs.some(l => /Approval required|Sending approval|Broadcasting/.test(l))).toBe(false);
+  });
+});
+
+describe('verifySwapOutcome (execute-path wiring)', () => {
+  const TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+  const WALLET = '0x8cb9c3f23c7d600fb430bbd171a313d9ea61cebc';
+  const USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
+  const OUT = '0x4200000000000000000000000000000000000006';
+  const ROUTER = '0x57df6092665eb6058def53f94734a338a50f2e5f';
+  const pad = (a) => '0x' + a.replace(/^0x/, '').toLowerCase().padStart(64, '0');
+  const hx = (n) => '0x' + BigInt(n).toString(16);
+  const tlog = (token, from, to, amount) => ({ address: token, topics: [TRANSFER, pad(from), pad(to)], data: hx(amount) });
+  const simBody = (logs) => ({ status: 200, text: async () => JSON.stringify({ result: [{ calls: [{ status: '0x1', logs }] }] }) });
+
+  const quote = {
+    inputMint: USDC, outputMint: OUT, inAmount: '1000000', outAmount: '1000000',
+    approvalAddress: ROUTER, transaction: { to: ROUTER, data: '0xabcd', value: '0' },
+  };
+  const quoteData = {
+    slippage: 0.03,
+    request: { chain: 'base', walletAddress: WALLET, fromToken: USDC, toToken: OUT, swapMode: 'exactIn', amount: '1000000', maxInputAmount: '1000000' },
+  };
+
+  let origBase, origFetch;
+  beforeEach(() => { origBase = SIMULATION_RPCS.base; origFetch = global.fetch; SIMULATION_RPCS.base = 'http://sim.test'; });
+  afterEach(() => { SIMULATION_RPCS.base = origBase; global.fetch = origFetch; vi.restoreAllMocks(); });
+
+  it('proceeds on a clean swap', async () => {
+    global.fetch = vi.fn().mockResolvedValue(simBody([tlog(USDC, WALLET, ROUTER, 1000000n), tlog(OUT, ROUTER, WALLET, 1000000n)]));
+    const r = await verifySwapOutcome({ chain: 'base', from: WALLET, quote, quoteData });
+    expect(r.proceed).toBe(true);
+  });
+
+  it('blocks (proceed=false) when a sibling token is drained', async () => {
+    const drain = '0xaaaa000000000000000000000000000000000001';
+    global.fetch = vi.fn().mockResolvedValue(simBody([
+      tlog(USDC, WALLET, ROUTER, 1000000n), tlog(OUT, ROUTER, WALLET, 1000000n), tlog(drain, WALLET, ROUTER, 5n),
+    ]));
+    const r = await verifySwapOutcome({ chain: 'base', from: WALLET, quote, quoteData });
+    expect(r.proceed).toBe(false);
+    expect(r.reason).toMatch(/SWAP_OUTCOME_MISMATCH/i);
+  });
+
+  it('blocks when the output falls short', async () => {
+    global.fetch = vi.fn().mockResolvedValue(simBody([tlog(USDC, WALLET, ROUTER, 1000000n), tlog(OUT, ROUTER, WALLET, 900000n)]));
+    const r = await verifySwapOutcome({ chain: 'base', from: WALLET, quote, quoteData });
+    expect(r.proceed).toBe(false);
+  });
+
+  it('blocks when the swap reverts in simulation', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ status: 200, text: async () => JSON.stringify({ result: [{ calls: [{ status: '0x0', logs: [] }] }] }) });
+    const r = await verifySwapOutcome({ chain: 'base', from: WALLET, quote, quoteData });
+    expect(r.proceed).toBe(false);
+  });
+
+  it('degrades (proceed=true) when no simulation endpoint is configured', async () => {
+    SIMULATION_RPCS.base = null;
+    const logs = [];
+    const r = await verifySwapOutcome({ chain: 'base', from: WALLET, quote, quoteData, log: (m) => logs.push(m) });
+    expect(r.proceed).toBe(true);
+    expect(logs.some((l) => /unavailable|proceeding without/i.test(l))).toBe(true);
+  });
+
+  it('degrades (proceed=true) when the endpoint cannot run the simulation', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ status: 200, text: async () => JSON.stringify({ error: { code: -32601, message: 'method not found' } }) });
+    const r = await verifySwapOutcome({ chain: 'base', from: WALLET, quote, quoteData });
+    expect(r.proceed).toBe(true);
+  });
+
+  it('skips non-EVM chains', async () => {
+    global.fetch = vi.fn(); // must not be called
+    const r = await verifySwapOutcome({ chain: 'solana', from: WALLET, quote, quoteData });
+    expect(r.proceed).toBe(true);
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 });

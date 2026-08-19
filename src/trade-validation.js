@@ -837,3 +837,153 @@ export function assertSwapCalldataNotBareTransfer(data) {
     );
   }
 }
+
+// ============= Swap-outcome verification (balance-delta simulation) =============
+
+/**
+ * Assert that a SIMULATED swap's asset changes match the user's intent, failing
+ * closed on any mismatch. This is a defence-in-depth outcome check that
+ * complements the static calldata checks (validateSwapTarget /
+ * assertSwapCalldataNotBareTransfer): it verifies what the swap actually does to
+ * the wallet's balances, not just what the calldata looks like.
+ *
+ * Run it on the swap-call-alone simulation AFTER any required approval is
+ * confirmed on-chain, so the live allowance is reflected on `latest` and a
+ * single-transaction sim matches the broadcast swap (see swap-simulation.js).
+ *
+ * Four assertions, all derived from the persisted request intent + the quote:
+ *   1. the input token leaves the wallet by no MORE than maxInputAmount. Native
+ *      input excludes gas: the sim deltas are log-based, so gas (not a transfer
+ *      log) is never counted.
+ *   2. the output token arrives by AT LEAST minOut — exactOut: >= the requested
+ *      output; exactIn: the quoted output reduced by the slippage in effect.
+ *   3. NO token other than the input leaves the wallet.
+ *   4. the wallet grants no Approval to a spender outside `expectedSpenders`.
+ *
+ * @param {object} request - persisted intent (quoteData.request); required
+ * @param {object} quote - the quote being executed
+ * @param {{deltas: Record<string, bigint|string|number>, approvals?: Array<{token?:string, spender?:string, amount?:any}>}} sim
+ *   - the normalised result from simulateAssetChanges()
+ * @param {object} [ctx]
+ * @param {number} [ctx.slippage] - slippage fraction in effect (quoteData.slippage);
+ *   defaults to 3% to match approvalAmountForSwap when omitted
+ * @param {Set<string>|string[]} [ctx.expectedSpenders] - spenders the wallet may
+ *   legitimately (re)approve during the swap (e.g. the approval target and the
+ *   router); anything else fails assertion 4. Compared case-insensitively.
+ * @param {bigint} [ctx.siblingDustThreshold=0n] - non-input outflow tolerated
+ *   before assertion 3 fires (for fee-on-transfer / rounding). Strict 0 default.
+ * @throws {Error} with `code = 'SWAP_OUTCOME_MISMATCH'` on any failed assertion.
+ */
+export function assertSwapOutcome(request, quote, sim, { slippage, expectedSpenders, siblingDustThreshold = 0n } = {}) {
+  const fail = (detail) => {
+    const e = new Error(`Swap outcome mismatch (SWAP_OUTCOME_MISMATCH): ${detail} Refusing to sign.`);
+    e.code = 'SWAP_OUTCOME_MISMATCH';
+    return e;
+  };
+
+  if (!request) throw fail('no request intent to verify the outcome against.');
+  if (!sim || typeof sim !== 'object' || sim.deltas == null) {
+    throw fail('simulation returned no asset changes to verify.');
+  }
+
+  // Normalise deltas to a lowercased-key BigInt map. A non-integer delta is a
+  // corrupt sim result — fail closed rather than coerce it to 0.
+  const deltas = {};
+  for (const [k, v] of Object.entries(sim.deltas)) {
+    let amt;
+    try {
+      amt = typeof v === 'bigint' ? v : BigInt(v);
+    } catch {
+      throw fail(`simulated delta for ${k} (${v}) is not an integer.`);
+    }
+    deltas[k.toLowerCase()] = amt;
+  }
+
+  const inputToken = quote?.inputMint ? String(quote.inputMint).toLowerCase() : null;
+  const outputToken = quote?.outputMint ? String(quote.outputMint).toLowerCase() : null;
+  if (!inputToken || !outputToken) {
+    throw fail('quote is missing the input or output token address.');
+  }
+
+  // --- Assertion 1: input outflow within the spend ceiling ---
+  if (request.maxInputAmount == null) {
+    throw fail('request has no maximum input to bound the outflow against.');
+  }
+  let cap;
+  try {
+    cap = BigInt(request.maxInputAmount);
+  } catch {
+    throw fail(`maximum input (${request.maxInputAmount}) is not an integer.`);
+  }
+  const inputDelta = deltas[inputToken] || 0n;
+  const outflow = inputDelta < 0n ? -inputDelta : 0n;
+  if (outflow > cap) {
+    throw fail(`the input token (${inputToken}) left the wallet by ${outflow}, exceeding your maximum input (${cap}).`);
+  }
+
+  // --- Assertion 2: output arrives at or above the minimum acceptable ---
+  const swapMode = request.swapMode ?? 'exactIn';
+  const outputDelta = deltas[outputToken] || 0n;
+  let minOut;
+  if (swapMode === 'exactOut') {
+    if (request.amount == null) throw fail('exactOut request is missing the requested output amount.');
+    try {
+      minOut = BigInt(request.amount);
+    } catch {
+      throw fail(`requested output amount (${request.amount}) is not an integer.`);
+    }
+  } else {
+    const quotedRaw = quote.outAmount ?? quote.outputAmount;
+    if (quotedRaw == null) {
+      throw fail('quote is missing the quoted output amount; cannot compute the minimum acceptable output.');
+    }
+    let quoted;
+    try {
+      quoted = BigInt(quotedRaw);
+    } catch {
+      throw fail(`quoted output amount (${quotedRaw}) is not an integer.`);
+    }
+    // Floor of quoted × (1 − slippage), in basis points to stay in BigInt. This
+    // mirrors the slippage the user actually set (quoteData.slippage), defaulting
+    // to 3% to match approvalAmountForSwap when it wasn't supplied.
+    const slip = Number.isFinite(slippage) && slippage >= 0 ? slippage : 0.03;
+    const bps = BigInt(Math.min(10000, Math.round(slip * 10000)));
+    minOut = (quoted * (10000n - bps)) / 10000n;
+  }
+  if (outputDelta < minOut) {
+    throw fail(`the output token (${outputToken}) increased by only ${outputDelta}, below the minimum acceptable output (${minOut}).`);
+  }
+
+  // --- Assertion 3: no token other than the input leaves the wallet ---
+  const dust = siblingDustThreshold > 0n ? siblingDustThreshold : 0n;
+  for (const [token, delta] of Object.entries(deltas)) {
+    if (token === inputToken) continue; // its outflow is bounded by assertion 1
+    if (delta < 0n && -delta > dust) {
+      throw fail(`a token other than the one you are selling (${token}) left the wallet (delta ${delta}); a swap must not move any token except the input.`);
+    }
+  }
+
+  // --- Assertion 4: no approval to an unexpected spender ---
+  const allowed = new Set(
+    (expectedSpenders instanceof Set ? [...expectedSpenders] : expectedSpenders || [])
+      .filter(Boolean)
+      .map((s) => String(s).toLowerCase()),
+  );
+  for (const ap of sim.approvals || []) {
+    if (!ap || !ap.spender) continue;
+    // A revoke (approve to 0) grants no allowance, so it is never a concern.
+    if (ap.amount != null) {
+      try {
+        if (BigInt(ap.amount) === 0n) continue;
+      } catch { /* non-integer amount → treat as a real approval below */ }
+    }
+    const spender = String(ap.spender).toLowerCase();
+    if (!allowed.has(spender)) {
+      throw fail(
+        `the swap grants an approval to an unexpected spender (${spender}); a swap should only (re)approve ${allowed.size ? [...allowed].join(', ') : 'nothing'}.`,
+      );
+    }
+  }
+
+  return { verified: true };
+}

@@ -11,6 +11,23 @@
  *   NANSEN_BSC_RPC        Custom BNB Smart Chain RPC
  *   NANSEN_XLAYER_RPC     Custom X Layer RPC
  *   NANSEN_SOLANA_RPC     Custom Solana RPC
+ *   NANSEN_BASE_SIM_RPC   Custom Base simulation RPC (see SIMULATION_RPCS below)
+ *
+ * Simulation RPCs (SIMULATION_RPCS) are a SEPARATE registry from the cheap
+ * defaults above. Swap-outcome verification (src/swap-simulation.js) needs an
+ * endpoint that supports state-changing simulation with asset-transfer tracing
+ * (`eth_simulateV1` / `debug_traceCall`), which the free public defaults in
+ * CHAIN_RPCS deliberately DISABLE. Keeping the two registries apart means only
+ * the (pricey) simulation calls hit the trace-capable endpoint; ordinary reads
+ * (nonce, balance, allowance, eth_call revert check) stay on the cheap default.
+ *
+ * The shipped simulation endpoint is a Nansen-hosted service authenticated with
+ * the user's existing Nansen API key (no secret in this public package): the
+ * trace-capable upstream is reached server-side, so the baked default carries no
+ * credential. With no NANSEN_BASE_SIM_RPC override, swap-outcome verification
+ * uses this default; if the service is ever unreachable it degrades with a
+ * warning rather than blocking the trade. To use your own endpoint (or for local
+ * dev/e2e), point NANSEN_BASE_SIM_RPC at any trace-capable RPC in a gitignored .env.
  *
  * Backward-compat aliases (deprecated — prefer the forms above):
  *   NANSEN_RPC_BASE       Old name for NANSEN_BASE_RPC; trading.js previously read this
@@ -39,4 +56,22 @@ export const CHAIN_RPCS = {
   arbitrum: process.env.NANSEN_ARBITRUM_RPC || DEFAULT_ARBITRUM_RPC,
   polygon:  process.env.NANSEN_POLYGON_RPC  || DEFAULT_POLYGON_RPC,
   bnb:      process.env.NANSEN_BNB_RPC      || DEFAULT_BNB_RPC,
+};
+
+// Zero-config default for the shipped Nansen-hosted simulation endpoint. It
+// authenticates with the user's existing Nansen API key (attached automatically
+// by swap-simulation.js), and the trace-capable upstream is reached server-side —
+// so this URL carries no secret and is safe to bake into a public package. Never
+// embed an RPC URL that carries an inline token here; any embedded secret would
+// leak on publish.
+const DEFAULT_BASE_SIM_RPC = 'https://api.nansen.ai/api/v1/trade/simulate-swap';
+
+// Separate registry for swap-outcome simulation (src/swap-simulation.js). These
+// endpoints must support state-changing simulation with asset-transfer tracing
+// (`eth_simulateV1` / `debug_traceCall`), which the CHAIN_RPCS public defaults
+// disable. Only outcome verification reads this registry; every other RPC call
+// stays on the cheap CHAIN_RPCS default. A null entry (no baked default and no
+// override) signals "no sim-capable endpoint" to the caller, which degrades.
+export const SIMULATION_RPCS = {
+  base: process.env.NANSEN_BASE_SIM_RPC || DEFAULT_BASE_SIM_RPC,
 };

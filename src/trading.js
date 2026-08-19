@@ -13,9 +13,10 @@ import { base58Decode } from './transfer.js';
 import { keccak256, signSecp256k1, rlpEncode } from './crypto.js';
 import { getWalletConnectAddress, sendTransactionViaWalletConnect, sendSolanaTransactionViaWalletConnect, sendApprovalViaWalletConnect } from './walletconnect-trading.js';
 import { retrievePassword } from './keychain.js';
-import { validateQuoteInput, validateBalance, resolvePercentAmount, validateGasBalance, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertSwapCalldataNotBareTransfer, approvalAmountForSwap } from './trade-validation.js';
+import { validateQuoteInput, validateBalance, resolvePercentAmount, validateGasBalance, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertSwapCalldataNotBareTransfer, assertSwapOutcome, approvalAmountForSwap } from './trade-validation.js';
 import { CHAIN_RPCS } from './rpc-urls.js';
-import { packageVersion, CommandError, telemetryHeaders } from './api.js';
+import { simulateAssetChanges, SwapSimulationError, hasSimulationRpc } from './swap-simulation.js';
+import { packageVersion, CommandError, telemetryHeaders, loadConfig } from './api.js';
 
 // ============= Constants =============
 
@@ -697,6 +698,61 @@ export async function simulateEvmCall(chain, { from, to, data, value, gas }) {
     }
     // Network/infrastructure errors (fetch failure, rate limit, non-JSON response) → non-blocking
     return { success: true };
+  }
+}
+
+/**
+ * Verify — via balance-delta simulation — that a swap does to the wallet what
+ * the user asked and no more. Defence-in-depth on top of the static calldata
+ * guards: the cheap eth_call sim answers "will it revert", this answers "does the
+ * outcome match intent" (see assertSwapOutcome in trade-validation.js).
+ *
+ * EVM-only, and on its own gate independent of --no-simulate/gasless. When no
+ * simulation-capable endpoint is configured it DEGRADES — logs a warning, then
+ * proceeds — so a simulation outage never blocks trading. --no-verify-outcome
+ * skips it entirely.
+ *
+ * Returns { proceed, reason }. proceed=false means this quote failed
+ * verification: the caller should fall through to the next candidate WITHOUT
+ * signing or broadcasting the swap. proceed=true covers a clean pass AND a
+ * degrade (the warning is logged here).
+ *
+ * @param {object} args
+ * @param {string} args.chain
+ * @param {string} args.from - the wallet that will sign (the sender simulated)
+ * @param {object} args.quote - the quote about to be executed (currentQuote)
+ * @param {object} args.quoteData - the loaded quote record (.request, .slippage)
+ * @param {string|null} [args.apiKey] - Nansen API key for the hosted endpoint
+ * @param {function} [args.log]
+ */
+export async function verifySwapOutcome({ chain, from, quote, quoteData, apiKey = null, log = () => {} }) {
+  if (CHAIN_MAP[chain?.toLowerCase()]?.type !== 'evm') return { proceed: true }; // EVM-only
+  if (!hasSimulationRpc(chain)) {
+    log(`  ⚠ Swap-outcome verification unavailable (no simulation endpoint for ${chain}); proceeding without it.`);
+    return { proceed: true };
+  }
+  const tx = quote?.transaction || {};
+  // Spenders the wallet may legitimately (re)approve mid-swap: the approval
+  // target and the router it routes through. Anything else fails assertion 4.
+  const expectedSpenders = [quote?.approvalAddress, tx.to].filter(Boolean);
+  try {
+    const sim = await simulateAssetChanges(
+      chain,
+      { to: tx.to, data: tx.data, value: tx.value ? '0x' + BigInt(tx.value).toString(16) : '0x0' },
+      { from, apiKey },
+    );
+    assertSwapOutcome(quoteData.request, quote, sim, { slippage: quoteData.slippage, expectedSpenders });
+    log(`  ✓ Swap outcome verified (via ${sim.method}).`);
+    return { proceed: true };
+  } catch (e) {
+    // Degrade (warn + proceed) when the simulation itself could not run; block
+    // (fall through to the next quote) when the outcome did not match or the
+    // swap reverts in simulation.
+    if (e instanceof SwapSimulationError && ['NO_SIM_RPC', 'NOT_SIM_CAPABLE', 'SIM_RPC_ERROR'].includes(e.code)) {
+      log(`  ⚠ Swap-outcome verification could not run (${e.message}); proceeding without it.`);
+      return { proceed: true };
+    }
+    return { proceed: false, reason: e.message };
   }
 }
 
@@ -1761,7 +1817,9 @@ CROSS-CHAIN NOTES (when using --to-chain):
       const quoteId = options.quote || options['quote-id'] || args[0];
       const walletName = options.wallet;
       const noSimulate = flags['no-simulate'];
+      const noVerifyOutcome = flags['no-verify-outcome'];
       const gasless = Boolean(flags.gasless);
+      const apiKey = loadConfig().apiKey;
 
       if (!quoteId) {
         throw new CommandError(`Usage: nansen trade execute --quote <quoteId> [options]
@@ -1769,7 +1827,8 @@ CROSS-CHAIN NOTES (when using --to-chain):
 OPTIONS:
   --quote <id>              Quote ID from 'nansen quote'
   --wallet <name>           Wallet name (default: default wallet)
-  --no-simulate             Skip pre-broadcast simulation
+  --no-simulate             Skip pre-broadcast simulation (the eth_call revert check)
+  --no-verify-outcome       Skip EVM swap-outcome verification (balance-delta check)
   --gasless                 Relay-only: have Relay's solver pay gas (no WalletConnect)
 
 EXAMPLES:
@@ -2048,6 +2107,20 @@ EXAMPLES:
                 }
               }
 
+              // Verify the swap's simulated on-chain outcome matches intent.
+              // Its own gate (runs even when --no-simulate/gasless skip the
+              // cheap revert check above); degrades with a warning if no
+              // simulation endpoint is available.
+              if (!noVerifyOutcome) {
+                const outcome = await verifySwapOutcome({ chain, from: walletAddress, quote: currentQuote, quoteData, apiKey, log });
+                if (!outcome.proceed) {
+                  log(`  ❌ ${quoteName} failed swap-outcome verification: ${outcome.reason}`);
+                  if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                  lastQuoteError = `${quoteName} outcome verification failed: ${outcome.reason}`;
+                  continue;
+                }
+              }
+
               // Gas resolution — fall back to eth_estimateGas if quote has no gas
               const txData = currentQuote.transaction;
               const apiGas = parseInt(currentQuote.gas || '0');
@@ -2282,6 +2355,18 @@ EXAMPLES:
                 }
               }
 
+              // Verify the swap's simulated on-chain outcome matches intent
+              // (own gate; degrades with a warning when no endpoint is set).
+              if (!noVerifyOutcome) {
+                const outcome = await verifySwapOutcome({ chain, from: wcAddress, quote: currentQuote, quoteData, apiKey, log });
+                if (!outcome.proceed) {
+                  log(`  ❌ ${quoteName} failed swap-outcome verification: ${outcome.reason}`);
+                  if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                  lastQuoteError = `${quoteName} outcome verification failed: ${outcome.reason}`;
+                  continue;
+                }
+              }
+
               // Resolve gas
               const txData = currentQuote.transaction;
               const apiGas = parseInt(currentQuote.gas || "0");
@@ -2497,6 +2582,18 @@ EXAMPLES:
                   log(`  ⚠ Simulation failed for ${quoteName}: ${sim.reason}`);
                   if (qi + 1 < endIndex) log(`  Trying next quote...`);
                   lastQuoteError = `${quoteName} simulation failed: ${sim.reason}`;
+                  continue;
+                }
+              }
+
+              // Verify the swap's simulated on-chain outcome matches intent
+              // (own gate; degrades with a warning when no endpoint is set).
+              if (!noVerifyOutcome) {
+                const outcome = await verifySwapOutcome({ chain, from: walletAddress, quote: currentQuote, quoteData, apiKey, log });
+                if (!outcome.proceed) {
+                  log(`  ❌ ${quoteName} failed swap-outcome verification: ${outcome.reason}`);
+                  if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                  lastQuoteError = `${quoteName} outcome verification failed: ${outcome.reason}`;
                   continue;
                 }
               }

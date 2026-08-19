@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { validateQuoteInput, fetchNativeBalance, fetchTokenBalance, validateBalance, resolvePercentAmount, validateGasBalance, GASLESS_MIN_TRADE_USD, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertInputWithinMax, assertSwapCalldataNotBareTransfer, MAX_UINT256 } from '../trade-validation.js';
+import { validateQuoteInput, fetchNativeBalance, fetchTokenBalance, validateBalance, resolvePercentAmount, validateGasBalance, GASLESS_MIN_TRADE_USD, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertInputWithinMax, assertSwapCalldataNotBareTransfer, assertSwapOutcome, MAX_UINT256 } from '../trade-validation.js';
 
 describe('validateQuoteInput', () => {
   const validSolana = {
@@ -1371,5 +1371,117 @@ describe('assertSwapCalldataNotBareTransfer', () => {
     expect(() => assertSwapCalldataNotBareTransfer('')).not.toThrow();
     expect(() => assertSwapCalldataNotBareTransfer('0x')).not.toThrow();
     expect(() => assertSwapCalldataNotBareTransfer('0xa905')).not.toThrow(); // < 4 bytes
+  });
+});
+
+describe('assertSwapOutcome', () => {
+  const USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
+  const DAI = '0x50c5725949a6f0c72e6c4a641f24049a917db0cb';
+  const ROUTER = '0x57df6092665eb6058def53f94734a338a50f2e5f';
+  const ATTACKER = '0x00000000000000000000000000000000deadbeef';
+  const NATIVE = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+
+  // exactIn: sell 1,000,000 USDC for DAI, quoted 1,000,000 out, 3% slippage.
+  const exactInRequest = {
+    chain: 'base', walletAddress: '0xwallet', fromToken: USDC, toToken: DAI,
+    swapMode: 'exactIn', amount: '1000000', maxInputAmount: '1000000',
+  };
+  const exactInQuote = { inputMint: USDC, outputMint: DAI, inAmount: '1000000', outAmount: '1000000' };
+
+  it('passes a benign exactIn swap within cap and above min output', () => {
+    const sim = { deltas: { [USDC]: -1000000n, [DAI]: 1000000n }, approvals: [] };
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, sim, { slippage: 0.03, expectedSpenders: [ROUTER] }))
+      .not.toThrow();
+  });
+
+  it('accepts a benign exactIn output within the slippage floor', () => {
+    // 3% slippage floor on 1,000,000 = 970,000; 980,000 received is acceptable.
+    const sim = { deltas: { [USDC]: -1000000n, [DAI]: 980000n }, approvals: [] };
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, sim, { slippage: 0.03 })).not.toThrow();
+  });
+
+  it('rejects an input outflow exceeding maxInputAmount (assertion 1)', () => {
+    const sim = { deltas: { [USDC]: -1000001n, [DAI]: 1000000n }, approvals: [] };
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*maximum input/i);
+  });
+
+  it('rejects an output below the minimum acceptable (assertion 2)', () => {
+    const sim = { deltas: { [USDC]: -1000000n, [DAI]: 900000n }, approvals: [] }; // below 970,000 floor
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, sim, { slippage: 0.03 }))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*minimum acceptable output/i);
+  });
+
+  it('rejects a sibling-token drain (assertion 3)', () => {
+    // Input + output are correct, but a THIRD token also leaves the wallet —
+    // the pre-existing-allowance drain the static checks cannot catch.
+    const sim = {
+      deltas: { [USDC]: -1000000n, [DAI]: 1000000n, '0xaaaa000000000000000000000000000000000001': -42n },
+      approvals: [],
+    };
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*other than the one you are selling/i);
+  });
+
+  it('rejects an approval to an unexpected spender (assertion 4)', () => {
+    const sim = {
+      deltas: { [USDC]: -1000000n, [DAI]: 1000000n },
+      approvals: [{ token: USDC, spender: ATTACKER, amount: 500000n }],
+    };
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, sim, { expectedSpenders: [ROUTER] }))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*unexpected spender/i);
+  });
+
+  it('allows an approval to an expected spender', () => {
+    const sim = {
+      deltas: { [USDC]: -1000000n, [DAI]: 1000000n },
+      approvals: [{ token: USDC, spender: ROUTER.toUpperCase(), amount: 500000n }], // case-insensitive
+    };
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, sim, { expectedSpenders: [ROUTER] })).not.toThrow();
+  });
+
+  it('allows a revoke (approve to 0) to any spender', () => {
+    const sim = {
+      deltas: { [USDC]: -1000000n, [DAI]: 1000000n },
+      approvals: [{ token: USDC, spender: ATTACKER, amount: 0n }],
+    };
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, sim, { expectedSpenders: [ROUTER] })).not.toThrow();
+  });
+
+  it('excludes gas for a native input (log-based deltas)', () => {
+    // Native sell of 0.0015 ETH; the sim delta is exactly the value moved, no gas.
+    const req = { ...exactInRequest, fromToken: NATIVE, amount: '1500000000000000', maxInputAmount: '1500000000000000' };
+    const quote = { inputMint: NATIVE, outputMint: USDC, inAmount: '1500000000000000', outAmount: '5000000' };
+    const sim = { deltas: { [NATIVE]: -1500000000000000n, [USDC]: 5000000n }, approvals: [] };
+    expect(() => assertSwapOutcome(req, { ...quote }, sim, {})).not.toThrow();
+  });
+
+  it('enforces exactOut minimum output = requested output', () => {
+    const req = { ...exactInRequest, swapMode: 'exactOut', amount: '1000000', maxInputAmount: '1100000' };
+    const quote = { inputMint: USDC, outputMint: DAI, inAmount: '1050000', outAmount: '1000000' };
+    const good = { deltas: { [USDC]: -1050000n, [DAI]: 1000000n }, approvals: [] };
+    expect(() => assertSwapOutcome(req, quote, good, {})).not.toThrow();
+    const short = { deltas: { [USDC]: -1050000n, [DAI]: 999999n }, approvals: [] };
+    expect(() => assertSwapOutcome(req, quote, short, {})).toThrow(/SWAP_OUTCOME_MISMATCH/i);
+  });
+
+  it('tolerates a sub-threshold non-input outflow when a dust threshold is set', () => {
+    const sim = {
+      deltas: { [USDC]: -1000000n, [DAI]: 1000000n, '0xaaaa000000000000000000000000000000000001': -3n },
+      approvals: [],
+    };
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, sim, { siblingDustThreshold: 5n })).not.toThrow();
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, sim, { siblingDustThreshold: 2n })).toThrow(/SWAP_OUTCOME_MISMATCH/i);
+  });
+
+  it('fails closed when the request has no maximum input', () => {
+    const req = { ...exactInRequest, maxInputAmount: undefined };
+    const sim = { deltas: { [USDC]: -1000000n, [DAI]: 1000000n }, approvals: [] };
+    expect(() => assertSwapOutcome(req, exactInQuote, sim, {})).toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*maximum input/i);
+  });
+
+  it('fails closed on a corrupt (non-integer) simulated delta', () => {
+    const sim = { deltas: { [USDC]: 'not-a-number' }, approvals: [] };
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, sim, {})).toThrow(/SWAP_OUTCOME_MISMATCH/i);
   });
 });
