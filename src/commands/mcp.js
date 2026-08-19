@@ -23,10 +23,15 @@ export const NANSEN_MCP_URL = 'https://mcp.nansen.ai/ra/mcp';
 // release; bump deliberately.
 export const MCP_REMOTE_PIN = 'mcp-remote@0.1.38';
 
+export const CLAUDE_CODE_KEY_REF = '${NANSEN_API_KEY}';
+export const CURSOR_KEY_REF = '${env:NANSEN_API_KEY}';
+
 const SERVER_KEY = 'nansen';
 
 // Claude Desktop passes the key by env-var reference, never inline. No space
-// after the colon: Claude Desktop mis-splits args containing spaces.
+// after the colon: Claude Desktop mis-splits args containing spaces. The
+// ${...} here is mcp-remote's own expansion syntax — same spelling as
+// CLAUDE_CODE_KEY_REF only by coincidence, so it stays an independent literal.
 const DESKTOP_HEADER_ARG = 'NANSEN-API-KEY:${NANSEN_API_KEY}';
 
 // House idiom (see src/api.js CONFIG_DIR): env first so tests can point HOME
@@ -49,6 +54,12 @@ CLIENTS:
 
 OPTIONS:
   --dry-run        Preview the change (key redacted) without writing
+  --env-ref        Reference NANSEN_API_KEY instead of writing the key (no login required)
+
+CREDENTIALS:
+  claude-code      headers: "\${NANSEN_API_KEY}"
+  cursor           headers: "\${env:NANSEN_API_KEY}"
+  claude-desktop   omit env; mcp-remote inherits NANSEN_API_KEY from the OS environment
 
 The API key is taken from \`nansen login\` / NANSEN_API_KEY. Re-run install after
 rotating your key to update the entry. Verify performs one real authenticated data
@@ -81,20 +92,29 @@ export function resolveClientConfigPath(client, { platform = process.platform, h
  * Build the mcpServers entry for a client.
  * claude-code/cursor use native remote HTTP; claude-desktop bridges via mcp-remote.
  */
-export function buildServerEntry(client, apiKey) {
+export function buildServerEntry(client, apiKey, { envRef = false } = {}) {
   switch (client) {
     case 'claude-code':
       // "type" is required — a url without type is treated as broken stdio and skipped
-      return { type: 'http', url: NANSEN_MCP_URL, headers: { 'NANSEN-API-KEY': apiKey } };
-    case 'cursor':
-      return { url: NANSEN_MCP_URL, headers: { 'NANSEN-API-KEY': apiKey } };
-    case 'claude-desktop':
-      // No --allow-http: the URL is HTTPS.
       return {
+        type: 'http',
+        url: NANSEN_MCP_URL,
+        headers: { 'NANSEN-API-KEY': envRef ? CLAUDE_CODE_KEY_REF : apiKey },
+      };
+    case 'cursor':
+      return {
+        url: NANSEN_MCP_URL,
+        headers: { 'NANSEN-API-KEY': envRef ? CURSOR_KEY_REF : apiKey },
+      };
+    case 'claude-desktop': {
+      // No --allow-http: the URL is HTTPS.
+      const entry = {
         command: 'npx',
         args: ['-y', MCP_REMOTE_PIN, NANSEN_MCP_URL, '--header', DESKTOP_HEADER_ARG],
-        env: { NANSEN_API_KEY: apiKey },
       };
+      if (!envRef) entry.env = { NANSEN_API_KEY: apiKey };
+      return entry;
+    }
     default:
       throw new CommandError(`Unknown client: ${client}. Supported: ${SUPPORTED_CLIENTS.join(', ')}`, 'INVALID_PARAMS');
   }
@@ -107,7 +127,7 @@ const isOfficialUrl = (value) =>
   typeof value === 'string' && value.replace(/\/+$/, '') === NANSEN_MCP_URL;
 
 /**
- * Extract the installed key, gating only on what decides where that key goes:
+ * Resolve the installed credential, gating only on what decides where that key goes:
  * the official URL (for Claude Desktop, the pinned mcp-remote bridge to it)
  * plus a non-empty key. Anything looser would let verify report success for a
  * config that actually ships the key elsewhere.
@@ -117,7 +137,17 @@ const isOfficialUrl = (value) =>
  * verify sends the key to the NANSEN_MCP_URL constant, never to the config's
  * URL. Non-security differences are reported by entryDriftNotes() as warnings.
  */
-export function extractInstalledKey(client, entry) {
+const resolveEnvReference = (env) => ({
+  key: typeof env?.NANSEN_API_KEY === 'string' && env.NANSEN_API_KEY.length > 0
+    ? env.NANSEN_API_KEY
+    : null,
+  source: 'env-ref',
+});
+
+const isNearMissReference = (value, supportedReference) =>
+  typeof value === 'string' && value.includes('${') && value !== supportedReference;
+
+function extractInstalledCredential(client, entry, { env = process.env } = {}) {
   if (!SUPPORTED_CLIENTS.includes(client)) return null;
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
 
@@ -143,12 +173,15 @@ export function extractInstalledKey(client, entry) {
       // second key header would make the client send a key we never tested.
       && args.filter(arg => /^nansen-api-key\s*:/i.test(arg)).length === 1;
     if (!officialBridge) return null;
+    if (entry.env === undefined) return resolveEnvReference(env);
     // npx reads npm_config_*, NODE_OPTIONS and PATH from env, so any extra
     // variable can redirect which code receives the key: only the key may be set.
-    const env = entry.env;
-    if (!env || typeof env !== 'object' || Array.isArray(env)) return null;
-    if (Object.keys(env).some(name => name !== 'NANSEN_API_KEY')) return null;
-    return typeof env.NANSEN_API_KEY === 'string' && env.NANSEN_API_KEY.length > 0 ? env.NANSEN_API_KEY : null;
+    const entryEnv = entry.env;
+    if (!entryEnv || typeof entryEnv !== 'object' || Array.isArray(entryEnv)) return null;
+    if (Object.keys(entryEnv).some(name => name !== 'NANSEN_API_KEY')) return null;
+    const apiKey = entryEnv.NANSEN_API_KEY;
+    if (typeof apiKey !== 'string' || apiKey.length === 0 || apiKey.includes('${')) return null;
+    return { key: apiKey, source: 'literal' };
   }
 
   // Remote HTTP clients: the URL is the transport. A command/args pair means the
@@ -162,7 +195,15 @@ export function extractInstalledKey(client, entry) {
   const keyHeaders = Object.keys(headers).filter(name => name.toLowerCase() === 'nansen-api-key');
   if (keyHeaders.length !== 1) return null;
   const apiKey = headers[keyHeaders[0]];
-  return typeof apiKey === 'string' && apiKey.length > 0 ? apiKey : null;
+  if (typeof apiKey !== 'string' || apiKey.length === 0) return null;
+  const reference = client === 'claude-code' ? CLAUDE_CODE_KEY_REF : CURSOR_KEY_REF;
+  if (apiKey === reference) return resolveEnvReference(env);
+  if (isNearMissReference(apiKey, reference)) return null;
+  return { key: apiKey, source: 'literal' };
+}
+
+export function extractInstalledKey(client, entry, options = {}) {
+  return extractInstalledCredential(client, entry, options)?.key || null;
 }
 
 /**
@@ -180,7 +221,11 @@ export function entryDriftNotes(client, entry) {
   const installedKey = client === 'claude-desktop'
     ? entry.env?.NANSEN_API_KEY
     : Object.entries(entry.headers || {}).find(([name]) => name.toLowerCase() === 'nansen-api-key')?.[1];
-  const expected = buildServerEntry(client, typeof installedKey === 'string' ? installedKey : '');
+  const reference = client === 'claude-code' ? CLAUDE_CODE_KEY_REF : CURSOR_KEY_REF;
+  const envRef = client === 'claude-desktop'
+    ? entry.env === undefined
+    : installedKey === reference;
+  const expected = buildServerEntry(client, typeof installedKey === 'string' ? installedKey : '', { envRef });
   const notes = [];
   for (const [field, want] of Object.entries(expected)) {
     if (entry[field] === undefined) notes.push(`missing "${field}"`);
@@ -303,7 +348,7 @@ const VERIFY_REQUEST_ID = 1;
 const VERIFY_TIMEOUT_MS = 15_000;
 const VERIFY_TOKEN_ADDRESS = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
 
-function redactSecret(text, secret) {
+export function redactSecret(text, secret) {
   return typeof text === 'string' && typeof secret === 'string' && secret
     ? text.split(secret).join('[redacted]')
     : text;
@@ -358,6 +403,25 @@ function assertMergeableServers(config, configPath) {
 export function mergeNansenEntry(config, entry, configPath = 'config') {
   assertMergeableServers(config, configPath);
   return { ...config, mcpServers: { ...config.mcpServers, [SERVER_KEY]: entry } };
+}
+
+/**
+ * Copy of the config with the nansen entry's credential slots redacted —
+ * every slot install has ever written a key to (headers in any casing, the
+ * desktop env block). Other entries and fields are preserved verbatim.
+ */
+export function redactNansenEntryCredential(config) {
+  const entry = config?.mcpServers?.[SERVER_KEY];
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return config;
+  const redacted = { ...entry };
+  if (redacted.headers && typeof redacted.headers === 'object' && !Array.isArray(redacted.headers)) {
+    redacted.headers = Object.fromEntries(Object.entries(redacted.headers).map(([name, value]) =>
+      name.toLowerCase() === 'nansen-api-key' ? [name, '<redacted>'] : [name, value]));
+  }
+  if (redacted.env && typeof redacted.env === 'object' && !Array.isArray(redacted.env) && 'NANSEN_API_KEY' in redacted.env) {
+    redacted.env = { ...redacted.env, NANSEN_API_KEY: '<redacted>' };
+  }
+  return { ...config, mcpServers: { ...config.mcpServers, [SERVER_KEY]: redacted } };
 }
 
 /**
@@ -454,10 +518,14 @@ export function buildMcpCommands(deps = {}) {
           if (!entry) {
             throw new CommandError(`Nansen MCP is not installed for ${client} — run: nansen mcp install ${client}`, 'NOT_INSTALLED');
           }
-          apiKey = extractInstalledKey(client, entry);
-          if (!apiKey) {
+          const credential = extractInstalledCredential(client, entry, { env });
+          if (!credential) {
             throw new CommandError(`Nansen MCP entry for ${client} does not match the official server URL/transport, or carries no API key — re-run install: nansen mcp install ${client}`, 'INVALID_CONFIG');
           }
+          if (credential.source === 'env-ref' && !credential.key) {
+            throw new CommandError(`The ${client} entry references NANSEN_API_KEY, which is not set in this shell — export it and re-run.`, 'INVALID_CONFIG');
+          }
+          apiKey = credential.key;
           const notes = entryDriftNotes(client, entry);
           if (notes.length) {
             log(`Warning: the ${client} entry differs from what install writes (${notes.join('; ')}). Verifying its key anyway — re-run nansen mcp install ${client} if the client cannot connect.`);
@@ -548,14 +616,16 @@ export function buildMcpCommands(deps = {}) {
       }
 
       // install
-      const apiKey = apiInstance?.apiKey;
-      if (!apiKey) {
+      const envRef = Boolean(flags['env-ref']);
+      const apiKey = envRef ? undefined : apiInstance?.apiKey;
+      if (!envRef && !apiKey) {
         throw new CommandError('Not logged in. Run: nansen login', 'NOT_LOGGED_IN');
       }
 
       if (flags['dry-run']) {
-        // The key is never printed — dry-run shows a redacted entry.
-        const redacted = buildServerEntry(client, '<redacted>');
+        // The key is never printed — dry-run shows a redacted inline entry or
+        // the real environment reference.
+        const redacted = buildServerEntry(client, envRef ? undefined : '<redacted>', { envRef });
         log(`Would write "${SERVER_KEY}" entry to ${configPath}:`);
         log(JSON.stringify({ mcpServers: { [SERVER_KEY]: redacted } }, null, 2));
         return undefined;
@@ -563,21 +633,43 @@ export function buildMcpCommands(deps = {}) {
 
       const { config, existed } = readConfig(configPath);
       const hadEntry = !!config.mcpServers?.[SERVER_KEY];
-      const merged = mergeNansenEntry(config, buildServerEntry(client, apiKey), configPath);
+      const merged = mergeNansenEntry(config, buildServerEntry(client, apiKey, { envRef }), configPath);
 
       if (existed) {
         const backupPath = `${configPath}.bak`;
-        fsx.copyFileSync(configPath, backupPath);
-        try { fsx.chmodSync(backupPath, 0o600); } catch { /* best-effort */ }
-        log(`Backed up existing config to ${backupPath}`);
+        if (hadEntry) {
+          // The backup must not keep a credential the new config no longer
+          // holds (an --env-ref migration would otherwise leave the old key
+          // in the sync/backup path forever). Our entry is regenerable via
+          // re-install, so its credential slots are redacted; everything
+          // else is preserved verbatim.
+          writeConfig(backupPath, redactNansenEntryCredential(config));
+          log(`Backed up existing config to ${backupPath} (Nansen credential redacted; restore other entries from it, re-run install for Nansen)`);
+        } else {
+          fsx.copyFileSync(configPath, backupPath);
+          try { fsx.chmodSync(backupPath, 0o600); } catch { /* best-effort */ }
+          log(`Backed up existing config to ${backupPath}`);
+        }
       }
       writeConfig(configPath, merged);
 
       log(hadEntry
         ? `Updated existing Nansen MCP entry in ${configPath}`
         : `Installed Nansen MCP server to ${configPath}`);
-      log(`Note: your Nansen API key is stored in plaintext in ${configPath}.`);
-      log('If this file is synced or backed up (settings sync, dotfiles), your key travels with it.');
+      if (envRef) {
+        log('Set NANSEN_API_KEY in the environment visible to the client when it launches.');
+        if (client === 'claude-desktop') {
+          log('Claude Desktop needs OS-level environment variables (macOS: launchctl setenv NANSEN_API_KEY <key>; Windows: user environment variables).');
+        }
+        if (!env.NANSEN_API_KEY) {
+          log('Warning: NANSEN_API_KEY is not set in this shell; it only needs to be set in the client launch environment.');
+        }
+        log('Some client versions fail to expand environment references in HTTP headers and send the literal reference; confirm expansion inside the client.');
+      } else {
+        log(`Note: your Nansen API key is stored in plaintext in ${configPath}.`);
+        log('If this file is synced or backed up (settings sync, dotfiles), your key travels with it.');
+        log('Use --env-ref to keep the key out of the generated config.');
+      }
       log(`Restart ${client} to pick up the change.`);
       log(`Verify your setup: nansen mcp verify ${client}`);
       return undefined;

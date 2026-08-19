@@ -1818,6 +1818,15 @@ describe('buildCommands', () => {
   });
 
   describe('login command', () => {
+    it('leads help with history-safe login methods', async () => {
+      await commands.login([], null, { help: true }, {});
+      const help = logs.join('\n');
+      expect(help.indexOf('nansen login --human')).toBeLessThan(help.indexOf('NANSEN_API_KEY=$(op read'));
+      expect(help.indexOf('NANSEN_API_KEY=$(op read')).toBeLessThan(help.indexOf('nansen login --api-key <key>'));
+      expect(help).toContain('literal values are recorded in shell history');
+      expect(help).toContain('Inline NANSEN_API_KEY=<key> assignments are also recorded in shell history');
+    });
+
     it('should exit when no API key provided', async () => {
       const savedEnv = process.env.NANSEN_API_KEY;
       delete process.env.NANSEN_API_KEY;
@@ -1873,12 +1882,15 @@ describe('buildCommands', () => {
     });
 
     it('should handle network errors during verification', async () => {
-      const mockApi = { getAccount: vi.fn().mockRejectedValue({ code: 'NETWORK_ERROR', message: 'Network error' }) };
+      const key = 'login-network-secret';
+      const mockApi = { getAccount: vi.fn().mockRejectedValue({ code: 'NETWORK_ERROR', message: `Network error for ${key}` }) };
       mockDeps.NansenAPIClass.mockImplementation(function() { return mockApi; });
 
-      const err = await commands.login([], null, {}, { 'api-key': 'some-key' }).catch(e => e);
+      const err = await commands.login([], null, {}, { 'api-key': key }).catch(e => e);
 
       expect(err.code).toBe('VERIFICATION_FAILED');
+      expect(err.message).toContain('[redacted]');
+      expect(err.message).not.toContain(key);
       expect(mockDeps.saveConfigFn).not.toHaveBeenCalled();
     });
 

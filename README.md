@@ -61,13 +61,26 @@ nansen mcp install claude-code       # ~/.claude.json (user scope)
 nansen mcp install claude-desktop    # macOS/Windows only; bridges via pinned mcp-remote
 nansen mcp install cursor            # ~/.cursor/mcp.json
 nansen mcp install cursor --dry-run  # print what would be written (key redacted)
+nansen mcp install cursor --env-ref  # reference NANSEN_API_KEY instead of storing it
 nansen mcp uninstall <client>        # remove the entry (add --dry-run to preview)
-nansen mcp verify [client]           # prove the setup with one real authenticated data call
+nansen mcp verify [client]           # check setup with one real authenticated data call
 ```
 
-Uses the API key from `nansen login` / `NANSEN_API_KEY`; re-run `install` after rotating your key. Installs are merge-only and atomic: existing servers and settings are preserved, a `.bak` copy is written first, and the CLI refuses to touch a config it can't parse. Note the client config stores the API key in plaintext — new files are created with `0600` permissions. Restart the client after installing. For other clients, see [docs.nansen.ai/mcp/connecting](https://docs.nansen.ai/mcp/connecting).
+Uses the API key from `nansen login` / `NANSEN_API_KEY`; re-run `install` after rotating your key. Installs are merge-only and atomic: existing servers and settings are preserved, a `.bak` copy is written first, and the CLI refuses to touch a config it can't parse. Note the client config stores the API key in plaintext by default (see `--env-ref`) — new files are created with `0600` permissions. Restart the client after installing. For other clients, see [docs.nansen.ai/mcp/connecting](https://docs.nansen.ai/mcp/connecting).
 
-`install` writes the config; `verify` proves it works. The MCP server answers `tools/list` — and even some free tools — without a key, so a broken credential only surfaces on the first real data call. `nansen mcp verify` makes that call (a `token_info` lookup, consuming a small number of API credits) and maps each failure to a fix. With a client argument (`nansen mcp verify cursor`) it checks the key actually stored in that client's config — catching stale keys after rotation; hand-written entries are fine as long as they still target the official server URL/transport (other differences are warned about, not refused), and the key is only ever sent to the official server URL. Without one it checks the `nansen login` / `NANSEN_API_KEY` credential directly.
+### MCP credential patterns
+
+By default, `install` writes the API key literal. With `--env-ref`, the config stores only a reference and `NANSEN_API_KEY` must be available in the client process when it launches:
+
+| Client | Default | `--env-ref` | Ceiling |
+| --- | --- | --- | --- |
+| Claude Code | `"NANSEN-API-KEY": "<key>"` | `"NANSEN-API-KEY": "${NANSEN_API_KEY}"` | Some client versions send the literal reference in HTTP headers. |
+| Cursor | `"NANSEN-API-KEY": "<key>"` | `"NANSEN-API-KEY": "${env:NANSEN_API_KEY}"` | Remote HTTP/SSE headers may send the literal reference; stdio expansion is reliable. |
+| Claude Desktop | Key in the config `env` block | Omits the `env` block; `mcp-remote` inherits the OS environment | Claude Desktop has no native config expansion. |
+
+`--env-ref` is opt-in: confirm reference expansion inside Claude Code or Cursor because `nansen mcp verify` can only check the config shape and resolve the variable in the current shell, not prove the client expands it. Claude Desktop requires OS-level environment variables for this mode, such as `launchctl setenv NANSEN_API_KEY <key>` on macOS or a Windows user environment variable.
+
+`install` writes the config; `verify` checks the configured credential path with one real call. The MCP server answers `tools/list` — and even some free tools — without a key, so a broken credential only surfaces on the first real data call. `nansen mcp verify` makes that call (a `token_info` lookup, consuming a small number of API credits) and maps each failure to a fix. With a client argument (`nansen mcp verify cursor`) it checks the key actually stored in that client's config — catching stale keys after rotation; hand-written entries are fine as long as they still target the official server URL/transport (other differences are warned about, not refused), and the key is only ever sent to the official server URL. Without one it checks the `nansen login` / `NANSEN_API_KEY` credential directly. For `--env-ref`, this proves config shape and current-shell resolution only; it cannot prove the client expands the reference.
 
 ## Trading
 

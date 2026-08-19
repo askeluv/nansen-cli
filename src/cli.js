@@ -11,7 +11,7 @@ import { buildTradingCommands } from './trading.js';
 import { buildLimitOrderCommands } from './limit-order.js';
 import { formatAlertsTable, buildAlertsCommands } from './commands/alerts.js';
 import { buildAgentCommands } from './commands/agent.js';
-import { buildMcpCommands } from './commands/mcp.js';
+import { buildMcpCommands, redactSecret } from './commands/mcp.js';
 import { buildResearchCommands, RESEARCH_HISTORICAL_SUBCOMMANDS } from './commands/research.js';
 import { resolveAddress, isEnsName } from './ens.js';
 import fs from 'fs';
@@ -191,7 +191,7 @@ export function parseArgs(args) {
       const key = arg.slice(2);
       const next = args[i + 1];
       
-      if (key === 'pretty' || key === 'help' || key === 'version' || key === 'table' || key === 'no-retry' || key === 'cache' || key === 'no-cache' || key === 'stream' || key === 'enrich' || key === 'full' || key === 'human' || key === 'enabled' || key === 'disabled' || key === 'expert' || key === 'json' || key === 'offline' || key === 'dry-run') {
+      if (key === 'pretty' || key === 'help' || key === 'version' || key === 'table' || key === 'no-retry' || key === 'cache' || key === 'no-cache' || key === 'stream' || key === 'enrich' || key === 'full' || key === 'human' || key === 'enabled' || key === 'disabled' || key === 'expert' || key === 'json' || key === 'offline' || key === 'dry-run' || key === 'env-ref') {
         result.flags[key] = true;
       } else if (next && (!next.startsWith('-') || /^-\d/.test(next))) {
         // Try to parse as JSON first (for objects/arrays/booleans),
@@ -990,13 +990,14 @@ export function buildCommands(deps = {}) {
       if (flags.help || flags.h) {
         log('nansen login - Save your Nansen API key\n');
         log('USAGE:');
-        log('  nansen login --api-key <key>');
-        log('  NANSEN_API_KEY=<key> nansen login');
-        log('  nansen login --human              (interactive prompt)\n');
+        log('  nansen login --human              (interactive masked prompt; key never enters history)');
+        log('  NANSEN_API_KEY=$(op read op://vault/item/credential) nansen login  (key output is not recorded in history)');
+        log('  nansen login --api-key <key>      (literal key is recorded in shell history)\n');
         log('OPTIONS:');
-        log('  --api-key <key>   Your Nansen API key');
+        log('  --api-key <key>   Your Nansen API key (literal values are recorded in shell history)');
         log('  --human           Enable interactive prompt');
         log('  --help            Show this help\n');
+        log('Inline NANSEN_API_KEY=<key> assignments are also recorded in shell history.');
         log('Get your API key at: https://app.nansen.ai/auth/agent-setup');
         return;
       }
@@ -1049,9 +1050,10 @@ export function buildCommands(deps = {}) {
             resolution: ['Check your key at https://app.nansen.ai/auth/agent-setup'],
           });
         }
-        throw new CommandError(`Could not verify API key: ${error.message}`, 'VERIFICATION_FAILED', {
+        const safeMessage = redactSecret(redactSecret(error.message, apiKey), apiKey.trim());
+        throw new CommandError(`Could not verify API key: ${safeMessage}`, 'VERIFICATION_FAILED', {
           error: 'VERIFICATION_FAILED',
-          message: `Could not verify API key: ${error.message}`,
+          message: `Could not verify API key: ${safeMessage}`,
           resolution: ['Check your internet connection', 'Try again'],
         });
       }

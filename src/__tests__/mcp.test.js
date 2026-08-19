@@ -15,11 +15,14 @@ import {
   buildMcpCommands,
   NANSEN_MCP_URL,
   MCP_REMOTE_PIN,
+  CLAUDE_CODE_KEY_REF,
+  CURSOR_KEY_REF,
   extractInstalledKey,
   entryDriftNotes,
   parseMcpResponse,
   classifyVerifyResult,
 } from '../commands/mcp.js';
+import { parseArgs } from '../cli.js';
 
 const API_KEY = 'test-key-123';
 const TOKEN_ADDRESS = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
@@ -88,6 +91,25 @@ describe('buildServerEntry', () => {
     expect(entry.args.join(' ')).not.toContain(API_KEY);
     expect(entry.env).toEqual({ NANSEN_API_KEY: API_KEY });
     expect(entry.args).not.toContain('--allow-http');
+  });
+
+  it('builds env-ref entries for each client without storing the key', () => {
+    expect(buildServerEntry('claude-code', API_KEY, { envRef: true })).toEqual({
+      type: 'http',
+      url: NANSEN_MCP_URL,
+      headers: { 'NANSEN-API-KEY': CLAUDE_CODE_KEY_REF },
+    });
+    expect(buildServerEntry('cursor', API_KEY, { envRef: true })).toEqual({
+      url: NANSEN_MCP_URL,
+      headers: { 'NANSEN-API-KEY': CURSOR_KEY_REF },
+    });
+    const desktop = buildServerEntry('claude-desktop', API_KEY, { envRef: true });
+    expect(desktop).toEqual({
+      command: 'npx',
+      args: ['-y', MCP_REMOTE_PIN, NANSEN_MCP_URL, '--header', 'NANSEN-API-KEY:${NANSEN_API_KEY}'],
+    });
+    expect(desktop).not.toHaveProperty('env');
+    expect(JSON.stringify(desktop)).not.toContain(API_KEY);
   });
 });
 
@@ -214,9 +236,37 @@ describe('MCP verify helpers', () => {
     expect(extractInstalledKey('vscode', buildServerEntry('cursor', API_KEY))).toBeNull();
   });
 
+  it('resolves exact env refs, refuses near-misses, and treats empty env as unset', () => {
+    const env = { NANSEN_API_KEY: API_KEY };
+    expect(extractInstalledKey('claude-code', buildServerEntry('claude-code', API_KEY, { envRef: true }), { env }))
+      .toBe(API_KEY);
+    expect(extractInstalledKey('cursor', buildServerEntry('cursor', API_KEY, { envRef: true }), { env }))
+      .toBe(API_KEY);
+    expect(extractInstalledKey('claude-desktop', buildServerEntry('claude-desktop', API_KEY, { envRef: true }), { env }))
+      .toBe(API_KEY);
+
+    expect(extractInstalledKey('claude-code', {
+      url: NANSEN_MCP_URL,
+      headers: { 'NANSEN-API-KEY': '${NANSEN_API_KEY}:suffix' },
+    }, { env })).toBeNull();
+    expect(extractInstalledKey('cursor', {
+      url: NANSEN_MCP_URL,
+      headers: { 'NANSEN-API-KEY': CLAUDE_CODE_KEY_REF },
+    }, { env })).toBeNull();
+    const desktopNearMiss = buildServerEntry('claude-desktop', API_KEY);
+    desktopNearMiss.env.NANSEN_API_KEY = '${OTHER_KEY}';
+    expect(extractInstalledKey('claude-desktop', desktopNearMiss, { env })).toBeNull();
+
+    const emptyEnv = { NANSEN_API_KEY: '' };
+    for (const client of ['claude-code', 'cursor', 'claude-desktop']) {
+      expect(extractInstalledKey(client, buildServerEntry(client, API_KEY, { envRef: true }), { env: emptyEnv })).toBeNull();
+    }
+  });
+
   it('names missing, changed, and extra fields without ever quoting a value', () => {
     for (const client of ['cursor', 'claude-code', 'claude-desktop']) {
       expect(entryDriftNotes(client, buildServerEntry(client, API_KEY))).toEqual([]);
+      expect(entryDriftNotes(client, buildServerEntry(client, API_KEY, { envRef: true }))).toEqual([]);
     }
     expect(entryDriftNotes('claude-code', { url: NANSEN_MCP_URL, headers: { 'NANSEN-API-KEY': API_KEY } }))
       .toEqual(['missing "type"']);
@@ -328,6 +378,26 @@ describe('mcp command handler', () => {
     expect(fs.statSync(`${cursorPath()}.bak`).mode & 0o777).toBe(0o600);
   });
 
+  it('redacts the nansen credential in the backup when replacing an existing entry', async () => {
+    fs.mkdirSync(path.dirname(cursorPath()), { recursive: true });
+    fs.writeFileSync(cursorPath(), JSON.stringify({
+      mcpServers: { nansen: buildServerEntry('cursor', API_KEY), other: { command: 'foo' } },
+      unrelated: true,
+    }));
+
+    await run(['install', 'cursor'], { flags: { 'env-ref': true } });
+
+    const bakText = fs.readFileSync(`${cursorPath()}.bak`, 'utf8');
+    expect(bakText).not.toContain(API_KEY);
+    const bak = JSON.parse(bakText);
+    expect(bak.mcpServers.nansen.headers['NANSEN-API-KEY']).toBe('<redacted>');
+    expect(bak.mcpServers.other).toEqual({ command: 'foo' });
+    expect(bak.unrelated).toBe(true);
+    expect(fs.statSync(`${cursorPath()}.bak`).mode & 0o777).toBe(0o600);
+    expect(readCursor().mcpServers.nansen.headers['NANSEN-API-KEY']).toBe(CURSOR_KEY_REF);
+    expect(logs.join('\n')).toContain('Nansen credential redacted');
+  });
+
   it('re-running install is idempotent and reports an update', async () => {
     await run(['install', 'cursor']);
     logs.length = 0;
@@ -379,6 +449,26 @@ describe('mcp command handler', () => {
     expect(fs.existsSync(cursorPath())).toBe(false);
   });
 
+  it('installs env-ref entries while logged out in either flag position', async () => {
+    for (const rawArgs of [
+      ['install', '--env-ref', 'cursor'],
+      ['install', 'cursor', '--env-ref'],
+    ]) {
+      const parsed = parseArgs(['mcp', ...rawArgs]);
+      expect(parsed._).toEqual(['mcp', 'install', 'cursor']);
+      expect(parsed.flags['env-ref']).toBe(true);
+      await mcp(parsed._.slice(1), null, parsed.flags, parsed.options);
+    }
+
+    const config = readCursor();
+    const entry = config.mcpServers.nansen;
+    expect(entry.headers['NANSEN-API-KEY']).toBe(CURSOR_KEY_REF);
+    expect(JSON.stringify(config)).not.toContain(API_KEY);
+    expect(logs.join('\n')).toContain('client launch environment');
+    expect(logs.join('\n')).toContain('Warning: NANSEN_API_KEY is not set in this shell');
+    expect(logs.join('\n')).not.toContain(API_KEY);
+  });
+
   it('--dry-run writes nothing and never prints the key', async () => {
     await run(['install', 'cursor'], { flags: { 'dry-run': true } });
     expect(fs.existsSync(cursorPath())).toBe(false);
@@ -424,6 +514,8 @@ describe('mcp command handler', () => {
   it('bare `mcp` and `mcp --help` print usage; bad inputs throw actionable errors', async () => {
     await run([]);
     expect(logs.join('\n')).toContain('nansen mcp install <client>');
+    expect(logs.join('\n')).toContain('--env-ref');
+    expect(logs.join('\n')).toContain('CREDENTIALS:');
     await expect(run(['frobnicate'])).rejects.toThrow(/Unknown subcommand/);
     await expect(run(['install'])).rejects.toThrow(/claude-code, claude-desktop, cursor/);
     await expect(run(['install', 'vscode'])).rejects.toThrow(/claude-code, claude-desktop, cursor/);
@@ -500,6 +592,32 @@ describe('mcp command handler', () => {
     } finally {
       fs.rmSync(desktopDir, { recursive: true, force: true });
     }
+  });
+
+  it('verifies env-ref entries from the injected environment and rejects unset refs', async () => {
+    fs.mkdirSync(path.dirname(cursorPath()), { recursive: true });
+    fs.writeFileSync(cursorPath(), JSON.stringify({
+      mcpServers: { nansen: buildServerEntry('cursor', API_KEY, { envRef: true }) },
+    }));
+    fetchFn.mockResolvedValue(response(successBody));
+
+    const resolvedLogs = [];
+    const { mcp: resolvedMcp } = buildMcpCommands({
+      log: (...a) => resolvedLogs.push(a.join(' ')),
+      platform: 'linux',
+      homedirFn: () => tempDir,
+      env: { NANSEN_API_KEY: API_KEY },
+      fetchFn,
+    });
+    await resolvedMcp(['verify', 'cursor'], null, {}, {});
+    expect(fetchFn.mock.calls[0][1].headers['NANSEN-API-KEY']).toBe(API_KEY);
+    expect(resolvedLogs.join('\n')).not.toContain(API_KEY);
+
+    fetchFn.mockClear();
+    const error = await run(['verify', 'cursor'], { apiInstance: null }).then(() => null, err => err);
+    expect(error?.message).toMatch(/references NANSEN_API_KEY, which is not set in this shell/);
+    expect(error?.message).not.toContain(API_KEY);
+    expect(fetchFn).not.toHaveBeenCalled();
   });
 
   it('rejects missing entries and relocated keys without a network call', async () => {
@@ -658,6 +776,8 @@ describe('schema + CLI registration', () => {
     expect(schema.commands.mcp.subcommands.verify.description).toContain('credits');
     expect(schema.commands.mcp.subcommands.verify.examples).toContain('nansen mcp verify cursor');
     expect(schema.commands.mcp.subcommands.uninstall.options['dry-run'].type).toBe('boolean');
+    expect(schema.commands.mcp.subcommands.install.options['env-ref'].type).toBe('boolean');
+    expect(schema.commands.mcp.subcommands.install.examples).toContain('nansen mcp install claude-code --env-ref');
   });
 
   it('runCLI routes `mcp` and parses --dry-run as a boolean flag', async () => {

@@ -1959,11 +1959,16 @@
             "dry-run": {
               "type": "boolean",
               "description": "Print the target config path and entry (API key redacted) without writing"
+            },
+            "env-ref": {
+              "type": "boolean",
+              "description": "Use NANSEN_API_KEY from the client's launch environment instead of storing the key"
             }
           },
           "examples": [
             "nansen mcp install claude-code",
-            "nansen mcp install cursor --dry-run"
+            "nansen mcp install cursor --dry-run",
+            "nansen mcp install claude-code --env-ref"
           ]
         },
         "uninstall": {
