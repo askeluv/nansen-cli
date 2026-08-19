@@ -25,6 +25,10 @@ export const MCP_REMOTE_PIN = 'mcp-remote@0.1.38';
 
 const SERVER_KEY = 'nansen';
 
+// Claude Desktop passes the key by env-var reference, never inline. No space
+// after the colon: Claude Desktop mis-splits args containing spaces.
+const DESKTOP_HEADER_ARG = 'NANSEN-API-KEY:${NANSEN_API_KEY}';
+
 // House idiom (see src/api.js CONFIG_DIR): env first so tests can point HOME
 // at a temp dir; os.homedir() as last resort.
 const houseHomedir = () => process.env.HOME || process.env.USERPROFILE || os.homedir();
@@ -85,11 +89,10 @@ export function buildServerEntry(client, apiKey) {
     case 'cursor':
       return { url: NANSEN_MCP_URL, headers: { 'NANSEN-API-KEY': apiKey } };
     case 'claude-desktop':
-      // No space after the colon: Claude Desktop mis-splits args containing spaces.
       // No --allow-http: the URL is HTTPS.
       return {
         command: 'npx',
-        args: ['-y', MCP_REMOTE_PIN, NANSEN_MCP_URL, '--header', 'NANSEN-API-KEY:${NANSEN_API_KEY}'],
+        args: ['-y', MCP_REMOTE_PIN, NANSEN_MCP_URL, '--header', DESKTOP_HEADER_ARG],
         env: { NANSEN_API_KEY: apiKey },
       };
     default:
@@ -98,17 +101,95 @@ export function buildServerEntry(client, apiKey) {
 }
 
 /**
- * Extract a key only from the exact entry written by install.
- * This prevents verify from sending a key to a hand-edited URL or command.
+ * A trailing slash is the same endpoint; anything else is a different server.
+ */
+const isOfficialUrl = (value) =>
+  typeof value === 'string' && value.replace(/\/+$/, '') === NANSEN_MCP_URL;
+
+/**
+ * Extract the installed key, gating only on what decides where that key goes:
+ * the official URL (for Claude Desktop, the pinned mcp-remote bridge to it)
+ * plus a non-empty key. Anything looser would let verify report success for a
+ * config that actually ships the key elsewhere.
+ *
+ * Deliberately not a deep-equal against buildServerEntry(): hand-written and
+ * deep-link configs carry extra or reordered fields and are still valid, and
+ * verify sends the key to the NANSEN_MCP_URL constant, never to the config's
+ * URL. Non-security differences are reported by entryDriftNotes() as warnings.
  */
 export function extractInstalledKey(client, entry) {
   if (!SUPPORTED_CLIENTS.includes(client)) return null;
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
-  const apiKey = client === 'claude-desktop'
+
+  if (client === 'claude-desktop') {
+    // The URL, the pin and the header all live in argv here, so argv is what has
+    // to hold up: npx must run the pinned bridge itself — an npm execution
+    // override (`--package=x`, `-p x`, `--call`) keeps every token below while
+    // handing the key's process to something else — aimed at the official URL
+    // and no other, and passing the key by env reference rather than inline (an
+    // inline literal is a different key from the one verify would test).
+    const args = Array.isArray(entry.args) ? entry.args : [];
+    if (!args.every(arg => typeof arg === 'string')) return null;
+    const pinIndex = args.indexOf(MCP_REMOTE_PIN);
+    const headerIndex = args.indexOf(DESKTOP_HEADER_ARG);
+    const officialBridge = entry.command === 'npx'
+      && pinIndex !== -1
+      && args.slice(0, pinIndex).every(arg => arg === '-y' || arg === '--yes')
+      && args.some(isOfficialUrl)
+      && !args.some(arg => /^https?:\/\//i.test(arg) && !isOfficialUrl(arg))
+      && headerIndex > pinIndex
+      && args[headerIndex - 1] === '--header'
+      // mcp-remote applies every --header and the last assignment wins, so a
+      // second key header would make the client send a key we never tested.
+      && args.filter(arg => /^nansen-api-key\s*:/i.test(arg)).length === 1;
+    if (!officialBridge) return null;
+    // npx reads npm_config_*, NODE_OPTIONS and PATH from env, so any extra
+    // variable can redirect which code receives the key: only the key may be set.
+    const env = entry.env;
+    if (!env || typeof env !== 'object' || Array.isArray(env)) return null;
+    if (Object.keys(env).some(name => name !== 'NANSEN_API_KEY')) return null;
+    return typeof env.NANSEN_API_KEY === 'string' && env.NANSEN_API_KEY.length > 0 ? env.NANSEN_API_KEY : null;
+  }
+
+  // Remote HTTP clients: the URL is the transport. A command/args pair means the
+  // client spawns a process instead and hands the key to that.
+  if (!isOfficialUrl(entry.url)) return null;
+  if (entry.command !== undefined || entry.args !== undefined) return null;
+  const headers = entry.headers;
+  if (!headers || typeof headers !== 'object' || Array.isArray(headers)) return null;
+  // Header names are case-insensitive on the wire, so two spellings mean the
+  // client may send a key other than the one being verified.
+  const keyHeaders = Object.keys(headers).filter(name => name.toLowerCase() === 'nansen-api-key');
+  if (keyHeaders.length !== 1) return null;
+  const apiKey = headers[keyHeaders[0]];
+  return typeof apiKey === 'string' && apiKey.length > 0 ? apiKey : null;
+}
+
+/**
+ * Which fields differ from what install writes — missing, changed or extra.
+ * Warned about rather than refused: none of them can send the key somewhere
+ * else (extractInstalledKey already refuses that), but a changed or missing
+ * field (e.g. claude-code's `type`) can stop the client loading the server.
+ *
+ * Notes name fields, never values, so a note can never carry the key. The key
+ * itself is compared by substituting the installed one into the expectation.
+ */
+export function entryDriftNotes(client, entry) {
+  if (!SUPPORTED_CLIENTS.includes(client)) return [];
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
+  const installedKey = client === 'claude-desktop'
     ? entry.env?.NANSEN_API_KEY
-    : entry.headers?.['NANSEN-API-KEY'];
-  if (typeof apiKey !== 'string' || apiKey.length === 0) return null;
-  return isDeepStrictEqual(entry, buildServerEntry(client, apiKey)) ? apiKey : null;
+    : Object.entries(entry.headers || {}).find(([name]) => name.toLowerCase() === 'nansen-api-key')?.[1];
+  const expected = buildServerEntry(client, typeof installedKey === 'string' ? installedKey : '');
+  const notes = [];
+  for (const [field, want] of Object.entries(expected)) {
+    if (entry[field] === undefined) notes.push(`missing "${field}"`);
+    else if (!isDeepStrictEqual(entry[field], want)) notes.push(`changed "${field}"`);
+  }
+  for (const field of Object.keys(entry)) {
+    if (!(field in expected)) notes.push(`unexpected "${field}"`);
+  }
+  return notes;
 }
 
 /**
@@ -375,7 +456,11 @@ export function buildMcpCommands(deps = {}) {
           }
           apiKey = extractInstalledKey(client, entry);
           if (!apiKey) {
-            throw new CommandError(`Nansen MCP entry does not match what nansen mcp install ${client} writes — re-run install`, 'INVALID_CONFIG');
+            throw new CommandError(`Nansen MCP entry for ${client} does not match the official server URL/transport, or carries no API key — re-run install: nansen mcp install ${client}`, 'INVALID_CONFIG');
+          }
+          const notes = entryDriftNotes(client, entry);
+          if (notes.length) {
+            log(`Warning: the ${client} entry differs from what install writes (${notes.join('; ')}). Verifying its key anyway — re-run nansen mcp install ${client} if the client cannot connect.`);
           }
         } else {
           apiKey = apiInstance?.apiKey;

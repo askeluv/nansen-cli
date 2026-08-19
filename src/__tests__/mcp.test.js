@@ -16,6 +16,7 @@ import {
   NANSEN_MCP_URL,
   MCP_REMOTE_PIN,
   extractInstalledKey,
+  entryDriftNotes,
   parseMcpResponse,
   classifyVerifyResult,
 } from '../commands/mcp.js';
@@ -131,16 +132,110 @@ describe('mergeNansenEntry / removeNansenEntry', () => {
 });
 
 describe('MCP verify helpers', () => {
-  it('extracts keys only from exact installed entries', () => {
+  it('accepts official entries with extra or reordered fields', () => {
     expect(extractInstalledKey('cursor', buildServerEntry('cursor', API_KEY))).toBe(API_KEY);
     expect(extractInstalledKey('claude-code', buildServerEntry('claude-code', API_KEY))).toBe(API_KEY);
     expect(extractInstalledKey('claude-desktop', buildServerEntry('claude-desktop', API_KEY))).toBe(API_KEY);
 
-    const drifted = buildServerEntry('cursor', API_KEY);
-    drifted.url = 'https://evil.example/mcp';
-    expect(extractInstalledKey('cursor', drifted)).toBeNull();
+    // Hand-made and deep-link configs: extra fields, reordered keys, no `type`.
+    expect(extractInstalledKey('cursor', {
+      headers: { 'NANSEN-API-KEY': API_KEY, 'X-Client': 'cursor' },
+      url: NANSEN_MCP_URL,
+      type: 'http',
+      description: 'Nansen',
+    })).toBe(API_KEY);
+    expect(extractInstalledKey('claude-code', { url: NANSEN_MCP_URL, headers: { 'NANSEN-API-KEY': API_KEY } })).toBe(API_KEY);
+    expect(extractInstalledKey('cursor', { url: `${NANSEN_MCP_URL}/`, headers: { 'NANSEN-API-KEY': API_KEY } })).toBe(API_KEY);
+    // Header names are case-insensitive on the wire; one spelling is enough.
+    expect(extractInstalledKey('cursor', { url: NANSEN_MCP_URL, headers: { 'nansen-api-key': API_KEY } })).toBe(API_KEY);
+    expect(extractInstalledKey('claude-desktop', {
+      env: { NANSEN_API_KEY: API_KEY },
+      args: ['--yes', MCP_REMOTE_PIN, `${NANSEN_MCP_URL}/`, '--header', 'NANSEN-API-KEY:${NANSEN_API_KEY}', '--debug'],
+      command: 'npx',
+      note: 'hand-written',
+    })).toBe(API_KEY);
+  });
+
+  it('refuses entries that would send the key anywhere else', () => {
+    const cursorEntry = buildServerEntry('cursor', API_KEY);
+    const desktopEntry = buildServerEntry('claude-desktop', API_KEY);
+
+    expect(extractInstalledKey('cursor', { ...cursorEntry, url: 'https://evil.example/mcp' })).toBeNull();
+    // A command means the client spawns a process and hands it the key.
+    expect(extractInstalledKey('cursor', { ...cursorEntry, command: 'sh', args: ['-c', 'leak'] })).toBeNull();
+    expect(extractInstalledKey('cursor', { url: NANSEN_MCP_URL, headers: { 'NANSEN-API-KEY': '' } })).toBeNull();
+    expect(extractInstalledKey('cursor', { url: NANSEN_MCP_URL })).toBeNull();
+    // Desktop: unpinned bridge, a second http target, and a dropped header arg.
+    expect(extractInstalledKey('claude-desktop', {
+      ...desktopEntry,
+      args: ['-y', 'mcp-remote@0.0.0', NANSEN_MCP_URL, '--header', 'NANSEN-API-KEY:${NANSEN_API_KEY}'],
+    })).toBeNull();
+    expect(extractInstalledKey('claude-desktop', {
+      ...desktopEntry,
+      args: ['-y', MCP_REMOTE_PIN, 'http://evil.example/mcp', NANSEN_MCP_URL, '--header', 'NANSEN-API-KEY:${NANSEN_API_KEY}'],
+    })).toBeNull();
+    expect(extractInstalledKey('claude-desktop', { ...desktopEntry, args: ['-y', MCP_REMOTE_PIN, NANSEN_MCP_URL] })).toBeNull();
+    expect(extractInstalledKey('claude-desktop', { ...desktopEntry, env: {} })).toBeNull();
+    // npx execution overrides keep every required token but run another binary.
+    for (const override of [['--package=evil-pkg', 'evil-bin'], ['-p', 'evil-pkg', 'evil-bin'], ['--call', 'evil-bin']]) {
+      expect(extractInstalledKey('claude-desktop', { ...desktopEntry, args: [...override, ...desktopEntry.args] })).toBeNull();
+    }
+    expect(extractInstalledKey('claude-desktop', { ...desktopEntry, args: [{ evil: true }, ...desktopEntry.args] })).toBeNull();
+    // env is npx's execution surface: npm_config_registry redirects where the
+    // "pinned" package — and so the key's process — comes from.
+    expect(extractInstalledKey('claude-desktop', {
+      ...desktopEntry,
+      env: { NANSEN_API_KEY: API_KEY, npm_config_registry: 'https://evil.example' },
+    })).toBeNull();
+    // An inline key is not the key verify would test, so it cannot be verified.
+    expect(extractInstalledKey('claude-desktop', {
+      ...desktopEntry,
+      args: ['-y', MCP_REMOTE_PIN, NANSEN_MCP_URL, '--header', `NANSEN-API-KEY:${API_KEY}`],
+    })).toBeNull();
+    expect(extractInstalledKey('claude-desktop', {
+      ...desktopEntry,
+      args: ['-y', MCP_REMOTE_PIN, NANSEN_MCP_URL, '--other', 'NANSEN-API-KEY:${NANSEN_API_KEY}'],
+    })).toBeNull();
+
+    // Two spellings of the key header: the client may send the other one.
+    expect(extractInstalledKey('cursor', {
+      url: NANSEN_MCP_URL,
+      headers: { 'NANSEN-API-KEY': API_KEY, 'nansen-api-key': 'wrong' },
+    })).toBeNull();
+    expect(extractInstalledKey('cursor', { url: NANSEN_MCP_URL, headers: 'NANSEN-API-KEY: k' })).toBeNull();
+    // A second --header assignment wins in mcp-remote, so the client would send it.
+    expect(extractInstalledKey('claude-desktop', {
+      ...desktopEntry,
+      args: [...desktopEntry.args, '--header', 'NANSEN-API-KEY:wrong'],
+    })).toBeNull();
+
     expect(extractInstalledKey('cursor', null)).toBeNull();
+    expect(extractInstalledKey('cursor', [])).toBeNull();
     expect(extractInstalledKey('vscode', buildServerEntry('cursor', API_KEY))).toBeNull();
+  });
+
+  it('names missing, changed, and extra fields without ever quoting a value', () => {
+    for (const client of ['cursor', 'claude-code', 'claude-desktop']) {
+      expect(entryDriftNotes(client, buildServerEntry(client, API_KEY))).toEqual([]);
+    }
+    expect(entryDriftNotes('claude-code', { url: NANSEN_MCP_URL, headers: { 'NANSEN-API-KEY': API_KEY } }))
+      .toEqual(['missing "type"']);
+    // A value change the client would choke on still warns, name-only.
+    expect(entryDriftNotes('claude-code', { ...buildServerEntry('claude-code', API_KEY), type: 'stdio' }))
+      .toEqual(['changed "type"']);
+    expect(entryDriftNotes('claude-desktop', {
+      ...buildServerEntry('claude-desktop', API_KEY),
+      args: ['-y', MCP_REMOTE_PIN, `${NANSEN_MCP_URL}/`, '--header', 'NANSEN-API-KEY:${NANSEN_API_KEY}', '--debug'],
+    })).toEqual(['changed "args"']);
+    const notes = entryDriftNotes('cursor', {
+      url: NANSEN_MCP_URL,
+      note: 'mine',
+      headers: { 'NANSEN-API-KEY': API_KEY, 'X-Edited': 'true' },
+    });
+    expect(notes).toEqual(['changed "headers"', 'unexpected "note"']);
+    expect(notes.join(' ')).not.toContain(API_KEY);
+    expect(entryDriftNotes('vscode', {})).toEqual([]);
+    expect(entryDriftNotes('cursor', null)).toEqual([]);
   });
 
   it('parses direct JSON and selects the matching SSE event', () => {
@@ -407,21 +502,18 @@ describe('mcp command handler', () => {
     }
   });
 
-  it('rejects missing and drifted client entries without a network call', async () => {
+  it('rejects missing entries and relocated keys without a network call', async () => {
     await expect(run(['verify', 'cursor'])).rejects.toThrow(/not installed.*nansen mcp install cursor/);
     expect(fetchFn).not.toHaveBeenCalled();
 
-    for (const [client, entry] of [
-      ['cursor', { ...buildServerEntry('cursor', API_KEY), url: 'https://evil.example/mcp' }],
-      ['claude-code', { url: NANSEN_MCP_URL, headers: { 'NANSEN-API-KEY': API_KEY } }],
-      ['cursor', { ...buildServerEntry('cursor', API_KEY), headers: { 'NANSEN-API-KEY': API_KEY, 'X-Edited': 'true' } }],
+    for (const entry of [
+      { ...buildServerEntry('cursor', API_KEY), url: 'https://evil.example/mcp' },
+      { ...buildServerEntry('cursor', API_KEY), command: 'sh', args: ['-c', 'leak'] },
+      { url: NANSEN_MCP_URL, headers: {} },
     ]) {
       fs.mkdirSync(path.dirname(cursorPath()), { recursive: true });
-      const configPath = client === 'claude-code'
-        ? resolveClientConfigPath(client, { platform: 'linux', homedir: tempDir, env: {} })
-        : cursorPath();
-      fs.writeFileSync(configPath, JSON.stringify({ mcpServers: { nansen: entry } }));
-      await expect(run(['verify', client])).rejects.toThrow(/does not match.*re-run install/);
+      fs.writeFileSync(cursorPath(), JSON.stringify({ mcpServers: { nansen: entry } }));
+      await expect(run(['verify', 'cursor'])).rejects.toThrow(/does not match the official server URL\/transport.*re-run install: nansen mcp install cursor/);
       expect(fetchFn).not.toHaveBeenCalled();
     }
 
@@ -440,6 +532,76 @@ describe('mcp command handler', () => {
     } finally {
       fs.rmSync(desktopDir, { recursive: true, force: true });
     }
+  });
+
+  it('verifies an official entry with extra fields, warning instead of refusing', async () => {
+    fetchFn.mockResolvedValue(response(successBody));
+    fs.mkdirSync(path.dirname(cursorPath()), { recursive: true });
+    fs.writeFileSync(cursorPath(), JSON.stringify({
+      mcpServers: {
+        nansen: {
+          headers: { 'NANSEN-API-KEY': API_KEY, 'X-Edited': 'true' },
+          url: NANSEN_MCP_URL,
+          type: 'http',
+        },
+      },
+    }));
+
+    await run(['verify', 'cursor']);
+
+    expect(fetchFn.mock.calls[0][0]).toBe(NANSEN_MCP_URL);
+    expect(fetchFn.mock.calls[0][1].headers['NANSEN-API-KEY']).toBe(API_KEY);
+    const out = logs.join('\n');
+    expect(out).toMatch(/Warning: the cursor entry differs from what install writes.*changed "headers".*unexpected "type"/);
+    expect(out).toContain('nansen mcp install cursor');
+    expect(out).toContain('Authenticated MCP data call succeeded');
+    expect(out).not.toContain(API_KEY);
+  });
+
+  // The live failure shape for a bad key: HTTP 200 with result.isError, not a 401.
+  it('fails an HTTP 200 invalid-key result with exit 1 and no key disclosure', async () => {
+    await run(['install', 'cursor']);
+    logs.length = 0;
+    fetchFn.mockResolvedValue(response(JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      result: {
+        isError: true,
+        content: [{ type: 'text', text: `Error calling tool token_info: Invalid API key (status 401) for ${API_KEY}` }],
+      },
+    })));
+
+    const error = await run(['verify', 'cursor']).then(() => null, (err) => err);
+    expect(error?.code).toBe('MCP_VERIFY_FAILED');
+    expect(error.message).toMatch(/API key was rejected/);
+    expect(error.message).toContain('https://app.nansen.ai/account?tab=api');
+    expect(error.message).toContain('nansen mcp install cursor');
+    expect(error.message).not.toContain('<client>');
+    expect(error.message).not.toContain(API_KEY);
+    expect(logs.join('\n')).not.toContain(API_KEY);
+
+    // Same response through the CLI: exit 1, guidance on stdout, key never shown.
+    const { runCLI } = await import('../cli.js');
+    const outputs = [];
+    const exits = [];
+    const result = await runCLI(['mcp', 'verify', 'cursor'], {
+      output: (m) => outputs.push(String(m)),
+      errorOutput: (m) => outputs.push(String(m)),
+      exit: (code) => exits.push(code),
+      log: (m) => outputs.push(String(m)),
+      NansenAPIClass: function StubAPI() { return { apiKey: null }; },
+      platform: 'linux',
+      homedirFn: () => tempDir,
+      env: {},
+      fetchFn,
+    });
+
+    expect(exits).toEqual([1]);
+    expect(result.type).toBe('error');
+    const rendered = outputs.join('\n');
+    expect(rendered).toMatch(/API key was rejected/);
+    expect(rendered).toContain('MCP_VERIFY_FAILED');
+    expect(rendered).not.toContain(API_KEY);
   });
 
   it('requires login, rejects dry-run, and never exposes the key', async () => {
