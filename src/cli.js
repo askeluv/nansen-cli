@@ -570,7 +570,10 @@ export async function batchProfile(api, params = {}) {
     }
     try {
       if (include.includes('labels')) {
-        entry.labels = await api.addressLabels({ address, chain });
+        const labelsResult = await api.addressLabels({ address, chain });
+        entry.labels = Array.isArray(labelsResult?.data)
+          ? labelsResult.data
+          : labelsResult?.labels || [];
       }
       if (include.includes('balance')) {
         entry.balance = await api.addressBalance({ address, chain });

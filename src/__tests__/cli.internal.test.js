@@ -3975,6 +3975,26 @@ describe('batchProfile', () => {
     expect(result.results[0].balance).toBeDefined();
   });
 
+  it('should unwrap the v1 labels response into a labels array', async () => {
+    const mockApi = {
+      addressLabels: vi.fn().mockResolvedValue({
+        pagination: { page: 1, per_page: 100, is_last_page: true },
+        data: [{ label: 'Fund', category: 'fund', kind: ['entity/fund'] }]
+      }),
+    };
+
+    const result = await batchProfile(mockApi, {
+      addresses: ['0x0000000000000000000000000000000000000001'],
+      chain: 'ethereum',
+      include: ['labels'],
+      delayMs: 0,
+    });
+
+    expect(result.results[0].labels).toEqual([
+      { label: 'Fund', category: 'fund', kind: ['entity/fund'] }
+    ]);
+  });
+
   it('should capture individual errors without failing batch', async () => {
     const mockApi = {
       addressLabels: vi.fn().mockRejectedValue(new Error('Not found')),
