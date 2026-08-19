@@ -1,0 +1,329 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { formatMcpVerifyReport, runMcpVerifyChecks } from '../mcp-verify.js';
+import { runCLI, SCHEMA } from '../cli.js';
+
+const API_KEY = 'nk_test_1234567890abcdef';
+
+function response(message, contentType = 'application/json', status = 200) {
+  return {
+    status,
+    headers: { get: () => contentType },
+    text: vi.fn().mockResolvedValue(typeof message === 'string' ? message : JSON.stringify(message)),
+  };
+}
+
+function rpcResult(result, contentType = 'application/json') {
+  return response({ jsonrpc: '2.0', id: 1, result }, contentType);
+}
+
+function rpcError(message, contentType = 'application/json', status = 200) {
+  return response({ jsonrpc: '2.0', id: 1, error: message }, contentType, status);
+}
+
+function sse(message) {
+  return response(`event: message\ndata: ${JSON.stringify(message)}\n\n`, 'text/event-stream');
+}
+
+function listResponse(contentType = 'application/json') {
+  const message = { tools: [{ name: 'nansen_score_top_tokens' }] };
+  return contentType === 'text/event-stream' ? sse({ jsonrpc: '2.0', id: 1, result: message }) : rpcResult(message);
+}
+
+function authSuccessResponse(contentType = 'application/json') {
+  const message = { content: [{ type: 'text', text: 'ok' }] };
+  return contentType === 'text/event-stream' ? sse({ jsonrpc: '2.0', id: 1, result: message }) : rpcResult(message);
+}
+
+describe('mcp verify', () => {
+  let tempHome;
+  let env;
+  let devConfigPath;
+
+  beforeEach(() => {
+    tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'nansen-mcp-verify-test-'));
+    env = { HOME: tempHome };
+    devConfigPath = path.join(tempHome, 'missing-dev-config.json');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  });
+
+  const runChecks = (fetchFn, overrides = {}) => runMcpVerifyChecks({
+    apiKey: API_KEY,
+    env,
+    devConfigPath,
+    fetchFn,
+    ...overrides,
+  });
+
+  const findCheck = (checks, id) => checks.find(check => check.id === id);
+
+  it('verifies an SSE-framed server and paid data call', async () => {
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(listResponse('text/event-stream'))
+      .mockResolvedValueOnce(authSuccessResponse('text/event-stream'));
+
+    const checks = await runChecks(fetchFn);
+
+    expect(findCheck(checks, 'mcp-server')).toMatchObject({ id: 'mcp-server', status: 'ok' });
+    expect(findCheck(checks, 'mcp-auth')).toMatchObject({ id: 'mcp-auth', status: 'ok' });
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    const [listCall, authCall] = fetchFn.mock.calls;
+    expect(listCall[1].headers).not.toHaveProperty('NANSEN-API-KEY');
+    expect(JSON.parse(authCall[1].body)).toMatchObject({
+      method: 'tools/call',
+      params: { name: 'nansen_score_top_tokens', arguments: { request: {} } },
+    });
+    expect(authCall[1].headers['NANSEN-API-KEY']).toBe(API_KEY);
+  });
+
+  it('verifies a plain JSON response body', async () => {
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(listResponse())
+      .mockResolvedValueOnce(authSuccessResponse());
+
+    const checks = await runChecks(fetchFn);
+
+    expect(findCheck(checks, 'mcp-auth').status).toBe('ok');
+  });
+
+  it('skips the paid call when the key is missing', async () => {
+    const fetchFn = vi.fn().mockResolvedValueOnce(listResponse());
+    const checks = await runChecks(fetchFn, { apiKey: null });
+
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(findCheck(checks, 'mcp-api-key')).toMatchObject({ status: 'error' });
+    expect(findCheck(checks, 'mcp-auth')).toMatchObject({ status: 'info' });
+  });
+
+  it.each([
+    ['401 rejected key', 'failed with status 401: Unauthorized', 'error', /rejected the API key/, /exact key/],
+    ['missing key response', 'NANSEN-API-KEY header is required', 'error', /rejected the API key/, /exact key/],
+    ['402 credits', '402 Payment Required: insufficient credits', 'error', /insufficient credits/, /Top up/],
+    ['429 rate limit', '429 Too Many Requests', 'warn', /rate limited/, /Retry/],
+  ])('maps %s auth text to an actionable check', async (_name, text, status, message, fix) => {
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(listResponse())
+      .mockResolvedValueOnce(rpcResult({ isError: true, content: [{ type: 'text', text }] }));
+
+    const check = findCheck(await runChecks(fetchFn), 'mcp-auth');
+
+    expect(check.status).toBe(status);
+    expect(check.message).toMatch(message);
+    expect(check.fix).toMatch(fix);
+  });
+
+  it('does not verify the key on a malformed tools/call result', async () => {
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(listResponse())
+      .mockResolvedValueOnce(rpcResult({ tools: [{ name: 'nansen_score_top_tokens' }] }));
+
+    const check = findCheck(await runChecks(fetchFn), 'mcp-auth');
+
+    expect(check.status).toBe('error');
+    expect(check.message).toContain('malformed');
+  });
+
+  it('turns a network failure into a server check', async () => {
+    const error = new Error('fetch failed');
+    error.cause = { code: 'ECONNREFUSED' };
+    const fetchFn = vi.fn().mockRejectedValue(error);
+
+    const checks = await runChecks(fetchFn);
+
+    expect(findCheck(checks, 'mcp-server')).toMatchObject({ status: 'error' });
+    expect(findCheck(checks, 'mcp-server').message).toContain('ECONNREFUSED');
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('turns a hung request into a timeout check via the abort signal', async () => {
+    const fetchFn = vi.fn((_url, { signal }) => new Promise((_, reject) => {
+      signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+    }));
+
+    const checks = await runChecks(fetchFn, { timeoutMs: 5 });
+
+    expect(findCheck(checks, 'mcp-server')).toMatchObject({ status: 'error' });
+    expect(findCheck(checks, 'mcp-server').message).toContain('timed out');
+  });
+
+  it('classifies a mixed credit/rate-limit text as a rate-limit warn, not a credits error', async () => {
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(listResponse())
+      .mockResolvedValueOnce(rpcResult({
+        isError: true,
+        content: [{ type: 'text', text: 'Rate limit exceeded: credit rate limit reached, too many requests' }],
+      }));
+
+    const check = findCheck(await runChecks(fetchFn), 'mcp-auth');
+
+    expect(check.status).toBe('warn');
+    expect(check.message).toMatch(/rate limited/);
+  });
+
+  it('classifies an HTTP 401 with a parseable error body as a rejected key', async () => {
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(listResponse())
+      .mockResolvedValueOnce(rpcError({ code: -32603, message: 'nope' }, 'application/json', 401));
+
+    const check = findCheck(await runChecks(fetchFn), 'mcp-auth');
+
+    expect(check.status).toBe('error');
+    expect(check.message).toMatch(/rejected the API key/);
+  });
+
+  it('parses an SSE message whose JSON-RPC id is a string', async () => {
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(sse({ jsonrpc: '2.0', id: '1', result: { tools: [] } }))
+      .mockResolvedValueOnce(authSuccessResponse());
+
+    const checks = await runChecks(fetchFn);
+
+    expect(findCheck(checks, 'mcp-server').status).toBe('ok');
+  });
+
+  it('warns when a non-default URL will receive the API key', async () => {
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(listResponse())
+      .mockResolvedValueOnce(authSuccessResponse());
+
+    const checks = await runChecks(fetchFn, { url: 'https://mcp.example.dev/ra/mcp' });
+
+    expect(findCheck(checks, 'mcp-url')).toMatchObject({ status: 'warn' });
+    expect(findCheck(checks, 'mcp-url').message).toContain('mcp.example.dev');
+  });
+
+  it('reports an unparseable server response', async () => {
+    const fetchFn = vi.fn().mockResolvedValueOnce(response('<!doctype html>', 'text/html'));
+
+    const checks = await runChecks(fetchFn);
+
+    expect(findCheck(checks, 'mcp-server')).toMatchObject({ status: 'error' });
+    expect(findCheck(checks, 'mcp-server').message).toContain('unexpected response');
+  });
+
+  it('reports a tools/list JSON-RPC failure and does not pay-call afterward', async () => {
+    const fetchFn = vi.fn().mockResolvedValueOnce(rpcError({ code: -32000, message: 'tools unavailable' }));
+
+    const checks = await runChecks(fetchFn);
+
+    expect(findCheck(checks, 'mcp-server')).toMatchObject({ status: 'error' });
+    expect(findCheck(checks, 'mcp-server').message).toContain('tools unavailable');
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the custom URL and gives the explicit API-key option precedence', async () => {
+    env.NANSEN_API_KEY = 'nk_env_1234567890abcdef';
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(listResponse())
+      .mockResolvedValueOnce(authSuccessResponse());
+
+    const checks = await runChecks(fetchFn, { apiKey: API_KEY, url: 'https://mcp.example.dev/ra/mcp' });
+
+    expect(findCheck(checks, 'mcp-auth').status).toBe('ok');
+    expect(fetchFn.mock.calls.every(([url]) => url === 'https://mcp.example.dev/ra/mcp')).toBe(true);
+    expect(fetchFn.mock.calls[1][1].headers['NANSEN-API-KEY']).toBe(API_KEY);
+  });
+
+  it('formats a report with check lines, fixes, and the verification summary', () => {
+    const report = formatMcpVerifyReport([
+      { id: 'mcp-api-key', status: 'ok', message: 'API key found (nk_t…cdef)' },
+      { id: 'mcp-auth', status: 'ok', message: 'Authenticated MCP data call succeeded (~1 credit consumed).' },
+    ], 'https://mcp.example.dev/ra/mcp', true);
+
+    expect(report).toContain('Nansen MCP verify — https://mcp.example.dev/ra/mcp');
+    expect(report).toContain('✓ API key found');
+    expect(report).toContain('Verified:');
+    expect(report).toContain('NANSEN-API-KEY header');
+  });
+
+  it('wires mcp verify JSON failures through the non-zero CLI error envelope', async () => {
+    const output = [];
+    const exits = [];
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(listResponse())
+      .mockResolvedValueOnce(rpcResult({
+        isError: true,
+        content: [{ type: 'text', text: 'failed with status 401: Unauthorized' }],
+      }));
+    const originalCI = process.env.CI;
+    process.env.CI = '1';
+    try {
+      const result = await runCLI(['mcp', 'verify', '--json', '--api-key', API_KEY], {
+        output: value => output.push(value),
+        errorOutput: () => {},
+        exit: code => exits.push(code),
+        NansenAPIClass: class {},
+        fetchFn,
+        env,
+        devConfigPath,
+        isTTY: false,
+      });
+
+      expect(result.type).toBe('error');
+      expect(exits).toEqual([1]);
+      expect(output).toHaveLength(1);
+      const envelope = JSON.parse(output[0]);
+      expect(envelope).toMatchObject({ success: false, code: 'MCP_VERIFY_FAILED' });
+      expect(envelope.details.verified).toBe(false);
+      expect(envelope.details.checks.find(check => check.id === 'mcp-auth').status).toBe('error');
+    } finally {
+      if (originalCI === undefined) delete process.env.CI;
+      else process.env.CI = originalCI;
+    }
+  });
+
+  it('rejects a valueless --api-key instead of falling back to a saved key', async () => {
+    const output = [];
+    const exits = [];
+    const fetchFn = vi.fn();
+    const result = await runCLI(['mcp', 'verify', '--api-key'], {
+      output: value => output.push(value),
+      errorOutput: () => {},
+      exit: code => exits.push(code),
+      NansenAPIClass: class {},
+      fetchFn,
+      env,
+      devConfigPath,
+      isTTY: false,
+    });
+
+    expect(result.type).toBe('error');
+    expect(exits).toEqual([1]);
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(output.join('\n')).toContain('--api-key requires a value');
+  });
+
+  it('rejects a non-string --api-key value such as the literal null', async () => {
+    const output = [];
+    const exits = [];
+    const fetchFn = vi.fn();
+    const result = await runCLI(['mcp', 'verify', '--api-key', 'null'], {
+      output: value => output.push(value),
+      errorOutput: () => {},
+      exit: code => exits.push(code),
+      NansenAPIClass: class {},
+      fetchFn,
+      env,
+      devConfigPath,
+      isTTY: false,
+    });
+
+    expect(result.type).toBe('error');
+    expect(exits).toEqual([1]);
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(output.join('\n')).toContain('--api-key must be a single key string');
+  });
+
+  it('documents the mcp verify command in the schema', () => {
+    expect(SCHEMA.commands.mcp.subcommands.verify.options).toEqual(expect.objectContaining({
+      'api-key': expect.any(Object),
+      url: expect.any(Object),
+      json: expect.any(Object),
+    }));
+  });
+});

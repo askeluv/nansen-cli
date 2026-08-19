@@ -16,6 +16,7 @@ import { resolveAddress, isEnsName } from './ens.js';
 import fs from 'fs';
 import { getUpdateNotification, getUpgradeNotice, scheduleUpdateCheck } from './update-check.js';
 import { getAuthStatus, runDoctorChecks, runConnectivityChecks, formatDoctorReport } from './doctor.js';
+import { DEFAULT_MCP_URL, formatMcpVerifyReport, runMcpVerifyChecks } from './mcp-verify.js';
 import { refreshCostMapIfStale, getCostForEndpoint, creditsCharged } from './cost-cache.js';
 import { creditWarning, noticeWarnings } from './response-meta.js';
 import { trackCommandSucceeded, trackCommandFailed } from './telemetry.js';
@@ -739,6 +740,7 @@ COMMANDS:
   login       Save API key (--api-key <key>, --human, or NANSEN_API_KEY env var)
   logout      Remove saved API key
   doctor      Diagnostics: auth, wallets, caches, connectivity (--offline --json)
+  mcp         Verify hosted MCP setup with an authenticated data call (~1 credit)
   schema      JSON schema for all commands (use "nansen schema <cmd>" for one)
   cache       clear
   changelog   --since <version> to filter
@@ -886,7 +888,9 @@ export function buildCommands(deps = {}) {
     deleteConfigFn = deleteConfig,
     getConfigFileFn = getConfigFile,
     isTTY = process.stdin.isTTY,
-    env = process.env
+    env = process.env,
+    fetchFn = fetch,
+    devConfigPath
   } = deps;
 
   const cmds = {
@@ -917,6 +921,59 @@ export function buildCommands(deps = {}) {
         };
       }
       log(formatDoctorReport(checks, { cliVersion: VERSION, offline: Boolean(flags.offline) }));
+    },
+
+    'mcp': async (args, _apiInstance, flags, options) => {
+      const subcommand = args[0];
+      const usage = `nansen mcp — Verify the hosted Nansen MCP setup\n\nUSAGE:\n  nansen mcp verify [--api-key <key>] [--url <url>] [--json]`;
+      if (!subcommand || subcommand === 'help' || flags.help || flags.h) {
+        log(usage);
+        return;
+      }
+      if (subcommand !== 'verify') {
+        throw new NansenError(`Unknown mcp subcommand: ${subcommand}. Available: verify`, ErrorCode.UNKNOWN);
+      }
+      // A valueless --api-key parses as a flag and would silently fall back to
+      // the saved key — the exact false positive this command exists to catch.
+      if (flags['api-key']) {
+        throw new NansenError('--api-key requires a value. Usage: nansen mcp verify --api-key <key>', ErrorCode.MISSING_PARAM);
+      }
+      // parseArgs JSON-parses option values, so `--api-key null` arrives as
+      // null and a repeated flag as an array — both must fail, not fall back.
+      if ('api-key' in options && typeof options['api-key'] !== 'string') {
+        throw new NansenError('--api-key must be a single key string. Usage: nansen mcp verify --api-key <key>', ErrorCode.INVALID_PARAMS);
+      }
+
+      const url = options.url || DEFAULT_MCP_URL;
+      const checks = await runMcpVerifyChecks({
+        apiKey: options['api-key'],
+        url,
+        env,
+        fetchFn,
+        devConfigPath,
+      });
+      const verified = checks.some(checkItem => checkItem.id === 'mcp-auth' && checkItem.status === 'ok');
+      const result = {
+        verified,
+        url,
+        checks,
+        errors: checks.filter(checkItem => checkItem.status === 'error').length,
+        warnings: checks.filter(checkItem => checkItem.status === 'warn').length,
+      };
+
+      if (verified) {
+        if (flags.json) return result;
+        log(formatMcpVerifyReport(checks, url, true));
+        return;
+      }
+
+      const reason = (checks.find(checkItem => checkItem.status === 'error')
+        || checks.find(checkItem => checkItem.id === 'mcp-auth' && checkItem.status !== 'ok'))?.message
+        || 'the paid data path did not complete';
+      const message = `MCP setup verification failed — ${reason}`;
+      if (flags.json) throw new CommandError(message, 'MCP_VERIFY_FAILED', result);
+      log(formatMcpVerifyReport(checks, url, false));
+      throw new CommandError(message, 'MCP_VERIFY_FAILED');
     },
 
     'web': async (args, apiInstance, flags, options) => {
@@ -1851,7 +1908,8 @@ export async function runCLI(rawArgs, deps = {}) {
   // `auth` and `doctor --offline` promise zero network activity — that
   // contract covers the background update-check fetch and telemetry too,
   // not just the command's own requests.
-  const isOfflineCommand = command === 'auth' || (command === 'doctor' && flags.offline);
+  const isMcpUsage = command === 'mcp' && (subcommand !== 'verify' || flags.help || flags.h);
+  const isOfflineCommand = command === 'auth' || (command === 'doctor' && flags.offline) || isMcpUsage;
   const trackSucceeded = isOfflineCommand ? async () => {} : trackCommandSucceeded;
   const trackFailed = isOfflineCommand ? async () => {} : trackCommandFailed;
 
