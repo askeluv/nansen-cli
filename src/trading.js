@@ -702,6 +702,23 @@ export async function simulateEvmCall(chain, { from, to, data, value, gas }) {
 }
 
 /**
+ * Normalise an aggregator's transaction `value` to a 0x-hex string the RPC
+ * accepts. The field may be a decimal string ('1000000'), a 0x-hex string, a
+ * bare '0x' (no digits — `BigInt('0x')` throws), or absent. Anything unparseable
+ * becomes '0x0' rather than throwing, so a malformed value can't crash the
+ * degrade path or misfire as an outcome mismatch. Note: unlike swap-simulation's
+ * hexToBigInt, this keeps BigInt's decimal parsing (tx.value is often decimal).
+ */
+function toRpcHexValue(value) {
+  if (!value || value === '0x') return '0x0';
+  try {
+    return '0x' + BigInt(value).toString(16);
+  } catch {
+    return '0x0';
+  }
+}
+
+/**
  * Verify — via balance-delta simulation — that a swap does to the wallet what
  * the user asked and no more. Defence-in-depth on top of the static calldata
  * guards: the cheap eth_call sim answers "will it revert", this answers "does the
@@ -744,7 +761,7 @@ export async function verifySwapOutcome({ chain, from, quote, quoteData, apiKey 
   try {
     const sim = await simulateAssetChanges(
       chain,
-      { to: tx.to, data: tx.data, value: tx.value ? '0x' + BigInt(tx.value).toString(16) : '0x0' },
+      { to: tx.to, data: tx.data, value: toRpcHexValue(tx.value) },
       { from, apiKey },
     );
     assertSwapOutcome(quoteData.request, quote, sim, { slippage: quoteData.slippage, expectedSpenders });
@@ -2008,11 +2025,15 @@ EXAMPLES:
               // never a bare ERC-20 transfer/approve. Reject that drain shape.
               // Cross-chain routes skip THIS selector check, but a bare transfer
               // still targets the token contract, so validateSwapTarget's
-              // `to === inputMint` gate above already refuses it on both paths —
-              // cross-chain bare transfers are not actually waved through here.
-              if (!quoteData.toChain) {
-                assertSwapCalldataNotBareTransfer(currentQuote.transaction.data);
-              }
+              // Reject a bare ERC-20 transfer/approve/transferFrom as the outer
+              // call: a real swap or bridge routes through an aggregator/router,
+              // never a direct token method. Runs on cross-chain too — the
+              // validateSwapTarget gate above only refuses `to === inputMint`, so
+              // a bare transfer to a SIBLING token the wallet holds would
+              // otherwise slip through the bridge path (which doesn't parse the
+              // calldata recipient) and drain it. Legitimate bridges route through
+              // a router selector, so this never fires on a real cross-chain quote.
+              assertSwapCalldataNotBareTransfer(currentQuote.transaction.data);
 
               // Validate transaction.value (same checks as local wallet)
               const isNative = isNativeToken(currentQuote.inputMint);
@@ -2258,11 +2279,15 @@ EXAMPLES:
               // never a bare ERC-20 transfer/approve. Reject that drain shape.
               // Cross-chain routes skip THIS selector check, but a bare transfer
               // still targets the token contract, so validateSwapTarget's
-              // `to === inputMint` gate above already refuses it on both paths —
-              // cross-chain bare transfers are not actually waved through here.
-              if (!quoteData.toChain) {
-                assertSwapCalldataNotBareTransfer(currentQuote.transaction.data);
-              }
+              // Reject a bare ERC-20 transfer/approve/transferFrom as the outer
+              // call: a real swap or bridge routes through an aggregator/router,
+              // never a direct token method. Runs on cross-chain too — the
+              // validateSwapTarget gate above only refuses `to === inputMint`, so
+              // a bare transfer to a SIBLING token the wallet holds would
+              // otherwise slip through the bridge path (which doesn't parse the
+              // calldata recipient) and drain it. Legitimate bridges route through
+              // a router selector, so this never fires on a real cross-chain quote.
+              assertSwapCalldataNotBareTransfer(currentQuote.transaction.data);
 
               // Validate transaction.value (same checks as local wallet)
               const txValue = BigInt(currentQuote.transaction.value || '0');
@@ -2474,11 +2499,15 @@ EXAMPLES:
               // never a bare ERC-20 transfer/approve. Reject that drain shape.
               // Cross-chain routes skip THIS selector check, but a bare transfer
               // still targets the token contract, so validateSwapTarget's
-              // `to === inputMint` gate above already refuses it on both paths —
-              // cross-chain bare transfers are not actually waved through here.
-              if (!quoteData.toChain) {
-                assertSwapCalldataNotBareTransfer(currentQuote.transaction.data);
-              }
+              // Reject a bare ERC-20 transfer/approve/transferFrom as the outer
+              // call: a real swap or bridge routes through an aggregator/router,
+              // never a direct token method. Runs on cross-chain too — the
+              // validateSwapTarget gate above only refuses `to === inputMint`, so
+              // a bare transfer to a SIBLING token the wallet holds would
+              // otherwise slip through the bridge path (which doesn't parse the
+              // calldata recipient) and drain it. Legitimate bridges route through
+              // a router selector, so this never fires on a real cross-chain quote.
+              assertSwapCalldataNotBareTransfer(currentQuote.transaction.data);
 
               // Handle approval if needed — skip for native ETH
               // Check existing allowance first to avoid unnecessary approve txs
