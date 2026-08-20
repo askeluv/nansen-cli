@@ -985,6 +985,28 @@ export function assertCompleteEvmRequestIntent(request) {
 }
 
 /**
+ * The Solana sibling of assertCompleteEvmRequestIntent. Solana signs the
+ * aggregator's serialized VersionedTransaction verbatim — there is no
+ * approval/calldata split to independently validate — so assertQuoteMatchesRequest
+ * is the only guard between a compromised quote and a signed drain. That check's
+ * per-field `if (request.x)` comparisons silently skip a missing field, so this
+ * closes the gap by failing closed on any incomplete request intent up front.
+ */
+export function assertCompleteSolanaRequestIntent(request) {
+  if (!request) {
+    throw new Error('Quote is missing request intent. Re-quote with this CLI version before executing a Solana swap. Refusing to sign.');
+  }
+
+  const missing = [];
+  for (const field of ['chain', 'walletAddress', 'fromToken', 'toToken', 'swapMode', 'amount', 'maxInputAmount']) {
+    if (request[field] == null || request[field] === '') missing.push(field);
+  }
+  if (missing.length) {
+    throw new Error(`Quote request intent is incomplete (${missing.join(', ')} missing). Re-quote before executing a Solana swap. Refusing to sign.`);
+  }
+}
+
+/**
  * Sanity-check the target of a swap transaction before signing it.
  *
  * This is a defensive gate, not a router allowlist. It rejects the crude cases
@@ -1922,7 +1944,30 @@ CROSS-CHAIN NOTES (when using --to-chain):
         }
 
         const signerType = isWalletConnect ? 'walletconnect' : walletProvider;
-        const maxInputAmount = swapMode === 'exactOut' ? maxInputOverride : String(resolvedAmount);
+        // exactOut has no request.amount input bound (amount is the OUTPUT), so
+        // maxInputAmount is the only spend ceiling assertInputWithinMax can enforce.
+        // EVM requires --max-input explicitly (checked above); Solana has no
+        // approval to scope so --max-input stays optional there, but the ceiling
+        // must still exist — derive the same slippage-buffered bound --max-input
+        // would have enforced, from the widest quote actually returned.
+        let maxInputAmount;
+        if (swapMode === 'exactOut') {
+          if (maxInputOverride != null) {
+            maxInputAmount = maxInputOverride;
+          } else {
+            const derivedCap = response.quotes.reduce((max, q) => {
+              const spend = approvalAmountForSwap({
+                inputAmount: q.inputAmount ?? q.inAmount ?? '0',
+                swapMode: 'exactOut',
+                slippage: effectiveSlippage,
+              });
+              return spend > 0n && (max == null || spend > max) ? spend : max;
+            }, null);
+            maxInputAmount = derivedCap != null ? derivedCap.toString() : null;
+          }
+        } else {
+          maxInputAmount = String(resolvedAmount);
+        }
         const quoteId = saveQuote(response, chain, signerType, privyWalletIds, isCrossChain ? toChainRaw : null, {
           swapMode,
           slippage: effectiveSlippage,
@@ -2141,9 +2186,21 @@ EXAMPLES:
               if (typeof txBase64 === 'object' && txBase64.data) {
                 txBase64 = base58Decode(txBase64.data).toString('base64');
               }
-              log('  Signing Solana transaction via Privy...');
+
               const solWalletId = quoteData.privyWalletIds?.solana;
               if (!solWalletId) throw new Error('No Solana Privy wallet ID in quote');
+              const walletResult = await privyClient.getWallet(solWalletId);
+              const walletAddress = walletResult.address;
+
+              // Bind the opaque Solana transaction to the persisted request intent.
+              // Solana signs the aggregator's serialized VersionedTransaction
+              // verbatim with no approval/calldata to independently check, so this
+              // is the only guard between a compromised quote and a signed drain —
+              // a wrong token pair, an inflated input, or a tx built for another signer.
+              assertCompleteSolanaRequestIntent(quoteData.request);
+              assertQuoteMatchesRequest(quoteData.request, currentQuote, { chain, walletAddress, slippage: quoteData.slippage });
+
+              log('  Signing Solana transaction via Privy...');
               const signResult = await privyClient.signSolanaTransaction(solWalletId, txBase64);
               signedTransaction = signResult.data?.signed_transaction || signResult.signed_transaction;
               requestId = currentQuote.metadata?.requestId;
@@ -2408,18 +2465,36 @@ EXAMPLES:
               signedTransaction = signResult.data?.signed_transaction || signResult.signed_transaction;
 
             } else if (chainType === 'solana') {
-              // NB: validateSwapTarget (the EVM `to`/`data` guard) intentionally does
-              // not apply here — Solana quotes are a pre-built serialized
-              // VersionedTransaction with no `to`/`data`/approval split to validate,
-              // and this path (including the WalletConnect sub-branch below) signs it
-              // as supplied. Deeper Solana inspection (e.g. checking instruction
-              // program IDs) is tracked as a follow-up, not an oversight.
+              // NB: validateSwapTarget (the EVM `to`/`data` guard) does not apply
+              // here — Solana quotes are a pre-built serialized VersionedTransaction
+              // with no `to`/`data`/approval split to validate. assertQuoteMatchesRequest
+              // below binds the metadata (token pair, amounts, signer) instead.
+              // Deeper static inspection of the tx's own instructions is tracked
+              // as a follow-up, not an oversight.
               // Solana: transaction is either a base64 string (Jupiter) or an object
               // with a base58-encoded `data` field (OKX). Normalize to base64.
               let txBase64 = currentQuote.transaction;
               if (typeof txBase64 === 'object' && txBase64.data) {
                 txBase64 = base58Decode(txBase64.data).toString('base64');
               }
+
+              // Resolve the signer for this sub-path so the intent-binding check
+              // below can confirm the quote was built for this exact wallet.
+              let solanaWalletAddress;
+              if (isWalletConnect) {
+                solanaWalletAddress = await getWalletConnectAddress(chainType);
+                if (!solanaWalletAddress) {
+                  throw new CommandError('WalletConnect session lost during execute. Reconnect with `walletconnect connect` and retry.', 'NO_WALLET');
+                }
+              } else {
+                solanaWalletAddress = exported.solana.address;
+              }
+
+              // Bind the opaque Solana transaction to the persisted request intent.
+              // A compromised API can't swap in a different token pair, inflate the
+              // input, or build the transaction for another signer.
+              assertCompleteSolanaRequestIntent(quoteData.request);
+              assertQuoteMatchesRequest(quoteData.request, currentQuote, { chain, walletAddress: solanaWalletAddress, slippage: quoteData.slippage });
 
               if (isWalletConnect) {
                 // Solana via WalletConnect: convert base64 → base58 for WC protocol

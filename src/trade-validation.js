@@ -578,7 +578,8 @@ export function needsAllowanceRevoke(existingAllowance, approveAmt) {
 
 /**
  * Compare two token addresses for equality (case-insensitive on EVM, exact on
- * Solana). Missing values never match.
+ * Solana except for the native-SOL sentinel aliasing above). Missing values
+ * never match.
  */
 function tokensEqual(a, b, chain) {
   if (!a || !b) return false;
