@@ -271,7 +271,7 @@ nansen research smart-money netflow --chain solana --fields token_symbol,net_flo
 
 | Code | Action |
 |------|--------|
-| `CREDITS_EXHAUSTED` | Stop all API calls immediately. `details.credits.remaining` is your actual balance. Top up your credits in the Nansen app. |
+| `CREDITS_EXHAUSTED` | Stop all API calls immediately. `details.credits.remaining` is your actual balance. Top up at [app.nansen.ai/api?tab=api](https://app.nansen.ai/api?tab=api). |
 | `UNAUTHORIZED` | Wrong or missing key. Re-auth. |
 | `RATE_LIMITED` | Auto-retried by CLI. `details.rateLimit.resetSeconds` is how long the window needs to drain. |
 | `UNSUPPORTED_FILTER` | Remove the filter and retry. |
