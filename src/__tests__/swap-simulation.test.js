@@ -282,6 +282,23 @@ describe('swap-simulation', () => {
       ).rejects.toMatchObject({ code: 'SIM_RPC_ERROR' });
     });
 
+    it('degrades with an actionable message on a non-2xx (e.g. 401 Invalid API key), not "no call result"', async () => {
+      // The hosted proxy phrases auth failures as `{message}` with an HTTP 401,
+      // not a JSON-RPC `{error}`. postSim must surface the status + message rather
+      // than letting the body flow on to a misleading "returned no call result".
+      global.fetch = vi.fn().mockResolvedValue({
+        status: 401,
+        ok: false,
+        text: async () => JSON.stringify({ message: 'Invalid API key. Get your key at https://app.nansen.ai/api' }),
+      });
+      await expect(
+        simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET }),
+      ).rejects.toMatchObject({ code: 'SIM_RPC_ERROR', message: expect.stringContaining('HTTP 401') });
+      await expect(
+        simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET }),
+      ).rejects.toMatchObject({ message: expect.stringContaining('Invalid API key') });
+    });
+
     it('blocks (SIM_REVERTED) when a revert surfaces as a top-level error, not a per-call status', async () => {
       // A proxy may collapse a reverting simulation into a top-level `error`
       // instead of calls[0].status='0x0'. That must fail closed (block), not be

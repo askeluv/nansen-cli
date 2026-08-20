@@ -230,6 +230,22 @@ async function postSim(rpcUrl, apiKey, method, params, timeoutMs) {
         `Simulation RPC returned non-JSON (HTTP ${res.status}) for ${method}: ${text.slice(0, 120)}`,
       );
     }
+    // A non-2xx is a transport/auth failure (e.g. 401 from the hosted proxy when
+    // the API key is missing/invalid), not a simulation outcome. The proxy phrases
+    // these as `{message}` — not a JSON-RPC `{error}` — so without this check the
+    // body flows on, yields no `result.calls[0]`, and degrades with a misleading
+    // "returned no call result". Surface the real status + message so the warning
+    // is actionable (per the repo's actionable-errors rule); still SIM_RPC_ERROR,
+    // so the caller degrades (warn + proceed) rather than blocking the trade.
+    const ok = res.ok ?? (res.status >= 200 && res.status < 300);
+    if (!ok) {
+      const detail =
+        body?.error?.message ||
+        body?.message ||
+        (typeof body?.error === 'string' ? body.error : null) ||
+        text.slice(0, 120);
+      throw new SwapSimulationError('SIM_RPC_ERROR', `Simulation RPC HTTP ${res.status} for ${method}: ${detail}`);
+    }
     return body;
   } catch (e) {
     if (e instanceof SwapSimulationError) throw e;
