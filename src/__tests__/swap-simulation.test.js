@@ -11,6 +11,7 @@ const TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523
 const APPROVAL = '0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925';
 const APPROVAL_FOR_ALL = '0x17307eab39ab6107e8899845ad3d59bd9653f200f220920489ca2b5937696c31';
 const ERC1155_SINGLE = '0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62';
+const ERC1155_BATCH = '0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb';
 const ZERO = '0x0000000000000000000000000000000000000000';
 
 const WALLET = '0x8cb9c3f23c7d600fb430bbd171a313d9ea61cebc';
@@ -43,6 +44,13 @@ const erc1155SingleLog = (token, operator, from, to) => ({
   address: token,
   topics: [ERC1155_SINGLE, pad(operator), pad(from), pad(to)],
   data: '0x' + '0'.repeat(128), // id + value, unread by the parser
+});
+// ERC-1155 TransferBatch indexes (operator, from, to) exactly like TransferSingle
+// — same topic layout, arrays live in the (unread) data.
+const erc1155BatchLog = (token, operator, from, to) => ({
+  address: token,
+  topics: [ERC1155_BATCH, pad(operator), pad(from), pad(to)],
+  data: '0x' + '0'.repeat(128), // ids[] + values[], unread by the parser
 });
 // ERC-721 single-token Approval (owner, approved, tokenId indexed; empty data).
 const erc721ApprovalLog = (token, owner, approved, tokenId) => ({
@@ -186,6 +194,20 @@ describe('swap-simulation', () => {
       expect(nftOut).toEqual([{ standard: 'ERC-1155', token: NFT }]);
     });
 
+    it('flags an ERC-1155 TransferBatch leaving the wallet as an NFT outflow', async () => {
+      // Shares the topic-count check and from/to extraction with TransferSingle;
+      // a field-ordering mistake specific to Batch would otherwise pass silently.
+      mockFetchOnce(simV1([erc1155BatchLog(NFT, ROUTER, WALLET, ATTACKER)]));
+      const { nftOut } = await simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET });
+      expect(nftOut).toEqual([{ standard: 'ERC-1155', token: NFT }]);
+    });
+
+    it('does not flag an inbound ERC-1155 TransferBatch (received, not sent)', async () => {
+      mockFetchOnce(simV1([erc1155BatchLog(NFT, ROUTER, ATTACKER, WALLET)]));
+      const { nftOut } = await simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET });
+      expect(nftOut).toEqual([]);
+    });
+
     it('does not flag an inbound NFT (received, not sent)', async () => {
       mockFetchOnce(simV1([
         erc721TransferLog(NFT, ATTACKER, WALLET, 7n),
@@ -230,6 +252,20 @@ describe('swap-simulation', () => {
       await expect(
         simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET }),
       ).rejects.toMatchObject({ code: 'SIM_REVERTED' });
+    });
+
+    it('does not throw or mis-block on a non-conformant bare "0x" status', async () => {
+      // A bare '0x' status is indeterminate: BigInt('0x') would throw a plain
+      // TypeError that isn't a SwapSimulationError, so verifySwapOutcome would
+      // hard-block (proceed:false) with an opaque message. It must instead be
+      // treated as non-revert and let the deltas judge the real outcome.
+      mockFetchOnce(simV1(
+        [transferLog(USDC, WALLET, ROUTER, 1000000n), transferLog(DAI, ROUTER, WALLET, 5n)],
+        { status: '0x' },
+      ));
+      const { deltas } = await simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET });
+      expect(deltas[USDC]).toBe(-1000000n);
+      expect(deltas[DAI]).toBe(5n);
     });
 
     it('throws NO_SIM_RPC when no endpoint is configured', async () => {

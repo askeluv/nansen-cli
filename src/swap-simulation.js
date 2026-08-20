@@ -289,8 +289,14 @@ async function simulateViaEthSimulateV1(rpcUrl, apiKey, { from, to, data, value 
   if (!call) {
     throw new SwapSimulationError('SIM_RPC_ERROR', 'eth_simulateV1 returned no call result');
   }
-  // status is '0x1' on success, '0x0' on revert.
-  if (call.status != null && BigInt(call.status) === 0n) {
+  // status is '0x1' on success, '0x0' on revert. A non-conformant bare '0x'/''
+  // (no hex digits) is indeterminate: BigInt('0x') would throw a TypeError that
+  // is NOT a SwapSimulationError, so verifySwapOutcome would misclassify it as a
+  // hard block (proceed:false) with an opaque message instead of degrading.
+  // Skip the status check for those and let the balance-delta assertions judge
+  // the real outcome (a swap that truly delivered nothing still fails assertion
+  // 2). Numeric statuses stay handled by BigInt via the plain constructor.
+  if (call.status != null && call.status !== '0x' && call.status !== '' && BigInt(call.status) === 0n) {
     throw new SwapSimulationError(
       'SIM_REVERTED',
       `Swap reverts in simulation${call.error?.message ? `: ${call.error.message}` : ''}`,
