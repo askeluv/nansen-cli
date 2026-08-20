@@ -750,6 +750,14 @@ export async function verifySwapOutcome({ chain, from, quote, quoteData, apiKey 
   // would always fail. The source-chain leg only spends/locks the input here;
   // skip outcome verification for bridges (mirrors the bridge branch below).
   if (quoteData?.toChain && quoteData.toChain !== quoteData.chain) return { proceed: true };
+  // No request intent recorded (a pre-intent quote): assertSwapOutcome has
+  // nothing to compare the simulated deltas against and would raise a misleading
+  // SWAP_OUTCOME_MISMATCH. Degrade cleanly — the static guards still ran, and a
+  // re-quote re-enables this check.
+  if (!quoteData?.request) {
+    log('  ⚠ Swap-outcome verification skipped (no request intent — re-quote to enable it).');
+    return { proceed: true };
+  }
   if (!hasSimulationRpc(chain)) {
     log(`  ⚠ Swap-outcome verification unavailable (no simulation endpoint for ${chain}); proceeding without it.`);
     return { proceed: true };

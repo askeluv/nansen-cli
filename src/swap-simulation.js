@@ -47,7 +47,16 @@ const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 // frame rather than being a transfer), so both must be excluded from native
 // delta accounting — some nodes populate their `value` field regardless, which
 // would otherwise double-count or invent ETH movement.
-const ETH_MOVING_FRAME_TYPES = new Set(['CALL', 'CALLCODE', 'CREATE', 'CREATE2', 'SELFDESTRUCT']);
+//
+// SELFDESTRUCT is deliberately excluded too. The wallet is the EOA signer, so it
+// can never itself SELFDESTRUCT — its real native outflow is always a top-level
+// CALL. Some nodes additionally surface a SELFDESTRUCT refund frame whose value
+// lands on the wallet; counting that as an inflow can cancel or partially offset
+// the wallet's real CALL outflow, letting the balance-delta assertion pass for a
+// mismatched result. Dropping it means we may under-count a genuine selfdestruct
+// refund into the wallet (rare, and largely neutered by EIP-6780), which only
+// makes the net native delta stricter — fail-closed, never the reverse.
+const ETH_MOVING_FRAME_TYPES = new Set(['CALL', 'CALLCODE', 'CREATE', 'CREATE2']);
 
 /**
  * A simulation error the caller can distinguish from a genuine outcome mismatch.

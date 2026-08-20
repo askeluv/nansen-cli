@@ -4290,4 +4290,17 @@ describe('verifySwapOutcome (execute-path wiring)', () => {
     expect(r.proceed).toBe(true);
     expect(global.fetch).not.toHaveBeenCalled();
   });
+
+  it('degrades (proceed=true) for a pre-intent quote with no request recorded', async () => {
+    // Without request intent, assertSwapOutcome has nothing to compare against and
+    // would raise a misleading SWAP_OUTCOME_MISMATCH. Skip cleanly instead — even
+    // with a sim-capable endpoint reachable, the verifier must not run.
+    global.fetch = vi.fn(); // must not be called
+    const noIntentData = { slippage: 0.03 };
+    const logs = [];
+    const r = await verifySwapOutcome({ chain: 'base', from: WALLET, quote, quoteData: noIntentData, log: (m) => logs.push(m) });
+    expect(r.proceed).toBe(true);
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(logs.some((l) => /no request intent/i.test(l))).toBe(true);
+  });
 });

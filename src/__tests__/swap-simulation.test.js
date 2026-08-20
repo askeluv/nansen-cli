@@ -291,6 +291,43 @@ describe('swap-simulation', () => {
       expect(deltas[USDC]).toBe(5_000_000n);
     });
 
+    it('ignores a SELFDESTRUCT refund frame so it cannot offset the wallet native outflow', async () => {
+      // The wallet spends native via the top-level CALL. A nested SELFDESTRUCT
+      // frame refunds value to the wallet — some nodes surface it, and counting
+      // it as an inflow would cancel/offset the real outflow and let a mismatched
+      // outcome pass. It must be ignored: the full outflow stays on the books.
+      global.fetch = vi.fn().mockImplementation((url, opts) => {
+        const req = JSON.parse(opts.body);
+        if (req.method === 'eth_simulateV1') {
+          return Promise.resolve({ status: 200, text: async () => JSON.stringify({ error: { code: -32601, message: 'not available' } }) });
+        }
+        return Promise.resolve({
+          status: 200,
+          text: async () => JSON.stringify({
+            result: {
+              type: 'CALL',
+              from: WALLET,
+              to: ROUTER,
+              value: hex(1_500_000_000_000_000n),
+              logs: [transferLog(USDC, ROUTER, WALLET, 5_000_000n)],
+              calls: [
+                { type: 'SELFDESTRUCT', from: ROUTER, to: WALLET, value: hex(1_500_000_000_000_000n), logs: [], calls: [] },
+              ],
+            },
+          }),
+        });
+      });
+      const { deltas } = await simulateAssetChanges(
+        'base',
+        { to: ROUTER, data: '0x', value: hex(1_500_000_000_000_000n) },
+        { from: WALLET },
+      );
+      // Only the CALL outflow counts; the SELFDESTRUCT inflow is ignored, so the
+      // net native delta is the full outflow rather than a cancelled-out zero.
+      expect(deltas[EVM_NATIVE_SENTINEL]).toBe(-1_500_000_000_000_000n);
+      expect(deltas[USDC]).toBe(5_000_000n);
+    });
+
     it('surfaces a silently-reverting sub-call as SIM_REVERTED (not an empty outcome)', async () => {
       // eth_simulateV1 unavailable → debug_traceCall. The top-level frame has no
       // error, but a sub-call reverted and nothing moved: report the revert
