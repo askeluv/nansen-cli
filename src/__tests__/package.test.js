@@ -15,7 +15,7 @@ describe('Package Integrity', () => {
   const tmpDirs = [];
 
   afterAll(() => {
-    // Cleanup temp directories
+    // Safely clean up temporary directories using cross-platform native Node.js filesystem methods
     for (const dir of tmpDirs) {
       if (existsSync(dir)) {
         rmSync(dir, { recursive: true, force: true });
@@ -27,20 +27,22 @@ describe('Package Integrity', () => {
     const tmpDir = mkdtempSync(join(tmpdir(), 'nansen-pack-test-'));
     tmpDirs.push(tmpDir);
 
-    // Pack from repo root
-    const packOutput = execSync('npm pack --json 2>/dev/null', {
+    // Pack the tarball from the repository root
+    const packOutput = execSync('npm pack --json', {
       encoding: 'utf-8',
       cwd: process.cwd(),
     });
     const [packInfo] = JSON.parse(packOutput);
     const tgzPath = join(process.cwd(), packInfo.filename);
 
-    // Install in isolated temp directory
+    // Install the packed tarball in an isolated temporary directory
     execSync('npm init -y', { cwd: tmpDir, stdio: 'ignore' });
-    execSync(`npm install ${tgzPath}`, { cwd: tmpDir, stdio: 'ignore' });
+    execSync(`npm install "${tgzPath}"`, { cwd: tmpDir, stdio: 'ignore' });
 
-    // Smoke test - if any import fails (e.g., missing src/commands/), this crashes
-    const result = execSync('./node_modules/.bin/nansen --help', {
+    // Smoke test: if any import fails, for example because src/commands is missing, this crashes.
+    // Ensure the executable path is resolved correctly depending on the operating system (e.g., resolving the .cmd extension for Windows)
+    const binary = join(tmpDir, 'node_modules', '.bin', process.platform === 'win32' ? 'nansen.cmd' : 'nansen');
+    const result = execSync(`"${binary}" --help`, {
       cwd: tmpDir,
       encoding: 'utf-8',
     });
@@ -48,18 +50,19 @@ describe('Package Integrity', () => {
     expect(result).toContain('nansen');
     expect(result).toContain('COMMANDS');
 
-    // Cleanup tarball
+    // Clean up the generated tarball artifact
     rmSync(tgzPath, { force: true });
   });
 
   it('should not include test files in package', () => {
-    const packOutput = execSync('npm pack --dry-run --json 2>/dev/null', {
+    const packOutput = execSync('npm pack --dry-run --json', {
       encoding: 'utf-8',
       cwd: process.cwd(),
     });
     const [packInfo] = JSON.parse(packOutput);
     const files = packInfo.files.map(f => f.path);
 
+    // Verify that internal test files are not leaked into the final deployment package
     const testFiles = files.filter(f => f.includes('__tests__'));
     expect(testFiles).toHaveLength(0);
   });
