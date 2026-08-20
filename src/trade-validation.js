@@ -957,11 +957,13 @@ export function assertSwapOutcome(request, quote, sim, { slippage, expectedSpend
     } catch {
       throw fail(`quoted output amount (${quotedRaw}) is not an integer.`);
     }
-    // A zero quoted output makes minOut 0, so a sim receiving nothing would pass
-    // assertion 2 (0 < 0 is false). exactIn has no upstream non-zero-output guard
-    // (unlike exactOut), so a rogue outAmount:"0" would otherwise slip through.
-    if (quoted === 0n) {
-      throw fail('quote has a zero output amount; cannot compute a minimum acceptable output.');
+    // A non-positive quoted output makes minOut <= 0, so a sim receiving nothing
+    // (or losing the output token) would pass assertion 2 (outputDelta < minOut is
+    // false when minOut <= 0). exactIn has no upstream positive-output guard
+    // (unlike exactOut), so a rogue outAmount of "0" or a negative value would
+    // otherwise slip through.
+    if (quoted <= 0n) {
+      throw fail(`quote has a non-positive output amount (${quoted}); cannot compute a minimum acceptable output.`);
     }
     // Floor of quoted × (1 − slippage), in basis points to stay in BigInt. This
     // mirrors the slippage the user actually set (quoteData.slippage), defaulting
@@ -981,6 +983,17 @@ export function assertSwapOutcome(request, quote, sim, { slippage, expectedSpend
     if (delta < 0n && -delta > dust) {
       throw fail(`a token other than the one you are selling (${token}) left the wallet (delta ${delta}); a swap must not move any token except the input.`);
     }
+  }
+
+  // --- Assertion 3b: no non-fungible asset leaves the wallet ---
+  // The signed `deltas` map only models native + ERC-20 balances, so an NFT
+  // drain is invisible to assertion 3. A DEX swap should never move an ERC-721 or
+  // ERC-1155 out of the wallet, so fail closed if the sim surfaced one. (Inbound
+  // NFTs are harmless and are not recorded by foldLogs.)
+  for (const nft of sim.nftOut || []) {
+    throw fail(
+      `a non-fungible asset (${nft.standard}${nft.token ? ` ${nft.token}` : ''}) left the wallet; a swap must not transfer any NFT.`,
+    );
   }
 
   // --- Assertion 4: no approval to an unexpected spender ---

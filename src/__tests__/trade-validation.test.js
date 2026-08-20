@@ -1425,11 +1425,20 @@ describe('assertSwapOutcome', () => {
 
   it('rejects an exactIn quote with a zero quoted output', () => {
     // outAmount "0" makes minOut 0, so a zero-output sim would pass assertion 2
-    // (0 < 0 is false). exactIn has no upstream non-zero-output guard.
+    // (0 < 0 is false). exactIn has no upstream positive-output guard.
     const quote = { inputMint: USDC, outputMint: DAI, inAmount: '1000000', outAmount: '0' };
     const sim = { deltas: { [USDC]: -1000000n }, approvals: [] };
     expect(() => assertSwapOutcome(exactInRequest, quote, sim, { slippage: 0.03 }))
-      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*zero output amount/i);
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*non-positive output amount/i);
+  });
+
+  it('rejects an exactIn quote with a negative quoted output', () => {
+    // A negative outAmount makes minOut negative, so a sim receiving nothing (or
+    // even losing the output token) would pass assertion 2. Fail closed instead.
+    const quote = { inputMint: USDC, outputMint: DAI, inAmount: '1000000', outAmount: '-5' };
+    const sim = { deltas: { [USDC]: -1000000n }, approvals: [] };
+    expect(() => assertSwapOutcome(exactInRequest, quote, sim, { slippage: 0.03 }))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*non-positive output amount/i);
   });
 
   it('fails closed when input and output tokens are the same', () => {
@@ -1440,6 +1449,19 @@ describe('assertSwapOutcome', () => {
     const sim = { deltas: { [USDC]: -1000000n }, approvals: [] };
     expect(() => assertSwapOutcome(req, quote, sim, {}))
       .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*input and output tokens are the same/i);
+  });
+
+  it('fails closed when an NFT leaves the wallet (assertion 3b)', () => {
+    // Input + output are correct, but the sim also reports an ERC-721/1155 leaving
+    // the wallet — invisible to the fungible-only deltas map. A swap must not move
+    // any NFT, so refuse.
+    const sim = {
+      deltas: { [USDC]: -1000000n, [DAI]: 1000000n },
+      approvals: [],
+      nftOut: [{ standard: 'ERC-721', token: '0x000000000000000000000000000000000000abcd' }],
+    };
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*non-fungible asset/i);
   });
 
   it('rejects an approval to an unexpected spender (assertion 4)', () => {

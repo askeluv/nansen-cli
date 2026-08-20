@@ -15,12 +15,18 @@
  * EVM-only: Solana signs the aggregator transaction verbatim and is out of scope.
  */
 
-import { SIMULATION_RPCS } from './rpc-urls.js';
+import { SIMULATION_RPCS, isNansenHostedUrl } from './rpc-urls.js';
 
-// keccak256("Transfer(address,address,uint256)")
+// keccak256("Transfer(address,address,uint256)") — shared by ERC-20 and ERC-721.
+// ERC-20 indexes (from, to) and carries value in `data` (3 topics); ERC-721 also
+// indexes the tokenId (4 topics). We distinguish them by topic count below.
 const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 // keccak256("Approval(address,address,uint256)")
 const APPROVAL_TOPIC = '0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925';
+// keccak256("TransferSingle(address,address,address,uint256,uint256)") — ERC-1155
+const ERC1155_SINGLE_TOPIC = '0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62';
+// keccak256("TransferBatch(address,address,address,uint256[],uint256[])") — ERC-1155
+const ERC1155_BATCH_TOPIC = '0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb';
 
 // The CLI's EVM native-asset sentinel (mirrors EVM_NATIVE in trading.js and
 // NATIVE_TOKEN_ADDRESSES in trade-validation.js). Native ETH movements surface
@@ -79,9 +85,16 @@ function normalizeToken(addr) {
 }
 
 /**
- * Fold a flat list of logs into per-token deltas for `wallet` and the set of
- * Approvals the wallet granted. `deltas` is signed: positive = received,
- * negative = sent. Tokens with a net-zero delta are dropped.
+ * Fold a flat list of logs into per-token deltas for `wallet`, the Approvals the
+ * wallet granted, and any non-fungible (ERC-721/ERC-1155) transfer OUT of the
+ * wallet. `deltas` is signed: positive = received, negative = sent. Tokens with a
+ * net-zero delta are dropped.
+ *
+ * `nftOut` exists because the fungible `deltas` map cannot represent an NFT: a
+ * DEX swap should only move native currency and ERC-20 tokens, so an ERC-721 /
+ * ERC-1155 leaving the wallet is an out-of-scope asset movement the caller must
+ * fail closed on (assertSwapOutcome) rather than silently ignore. Inbound NFTs
+ * are harmless and not recorded.
  *
  * @param {Array} logs - [{ address, topics, data }]
  * @param {string} wallet - the sender whose balance changes we care about
@@ -90,12 +103,18 @@ function foldLogs(logs, wallet) {
   const w = wallet.toLowerCase();
   const deltas = {}; // token -> bigint (signed)
   const approvals = []; // { token, spender, amount }
+  const nftOut = []; // { standard, token } — non-fungible transfers leaving `w`
 
   for (const lg of logs || []) {
     const topics = lg?.topics || [];
     const topic0 = (topics[0] || '').toLowerCase();
 
-    if (topic0 === TRANSFER_TOPIC && topics.length >= 3) {
+    if (topic0 === TRANSFER_TOPIC && topics.length >= 4) {
+      // ERC-721: shares the ERC-20 Transfer signature but indexes the tokenId as
+      // a 4th topic. Only flag it when the NFT leaves the wallet.
+      const from = topicToAddress(topics[1]);
+      if (from === w) nftOut.push({ standard: 'ERC-721', token: normalizeToken(lg.address) });
+    } else if (topic0 === TRANSFER_TOPIC && topics.length >= 3) {
       const from = topicToAddress(topics[1]);
       const to = topicToAddress(topics[2]);
       // eth_simulateV1 emits native transfers from the zero address; those carry
@@ -106,6 +125,11 @@ function foldLogs(logs, wallet) {
       if (!token || amount === 0n) continue;
       if (to === w) deltas[token] = (deltas[token] || 0n) + amount;
       if (from === w) deltas[token] = (deltas[token] || 0n) - amount;
+    } else if ((topic0 === ERC1155_SINGLE_TOPIC || topic0 === ERC1155_BATCH_TOPIC) && topics.length >= 4) {
+      // ERC-1155 TransferSingle/Batch index (operator, from, to); `from` is the
+      // 3rd topic. Flag only when the wallet is the sender.
+      const from = topicToAddress(topics[2]);
+      if (from === w) nftOut.push({ standard: 'ERC-1155', token: normalizeToken(lg.address) });
     } else if (topic0 === APPROVAL_TOPIC && topics.length >= 3) {
       const owner = topicToAddress(topics[1]);
       const spender = topicToAddress(topics[2]);
@@ -122,7 +146,7 @@ function foldLogs(logs, wallet) {
   for (const t of Object.keys(deltas)) {
     if (deltas[t] === 0n) delete deltas[t];
   }
-  return { deltas, approvals };
+  return { deltas, approvals, nftOut };
 }
 
 // ============= eth_simulateV1 (primary) =============
@@ -135,14 +159,16 @@ async function postSim(rpcUrl, apiKey, method, params, timeoutMs) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
+    // Attach the Nansen API key ONLY when the endpoint is Nansen-hosted. A
+    // NANSEN_BASE_SIM_RPC override can point at any host (dev node, third-party
+    // trace RPC); forwarding the user's credential there would leak it, so an
+    // untrusted endpoint is always called anonymously (see isNansenHostedUrl).
+    const sendApiKey = Boolean(apiKey) && isNansenHostedUrl(rpcUrl);
     const res = await fetch(rpcUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        // The Nansen-hosted proxy authenticates with the user's API key (the
-        // same header every other command sends). A raw dev/override RPC simply
-        // ignores an unknown header, so it is always safe to include when present.
-        ...(apiKey ? { apikey: apiKey } : {}),
+        ...(sendApiKey ? { apikey: apiKey } : {}),
       },
       body: buildSimRpcBody(method, params),
       signal: controller.signal,
@@ -223,8 +249,8 @@ async function simulateViaEthSimulateV1(rpcUrl, apiKey, { from, to, data, value 
       `Swap reverts in simulation${call.error?.message ? `: ${call.error.message}` : ''}`,
     );
   }
-  const { deltas, approvals } = foldLogs(call.logs, from);
-  return { deltas, approvals, method: 'eth_simulateV1' };
+  const { deltas, approvals, nftOut } = foldLogs(call.logs, from);
+  return { deltas, approvals, nftOut, method: 'eth_simulateV1' };
 }
 
 // ============= debug_traceCall + callTracer (fallback) =============
@@ -264,7 +290,7 @@ async function simulateViaDebugTraceCall(rpcUrl, apiKey, { from, to, data, value
   }
 
   const { logs, frames } = flattenFrames(root);
-  const { deltas, approvals } = foldLogs(logs, from);
+  const { deltas, approvals, nftOut } = foldLogs(logs, from);
 
   // callTracer does NOT emit synthetic logs for native ETH, so derive native
   // movement from the `value` on each frame: value the wallet sends is an
@@ -295,13 +321,13 @@ async function simulateViaDebugTraceCall(rpcUrl, apiKey, { from, to, data, value
   // moved, assertSwapOutcome judges the real outcome (a partial swap that failed
   // to deliver the output still fails assertion 2), so an errored frame there is
   // not a reliable revert signal and would false-positive on legitimate swaps.
-  if (Object.keys(deltas).length === 0 && approvals.length === 0) {
+  if (Object.keys(deltas).length === 0 && approvals.length === 0 && nftOut.length === 0) {
     const errored = frames.find((f) => f.error);
     if (errored) {
       throw new SwapSimulationError('SIM_REVERTED', `Swap reverts in simulation: ${errored.error}`);
     }
   }
-  return { deltas, approvals, method: 'debug_traceCall' };
+  return { deltas, approvals, nftOut, method: 'debug_traceCall' };
 }
 
 // ============= public entry point =============
@@ -317,7 +343,7 @@ async function simulateViaDebugTraceCall(rpcUrl, apiKey, { from, to, data, value
  * @param {string} chain - chain key (only 'base' is wired today)
  * @param {{ to: string, data: string, value?: string }} swapCall - the swap tx
  * @param {{ from: string, apiKey?: string|null, timeoutMs?: number }} opts
- * @returns {Promise<{ deltas: Record<string,bigint>, approvals: Array<{token,spender,amount}>, method: string }>}
+ * @returns {Promise<{ deltas: Record<string,bigint>, approvals: Array<{token,spender,amount}>, nftOut: Array<{standard,token}>, method: string }>}
  * @throws {SwapSimulationError} on any degrade condition or an in-sim revert.
  */
 export async function simulateAssetChanges(chain, swapCall, { from, apiKey = null, timeoutMs = 20000 } = {}) {

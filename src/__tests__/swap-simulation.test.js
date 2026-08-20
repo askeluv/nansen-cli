@@ -9,12 +9,15 @@ import {
 
 const TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 const APPROVAL = '0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925';
+const ERC1155_SINGLE = '0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62';
 const ZERO = '0x0000000000000000000000000000000000000000';
 
 const WALLET = '0x8cb9c3f23c7d600fb430bbd171a313d9ea61cebc';
 const USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
 const DAI = '0x50c5725949a6f0c72e6c4a641f24049a917db0cb';
 const ROUTER = '0x57df6092665eb6058def53f94734a338a50f2e5f';
+const NFT = '0x000000000000000000000000000000000000abcd';
+const ATTACKER = '0x00000000000000000000000000000000deadbeef';
 
 const pad = (a) => '0x' + a.replace(/^0x/, '').toLowerCase().padStart(64, '0');
 const hex = (n) => '0x' + BigInt(n).toString(16);
@@ -27,6 +30,18 @@ const approvalLog = (token, owner, spender, amount) => ({
   address: token,
   topics: [APPROVAL, pad(owner), pad(spender)],
   data: hex(amount),
+});
+// ERC-721 shares the Transfer signature but indexes the tokenId as a 4th topic
+// (empty data). ERC-1155 TransferSingle indexes (operator, from, to).
+const erc721TransferLog = (token, from, to, tokenId) => ({
+  address: token,
+  topics: [TRANSFER, pad(from), pad(to), pad(BigInt(tokenId).toString(16))],
+  data: '0x',
+});
+const erc1155SingleLog = (token, operator, from, to) => ({
+  address: token,
+  topics: [ERC1155_SINGLE, pad(operator), pad(from), pad(to)],
+  data: '0x' + '0'.repeat(128), // id + value, unread by the parser
 });
 
 function mockFetchOnce(body) {
@@ -120,11 +135,51 @@ describe('swap-simulation', () => {
       expect(deltas[DAI]).toBe(5n);
     });
 
-    it('sends the Nansen apikey header when provided', async () => {
+    it('sends the Nansen apikey header only to a Nansen-hosted endpoint', async () => {
+      SIMULATION_RPCS.base = 'https://api.nansen.ai/api/v1/trade/simulate-swap';
       mockFetchOnce(simV1([]));
       await simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET, apiKey: 'secret-key' });
       const [, opts] = global.fetch.mock.calls[0];
       expect(opts.headers.apikey).toBe('secret-key');
+    });
+
+    it('does NOT leak the apikey to a custom (non-Nansen) override RPC', async () => {
+      // A NANSEN_BASE_SIM_RPC override can point at an arbitrary host; the user's
+      // Nansen credential must never be forwarded there.
+      SIMULATION_RPCS.base = 'http://sim.test/rpc';
+      mockFetchOnce(simV1([]));
+      await simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET, apiKey: 'secret-key' });
+      const [, opts] = global.fetch.mock.calls[0];
+      expect('apikey' in opts.headers).toBe(false);
+    });
+
+    it('flags an ERC-721 leaving the wallet as an NFT outflow', async () => {
+      mockFetchOnce(simV1([
+        transferLog(USDC, WALLET, ROUTER, 1_000_000n),
+        transferLog(DAI, ROUTER, WALLET, 999_000n),
+        erc721TransferLog(NFT, WALLET, ATTACKER, 7n), // NFT drained alongside the swap
+      ]));
+      const { deltas, nftOut } = await simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET });
+      // The NFT is NOT folded into the fungible deltas (its tokenId is not a balance).
+      expect(NFT in deltas).toBe(false);
+      expect(nftOut).toEqual([{ standard: 'ERC-721', token: NFT }]);
+    });
+
+    it('flags an ERC-1155 leaving the wallet as an NFT outflow', async () => {
+      mockFetchOnce(simV1([
+        erc1155SingleLog(NFT, ROUTER, WALLET, ATTACKER),
+      ]));
+      const { nftOut } = await simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET });
+      expect(nftOut).toEqual([{ standard: 'ERC-1155', token: NFT }]);
+    });
+
+    it('does not flag an inbound NFT (received, not sent)', async () => {
+      mockFetchOnce(simV1([
+        erc721TransferLog(NFT, ATTACKER, WALLET, 7n),
+        erc1155SingleLog(NFT, ROUTER, ATTACKER, WALLET),
+      ]));
+      const { nftOut } = await simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET });
+      expect(nftOut).toEqual([]);
     });
 
     it('throws SIM_REVERTED when the swap reverts in simulation', async () => {

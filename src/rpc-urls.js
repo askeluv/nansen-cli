@@ -75,3 +75,26 @@ const DEFAULT_BASE_SIM_RPC = 'https://api.nansen.ai/api/v1/trade/simulate-swap';
 export const SIMULATION_RPCS = {
   base: process.env.NANSEN_BASE_SIM_RPC || DEFAULT_BASE_SIM_RPC,
 };
+
+/**
+ * Whether a simulation URL is a Nansen-hosted endpoint that may receive the
+ * user's Nansen API key. The key authenticates the shipped default proxy
+ * (DEFAULT_BASE_SIM_RPC); a NANSEN_BASE_SIM_RPC override can point at ANY host
+ * (dev node, third-party trace RPC), and forwarding the credential there would
+ * leak it. So the key is attached ONLY when this returns true — every other
+ * endpoint is called anonymously.
+ *
+ * Trust is: https + hostname is exactly `nansen.ai`/`api.nansen.ai` or a
+ * `*.nansen.ai` subdomain. Anything else (http, other host, unparseable) is
+ * untrusted and gets no key.
+ */
+export function isNansenHostedUrl(url) {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== 'https:') return false;
+    const host = u.hostname.toLowerCase();
+    return host === 'nansen.ai' || host === 'api.nansen.ai' || host.endsWith('.nansen.ai');
+  } catch {
+    return false;
+  }
+}
