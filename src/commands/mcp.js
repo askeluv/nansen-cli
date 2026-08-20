@@ -207,8 +207,17 @@ export function buildMcpCommands(deps = {}) {
           log(`Would remove "${SERVER_KEY}" entry from ${configPath} (no changes made).`);
           return undefined;
         }
+        // Same backup contract as install: an accidental uninstall of the wrong
+        // client is recoverable. copyFileSync failures surface (like install);
+        // chmod is best-effort.
+        const backupPath = `${configPath}.bak`;
+        fsx.copyFileSync(configPath, backupPath);
+        try { fsx.chmodSync(backupPath, 0o600); } catch { /* best-effort */ }
+        log(`Backed up existing config to ${backupPath}`);
         writeConfig(configPath, updated);
         log(`Removed Nansen MCP server from ${configPath}`);
+        // The backup still holds the entry we just removed, key included.
+        log(`Note: ${backupPath} still contains your API key (mode 0600). Delete it once you've confirmed the change.`);
         log(`Restart ${client} to pick up the change.`);
         return undefined;
       }

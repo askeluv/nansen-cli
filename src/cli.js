@@ -1873,7 +1873,9 @@ export async function runCLI(rawArgs, deps = {}) {
     return '';
   };
 
-  const commands = { ...buildCommands(deps), ...buildWalletCommands(deps), ...buildTradingCommands(deps), ...buildAlertsCommands(deps), ...buildAgentCommands(deps), ...buildMcpCommands(deps), ...commandOverrides };
+  // mcp prints its own output via `log`; runCLI callers inject their stdout
+  // sink as `output`, so map it across (an explicit `log` dep still wins).
+  const commands = { ...buildCommands(deps), ...buildWalletCommands(deps), ...buildTradingCommands(deps), ...buildAlertsCommands(deps), ...buildAgentCommands(deps), ...buildMcpCommands({ ...deps, log: deps.log ?? output }), ...commandOverrides };
 
   if (flags.version || flags.v) {
     output(VERSION);

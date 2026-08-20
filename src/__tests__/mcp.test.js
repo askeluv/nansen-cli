@@ -3,7 +3,7 @@
  * House pattern: real temp dir + injected deps, no fs mocking.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -240,6 +240,48 @@ describe('mcp command handler', () => {
     expect(readCursor().mcpServers).toEqual({ other: { command: 'foo' } });
   });
 
+  it('uninstall backs up the config before writing (0600)', async () => {
+    fs.mkdirSync(path.dirname(cursorPath()), { recursive: true });
+    const original = JSON.stringify({ mcpServers: { nansen: { url: 'x' }, other: { command: 'foo' } } });
+    fs.writeFileSync(cursorPath(), original);
+
+    await run(['uninstall', 'cursor']);
+
+    expect(fs.readFileSync(`${cursorPath()}.bak`, 'utf8')).toBe(original);
+    expect(fs.statSync(`${cursorPath()}.bak`).mode & 0o777).toBe(0o600);
+    expect(logs.join('\n')).toContain(`Backed up existing config to ${cursorPath()}.bak`);
+    // The backup carries the key that was just removed — say so, but never print it.
+    expect(logs.join('\n')).toContain(`${cursorPath()}.bak still contains your API key`);
+    expect(logs.join('\n')).not.toContain(API_KEY);
+  });
+
+  it('uninstall writes no backup when there is nothing to remove', async () => {
+    fs.mkdirSync(path.dirname(cursorPath()), { recursive: true });
+    fs.writeFileSync(cursorPath(), JSON.stringify({ mcpServers: { other: { command: 'foo' } } }));
+
+    await run(['uninstall', 'cursor']);
+    expect(fs.existsSync(`${cursorPath()}.bak`)).toBe(false);
+
+    await run(['uninstall', 'cursor'], { flags: { 'dry-run': true } });
+    expect(fs.existsSync(`${cursorPath()}.bak`)).toBe(false);
+  });
+
+  it('uninstall surfaces a failed backup copy instead of writing the config', async () => {
+    fs.mkdirSync(path.dirname(cursorPath()), { recursive: true });
+    const original = JSON.stringify({ mcpServers: { nansen: { url: 'x' } } });
+    fs.writeFileSync(cursorPath(), original);
+    const { mcp: failingMcp } = buildMcpCommands({
+      log: () => {},
+      fsOverride: { ...fs, copyFileSync: () => { throw new Error('copy failed'); } },
+      platform: 'linux',
+      homedirFn: () => tempDir,
+      env: {},
+    });
+
+    await expect(failingMcp(['uninstall', 'cursor'], api, {}, {})).rejects.toThrow('copy failed');
+    expect(fs.readFileSync(cursorPath(), 'utf8')).toBe(original);
+  });
+
   it('uninstall --dry-run leaves the config unchanged', async () => {
     fs.mkdirSync(path.dirname(cursorPath()), { recursive: true });
     const original = JSON.stringify({ mcpServers: { nansen: { url: 'x' } } });
@@ -308,5 +350,23 @@ describe('schema + CLI registration', () => {
     });
     expect(result.type).toBe('no-output');
     expect(logs.join('\n')).toContain('nansen mcp install <client>');
+  });
+
+  it('runCLI routes mcp output through the caller\'s output sink', async () => {
+    const { runCLI } = await import('../cli.js');
+    const outputs = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const result = await runCLI(['mcp'], {
+        output: (m) => outputs.push(m),
+        errorOutput: () => {},
+        exit: () => {},
+      });
+      expect(result.type).toBe('no-output');
+      expect(outputs.join('\n')).toContain('nansen mcp install <client>');
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

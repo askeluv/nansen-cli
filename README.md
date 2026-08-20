@@ -70,7 +70,7 @@ nansen mcp install cursor --dry-run  # print what would be written (key redacted
 nansen mcp uninstall <client>        # remove the entry (add --dry-run to preview)
 ```
 
-Uses the API key from `nansen login` / `NANSEN_API_KEY`; re-run `install` after rotating your key. Installs are merge-only and atomic: existing servers and settings are preserved, a `.bak` copy is written first, and the CLI refuses to touch a config it can't parse. Note the client config stores the API key in plaintext — new files are created with `0600` permissions. Restart the client after installing. For other clients, see [docs.nansen.ai/mcp/connecting](https://docs.nansen.ai/mcp/connecting).
+Uses the API key from `nansen login` / `NANSEN_API_KEY`; re-run `install` after rotating your key. Writes are merge-only and atomic: existing servers and settings are preserved, a `.bak` copy is written before every install or uninstall, and the CLI refuses to touch a config it can't parse. Note the client config stores the API key in plaintext — new files are created with `0600` permissions. Restart the client after installing. For other clients, see [docs.nansen.ai/mcp/connecting](https://docs.nansen.ai/mcp/connecting).
 
 **Claude Desktop and Cursor:** setup instructions for both are in the connection docs: [docs.nansen.ai/mcp/connecting](https://docs.nansen.ai/mcp/connecting).
 
