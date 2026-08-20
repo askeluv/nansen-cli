@@ -398,6 +398,46 @@ describe('mcp command handler', () => {
     expect(logs.join('\n')).toContain('Nansen credential redacted');
   });
 
+  it('redacts an inline --header key in a hand-written desktop entry', async () => {
+    const desktopDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nansen-mcp-bak-test-'));
+    try {
+      const desktopPath = resolveClientConfigPath('claude-desktop', { platform: 'darwin', homedir: desktopDir, env: {} });
+      fs.mkdirSync(path.dirname(desktopPath), { recursive: true });
+      fs.writeFileSync(desktopPath, JSON.stringify({
+        mcpServers: {
+          nansen: { command: 'npx', args: ['-y', MCP_REMOTE_PIN, NANSEN_MCP_URL, '--header', `NANSEN-API-KEY:${API_KEY}`] },
+        },
+      }));
+      const desktopLogs = [];
+      const { mcp: desktopMcp } = buildMcpCommands({
+        log: (...a) => desktopLogs.push(a.join(' ')), platform: 'darwin', homedirFn: () => desktopDir, env: {}, fetchFn,
+      });
+
+      await desktopMcp(['install', 'claude-desktop'], api, {}, {});
+
+      const bakText = fs.readFileSync(`${desktopPath}.bak`, 'utf8');
+      expect(bakText).not.toContain(API_KEY);
+      expect(JSON.parse(bakText).mcpServers.nansen.args).toContain('NANSEN-API-KEY:<redacted>');
+      expect(desktopLogs.join('\n')).toContain('Nansen credential redacted');
+    } finally {
+      fs.rmSync(desktopDir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps an env-ref backup intact and claims no redaction it did not make', async () => {
+    fs.mkdirSync(path.dirname(cursorPath()), { recursive: true });
+    fs.writeFileSync(cursorPath(), JSON.stringify({
+      mcpServers: { nansen: buildServerEntry('cursor', undefined, { envRef: true }) },
+    }));
+
+    await run(['install', 'cursor']);
+
+    const bak = JSON.parse(fs.readFileSync(`${cursorPath()}.bak`, 'utf8'));
+    expect(bak.mcpServers.nansen.headers['NANSEN-API-KEY']).toBe(CURSOR_KEY_REF);
+    expect(logs.join('\n')).toContain('Backed up existing config');
+    expect(logs.join('\n')).not.toContain('redacted');
+  });
+
   it('re-running install is idempotent and reports an update', async () => {
     await run(['install', 'cursor']);
     logs.length = 0;
@@ -650,6 +690,17 @@ describe('mcp command handler', () => {
     } finally {
       fs.rmSync(desktopDir, { recursive: true, force: true });
     }
+  });
+
+  it('names an unsupported credential reference instead of blaming the URL', async () => {
+    fs.mkdirSync(path.dirname(cursorPath()), { recursive: true });
+    fs.writeFileSync(cursorPath(), JSON.stringify({
+      mcpServers: { nansen: { url: NANSEN_MCP_URL, headers: { 'NANSEN-API-KEY': CLAUDE_CODE_KEY_REF } } },
+    }));
+
+    await expect(run(['verify', 'cursor']))
+      .rejects.toThrow(/environment reference cursor does not expand there.*nansen mcp install cursor --env-ref/);
+    expect(fetchFn).not.toHaveBeenCalled();
   });
 
   it('verifies an official entry with extra fields, warning instead of refusing', async () => {

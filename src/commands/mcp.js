@@ -147,6 +147,22 @@ const resolveEnvReference = (env) => ({
 const isNearMissReference = (value, supportedReference) =>
   typeof value === 'string' && value.includes('${') && value !== supportedReference;
 
+/**
+ * The only reference form the client expands in the key's position; null for
+ * claude-desktop, where the supported form is omitting the env block entirely
+ * and mcp-remote expands the reference already sitting in args.
+ */
+const referenceFor = (client) => {
+  if (client === 'claude-code') return CLAUDE_CODE_KEY_REF;
+  if (client === 'cursor') return CURSOR_KEY_REF;
+  return null;
+};
+
+/** The raw value in the entry's credential slot, whatever it holds. */
+const installedCredentialValue = (client, entry) => (client === 'claude-desktop'
+  ? entry.env?.NANSEN_API_KEY
+  : Object.entries(entry.headers || {}).find(([name]) => name.toLowerCase() === 'nansen-api-key')?.[1]);
+
 function extractInstalledCredential(client, entry, { env = process.env } = {}) {
   if (!SUPPORTED_CLIENTS.includes(client)) return null;
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
@@ -196,7 +212,7 @@ function extractInstalledCredential(client, entry, { env = process.env } = {}) {
   if (keyHeaders.length !== 1) return null;
   const apiKey = headers[keyHeaders[0]];
   if (typeof apiKey !== 'string' || apiKey.length === 0) return null;
-  const reference = client === 'claude-code' ? CLAUDE_CODE_KEY_REF : CURSOR_KEY_REF;
+  const reference = referenceFor(client);
   if (apiKey === reference) return resolveEnvReference(env);
   if (isNearMissReference(apiKey, reference)) return null;
   return { key: apiKey, source: 'literal' };
@@ -218,10 +234,8 @@ export function extractInstalledKey(client, entry, options = {}) {
 export function entryDriftNotes(client, entry) {
   if (!SUPPORTED_CLIENTS.includes(client)) return [];
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
-  const installedKey = client === 'claude-desktop'
-    ? entry.env?.NANSEN_API_KEY
-    : Object.entries(entry.headers || {}).find(([name]) => name.toLowerCase() === 'nansen-api-key')?.[1];
-  const reference = client === 'claude-code' ? CLAUDE_CODE_KEY_REF : CURSOR_KEY_REF;
+  const installedKey = installedCredentialValue(client, entry);
+  const reference = referenceFor(client);
   const envRef = client === 'claude-desktop'
     ? entry.env === undefined
     : installedKey === reference;
@@ -406,22 +420,42 @@ export function mergeNansenEntry(config, entry, configPath = 'config') {
 }
 
 /**
- * Copy of the config with the nansen entry's credential slots redacted —
- * every slot install has ever written a key to (headers in any casing, the
- * desktop env block). Other entries and fields are preserved verbatim.
+ * { config, redacted }: a copy of the config with the nansen entry's credential
+ * slots redacted, and whether any slot actually held a secret. Covers every
+ * slot install has ever written a key to (headers in any casing, the desktop
+ * env block) plus the inline `--header NANSEN-API-KEY:<key>` argv form a
+ * hand-written desktop entry can carry. A `${...}` reference is not a secret
+ * and is preserved, so the caller never claims a redaction it did not make —
+ * a key parked under some other header name is copied verbatim, unclaimed.
+ * Other entries and fields are preserved verbatim.
  */
 export function redactNansenEntryCredential(config) {
   const entry = config?.mcpServers?.[SERVER_KEY];
-  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return config;
-  const redacted = { ...entry };
-  if (redacted.headers && typeof redacted.headers === 'object' && !Array.isArray(redacted.headers)) {
-    redacted.headers = Object.fromEntries(Object.entries(redacted.headers).map(([name, value]) =>
-      name.toLowerCase() === 'nansen-api-key' ? [name, '<redacted>'] : [name, value]));
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return { config, redacted: false };
+  const isSecret = (value) => typeof value === 'string' && value.length > 0 && !value.includes('${');
+  const entryCopy = { ...entry };
+  let redacted = false;
+  if (entryCopy.headers && typeof entryCopy.headers === 'object' && !Array.isArray(entryCopy.headers)) {
+    entryCopy.headers = Object.fromEntries(Object.entries(entryCopy.headers).map(([name, value]) => {
+      if (name.toLowerCase() !== 'nansen-api-key' || !isSecret(value)) return [name, value];
+      redacted = true;
+      return [name, '<redacted>'];
+    }));
   }
-  if (redacted.env && typeof redacted.env === 'object' && !Array.isArray(redacted.env) && 'NANSEN_API_KEY' in redacted.env) {
-    redacted.env = { ...redacted.env, NANSEN_API_KEY: '<redacted>' };
+  if (Array.isArray(entryCopy.args)) {
+    entryCopy.args = entryCopy.args.map((arg) => {
+      const inlineHeader = typeof arg === 'string' && arg.match(/^(nansen-api-key\s*:\s*)(.*)$/is);
+      if (!inlineHeader || !isSecret(inlineHeader[2])) return arg;
+      redacted = true;
+      return `${inlineHeader[1]}<redacted>`;
+    });
   }
-  return { ...config, mcpServers: { ...config.mcpServers, [SERVER_KEY]: redacted } };
+  if (entryCopy.env && typeof entryCopy.env === 'object' && !Array.isArray(entryCopy.env) && isSecret(entryCopy.env.NANSEN_API_KEY)) {
+    entryCopy.env = { ...entryCopy.env, NANSEN_API_KEY: '<redacted>' };
+    redacted = true;
+  }
+  if (!redacted) return { config, redacted: false };
+  return { config: { ...config, mcpServers: { ...config.mcpServers, [SERVER_KEY]: entryCopy } }, redacted: true };
 }
 
 /**
@@ -520,6 +554,9 @@ export function buildMcpCommands(deps = {}) {
           }
           const credential = extractInstalledCredential(client, entry, { env });
           if (!credential) {
+            if (isNearMissReference(installedCredentialValue(client, entry), referenceFor(client))) {
+              throw new CommandError(`The ${client} Nansen entry passes the API key as an environment reference ${client} does not expand there — re-run install to write the supported form: nansen mcp install ${client} --env-ref`, 'INVALID_CONFIG');
+            }
             throw new CommandError(`Nansen MCP entry for ${client} does not match the official server URL/transport, or carries no API key — re-run install: nansen mcp install ${client}`, 'INVALID_CONFIG');
           }
           if (credential.source === 'env-ref' && !credential.key) {
@@ -643,8 +680,11 @@ export function buildMcpCommands(deps = {}) {
           // in the sync/backup path forever). Our entry is regenerable via
           // re-install, so its credential slots are redacted; everything
           // else is preserved verbatim.
-          writeConfig(backupPath, redactNansenEntryCredential(config));
-          log(`Backed up existing config to ${backupPath} (Nansen credential redacted; restore other entries from it, re-run install for Nansen)`);
+          const backup = redactNansenEntryCredential(config);
+          writeConfig(backupPath, backup.config);
+          log(backup.redacted
+            ? `Backed up existing config to ${backupPath} (Nansen credential redacted; restore other entries from it, re-run install for Nansen)`
+            : `Backed up existing config to ${backupPath}`);
         } else {
           fsx.copyFileSync(configPath, backupPath);
           try { fsx.chmodSync(backupPath, 0o600); } catch { /* best-effort */ }
