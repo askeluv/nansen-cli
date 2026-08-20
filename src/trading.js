@@ -1842,7 +1842,16 @@ CROSS-CHAIN NOTES (when using --to-chain):
       const noSimulate = flags['no-simulate'];
       const noVerifyOutcome = flags['no-verify-outcome'];
       const gasless = Boolean(flags.gasless);
-      const apiKey = loadConfig().apiKey;
+      // Read the API key for the swap-outcome sim endpoint. It's optional (the
+      // check degrades to a warning if the endpoint can't authenticate), so a
+      // malformed config must not crash an in-progress trade — fall back to null.
+      const apiKey = (() => {
+        try {
+          return loadConfig().apiKey;
+        } catch {
+          return null;
+        }
+      })();
 
       if (!quoteId) {
         throw new CommandError(`Usage: nansen trade execute --quote <quoteId> [options]

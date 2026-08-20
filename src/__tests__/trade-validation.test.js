@@ -1464,6 +1464,34 @@ describe('assertSwapOutcome', () => {
       .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*non-fungible asset/i);
   });
 
+  it('fails closed when the swap grants an NFT approval (assertion 3c)', () => {
+    // A single-NFT Approval folds in as a zero-amount "revoke" and an
+    // ApprovalForAll is not an ERC-20 Approval, so neither reaches assertion 4.
+    // Both grant an operator the ability to move the NFT out after the swap.
+    const base = { deltas: { [USDC]: -1000000n, [DAI]: 1000000n }, approvals: [] };
+    const nft = '0x000000000000000000000000000000000000abcd';
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, { ...base, nftApprovals: [{ standard: 'ERC-721', token: nft, operator: ATTACKER }] }, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*non-fungible approval/i);
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, { ...base, nftApprovals: [{ standard: 'ERC-721/1155 (all)', token: nft, operator: ATTACKER }] }, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*non-fungible approval/i);
+  });
+
+  it('caps the slippage floor at 50%, so 100% slippage cannot neuter assertion 2', () => {
+    // --slippage 1 (100%, accepted upstream) would make minOut 0, letting a swap
+    // deliver nothing. The floor is capped at 50% of quoted regardless.
+    const zeroOut = { deltas: { [USDC]: -1000000n }, approvals: [] }; // no DAI received
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, zeroOut, { slippage: 1 }))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*minimum acceptable output/i);
+    // 600,000 received is above the 50% floor (500,000) even though it is below
+    // the 970,000 a 3% floor would demand — 100% slippage still allows the swap.
+    const halfOut = { deltas: { [USDC]: -1000000n, [DAI]: 600000n }, approvals: [] };
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, halfOut, { slippage: 1 })).not.toThrow();
+    // Just below the 50% floor fails.
+    const belowFloor = { deltas: { [USDC]: -1000000n, [DAI]: 499999n }, approvals: [] };
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, belowFloor, { slippage: 1 }))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*minimum acceptable output/i);
+  });
+
   it('rejects an approval to an unexpected spender (assertion 4)', () => {
     const sim = {
       deltas: { [USDC]: -1000000n, [DAI]: 1000000n },

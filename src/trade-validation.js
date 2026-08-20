@@ -968,7 +968,16 @@ export function assertSwapOutcome(request, quote, sim, { slippage, expectedSpend
     // Floor of quoted × (1 − slippage), in basis points to stay in BigInt. This
     // mirrors the slippage the user actually set (quoteData.slippage), defaulting
     // to 3% to match approvalAmountForSwap when it wasn't supplied.
-    const slip = Number.isFinite(slippage) && slippage >= 0 ? slippage : 0.03;
+    //
+    // Cap the slippage used HERE at 50%, independent of what the user accepted:
+    // the upstream quote command allows --slippage up to 1.0 (100%), which would
+    // make minOut 0 and neuter this assertion — a route delivering nothing would
+    // pass (outputDelta >= 0). This is a defence-in-depth floor, not the user's
+    // execution tolerance; a real swap never loses more than half the quoted
+    // output, so requiring at least 50% keeps the guard meaningful while leaving
+    // enormous headroom over a normal few-percent deviation.
+    const rawSlip = Number.isFinite(slippage) && slippage >= 0 ? slippage : 0.03;
+    const slip = Math.min(rawSlip, 0.5);
     const bps = BigInt(Math.min(10000, Math.round(slip * 10000)));
     minOut = (quoted * (10000n - bps)) / 10000n;
   }
@@ -993,6 +1002,19 @@ export function assertSwapOutcome(request, quote, sim, { slippage, expectedSpend
   for (const nft of sim.nftOut || []) {
     throw fail(
       `a non-fungible asset (${nft.standard}${nft.token ? ` ${nft.token}` : ''}) left the wallet; a swap must not transfer any NFT.`,
+    );
+  }
+
+  // --- Assertion 3c: no non-fungible approval is granted ---
+  // A DEX swap never needs to approve an NFT, so any ERC-721 / ERC-1155 approval
+  // the wallet grants (single-token Approval or ApprovalForAll) is fail-closed —
+  // it would let the operator move the NFT out AFTER the swap, invisibly to the
+  // transfer checks above. The ERC-20 spender allowlist (assertion 4) does NOT
+  // cover these: a single-NFT Approval folds in as a zero-amount "revoke" and an
+  // ApprovalForAll is not an ERC-20 Approval at all.
+  for (const ap of sim.nftApprovals || []) {
+    throw fail(
+      `the swap grants a non-fungible approval (${ap.standard}${ap.token ? ` ${ap.token}` : ''}) to ${ap.operator || 'an operator'}; a swap must not approve any NFT.`,
     );
   }
 

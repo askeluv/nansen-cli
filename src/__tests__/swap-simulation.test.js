@@ -9,6 +9,7 @@ import {
 
 const TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 const APPROVAL = '0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925';
+const APPROVAL_FOR_ALL = '0x17307eab39ab6107e8899845ad3d59bd9653f200f220920489ca2b5937696c31';
 const ERC1155_SINGLE = '0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62';
 const ZERO = '0x0000000000000000000000000000000000000000';
 
@@ -42,6 +43,18 @@ const erc1155SingleLog = (token, operator, from, to) => ({
   address: token,
   topics: [ERC1155_SINGLE, pad(operator), pad(from), pad(to)],
   data: '0x' + '0'.repeat(128), // id + value, unread by the parser
+});
+// ERC-721 single-token Approval (owner, approved, tokenId indexed; empty data).
+const erc721ApprovalLog = (token, owner, approved, tokenId) => ({
+  address: token,
+  topics: [APPROVAL, pad(owner), pad(approved), pad(BigInt(tokenId).toString(16))],
+  data: '0x',
+});
+// ERC-721/1155 ApprovalForAll(owner, operator indexed; bool in data).
+const approvalForAllLog = (token, owner, operator, approved) => ({
+  address: token,
+  topics: [APPROVAL_FOR_ALL, pad(owner), pad(operator)],
+  data: hex(approved ? 1 : 0),
 });
 
 function mockFetchOnce(body) {
@@ -180,6 +193,36 @@ describe('swap-simulation', () => {
       ]));
       const { nftOut } = await simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET });
       expect(nftOut).toEqual([]);
+    });
+
+    it('does not flag an NFT self-transfer (from == to == wallet)', async () => {
+      mockFetchOnce(simV1([
+        erc721TransferLog(NFT, WALLET, WALLET, 7n),
+        erc1155SingleLog(NFT, WALLET, WALLET, WALLET),
+      ]));
+      const { nftOut } = await simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET });
+      expect(nftOut).toEqual([]);
+    });
+
+    it('flags an ERC-721 single-token approval the wallet grants', async () => {
+      mockFetchOnce(simV1([erc721ApprovalLog(NFT, WALLET, ATTACKER, 7n)]));
+      const { nftApprovals } = await simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET });
+      expect(nftApprovals).toEqual([{ standard: 'ERC-721', token: NFT, operator: ATTACKER }]);
+    });
+
+    it('flags an ApprovalForAll the wallet grants', async () => {
+      mockFetchOnce(simV1([approvalForAllLog(NFT, WALLET, ATTACKER, true)]));
+      const { nftApprovals } = await simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET });
+      expect(nftApprovals).toEqual([{ standard: 'ERC-721/1155 (all)', token: NFT, operator: ATTACKER }]);
+    });
+
+    it('does not flag NFT revokes (approve-to-zero or ApprovalForAll false)', async () => {
+      mockFetchOnce(simV1([
+        erc721ApprovalLog(NFT, WALLET, ZERO, 7n), // single-token revoke
+        approvalForAllLog(NFT, WALLET, ATTACKER, false), // operator revoke
+      ]));
+      const { nftApprovals } = await simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET });
+      expect(nftApprovals).toEqual([]);
     });
 
     it('throws SIM_REVERTED when the swap reverts in simulation', async () => {

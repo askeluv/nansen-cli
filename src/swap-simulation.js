@@ -21,8 +21,13 @@ import { SIMULATION_RPCS, isNansenHostedUrl } from './rpc-urls.js';
 // ERC-20 indexes (from, to) and carries value in `data` (3 topics); ERC-721 also
 // indexes the tokenId (4 topics). We distinguish them by topic count below.
 const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
-// keccak256("Approval(address,address,uint256)")
+// keccak256("Approval(address,address,uint256)") — shared by ERC-20 and ERC-721.
+// ERC-20 indexes (owner, spender) with the value in `data` (3 topics); ERC-721
+// also indexes the tokenId (4 topics), granting control of one specific NFT.
 const APPROVAL_TOPIC = '0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925';
+// keccak256("ApprovalForAll(address,address,bool)") — ERC-721 AND ERC-1155. Grants
+// an operator control of the owner's ENTIRE collection; `data` is the bool flag.
+const APPROVAL_FOR_ALL_TOPIC = '0x17307eab39ab6107e8899845ad3d59bd9653f200f220920489ca2b5937696c31';
 // keccak256("TransferSingle(address,address,address,uint256,uint256)") — ERC-1155
 const ERC1155_SINGLE_TOPIC = '0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62';
 // keccak256("TransferBatch(address,address,address,uint256[],uint256[])") — ERC-1155
@@ -85,16 +90,21 @@ function normalizeToken(addr) {
 }
 
 /**
- * Fold a flat list of logs into per-token deltas for `wallet`, the Approvals the
- * wallet granted, and any non-fungible (ERC-721/ERC-1155) transfer OUT of the
- * wallet. `deltas` is signed: positive = received, negative = sent. Tokens with a
- * net-zero delta are dropped.
+ * Fold a flat list of logs into per-token deltas for `wallet`, the ERC-20
+ * Approvals the wallet granted, any non-fungible (ERC-721/ERC-1155) transfer OUT
+ * of the wallet, and any non-fungible approval the wallet GRANTED. `deltas` is
+ * signed: positive = received, negative = sent. Tokens with a net-zero delta are
+ * dropped.
  *
- * `nftOut` exists because the fungible `deltas` map cannot represent an NFT: a
- * DEX swap should only move native currency and ERC-20 tokens, so an ERC-721 /
- * ERC-1155 leaving the wallet is an out-of-scope asset movement the caller must
- * fail closed on (assertSwapOutcome) rather than silently ignore. Inbound NFTs
- * are harmless and not recorded.
+ * `nftOut` / `nftApprovals` exist because the fungible `deltas` (and the ERC-20
+ * `approvals`) map cannot represent an NFT: a DEX swap should only move native
+ * currency and ERC-20 tokens, so an ERC-721 / ERC-1155 leaving the wallet OR the
+ * wallet granting an NFT operator approval is an out-of-scope, asset-endangering
+ * event the caller must fail closed on (assertSwapOutcome) rather than silently
+ * ignore. A single-NFT Approval carries empty `data`, so it would otherwise fold
+ * into `approvals` as amount 0n and be mistaken for a harmless revoke; an
+ * ApprovalForAll is not an ERC-20 Approval at all and would be dropped entirely.
+ * Inbound NFTs, self-transfers, and NFT revokes are harmless and not recorded.
  *
  * @param {Array} logs - [{ address, topics, data }]
  * @param {string} wallet - the sender whose balance changes we care about
@@ -102,8 +112,9 @@ function normalizeToken(addr) {
 function foldLogs(logs, wallet) {
   const w = wallet.toLowerCase();
   const deltas = {}; // token -> bigint (signed)
-  const approvals = []; // { token, spender, amount }
+  const approvals = []; // { token, spender, amount } — ERC-20 approvals
   const nftOut = []; // { standard, token } — non-fungible transfers leaving `w`
+  const nftApprovals = []; // { standard, token, operator } — NFT approvals `w` granted
 
   for (const lg of logs || []) {
     const topics = lg?.topics || [];
@@ -111,9 +122,11 @@ function foldLogs(logs, wallet) {
 
     if (topic0 === TRANSFER_TOPIC && topics.length >= 4) {
       // ERC-721: shares the ERC-20 Transfer signature but indexes the tokenId as
-      // a 4th topic. Only flag it when the NFT leaves the wallet.
+      // a 4th topic. Flag only when the NFT leaves the wallet for someone else (a
+      // self-transfer is a no-op, mirroring the ERC-20 net-zero cleanup).
       const from = topicToAddress(topics[1]);
-      if (from === w) nftOut.push({ standard: 'ERC-721', token: normalizeToken(lg.address) });
+      const to = topicToAddress(topics[2]);
+      if (from === w && to !== w) nftOut.push({ standard: 'ERC-721', token: normalizeToken(lg.address) });
     } else if (topic0 === TRANSFER_TOPIC && topics.length >= 3) {
       const from = topicToAddress(topics[1]);
       const to = topicToAddress(topics[2]);
@@ -127,9 +140,18 @@ function foldLogs(logs, wallet) {
       if (from === w) deltas[token] = (deltas[token] || 0n) - amount;
     } else if ((topic0 === ERC1155_SINGLE_TOPIC || topic0 === ERC1155_BATCH_TOPIC) && topics.length >= 4) {
       // ERC-1155 TransferSingle/Batch index (operator, from, to); `from` is the
-      // 3rd topic. Flag only when the wallet is the sender.
+      // 3rd topic, `to` the 4th. Flag only a real outbound transfer.
       const from = topicToAddress(topics[2]);
-      if (from === w) nftOut.push({ standard: 'ERC-1155', token: normalizeToken(lg.address) });
+      const to = topicToAddress(topics[3]);
+      if (from === w && to !== w) nftOut.push({ standard: 'ERC-1155', token: normalizeToken(lg.address) });
+    } else if (topic0 === APPROVAL_TOPIC && topics.length >= 4) {
+      // ERC-721 single-token Approval (owner, approved, tokenId indexed; empty
+      // data). Approving the zero address is a revoke and grants nothing.
+      const owner = topicToAddress(topics[1]);
+      const approved = topicToAddress(topics[2]);
+      if (owner === w && approved && approved !== ZERO_ADDRESS) {
+        nftApprovals.push({ standard: 'ERC-721', token: normalizeToken(lg.address), operator: approved });
+      }
     } else if (topic0 === APPROVAL_TOPIC && topics.length >= 3) {
       const owner = topicToAddress(topics[1]);
       const spender = topicToAddress(topics[2]);
@@ -140,13 +162,22 @@ function foldLogs(logs, wallet) {
           amount: hexToBigInt(lg.data),
         });
       }
+    } else if (topic0 === APPROVAL_FOR_ALL_TOPIC && topics.length >= 3) {
+      // ERC-721/ERC-1155 ApprovalForAll(owner, operator indexed; bool in data).
+      // data == 0 is a revoke (grants nothing); any non-zero flag is a grant of
+      // control over the wallet's whole collection.
+      const owner = topicToAddress(topics[1]);
+      const operator = topicToAddress(topics[2]);
+      if (owner === w && hexToBigInt(lg.data) !== 0n) {
+        nftApprovals.push({ standard: 'ERC-721/1155 (all)', token: normalizeToken(lg.address), operator });
+      }
     }
   }
 
   for (const t of Object.keys(deltas)) {
     if (deltas[t] === 0n) delete deltas[t];
   }
-  return { deltas, approvals, nftOut };
+  return { deltas, approvals, nftOut, nftApprovals };
 }
 
 // ============= eth_simulateV1 (primary) =============
@@ -249,8 +280,8 @@ async function simulateViaEthSimulateV1(rpcUrl, apiKey, { from, to, data, value 
       `Swap reverts in simulation${call.error?.message ? `: ${call.error.message}` : ''}`,
     );
   }
-  const { deltas, approvals, nftOut } = foldLogs(call.logs, from);
-  return { deltas, approvals, nftOut, method: 'eth_simulateV1' };
+  const { deltas, approvals, nftOut, nftApprovals } = foldLogs(call.logs, from);
+  return { deltas, approvals, nftOut, nftApprovals, method: 'eth_simulateV1' };
 }
 
 // ============= debug_traceCall + callTracer (fallback) =============
@@ -290,7 +321,7 @@ async function simulateViaDebugTraceCall(rpcUrl, apiKey, { from, to, data, value
   }
 
   const { logs, frames } = flattenFrames(root);
-  const { deltas, approvals, nftOut } = foldLogs(logs, from);
+  const { deltas, approvals, nftOut, nftApprovals } = foldLogs(logs, from);
 
   // callTracer does NOT emit synthetic logs for native ETH, so derive native
   // movement from the `value` on each frame: value the wallet sends is an
@@ -321,13 +352,18 @@ async function simulateViaDebugTraceCall(rpcUrl, apiKey, { from, to, data, value
   // moved, assertSwapOutcome judges the real outcome (a partial swap that failed
   // to deliver the output still fails assertion 2), so an errored frame there is
   // not a reliable revert signal and would false-positive on legitimate swaps.
-  if (Object.keys(deltas).length === 0 && approvals.length === 0 && nftOut.length === 0) {
+  if (
+    Object.keys(deltas).length === 0 &&
+    approvals.length === 0 &&
+    nftOut.length === 0 &&
+    nftApprovals.length === 0
+  ) {
     const errored = frames.find((f) => f.error);
     if (errored) {
       throw new SwapSimulationError('SIM_REVERTED', `Swap reverts in simulation: ${errored.error}`);
     }
   }
-  return { deltas, approvals, nftOut, method: 'debug_traceCall' };
+  return { deltas, approvals, nftOut, nftApprovals, method: 'debug_traceCall' };
 }
 
 // ============= public entry point =============
@@ -343,7 +379,7 @@ async function simulateViaDebugTraceCall(rpcUrl, apiKey, { from, to, data, value
  * @param {string} chain - chain key (only 'base' is wired today)
  * @param {{ to: string, data: string, value?: string }} swapCall - the swap tx
  * @param {{ from: string, apiKey?: string|null, timeoutMs?: number }} opts
- * @returns {Promise<{ deltas: Record<string,bigint>, approvals: Array<{token,spender,amount}>, nftOut: Array<{standard,token}>, method: string }>}
+ * @returns {Promise<{ deltas: Record<string,bigint>, approvals: Array<{token,spender,amount}>, nftOut: Array<{standard,token}>, nftApprovals: Array<{standard,token,operator}>, method: string }>}
  * @throws {SwapSimulationError} on any degrade condition or an in-sim revert.
  */
 export async function simulateAssetChanges(chain, swapCall, { from, apiKey = null, timeoutMs = 20000 } = {}) {
