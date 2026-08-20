@@ -289,7 +289,13 @@ function isMethodUnsupported(rpcError) {
  * never misread as a revert.
  */
 function isRevertError(rpcError) {
-  return (rpcError?.message || '').toLowerCase().includes('revert');
+  // EIP-1474: code 3 is the execution (revert) error. Also match the standard
+  // geth phrasing, but NOT a bare "revert": messages like "gas estimation would
+  // revert" or "request reverted by upstream policy" are estimation/transport
+  // noise, and treating those as a revert would hard-block (skip the quote)
+  // instead of degrading. Checked only AFTER isMethodUnsupported.
+  if (rpcError?.code === 3) return true;
+  return (rpcError?.message || '').toLowerCase().includes('execution reverted');
 }
 
 async function simulateViaEthSimulateV1(rpcUrl, apiKey, { from, to, data, value }, timeoutMs) {

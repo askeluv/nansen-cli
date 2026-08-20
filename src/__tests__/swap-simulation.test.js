@@ -315,6 +315,23 @@ describe('swap-simulation', () => {
         simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET }),
       ).rejects.toMatchObject({ code: 'SIM_RPC_ERROR' });
     });
+
+    it('does not hard-block on a transport error that merely contains the word "revert"', async () => {
+      // "gas estimation would revert" / "reverted by upstream policy" are not
+      // execution reverts — they must DEGRADE (SIM_RPC_ERROR), not block, so a
+      // transient proxy message never false-rejects a valid quote.
+      mockFetchOnce({ jsonrpc: '2.0', id: 1, error: { message: 'request reverted by upstream policy' } });
+      await expect(
+        simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET }),
+      ).rejects.toMatchObject({ code: 'SIM_RPC_ERROR' });
+    });
+
+    it('blocks on the EIP-1474 execution-revert error code (3) even without the phrase', async () => {
+      mockFetchOnce({ jsonrpc: '2.0', id: 1, error: { code: 3, message: 'reverted' } });
+      await expect(
+        simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET }),
+      ).rejects.toMatchObject({ code: 'SIM_REVERTED' });
+    });
   });
 
   describe('fallback to debug_traceCall', () => {

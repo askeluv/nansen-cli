@@ -72,6 +72,10 @@ const DEFAULT_BASE_SIM_RPC = 'https://api.nansen.ai/api/v1/trade/simulate-swap';
 // disable. Only outcome verification reads this registry; every other RPC call
 // stays on the cheap CHAIN_RPCS default. A null entry (no baked default and no
 // override) signals "no sim-capable endpoint" to the caller, which degrades.
+//
+// Intentionally a mutable export: unit tests override an entry in-place (e.g.
+// `SIMULATION_RPCS.base = ...`) to point at a mock or to null out the endpoint,
+// restoring it in afterEach. Runtime code only ever reads it.
 export const SIMULATION_RPCS = {
   base: process.env.NANSEN_BASE_SIM_RPC || DEFAULT_BASE_SIM_RPC,
 };
