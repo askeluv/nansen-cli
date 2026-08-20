@@ -76,6 +76,13 @@ export const SIMULATION_RPCS = {
   base: process.env.NANSEN_BASE_SIM_RPC || DEFAULT_BASE_SIM_RPC,
 };
 
+// Nansen hosts the API key may be forwarded to. Kept to an explicit allowlist
+// (not a `*.nansen.ai` wildcard): the key only ever authenticates the sim proxy
+// on api.nansen.ai, and a wildcard would forward it to any subdomain that
+// resolves — including a misconfigured or compromised one. Add new sim hosts
+// here deliberately if one is ever introduced.
+const NANSEN_HOSTED_SIM_HOSTS = new Set(['api.nansen.ai']);
+
 /**
  * Whether a simulation URL is a Nansen-hosted endpoint that may receive the
  * user's Nansen API key. The key authenticates the shipped default proxy
@@ -84,16 +91,14 @@ export const SIMULATION_RPCS = {
  * leak it. So the key is attached ONLY when this returns true — every other
  * endpoint is called anonymously.
  *
- * Trust is: https + hostname is exactly `nansen.ai`/`api.nansen.ai` or a
- * `*.nansen.ai` subdomain. Anything else (http, other host, unparseable) is
- * untrusted and gets no key.
+ * Trust is: https + hostname is one of NANSEN_HOSTED_SIM_HOSTS. Anything else
+ * (http, other host, unparseable) is untrusted and gets no key.
  */
 export function isNansenHostedUrl(url) {
   try {
     const u = new URL(url);
     if (u.protocol !== 'https:') return false;
-    const host = u.hostname.toLowerCase();
-    return host === 'nansen.ai' || host === 'api.nansen.ai' || host.endsWith('.nansen.ai');
+    return NANSEN_HOSTED_SIM_HOSTS.has(u.hostname.toLowerCase());
   } catch {
     return false;
   }

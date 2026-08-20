@@ -42,6 +42,13 @@ const ERC1155_BATCH_TOPIC = '0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d9
 export const EVM_NATIVE_SENTINEL = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
+// callTracer frame types that can actually move ETH. STATICCALL forbids value
+// and DELEGATECALL runs in the caller's context (its `value` mirrors the parent
+// frame rather than being a transfer), so both must be excluded from native
+// delta accounting — some nodes populate their `value` field regardless, which
+// would otherwise double-count or invent ETH movement.
+const ETH_MOVING_FRAME_TYPES = new Set(['CALL', 'CALLCODE', 'CREATE', 'CREATE2', 'SELFDESTRUCT']);
+
 /**
  * A simulation error the caller can distinguish from a genuine outcome mismatch.
  * `code` is one of:
@@ -326,9 +333,16 @@ async function simulateViaDebugTraceCall(rpcUrl, apiKey, { from, to, data, value
   // callTracer does NOT emit synthetic logs for native ETH, so derive native
   // movement from the `value` on each frame: value the wallet sends is an
   // outflow, value it receives is an inflow. Mirrors traceTransfers semantics.
+  //
+  // Only value-carrying opcodes actually move ETH: skip STATICCALL (value
+  // forbidden) and DELEGATECALL (runs in the caller's context, its `value`
+  // mirrors the parent rather than transferring) so a node that populates their
+  // `value` field anyway can't invent or double-count native flow. A frame with
+  // no `type` (unusual) is treated as non-moving and skipped.
   const w = from.toLowerCase();
   let native = 0n;
   for (const f of frames) {
+    if (!ETH_MOVING_FRAME_TYPES.has((f.type || '').toUpperCase())) continue;
     const v = hexToBigInt(f.value);
     if (v === 0n) continue;
     if ((f.to || '').toLowerCase() === w) native += v;

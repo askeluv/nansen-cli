@@ -260,16 +260,21 @@ describe('swap-simulation', () => {
           });
         }
         // callTracer frame tree: ERC-20 output arrives via a log; native input is
-        // the top-level frame value from the wallet.
+        // the top-level CALL frame value from the wallet. A nested STATICCALL
+        // carries a spurious non-zero `value` (some nodes populate it) that must
+        // NOT be counted — STATICCALL cannot move ETH.
         return Promise.resolve({
           status: 200,
           text: async () => JSON.stringify({
             result: {
+              type: 'CALL',
               from: WALLET,
               to: ROUTER,
               value: hex(1_500_000_000_000_000n),
               logs: [transferLog(USDC, ROUTER, WALLET, 5_000_000n)],
-              calls: [],
+              calls: [
+                { type: 'STATICCALL', from: WALLET, to: ROUTER, value: hex(9_999_000_000_000_000n), logs: [], calls: [] },
+              ],
             },
           }),
         });
@@ -281,6 +286,7 @@ describe('swap-simulation', () => {
       );
       expect(calls).toEqual(['eth_simulateV1', 'debug_traceCall']);
       expect(method).toBe('debug_traceCall');
+      // Only the CALL frame's value counts; the STATICCALL's is ignored.
       expect(deltas[EVM_NATIVE_SENTINEL]).toBe(-1_500_000_000_000_000n);
       expect(deltas[USDC]).toBe(5_000_000n);
     });
