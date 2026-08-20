@@ -169,14 +169,17 @@ describe('creditWarning', () => {
   it('warns when the balance is exhausted', () => {
     const warning = creditWarning({ credits: { used: 5, remaining: 0 } });
     expect(warning).toContain('Out of API credits');
-    expect(warning).toContain('https://app.nansen.ai/auth/agent-setup');
+    expect(warning).toContain('Top up your credits in the Nansen app');
+    // Credit warnings stay URL-free — the auth/agent-setup link belongs to MCP setup, not top-ups.
+    expect(warning).not.toContain('app.nansen.ai');
   });
 
   it('warns when the balance will not cover another call of the same size', () => {
     const warning = creditWarning({ credits: { used: 10, remaining: 3 } });
     expect(warning).toContain('3 API credits left');
     expect(warning).toContain('less than this call cost (10)');
-    expect(warning).toContain('https://app.nansen.ai/auth/agent-setup');
+    expect(warning).toContain('Top up your credits in the Nansen app');
+    expect(warning).not.toContain('app.nansen.ai');
   });
 
   it('singularises one remaining credit', () => {
