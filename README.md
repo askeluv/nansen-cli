@@ -59,7 +59,17 @@ Connect any MCP client to Nansen's streamable HTTP server:
 - **Authentication:** `NANSEN-API-KEY` header
 - **API key:** [app.nansen.ai/auth/agent-setup](https://app.nansen.ai/auth/agent-setup)
 
-**One-click:** [Claude Desktop (`.dxt` bundle)](https://docs.nansen.ai/mcp/connecting) and [Cursor (install deep link)](https://docs.nansen.ai/mcp/connecting) are available from the connection docs.
+**One-click (Claude Desktop):** download [`nansen.dxt`](https://github.com/nansen-ai/nansen-mcp-dxt/raw/refs/heads/main/nansen.dxt), open it, and paste your API key when prompted.
+
+**One-click (Cursor):** open this deep link — GitHub strips the `cursor://` scheme from rendered links, so copy the line:
+
+```
+cursor://anysphere.cursor-deeplink/mcp/install?name=nansen-mcp&config=eyJlbnYiOnsiTkFOU0VOX0FQSV9LRVkiOiJSRVBMQUNFX1RISVMifSwiY29tbWFuZCI6Im5weCIsImFyZ3MiOlsiLXkiLCJtY3AtcmVtb3RlIiwiaHR0cHM6Ly9tY3AubmFuc2VuLmFpL3JhL21jcC8iLCItLWhlYWRlciIsIk5BTlNFTi1BUEktS0VZOiR7TkFOU0VOX0FQSV9LRVl9IiwiLS1hbGxvdy1odHRwIl19Cg==
+```
+
+It installs the `mcp-remote` bridge with `NANSEN_API_KEY` set to `REPLACE_THIS` — swap in your key afterwards. For a native (bridge-free) Cursor setup, use the manual JSON below instead.
+
+Screenshots and per-client walkthroughs: [docs.nansen.ai/mcp/connecting](https://docs.nansen.ai/mcp/connecting).
 
 **One-command (Claude Code):**
 
