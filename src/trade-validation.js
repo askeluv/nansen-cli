@@ -946,6 +946,13 @@ export function assertSwapOutcome(request, quote, sim, { slippage, expectedSpend
     } catch {
       throw fail(`requested output amount (${request.amount}) is not an integer.`);
     }
+    // Mirror the exactIn non-positive guard: a zero/negative requested output
+    // makes minOut <= 0 and turns assertion 2 into a no-op (outputDelta >= 0
+    // always holds), so a swap delivering nothing would pass. Upstream rejects
+    // zero amounts, but this helper is a self-contained fail-closed boundary.
+    if (minOut <= 0n) {
+      throw fail(`exactOut request has a non-positive output amount (${minOut}); cannot compute a minimum acceptable output.`);
+    }
   } else {
     const quotedRaw = quote.outAmount ?? quote.outputAmount;
     if (quotedRaw == null) {

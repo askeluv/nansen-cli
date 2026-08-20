@@ -1534,6 +1534,16 @@ describe('assertSwapOutcome', () => {
     expect(() => assertSwapOutcome(req, quote, short, {})).toThrow(/SWAP_OUTCOME_MISMATCH/i);
   });
 
+  it('rejects an exactOut request with a non-positive requested output', () => {
+    // amount "0" makes minOut 0, so a zero-output sim would pass assertion 2
+    // (outputDelta >= 0). Mirror the exactIn guard and fail closed.
+    const req = { ...exactInRequest, swapMode: 'exactOut', amount: '0', maxInputAmount: '1100000' };
+    const quote = { inputMint: USDC, outputMint: DAI, inAmount: '1050000', outAmount: '0' };
+    const sim = { deltas: { [USDC]: -1050000n }, approvals: [] };
+    expect(() => assertSwapOutcome(req, quote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*non-positive output amount/i);
+  });
+
   it('tolerates a sub-threshold non-input outflow when a dust threshold is set', () => {
     const sim = {
       deltas: { [USDC]: -1000000n, [DAI]: 1000000n, '0xaaaa000000000000000000000000000000000001': -3n },
