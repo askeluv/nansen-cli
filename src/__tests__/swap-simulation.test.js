@@ -281,6 +281,23 @@ describe('swap-simulation', () => {
         simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET }),
       ).rejects.toMatchObject({ code: 'SIM_RPC_ERROR' });
     });
+
+    it('blocks (SIM_REVERTED) when a revert surfaces as a top-level error, not a per-call status', async () => {
+      // A proxy may collapse a reverting simulation into a top-level `error`
+      // instead of calls[0].status='0x0'. That must fail closed (block), not be
+      // classified SIM_RPC_ERROR — which the caller degrades (warn + proceed).
+      mockFetchOnce({ jsonrpc: '2.0', id: 1, error: { message: 'execution reverted: TRANSFER_FROM_FAILED' } });
+      await expect(
+        simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET }),
+      ).rejects.toMatchObject({ code: 'SIM_REVERTED' });
+    });
+
+    it('still classifies a non-revert top-level error as SIM_RPC_ERROR (degrade)', async () => {
+      mockFetchOnce({ jsonrpc: '2.0', id: 1, error: { message: 'invalid params: bad block tag' } });
+      await expect(
+        simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET }),
+      ).rejects.toMatchObject({ code: 'SIM_RPC_ERROR' });
+    });
   });
 
   describe('fallback to debug_traceCall', () => {

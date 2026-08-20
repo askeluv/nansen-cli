@@ -262,6 +262,20 @@ function isMethodUnsupported(rpcError) {
   );
 }
 
+/**
+ * True when a top-level JSON-RPC error denotes an in-EVM revert rather than a
+ * transport/params problem. The conformant eth_simulateV1 / callTracer shapes
+ * report a revert per-call (`calls[0].status === '0x0'` or a frame `error`), but
+ * a proxy may instead collapse a reverting simulation into a top-level `error`.
+ * Classifying that as SIM_RPC_ERROR would DEGRADE (warn + proceed), waving a
+ * reverting swap through; treat it as SIM_REVERTED so it blocks (fail closed).
+ * Checked only AFTER isMethodUnsupported, so a "method not available" error is
+ * never misread as a revert.
+ */
+function isRevertError(rpcError) {
+  return (rpcError?.message || '').toLowerCase().includes('revert');
+}
+
 async function simulateViaEthSimulateV1(rpcUrl, apiKey, { from, to, data, value }, timeoutMs) {
   const params = [
     {
@@ -281,6 +295,9 @@ async function simulateViaEthSimulateV1(rpcUrl, apiKey, { from, to, data, value 
   if (body.error) {
     if (isMethodUnsupported(body.error)) {
       throw new SwapSimulationError('NOT_SIM_CAPABLE', `eth_simulateV1 unavailable: ${body.error.message}`);
+    }
+    if (isRevertError(body.error)) {
+      throw new SwapSimulationError('SIM_REVERTED', `Swap reverts in simulation: ${body.error.message}`);
     }
     throw new SwapSimulationError('SIM_RPC_ERROR', `eth_simulateV1 error: ${body.error.message}`);
   }
@@ -333,6 +350,9 @@ async function simulateViaDebugTraceCall(rpcUrl, apiKey, { from, to, data, value
   if (body.error) {
     if (isMethodUnsupported(body.error)) {
       throw new SwapSimulationError('NOT_SIM_CAPABLE', `debug_traceCall unavailable: ${body.error.message}`);
+    }
+    if (isRevertError(body.error)) {
+      throw new SwapSimulationError('SIM_REVERTED', `Swap reverts in simulation: ${body.error.message}`);
     }
     throw new SwapSimulationError('SIM_RPC_ERROR', `debug_traceCall error: ${body.error.message}`);
   }
