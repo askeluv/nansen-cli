@@ -332,6 +332,22 @@ describe('sendApprovalViaWalletConnect', () => {
     const payload = JSON.parse(execFile.mock.calls[0][1][1]);
     expect(payload.gas).toBe('0x186a0'); // 100000 in hex
   });
+
+  it('builds zero-amount revoke calldata when explicitly allowed', async () => {
+    mockExecFile(JSON.stringify({ txHash: '0xrevoke123' }));
+
+    await sendApprovalViaWalletConnect(
+      '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+      '0xDef1C0ded9bec7F1a1670819833240f027b25EfF',
+      8453,
+      0n,
+      undefined,
+      { allowZero: true },
+    );
+
+    const payload = JSON.parse(execFile.mock.calls[0][1][1]);
+    expect(payload.data.slice(74)).toBe('0'.repeat(64));
+  });
 });
 
 // ============= sendSolanaTransactionViaWalletConnect =============

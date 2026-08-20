@@ -619,6 +619,23 @@ describe('buildApprovalTransaction', () => {
     expect(signedHex).not.toContain('f'.repeat(64));
   });
 
+  it('should build a zero-amount revoke approval when explicitly allowed', () => {
+    const wallet = generateEvmWallet();
+    const signedHex = buildApprovalTransaction(
+      '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+      '0x57df6092665eb6058de53939612413ff4b09114e',
+      wallet.privateKey,
+      'base',
+      0,
+      '1000000',
+      0n,
+      undefined,
+      { allowZero: true },
+    );
+    expect(signedHex).toMatch(/^0x[0-9a-f]+$/);
+    expect(signedHex).toContain('0'.repeat(64));
+  });
+
   it('should reject unsupported chains', () => {
     const wallet = generateEvmWallet();
     expect(() => buildApprovalTransaction('0xabc', '0xdef', wallet.privateKey, 'polygon', 0))
@@ -1514,6 +1531,85 @@ describe('Privy execute support', () => {
     // Verify approval receipt was waited for (eth_getTransactionReceipt called for approval)
     expect(logs.some(l => l.includes('Waiting for approval confirmation'))).toBe(true);
     expect(logs.some(l => l.includes('Approval confirmed in block'))).toBe(true);
+  });
+
+  it('refuses to broadcast when Privy returns no signed revoke transaction', async () => {
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'lifi',
+        inputMint: BASE_USDC,
+        outputMint: OUT_TOKEN,
+        inAmount: '100000',
+        inputAmount: '100000',
+        outAmount: '44000000000000',
+        approvalAddress: LIFI_ROUTER,
+        gas: '300000',
+        transaction: {
+          to: LIFI_ROUTER,
+          data: '0xdeadbeef',
+          value: '0',
+          gas: '300000',
+          maxFeePerGas: '1000000',
+          maxPriorityFeePerGas: '1000000',
+        },
+      }],
+    }, 'base', 'privy', { evm: 'wl_evm_1', solana: 'wl_sol_1' }, null, {
+      swapMode: 'exactIn',
+      request: evmIntent({
+        walletAddress: '0xPrivyAddr',
+        fromToken: BASE_USDC,
+        toToken: OUT_TOKEN,
+        amount: '100000',
+        maxInputAmount: '100000',
+      }),
+    });
+
+    const executeBodies = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
+        executeBodies.push(JSON.parse(opts.body));
+        return Promise.resolve({
+          ok: true,
+          text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: '0xshouldnothappen', chainType: 'evm', broadcaster: 'test' })),
+        });
+      }
+      if (urlStr.includes('privy.io') && opts?.method === 'GET') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ id: 'wl_evm_1', address: '0xPrivyAddr', chain_type: 'ethereum' }),
+        });
+      }
+      if (urlStr.includes('privy.io') && opts?.method === 'POST') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ data: {} }),
+        });
+      }
+      if (urlStr.includes('base') || urlStr.includes('mainnet')) {
+        const body = opts?.body ? JSON.parse(opts.body) : {};
+        if (body.method === 'eth_getCode') {
+          return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+        }
+        if (body.method === 'eth_call') {
+          return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' + (2000000n).toString(16).padStart(64, '0') })) });
+        }
+        if (body.method === 'eth_getTransactionCount') {
+          return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+        }
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: null })) });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    }));
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (msg) => logs.push(msg), exit: () => {} });
+    await expect(cmds.execute([], null, { 'no-simulate': true }, { quote: quoteId })).rejects.toThrow(/All quotes failed/i);
+
+    expect(executeBodies).toHaveLength(0);
+    expect(logs.some(l => l.includes('Privy returned no signed revoke transaction'))).toBe(true);
+    expect(logs.some(l => l.includes('allowance revoke failed'))).toBe(false);
   });
 });
 
@@ -3168,6 +3264,258 @@ describe('Swap target validation blocks a poisoned quote (security hardening)', 
 
     delete process.env.NANSEN_WALLET_PASSWORD;
     vi.unstubAllGlobals();
+  });
+});
+
+describe('ERC-20 excessive allowance handling', () => {
+  const approveSelector = '095ea7b3';
+  const amountWord = (amount) => BigInt(amount).toString(16).padStart(64, '0');
+  const hexResult = (amount) => '0x' + amountWord(amount);
+
+  function saveLocalErc20Quote(walletAddress, { inputAmount = '100000', approvalAddress = LIFI_ROUTER } = {}) {
+    return saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'lifi',
+        inputMint: BASE_USDC,
+        outputMint: BASE_ETH,
+        inAmount: inputAmount,
+        inputAmount,
+        outAmount: '44000000000000',
+        approvalAddress,
+        gas: '300000',
+        transaction: {
+          to: approvalAddress,
+          data: '0xdeadbeef',
+          value: '0',
+          gas: '300000',
+          gasPrice: '5000000',
+        },
+        metadata: {},
+      }],
+    }, 'base', 'local', null, null, {
+      swapMode: 'exactIn',
+      request: evmIntent({
+        walletAddress,
+        fromToken: BASE_USDC,
+        toToken: BASE_ETH,
+        amount: inputAmount,
+        maxInputAmount: inputAmount,
+      }),
+    });
+  }
+
+  function saveWalletConnectErc20Quote(walletAddress, { inputAmount = '100000', approvalAddress = LIFI_ROUTER } = {}) {
+    return saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'lifi',
+        inputMint: BASE_USDC,
+        outputMint: BASE_ETH,
+        inAmount: inputAmount,
+        inputAmount,
+        outAmount: '44000000000000',
+        approvalAddress,
+        gas: '300000',
+        transaction: {
+          to: approvalAddress,
+          data: '0xdeadbeef',
+          value: '0',
+          gas: '300000',
+          gasPrice: '5000000',
+        },
+        metadata: {},
+      }],
+    }, 'base', 'walletconnect', null, null, {
+      swapMode: 'exactIn',
+      request: evmIntent({
+        walletAddress,
+        fromToken: BASE_USDC,
+        toToken: BASE_ETH,
+        amount: inputAmount,
+        maxInputAmount: inputAmount,
+      }),
+    });
+  }
+
+  function mockLocalEvmExecute({ allowance, executeResponses }) {
+    const executeBodies = [];
+    const sequence = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const body = opts?.body ? JSON.parse(opts.body) : {};
+
+      if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
+        const response = executeResponses[executeBodies.length] ?? executeResponses.at(-1);
+        executeBodies.push(body);
+        sequence.push({ type: 'execute', txHash: response.txHash, signedTransaction: body.signedTransaction });
+        return Promise.resolve({
+          ok: true,
+          text: () => Promise.resolve(JSON.stringify(response)),
+        });
+      }
+
+      if (body.method === 'eth_getCode') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      }
+      if (body.method === 'eth_getTransactionCount') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+      }
+      if (body.method === 'eth_getTransactionReceipt') {
+        const txHash = body.params?.[0];
+        sequence.push({ type: 'receipt', txHash });
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { status: '0x1', blockNumber: '0x100' } })) });
+      }
+      if (body.method === 'eth_call') {
+        const data = body.params?.[0]?.data || '';
+        const result = data.startsWith('0xdd62ed3e') ? hexResult(allowance) : '0x';
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result })) });
+      }
+
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+    return { executeBodies, sequence };
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    delete process.env.NANSEN_WALLET_PASSWORD;
+  });
+
+  it('revokes an oversized allowance, waits for receipt, reapproves scoped amount, then broadcasts swap', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    const walletAddress = showWallet('default').evm;
+    const quoteId = saveLocalErc20Quote(walletAddress);
+    const { executeBodies, sequence } = mockLocalEvmExecute({
+      allowance: 2000000n,
+      executeResponses: [
+        { status: 'Success', txHash: '0xRevokeHash', chainType: 'evm', broadcaster: 'test' },
+        { status: 'Success', txHash: '0xApprovalHash', chainType: 'evm', broadcaster: 'test' },
+        { status: 'Success', txHash: '0xSwapHash', chainType: 'evm', broadcaster: 'test' },
+      ],
+    });
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    await cmds.execute([], null, { 'no-simulate': true }, { quote: quoteId });
+
+    expect(executeBodies).toHaveLength(3);
+    expect(executeBodies[0].signedTransaction).toContain(approveSelector);
+    expect(executeBodies[0].signedTransaction).toContain(amountWord(0n));
+    expect(executeBodies[1].signedTransaction).toContain(approveSelector);
+    expect(executeBodies[1].signedTransaction).toContain(amountWord(100000n));
+    expect(executeBodies[2].signedTransaction).not.toContain(approveSelector);
+    expect(sequence.map(e => `${e.type}:${e.txHash}`)).toEqual([
+      'execute:0xRevokeHash',
+      'receipt:0xRevokeHash',
+      'execute:0xApprovalHash',
+      'receipt:0xApprovalHash',
+      'execute:0xSwapHash',
+      'receipt:0xSwapHash',
+    ]);
+    expect(logs.some(l => l.includes('Existing allowance (2000000)'))).toBe(true);
+    expect(logs.some(l => l.includes('Allowance revoked in block'))).toBe(true);
+  });
+
+  it('fails closed when reapproval fails after a successful revoke', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    const walletAddress = showWallet('default').evm;
+    const quoteId = saveLocalErc20Quote(walletAddress);
+    const { executeBodies } = mockLocalEvmExecute({
+      allowance: 2000000n,
+      executeResponses: [
+        { status: 'Success', txHash: '0xRevokeHash', chainType: 'evm', broadcaster: 'test' },
+        { status: 'Failed', error: 'approval simulation failed', txHash: '0xApprovalHash', chainType: 'evm', broadcaster: 'test' },
+      ],
+    });
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    await expect(cmds.execute([], null, { 'no-simulate': true }, { quote: quoteId })).rejects.toThrow(/All quotes failed/i);
+
+    expect(executeBodies).toHaveLength(2);
+    expect(executeBodies[0].signedTransaction).toContain(amountWord(0n));
+    expect(executeBodies[1].signedTransaction).toContain(amountWord(100000n));
+    expect(logs.some(l => l.includes('Approval failed for #1 after revoking the prior allowance (now 0)'))).toBe(true);
+  });
+
+  it('reuses a sufficient allowance below the excessive threshold without approval transactions', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    const walletAddress = showWallet('default').evm;
+    const quoteId = saveLocalErc20Quote(walletAddress);
+    const { executeBodies } = mockLocalEvmExecute({
+      allowance: 300000n,
+      executeResponses: [
+        { status: 'Success', txHash: '0xSwapHash', chainType: 'evm', broadcaster: 'test' },
+      ],
+    });
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    await cmds.execute([], null, { 'no-simulate': true }, { quote: quoteId });
+
+    expect(executeBodies).toHaveLength(1);
+    expect(executeBodies[0].signedTransaction).not.toContain(approveSelector);
+    expect(logs.some(l => l.includes('Sufficient allowance exists for #1, skipping approval'))).toBe(true);
+  });
+
+  it('reuses an oversized sufficient allowance when revocation is explicitly disabled', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    const walletAddress = showWallet('default').evm;
+    const quoteId = saveLocalErc20Quote(walletAddress);
+    const { executeBodies } = mockLocalEvmExecute({
+      allowance: 2000000n,
+      executeResponses: [
+        { status: 'Success', txHash: '0xSwapHash', chainType: 'evm', broadcaster: 'test' },
+      ],
+    });
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    await cmds.execute([], null, { 'no-simulate': true, 'no-revoke-excessive-allowance': true }, { quote: quoteId });
+
+    expect(executeBodies).toHaveLength(1);
+    expect(executeBodies[0].signedTransaction).not.toContain(approveSelector);
+    expect(logs.some(l => l.includes('--no-revoke-excessive-allowance was set'))).toBe(true);
+    expect(logs.some(l => l.includes('Sufficient allowance exists for #1, skipping approval'))).toBe(true);
+    expect(logs.some(l => l.includes('Approval required'))).toBe(false);
+  });
+
+  it('fails closed when WalletConnect revoke returns no confirmable transaction', async () => {
+    const wcAddress = '0x742d35Cc6bF4F3f4e0e3a8DD7e37ff4e4Be4E4B4';
+    vi.spyOn(wcTrading, 'getWalletConnectAddress').mockResolvedValue(wcAddress);
+    const approvalSpy = vi.spyOn(wcTrading, 'sendApprovalViaWalletConnect').mockResolvedValue({});
+    const sendSpy = vi.spyOn(wcTrading, 'sendTransactionViaWalletConnect').mockResolvedValue({ txHash: '0xshouldnothappen' });
+    const quoteId = saveWalletConnectErc20Quote(wcAddress);
+    const { executeBodies } = mockLocalEvmExecute({
+      allowance: 2000000n,
+      executeResponses: [
+        { status: 'Success', txHash: '0xshouldnothappen', chainType: 'evm', broadcaster: 'test' },
+      ],
+    });
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    await expect(cmds.execute([], null, { 'no-simulate': true }, { quote: quoteId })).rejects.toThrow(/All quotes failed/i);
+
+    expect(approvalSpy).toHaveBeenCalledTimes(1);
+    expect(approvalSpy).toHaveBeenCalledWith(
+      BASE_USDC,
+      LIFI_ROUTER,
+      8453,
+      0n,
+      undefined,
+      { allowZero: true },
+    );
+    expect(sendSpy).not.toHaveBeenCalled();
+    expect(executeBodies).toHaveLength(0);
+    expect(logs.some(l => l.includes('cannot confirm allowance was cleared'))).toBe(true);
+    expect(logs.some(l => l.includes('Approval required'))).toBe(false);
   });
 });
 
