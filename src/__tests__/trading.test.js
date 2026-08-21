@@ -37,11 +37,13 @@ import {
   convertToBaseUnits,
   formatQuote,
   simulateEvmCall,
+  verifySwapOutcome,
   getBridgeStatus,
   pollBridgeStatus,
   saveTxRecord,
   loadTxRecord,
 } from '../trading.js';
+import { SIMULATION_RPCS } from '../rpc-urls.js';
 import { keccak256, rlpEncode } from '../crypto.js';
 import { base58Decode } from '../transfer.js';
 import {
@@ -3113,6 +3115,59 @@ describe('Swap target validation blocks a poisoned quote (security hardening)', 
     vi.unstubAllGlobals();
   });
 
+  it('does not broadcast a cross-chain bridge quote whose calldata is a bare ERC-20 transfer', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const fetchCalls = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const body = opts?.body ? (() => { try { return JSON.parse(opts.body); } catch { return {}; } })() : {};
+      fetchCalls.push({ url: urlStr, method: body.method, body });
+      if (body.method === 'eth_getTransactionCount') return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+      if (body.method === 'eth_getCode') return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      if (body.method === 'eth_call') return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' })) });
+      if (urlStr.includes('trading-api')) return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: '0xShouldNotHappen', chainType: 'evm', broadcaster: 'test' })) });
+      return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    const USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
+    const WETH = '0x4200000000000000000000000000000000000006'; // sibling token, != inputMint
+    const OUT = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+    // A poisoned bridge quote: source-chain tx is transfer(attacker, ...) to a
+    // sibling token. validateSwapTarget passes (to != inputMint, has code); the
+    // bare-transfer guard must still fire on the cross-chain path (toChain set).
+    const transferCalldata = '0xa9059cbb' + '00'.repeat(12) + '22'.repeat(20) + 'f'.repeat(64);
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'lifi',
+        inputMint: USDC,
+        outputMint: OUT,
+        inAmount: '1000000',
+        inputAmount: '1000000',
+        outAmount: '2000000000000000',
+        approvalAddress: '',
+        transaction: { to: WETH, data: transferCalldata, value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
+        metadata: {},
+      }],
+    }, 'base', 'local', null, 'solana', {
+      swapMode: 'exactIn',
+      request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: USDC, toToken: OUT }),
+    });
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/All quotes failed/i);
+
+    const executeCalls = fetchCalls.filter(c => c.url.includes('trading-api') && c.url.endsWith('/execute'));
+    expect(executeCalls.length).toBe(0);
+    expect(logs.some(l => /bare ERC-20 transfer/i.test(l))).toBe(true);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+    vi.unstubAllGlobals();
+  });
+
   it('skips a malformed zero-input quote instead of broadcasting a zero-amount approval', async () => {
     createWallet('default', 'testpass');
     process.env.NANSEN_WALLET_PASSWORD = 'testpass';
@@ -4138,5 +4193,114 @@ describe('exactOut max-input enforcement (adversarial)', () => {
     await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/built for wallet .* but the signer is/i);
     noBroadcast(calls);
     expect(logs.some(l => /Approval required|Sending approval|Broadcasting/.test(l))).toBe(false);
+  });
+});
+
+describe('verifySwapOutcome (execute-path wiring)', () => {
+  const TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+  const WALLET = '0x8cb9c3f23c7d600fb430bbd171a313d9ea61cebc';
+  const USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
+  const OUT = '0x4200000000000000000000000000000000000006';
+  const ROUTER = '0x57df6092665eb6058def53f94734a338a50f2e5f';
+  const pad = (a) => '0x' + a.replace(/^0x/, '').toLowerCase().padStart(64, '0');
+  const hx = (n) => '0x' + BigInt(n).toString(16);
+  const tlog = (token, from, to, amount) => ({ address: token, topics: [TRANSFER, pad(from), pad(to)], data: hx(amount) });
+  const simBody = (logs) => ({ status: 200, text: async () => JSON.stringify({ result: [{ calls: [{ status: '0x1', logs }] }] }) });
+
+  const quote = {
+    inputMint: USDC, outputMint: OUT, inAmount: '1000000', outAmount: '1000000',
+    approvalAddress: ROUTER, transaction: { to: ROUTER, data: '0xabcd', value: '0' },
+  };
+  const quoteData = {
+    slippage: 0.03,
+    request: { chain: 'base', walletAddress: WALLET, fromToken: USDC, toToken: OUT, swapMode: 'exactIn', amount: '1000000', maxInputAmount: '1000000' },
+  };
+
+  let origBase, origFetch;
+  beforeEach(() => { origBase = SIMULATION_RPCS.base; origFetch = global.fetch; SIMULATION_RPCS.base = 'http://sim.test'; });
+  afterEach(() => { SIMULATION_RPCS.base = origBase; global.fetch = origFetch; vi.restoreAllMocks(); });
+
+  it('proceeds on a clean swap', async () => {
+    global.fetch = vi.fn().mockResolvedValue(simBody([tlog(USDC, WALLET, ROUTER, 1000000n), tlog(OUT, ROUTER, WALLET, 1000000n)]));
+    const r = await verifySwapOutcome({ chain: 'base', from: WALLET, quote, quoteData });
+    expect(r.proceed).toBe(true);
+  });
+
+  it('blocks (proceed=false) when a sibling token is drained', async () => {
+    const drain = '0xaaaa000000000000000000000000000000000001';
+    global.fetch = vi.fn().mockResolvedValue(simBody([
+      tlog(USDC, WALLET, ROUTER, 1000000n), tlog(OUT, ROUTER, WALLET, 1000000n), tlog(drain, WALLET, ROUTER, 5n),
+    ]));
+    const r = await verifySwapOutcome({ chain: 'base', from: WALLET, quote, quoteData });
+    expect(r.proceed).toBe(false);
+    expect(r.reason).toMatch(/SWAP_OUTCOME_MISMATCH/i);
+  });
+
+  it('blocks when the output falls short', async () => {
+    global.fetch = vi.fn().mockResolvedValue(simBody([tlog(USDC, WALLET, ROUTER, 1000000n), tlog(OUT, ROUTER, WALLET, 900000n)]));
+    const r = await verifySwapOutcome({ chain: 'base', from: WALLET, quote, quoteData });
+    expect(r.proceed).toBe(false);
+  });
+
+  it('blocks when the swap reverts in simulation', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ status: 200, text: async () => JSON.stringify({ result: [{ calls: [{ status: '0x0', logs: [] }] }] }) });
+    const r = await verifySwapOutcome({ chain: 'base', from: WALLET, quote, quoteData });
+    expect(r.proceed).toBe(false);
+  });
+
+  it('degrades (proceed=true) when no simulation endpoint is configured', async () => {
+    SIMULATION_RPCS.base = null;
+    const logs = [];
+    const r = await verifySwapOutcome({ chain: 'base', from: WALLET, quote, quoteData, log: (m) => logs.push(m) });
+    expect(r.proceed).toBe(true);
+    expect(logs.some((l) => /unavailable|proceeding without/i.test(l))).toBe(true);
+  });
+
+  it('degrades (proceed=true) when the endpoint cannot run the simulation', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ status: 200, text: async () => JSON.stringify({ error: { code: -32601, message: 'method not found' } }) });
+    const r = await verifySwapOutcome({ chain: 'base', from: WALLET, quote, quoteData });
+    expect(r.proceed).toBe(true);
+  });
+
+  it('skips non-EVM chains', async () => {
+    global.fetch = vi.fn(); // must not be called
+    const r = await verifySwapOutcome({ chain: 'solana', from: WALLET, quote, quoteData });
+    expect(r.proceed).toBe(true);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('handles a bare "0x" tx.value without throwing (BigInt("0x") would throw)', async () => {
+    // A bare '0x' is truthy but unparseable by BigInt; it must normalise to zero
+    // value, not crash or misfire as an outcome mismatch.
+    global.fetch = vi.fn().mockResolvedValue(simBody([tlog(USDC, WALLET, ROUTER, 1000000n), tlog(OUT, ROUTER, WALLET, 1000000n)]));
+    const bareValueQuote = { ...quote, transaction: { ...quote.transaction, value: '0x' } };
+    const r = await verifySwapOutcome({ chain: 'base', from: WALLET, quote: bareValueQuote, quoteData });
+    expect(r.proceed).toBe(true);
+    const sentBody = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(sentBody.params[0].blockStateCalls[0].calls[0].value).toBe('0x0');
+  });
+
+  it('skips cross-chain bridge quotes', async () => {
+    // The bridge output settles on the destination chain, so it never appears in
+    // a source-chain simulation and the output-received assertion would always
+    // fail. The verifier must not run (and must not touch the sim endpoint).
+    global.fetch = vi.fn(); // must not be called
+    const crossChainData = { ...quoteData, chain: 'base', toChain: 'solana' };
+    const r = await verifySwapOutcome({ chain: 'base', from: WALLET, quote, quoteData: crossChainData });
+    expect(r.proceed).toBe(true);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('degrades (proceed=true) for a pre-intent quote with no request recorded', async () => {
+    // Without request intent, assertSwapOutcome has nothing to compare against and
+    // would raise a misleading SWAP_OUTCOME_MISMATCH. Skip cleanly instead — even
+    // with a sim-capable endpoint reachable, the verifier must not run.
+    global.fetch = vi.fn(); // must not be called
+    const noIntentData = { slippage: 0.03 };
+    const logs = [];
+    const r = await verifySwapOutcome({ chain: 'base', from: WALLET, quote, quoteData: noIntentData, log: (m) => logs.push(m) });
+    expect(r.proceed).toBe(true);
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(logs.some((l) => /no request intent/i.test(l))).toBe(true);
   });
 });
