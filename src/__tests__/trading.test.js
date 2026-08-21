@@ -1613,6 +1613,92 @@ describe('Privy execute support', () => {
     expect(logs.some(l => l.includes('Privy returned no signed transaction'))).toBe(true);
     expect(logs.some(l => l.includes('Allowance revoke failed'))).toBe(true);
   });
+
+  it('fails closed when Privy returns no signed approval transaction after a successful revoke', async () => {
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'lifi',
+        inputMint: BASE_USDC,
+        outputMint: OUT_TOKEN,
+        inAmount: '100000',
+        inputAmount: '100000',
+        outAmount: '44000000000000',
+        approvalAddress: LIFI_ROUTER,
+        gas: '300000',
+        transaction: {
+          to: LIFI_ROUTER,
+          data: '0xdeadbeef',
+          value: '0',
+          gas: '300000',
+          maxFeePerGas: '1000000',
+          maxPriorityFeePerGas: '1000000',
+        },
+      }],
+    }, 'base', 'privy', { evm: 'wl_evm_1', solana: 'wl_sol_1' }, null, {
+      swapMode: 'exactIn',
+      request: evmIntent({
+        walletAddress: '0xPrivyAddr',
+        fromToken: BASE_USDC,
+        toToken: OUT_TOKEN,
+        amount: '100000',
+        maxInputAmount: '100000',
+      }),
+    });
+
+    // Privy signs the revoke (1st POST) but returns an empty response for the
+    // approval (2nd POST) — the allowance has already been zeroed on-chain.
+    let privyPostCount = 0;
+    const executeBodies = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
+        executeBodies.push(JSON.parse(opts.body));
+        return Promise.resolve({
+          ok: true,
+          text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: '0xRevokeHash', chainType: 'evm', broadcaster: 'test' })),
+        });
+      }
+      if (urlStr.includes('privy.io') && opts?.method === 'GET') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ id: 'wl_evm_1', address: '0xPrivyAddr', chain_type: 'ethereum' }),
+        });
+      }
+      if (urlStr.includes('privy.io') && opts?.method === 'POST') {
+        privyPostCount++;
+        const data = privyPostCount === 1 ? { signed_transaction: '0xSignedRevoke' } : {};
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ data }) });
+      }
+      if (urlStr.includes('base') || urlStr.includes('mainnet')) {
+        const body = opts?.body ? JSON.parse(opts.body) : {};
+        if (body.method === 'eth_getCode') {
+          return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+        }
+        if (body.method === 'eth_call') {
+          // Oversized existing allowance (2 USDC) → triggers revoke-then-reapprove
+          return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' + (2000000n).toString(16).padStart(64, '0') })) });
+        }
+        if (body.method === 'eth_getTransactionCount') {
+          return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+        }
+        if (body.method === 'eth_getTransactionReceipt') {
+          return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { status: '0x1', blockNumber: '0x100' } })) });
+        }
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: null })) });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    }));
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (msg) => logs.push(msg), exit: () => {} });
+    await expect(cmds.execute([], null, { 'no-simulate': true }, { quote: quoteId })).rejects.toThrow(/All quotes failed/i);
+
+    // Only the revoke was broadcast; the swap was never signed or sent.
+    expect(executeBodies).toHaveLength(1);
+    expect(logs.some(l => l.includes('Allowance revoked in block'))).toBe(true);
+    expect(logs.some(l => l.includes('Approval failed for #1 after revoking the prior allowance (now 0): Privy returned no signed transaction'))).toBe(true);
+  });
 });
 
 // ============= stripLeadingZeros =============

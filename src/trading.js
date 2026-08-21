@@ -2172,6 +2172,15 @@ EXAMPLES:
                     max_priority_fee_per_gas: toHex(approvalPriorityFee),
                   });
                   const signedApproval = approvalSignResult.data?.signed_transaction || approvalSignResult.signed_transaction;
+                  if (!signedApproval) {
+                    const revokedMsg = shouldRevoke
+                      ? ' after revoking the prior allowance (now 0)'
+                      : '';
+                    log(`  ❌ Approval failed for ${quoteName}${revokedMsg}: Privy returned no signed transaction`);
+                    if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                    lastQuoteError = `${quoteName} approval failed`;
+                    continue;
+                  }
                   const approvalResult = await executeTransaction({ signedTransaction: signedApproval, chain, simulate: !noSimulate });
                   if (approvalResult.status !== 'Success') {
                     const revokedMsg = shouldRevoke
