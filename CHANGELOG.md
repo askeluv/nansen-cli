@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.39.0
+
+### Minor Changes
+
+- [#495](https://github.com/nansen-ai/nansen-cli/pull/495) [`3306897`](https://github.com/nansen-ai/nansen-cli/commit/3306897c1aaae594f4401fd4656b2451ab375d78) Thanks [@kome12](https://github.com/kome12)! - Add EVM swap-outcome verification to `trade execute`. Before broadcasting a swap on an EVM chain (Base), the CLI now simulates the transaction and confirms the wallet's balance changes match the quote — the input is spent within your maximum, at least the expected output is received, and no other token or NFT leaves the wallet — refusing to sign when they don't. This runs on top of the existing pre-broadcast checks and needs a simulation-capable RPC (`NANSEN_BASE_SIM_RPC`); when none is available it degrades with a warning rather than blocking the trade. Skip it with `--no-verify-outcome`. Solana is unaffected.
+
+### Patch Changes
+
+- [#495](https://github.com/nansen-ai/nansen-cli/pull/495) [`e8cf217`](https://github.com/nansen-ai/nansen-cli/commit/e8cf217feaa9e7c8f68f4f3c3c2a49adcda07101) Thanks [@kome12](https://github.com/kome12)! - Harden swap-outcome verification error handling: a revert reported by the simulation endpoint as a top-level JSON-RPC error (rather than a per-call status) now fails closed (blocks the swap) instead of degrading, and a non-2xx simulation response (e.g. HTTP 401 "Invalid API key") now degrades with the real status and message instead of a misleading "returned no call result" warning.
+
+- [#499](https://github.com/nansen-ai/nansen-cli/pull/499) [`de0bcc5`](https://github.com/nansen-ai/nansen-cli/commit/de0bcc562bcd20a80edd3ab2f486870b80629c83) Thanks [@gulshngill](https://github.com/gulshngill)! - Fix `profiler labels`: call `/api/v1/profiler/address/labels` with its v1 request body — the beta endpoint previously used was removed from the Nansen API. `profiler batch --include labels` now returns the label array itself instead of the raw `{pagination, data}` envelope.
+
+- [#506](https://github.com/nansen-ai/nansen-cli/pull/506) [`f407edb`](https://github.com/nansen-ai/nansen-cli/commit/f407edb19444d6b5a1a631d29b4c4fb9bd280708) Thanks [@gulshngill](https://github.com/gulshngill)! - Add a canonical MCP setup section to the README — endpoint `https://mcp.nansen.ai/ra/mcp`, `NANSEN-API-KEY` auth, per-client setup paths for Claude Code, Claude Tag, and generic or stdio-only clients, plus a pointer to the connection docs for Claude Desktop and Cursor — and point the out-of-credits and low-credit warnings at the credits tab of the billing page, `app.nansen.ai/api?tab=api`, instead of the bare `app.nansen.ai/api`.
+
+- [#500](https://github.com/nansen-ai/nansen-cli/pull/500) [`9ccf8a2`](https://github.com/nansen-ai/nansen-cli/commit/9ccf8a20841a9ca01a2627ccf5de2575bf016a46) Thanks [@gulshngill](https://github.com/gulshngill)! - Document global pagination options in `nansen schema`.
+
 ## 1.38.0
 
 ### Minor Changes
