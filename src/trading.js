@@ -2492,11 +2492,17 @@ EXAMPLES:
                       }
                       approvalTxHash = broadcastResult.txHash;
                     }
-                    if (approvalTxHash) {
-                      log(`  Waiting for approval confirmation...`);
-                      const receipt = await waitForReceipt(chain, approvalTxHash);
-                      log(`  ✓ Approval confirmed in block ${parseInt(receipt.blockNumber, 16)}: ${approvalTxHash}`);
+                    if (!approvalTxHash) {
+                      // Fail closed: the wallet returned neither a hash nor a
+                      // signed tx, so we can't confirm the approval landed —
+                      // never fall through to the swap (esp. after a revoke has
+                      // already zeroed the allowance). The catch adds the
+                      // "after revoking (now 0)" context.
+                      throw new Error('returned no transaction hash and no signed transaction; cannot confirm approval landed');
                     }
+                    log(`  Waiting for approval confirmation...`);
+                    const receipt = await waitForReceipt(chain, approvalTxHash);
+                    log(`  ✓ Approval confirmed in block ${parseInt(receipt.blockNumber, 16)}: ${approvalTxHash}`);
                   } catch (approvalErr) {
                     const revokedMsg = shouldRevoke
                       ? ' after revoking the prior allowance (now 0)'

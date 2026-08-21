@@ -3658,6 +3658,34 @@ describe('ERC-20 excessive allowance handling', () => {
     expect(logs.some(l => l.includes('cannot confirm allowance was cleared'))).toBe(true);
     expect(logs.some(l => l.includes('Approval required'))).toBe(false);
   });
+
+  it('fails closed when WalletConnect approval returns no confirmable transaction after a revoke', async () => {
+    const wcAddress = '0x742d35Cc6bF4F3f4e0e3a8DD7e37ff4e4Be4E4B4';
+    vi.spyOn(wcTrading, 'getWalletConnectAddress').mockResolvedValue(wcAddress);
+    // Revoke confirms (returns a tx hash); the reapproval returns nothing.
+    const approvalSpy = vi.spyOn(wcTrading, 'sendApprovalViaWalletConnect')
+      .mockResolvedValueOnce({ txHash: '0xRevokeHash' })
+      .mockResolvedValueOnce({});
+    const sendSpy = vi.spyOn(wcTrading, 'sendTransactionViaWalletConnect').mockResolvedValue({ txHash: '0xshouldnothappen' });
+    const quoteId = saveWalletConnectErc20Quote(wcAddress);
+    const { executeBodies } = mockLocalEvmExecute({
+      allowance: 2000000n,
+      executeResponses: [
+        { status: 'Success', txHash: '0xshouldnothappen', chainType: 'evm', broadcaster: 'test' },
+      ],
+    });
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    await expect(cmds.execute([], null, { 'no-simulate': true }, { quote: quoteId })).rejects.toThrow(/All quotes failed/i);
+
+    // Both the revoke and the reapproval were attempted; the swap was never sent.
+    expect(approvalSpy).toHaveBeenCalledTimes(2);
+    expect(sendSpy).not.toHaveBeenCalled();
+    expect(executeBodies).toHaveLength(0);
+    expect(logs.some(l => l.includes('Allowance revoked in block'))).toBe(true);
+    expect(logs.some(l => l.includes('Approval failed for #1 after revoking the prior allowance (now 0): returned no transaction hash and no signed transaction; cannot confirm approval landed'))).toBe(true);
+  });
 });
 
 describe('Relay aggregator: --gasless flag dispatch', () => {
