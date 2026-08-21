@@ -1620,7 +1620,11 @@
             },
             "no-simulate": {
               "type": "boolean",
-              "description": "Skip the pre-broadcast simulation."
+              "description": "Skip the pre-broadcast simulation (the eth_call revert check)."
+            },
+            "no-verify-outcome": {
+              "type": "boolean",
+              "description": "Skip EVM swap-outcome verification. That check simulates the swap and confirms the wallet's balance changes match the quote (input spent within your max, expected output received, no other token moved) before broadcasting; it needs a simulation-capable endpoint (NANSEN_BASE_SIM_RPC) and degrades with a warning when none is available. No effect on Solana."
             },
             "no-revoke-excessive-allowance": {
               "type": "boolean",

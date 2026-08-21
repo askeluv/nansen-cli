@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { validateQuoteInput, fetchNativeBalance, fetchTokenBalance, validateBalance, resolvePercentAmount, validateGasBalance, GASLESS_MIN_TRADE_USD, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertInputWithinMax, assertSwapCalldataNotBareTransfer, MAX_UINT256, needsAllowanceRevoke } from '../trade-validation.js';
+import { validateQuoteInput, fetchNativeBalance, fetchTokenBalance, validateBalance, resolvePercentAmount, validateGasBalance, GASLESS_MIN_TRADE_USD, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertInputWithinMax, assertSwapCalldataNotBareTransfer, assertSwapOutcome, MAX_UINT256, needsAllowanceRevoke } from '../trade-validation.js';
 
 describe('validateQuoteInput', () => {
   const validSolana = {
@@ -1393,5 +1393,196 @@ describe('assertSwapCalldataNotBareTransfer', () => {
     expect(() => assertSwapCalldataNotBareTransfer('')).not.toThrow();
     expect(() => assertSwapCalldataNotBareTransfer('0x')).not.toThrow();
     expect(() => assertSwapCalldataNotBareTransfer('0xa905')).not.toThrow(); // < 4 bytes
+  });
+});
+
+describe('assertSwapOutcome', () => {
+  const USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
+  const DAI = '0x50c5725949a6f0c72e6c4a641f24049a917db0cb';
+  const ROUTER = '0x57df6092665eb6058def53f94734a338a50f2e5f';
+  const ATTACKER = '0x00000000000000000000000000000000deadbeef';
+  const NATIVE = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+
+  // exactIn: sell 1,000,000 USDC for DAI, quoted 1,000,000 out, 3% slippage.
+  const exactInRequest = {
+    chain: 'base', walletAddress: '0xwallet', fromToken: USDC, toToken: DAI,
+    swapMode: 'exactIn', amount: '1000000', maxInputAmount: '1000000',
+  };
+  const exactInQuote = { inputMint: USDC, outputMint: DAI, inAmount: '1000000', outAmount: '1000000' };
+
+  it('passes a benign exactIn swap within cap and above min output', () => {
+    const sim = { deltas: { [USDC]: -1000000n, [DAI]: 1000000n }, approvals: [] };
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, sim, { slippage: 0.03, expectedSpenders: [ROUTER] }))
+      .not.toThrow();
+  });
+
+  it('accepts a benign exactIn output within the slippage floor', () => {
+    // 3% slippage floor on 1,000,000 = 970,000; 980,000 received is acceptable.
+    const sim = { deltas: { [USDC]: -1000000n, [DAI]: 980000n }, approvals: [] };
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, sim, { slippage: 0.03 })).not.toThrow();
+  });
+
+  it('rejects an input outflow exceeding maxInputAmount (assertion 1)', () => {
+    const sim = { deltas: { [USDC]: -1000001n, [DAI]: 1000000n }, approvals: [] };
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*maximum input/i);
+  });
+
+  it('rejects an output below the minimum acceptable (assertion 2)', () => {
+    const sim = { deltas: { [USDC]: -1000000n, [DAI]: 900000n }, approvals: [] }; // below 970,000 floor
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, sim, { slippage: 0.03 }))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*minimum acceptable output/i);
+  });
+
+  it('rejects a sibling-token drain (assertion 3)', () => {
+    // Input + output are correct, but a THIRD token also leaves the wallet —
+    // the pre-existing-allowance drain the static checks cannot catch.
+    const sim = {
+      deltas: { [USDC]: -1000000n, [DAI]: 1000000n, '0xaaaa000000000000000000000000000000000001': -42n },
+      approvals: [],
+    };
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*other than the one you are selling/i);
+  });
+
+  it('rejects an exactIn quote with a zero quoted output', () => {
+    // outAmount "0" makes minOut 0, so a zero-output sim would pass assertion 2
+    // (0 < 0 is false). exactIn has no upstream positive-output guard.
+    const quote = { inputMint: USDC, outputMint: DAI, inAmount: '1000000', outAmount: '0' };
+    const sim = { deltas: { [USDC]: -1000000n }, approvals: [] };
+    expect(() => assertSwapOutcome(exactInRequest, quote, sim, { slippage: 0.03 }))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*non-positive output amount/i);
+  });
+
+  it('rejects an exactIn quote with a negative quoted output', () => {
+    // A negative outAmount makes minOut negative, so a sim receiving nothing (or
+    // even losing the output token) would pass assertion 2. Fail closed instead.
+    const quote = { inputMint: USDC, outputMint: DAI, inAmount: '1000000', outAmount: '-5' };
+    const sim = { deltas: { [USDC]: -1000000n }, approvals: [] };
+    expect(() => assertSwapOutcome(exactInRequest, quote, sim, { slippage: 0.03 }))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*non-positive output amount/i);
+  });
+
+  it('fails closed when input and output tokens are the same', () => {
+    // Assertion 3 skips the input token, so a same-token quote could hide a
+    // drain of the "output" token. Refuse before the assertions run.
+    const req = { ...exactInRequest, toToken: USDC };
+    const quote = { inputMint: USDC, outputMint: USDC, inAmount: '1000000', outAmount: '1000000' };
+    const sim = { deltas: { [USDC]: -1000000n }, approvals: [] };
+    expect(() => assertSwapOutcome(req, quote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*input and output tokens are the same/i);
+  });
+
+  it('fails closed when an NFT leaves the wallet (assertion 3b)', () => {
+    // Input + output are correct, but the sim also reports an ERC-721/1155 leaving
+    // the wallet — invisible to the fungible-only deltas map. A swap must not move
+    // any NFT, so refuse.
+    const sim = {
+      deltas: { [USDC]: -1000000n, [DAI]: 1000000n },
+      approvals: [],
+      nftOut: [{ standard: 'ERC-721', token: '0x000000000000000000000000000000000000abcd' }],
+    };
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*non-fungible asset/i);
+  });
+
+  it('fails closed when the swap grants an NFT approval (assertion 3c)', () => {
+    // A single-NFT Approval folds in as a zero-amount "revoke" and an
+    // ApprovalForAll is not an ERC-20 Approval, so neither reaches assertion 4.
+    // Both grant an operator the ability to move the NFT out after the swap.
+    const base = { deltas: { [USDC]: -1000000n, [DAI]: 1000000n }, approvals: [] };
+    const nft = '0x000000000000000000000000000000000000abcd';
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, { ...base, nftApprovals: [{ standard: 'ERC-721', token: nft, operator: ATTACKER }] }, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*non-fungible approval/i);
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, { ...base, nftApprovals: [{ standard: 'ERC-721/1155 (all)', token: nft, operator: ATTACKER }] }, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*non-fungible approval/i);
+  });
+
+  it('caps the slippage floor at 50%, so 100% slippage cannot neuter assertion 2', () => {
+    // --slippage 1 (100%, accepted upstream) would make minOut 0, letting a swap
+    // deliver nothing. The floor is capped at 50% of quoted regardless.
+    const zeroOut = { deltas: { [USDC]: -1000000n }, approvals: [] }; // no DAI received
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, zeroOut, { slippage: 1 }))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*minimum acceptable output/i);
+    // 600,000 received is above the 50% floor (500,000) even though it is below
+    // the 970,000 a 3% floor would demand — 100% slippage still allows the swap.
+    const halfOut = { deltas: { [USDC]: -1000000n, [DAI]: 600000n }, approvals: [] };
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, halfOut, { slippage: 1 })).not.toThrow();
+    // Just below the 50% floor fails.
+    const belowFloor = { deltas: { [USDC]: -1000000n, [DAI]: 499999n }, approvals: [] };
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, belowFloor, { slippage: 1 }))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*minimum acceptable output/i);
+  });
+
+  it('rejects an approval to an unexpected spender (assertion 4)', () => {
+    const sim = {
+      deltas: { [USDC]: -1000000n, [DAI]: 1000000n },
+      approvals: [{ token: USDC, spender: ATTACKER, amount: 500000n }],
+    };
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, sim, { expectedSpenders: [ROUTER] }))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*unexpected spender/i);
+  });
+
+  it('allows an approval to an expected spender', () => {
+    const sim = {
+      deltas: { [USDC]: -1000000n, [DAI]: 1000000n },
+      approvals: [{ token: USDC, spender: ROUTER.toUpperCase(), amount: 500000n }], // case-insensitive
+    };
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, sim, { expectedSpenders: [ROUTER] })).not.toThrow();
+  });
+
+  it('allows a revoke (approve to 0) to any spender', () => {
+    const sim = {
+      deltas: { [USDC]: -1000000n, [DAI]: 1000000n },
+      approvals: [{ token: USDC, spender: ATTACKER, amount: 0n }],
+    };
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, sim, { expectedSpenders: [ROUTER] })).not.toThrow();
+  });
+
+  it('excludes gas for a native input (log-based deltas)', () => {
+    // Native sell of 0.0015 ETH; the sim delta is exactly the value moved, no gas.
+    const req = { ...exactInRequest, fromToken: NATIVE, amount: '1500000000000000', maxInputAmount: '1500000000000000' };
+    const quote = { inputMint: NATIVE, outputMint: USDC, inAmount: '1500000000000000', outAmount: '5000000' };
+    const sim = { deltas: { [NATIVE]: -1500000000000000n, [USDC]: 5000000n }, approvals: [] };
+    expect(() => assertSwapOutcome(req, { ...quote }, sim, {})).not.toThrow();
+  });
+
+  it('enforces exactOut minimum output = requested output', () => {
+    const req = { ...exactInRequest, swapMode: 'exactOut', amount: '1000000', maxInputAmount: '1100000' };
+    const quote = { inputMint: USDC, outputMint: DAI, inAmount: '1050000', outAmount: '1000000' };
+    const good = { deltas: { [USDC]: -1050000n, [DAI]: 1000000n }, approvals: [] };
+    expect(() => assertSwapOutcome(req, quote, good, {})).not.toThrow();
+    const short = { deltas: { [USDC]: -1050000n, [DAI]: 999999n }, approvals: [] };
+    expect(() => assertSwapOutcome(req, quote, short, {})).toThrow(/SWAP_OUTCOME_MISMATCH/i);
+  });
+
+  it('rejects an exactOut request with a non-positive requested output', () => {
+    // amount "0" makes minOut 0, so a zero-output sim would pass assertion 2
+    // (outputDelta >= 0). Mirror the exactIn guard and fail closed.
+    const req = { ...exactInRequest, swapMode: 'exactOut', amount: '0', maxInputAmount: '1100000' };
+    const quote = { inputMint: USDC, outputMint: DAI, inAmount: '1050000', outAmount: '0' };
+    const sim = { deltas: { [USDC]: -1050000n }, approvals: [] };
+    expect(() => assertSwapOutcome(req, quote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*non-positive output amount/i);
+  });
+
+  it('tolerates a sub-threshold non-input outflow when a dust threshold is set', () => {
+    const sim = {
+      deltas: { [USDC]: -1000000n, [DAI]: 1000000n, '0xaaaa000000000000000000000000000000000001': -3n },
+      approvals: [],
+    };
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, sim, { siblingDustThreshold: 5n })).not.toThrow();
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, sim, { siblingDustThreshold: 2n })).toThrow(/SWAP_OUTCOME_MISMATCH/i);
+  });
+
+  it('fails closed when the request has no maximum input', () => {
+    const req = { ...exactInRequest, maxInputAmount: undefined };
+    const sim = { deltas: { [USDC]: -1000000n, [DAI]: 1000000n }, approvals: [] };
+    expect(() => assertSwapOutcome(req, exactInQuote, sim, {})).toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*maximum input/i);
+  });
+
+  it('fails closed on a corrupt (non-integer) simulated delta', () => {
+    const sim = { deltas: { [USDC]: 'not-a-number' }, approvals: [] };
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, sim, {})).toThrow(/SWAP_OUTCOME_MISMATCH/i);
   });
 });

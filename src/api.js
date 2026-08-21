@@ -393,7 +393,7 @@ function requireValidToken(tokenAddress, chain) {
   if (!v.valid) throw new NansenError(v.error, v.code);
 }
 
-function loadConfig() {
+export function loadConfig() {
   // Base config from files, then env vars override individual fields
   let config = null;
 

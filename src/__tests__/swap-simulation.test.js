@@ -1,0 +1,455 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { SIMULATION_RPCS } from '../rpc-urls.js';
+import {
+  simulateAssetChanges,
+  SwapSimulationError,
+  hasSimulationRpc,
+  EVM_NATIVE_SENTINEL,
+} from '../swap-simulation.js';
+
+const TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+const APPROVAL = '0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925';
+const APPROVAL_FOR_ALL = '0x17307eab39ab6107e8899845ad3d59bd9653f200f220920489ca2b5937696c31';
+const ERC1155_SINGLE = '0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62';
+const ERC1155_BATCH = '0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb';
+const ZERO = '0x0000000000000000000000000000000000000000';
+
+const WALLET = '0x8cb9c3f23c7d600fb430bbd171a313d9ea61cebc';
+const USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
+const DAI = '0x50c5725949a6f0c72e6c4a641f24049a917db0cb';
+const ROUTER = '0x57df6092665eb6058def53f94734a338a50f2e5f';
+const NFT = '0x000000000000000000000000000000000000abcd';
+const ATTACKER = '0x00000000000000000000000000000000deadbeef';
+
+const pad = (a) => '0x' + a.replace(/^0x/, '').toLowerCase().padStart(64, '0');
+const hex = (n) => '0x' + BigInt(n).toString(16);
+const transferLog = (token, from, to, amount) => ({
+  address: token,
+  topics: [TRANSFER, pad(from), pad(to)],
+  data: hex(amount),
+});
+const approvalLog = (token, owner, spender, amount) => ({
+  address: token,
+  topics: [APPROVAL, pad(owner), pad(spender)],
+  data: hex(amount),
+});
+// ERC-721 shares the Transfer signature but indexes the tokenId as a 4th topic
+// (empty data). ERC-1155 TransferSingle indexes (operator, from, to).
+const erc721TransferLog = (token, from, to, tokenId) => ({
+  address: token,
+  topics: [TRANSFER, pad(from), pad(to), pad(BigInt(tokenId).toString(16))],
+  data: '0x',
+});
+const erc1155SingleLog = (token, operator, from, to) => ({
+  address: token,
+  topics: [ERC1155_SINGLE, pad(operator), pad(from), pad(to)],
+  data: '0x' + '0'.repeat(128), // id + value, unread by the parser
+});
+// ERC-1155 TransferBatch indexes (operator, from, to) exactly like TransferSingle
+// — same topic layout, arrays live in the (unread) data.
+const erc1155BatchLog = (token, operator, from, to) => ({
+  address: token,
+  topics: [ERC1155_BATCH, pad(operator), pad(from), pad(to)],
+  data: '0x' + '0'.repeat(128), // ids[] + values[], unread by the parser
+});
+// ERC-721 single-token Approval (owner, approved, tokenId indexed; empty data).
+const erc721ApprovalLog = (token, owner, approved, tokenId) => ({
+  address: token,
+  topics: [APPROVAL, pad(owner), pad(approved), pad(BigInt(tokenId).toString(16))],
+  data: '0x',
+});
+// ERC-721/1155 ApprovalForAll(owner, operator indexed; bool in data).
+const approvalForAllLog = (token, owner, operator, approved) => ({
+  address: token,
+  topics: [APPROVAL_FOR_ALL, pad(owner), pad(operator)],
+  data: hex(approved ? 1 : 0),
+});
+
+function mockFetchOnce(body) {
+  global.fetch = vi.fn().mockResolvedValue({
+    status: 200,
+    text: async () => (typeof body === 'string' ? body : JSON.stringify(body)),
+  });
+}
+function simV1(logs, { status = '0x1' } = {}) {
+  return { jsonrpc: '2.0', id: 1, result: [{ calls: [{ status, logs }] }] };
+}
+
+describe('swap-simulation', () => {
+  let originalBase;
+  let originalFetch;
+  beforeEach(() => {
+    originalBase = SIMULATION_RPCS.base;
+    originalFetch = global.fetch;
+    SIMULATION_RPCS.base = 'http://sim.test/rpc';
+  });
+  afterEach(() => {
+    SIMULATION_RPCS.base = originalBase;
+    global.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  describe('hasSimulationRpc', () => {
+    it('reflects whether an endpoint is configured', () => {
+      expect(hasSimulationRpc('base')).toBe(true);
+      SIMULATION_RPCS.base = null;
+      expect(hasSimulationRpc('base')).toBe(false);
+      expect(hasSimulationRpc('ethereum')).toBe(false);
+    });
+  });
+
+  describe('simulateAssetChanges (eth_simulateV1)', () => {
+    it('parses a benign ERC-20 swap into signed per-token deltas', async () => {
+      mockFetchOnce(simV1([
+        transferLog(USDC, WALLET, ROUTER, 1_000_000n), // input out
+        transferLog(DAI, ROUTER, WALLET, 999_000n), // output in
+      ]));
+      const { deltas, approvals, method } = await simulateAssetChanges(
+        'base',
+        { to: ROUTER, data: '0xabcd', value: '0x0' },
+        { from: WALLET },
+      );
+      expect(method).toBe('eth_simulateV1');
+      expect(deltas[USDC]).toBe(-1_000_000n);
+      expect(deltas[DAI]).toBe(999_000n);
+      expect(approvals).toEqual([]);
+    });
+
+    it('maps a zero-address (native ETH) transfer to the native sentinel and excludes gas', async () => {
+      // traceTransfers emits native movement as a Transfer from the zero address;
+      // gas is NOT a transfer log, so it never appears in the deltas.
+      mockFetchOnce(simV1([
+        transferLog(ZERO, WALLET, ROUTER, 1_500_000_000_000_000n), // 0.0015 ETH out
+        transferLog(USDC, ROUTER, WALLET, 5_000_000n),
+      ]));
+      const { deltas } = await simulateAssetChanges(
+        'base',
+        { to: ROUTER, data: '0x', value: hex(1_500_000_000_000_000n) },
+        { from: WALLET },
+      );
+      expect(deltas[EVM_NATIVE_SENTINEL]).toBe(-1_500_000_000_000_000n);
+      expect(deltas[USDC]).toBe(5_000_000n);
+    });
+
+    it('captures approvals the wallet grants', async () => {
+      mockFetchOnce(simV1([
+        approvalLog(USDC, WALLET, ROUTER, 2_000_000n),
+        transferLog(USDC, WALLET, ROUTER, 1_000_000n),
+        transferLog(DAI, ROUTER, WALLET, 999_000n),
+      ]));
+      const { approvals } = await simulateAssetChanges(
+        'base',
+        { to: ROUTER, data: '0xabcd' },
+        { from: WALLET },
+      );
+      expect(approvals).toEqual([{ token: USDC, spender: ROUTER, amount: 2_000_000n }]);
+    });
+
+    it('drops net-zero token deltas', async () => {
+      mockFetchOnce(simV1([
+        transferLog(USDC, WALLET, ROUTER, 1_000_000n),
+        transferLog(USDC, ROUTER, WALLET, 1_000_000n), // net zero
+        transferLog(DAI, ROUTER, WALLET, 5n),
+      ]));
+      const { deltas } = await simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET });
+      expect(USDC in deltas).toBe(false);
+      expect(deltas[DAI]).toBe(5n);
+    });
+
+    it('sends the Nansen apikey header only to a Nansen-hosted endpoint', async () => {
+      SIMULATION_RPCS.base = 'https://api.nansen.ai/api/v1/trade/simulate-swap';
+      mockFetchOnce(simV1([]));
+      await simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET, apiKey: 'secret-key' });
+      const [, opts] = global.fetch.mock.calls[0];
+      expect(opts.headers.apikey).toBe('secret-key');
+    });
+
+    it('does NOT leak the apikey to a custom (non-Nansen) override RPC', async () => {
+      // A NANSEN_BASE_SIM_RPC override can point at an arbitrary host; the user's
+      // Nansen credential must never be forwarded there.
+      SIMULATION_RPCS.base = 'http://sim.test/rpc';
+      mockFetchOnce(simV1([]));
+      await simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET, apiKey: 'secret-key' });
+      const [, opts] = global.fetch.mock.calls[0];
+      expect('apikey' in opts.headers).toBe(false);
+    });
+
+    it('flags an ERC-721 leaving the wallet as an NFT outflow', async () => {
+      mockFetchOnce(simV1([
+        transferLog(USDC, WALLET, ROUTER, 1_000_000n),
+        transferLog(DAI, ROUTER, WALLET, 999_000n),
+        erc721TransferLog(NFT, WALLET, ATTACKER, 7n), // NFT drained alongside the swap
+      ]));
+      const { deltas, nftOut } = await simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET });
+      // The NFT is NOT folded into the fungible deltas (its tokenId is not a balance).
+      expect(NFT in deltas).toBe(false);
+      expect(nftOut).toEqual([{ standard: 'ERC-721', token: NFT }]);
+    });
+
+    it('flags an ERC-1155 leaving the wallet as an NFT outflow', async () => {
+      mockFetchOnce(simV1([
+        erc1155SingleLog(NFT, ROUTER, WALLET, ATTACKER),
+      ]));
+      const { nftOut } = await simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET });
+      expect(nftOut).toEqual([{ standard: 'ERC-1155', token: NFT }]);
+    });
+
+    it('flags an ERC-1155 TransferBatch leaving the wallet as an NFT outflow', async () => {
+      // Shares the topic-count check and from/to extraction with TransferSingle;
+      // a field-ordering mistake specific to Batch would otherwise pass silently.
+      mockFetchOnce(simV1([erc1155BatchLog(NFT, ROUTER, WALLET, ATTACKER)]));
+      const { nftOut } = await simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET });
+      expect(nftOut).toEqual([{ standard: 'ERC-1155', token: NFT }]);
+    });
+
+    it('does not flag an inbound ERC-1155 TransferBatch (received, not sent)', async () => {
+      mockFetchOnce(simV1([erc1155BatchLog(NFT, ROUTER, ATTACKER, WALLET)]));
+      const { nftOut } = await simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET });
+      expect(nftOut).toEqual([]);
+    });
+
+    it('does not flag an inbound NFT (received, not sent)', async () => {
+      mockFetchOnce(simV1([
+        erc721TransferLog(NFT, ATTACKER, WALLET, 7n),
+        erc1155SingleLog(NFT, ROUTER, ATTACKER, WALLET),
+      ]));
+      const { nftOut } = await simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET });
+      expect(nftOut).toEqual([]);
+    });
+
+    it('does not flag an NFT self-transfer (from == to == wallet)', async () => {
+      mockFetchOnce(simV1([
+        erc721TransferLog(NFT, WALLET, WALLET, 7n),
+        erc1155SingleLog(NFT, WALLET, WALLET, WALLET),
+      ]));
+      const { nftOut } = await simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET });
+      expect(nftOut).toEqual([]);
+    });
+
+    it('flags an ERC-721 single-token approval the wallet grants', async () => {
+      mockFetchOnce(simV1([erc721ApprovalLog(NFT, WALLET, ATTACKER, 7n)]));
+      const { nftApprovals } = await simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET });
+      expect(nftApprovals).toEqual([{ standard: 'ERC-721', token: NFT, operator: ATTACKER }]);
+    });
+
+    it('flags an ApprovalForAll the wallet grants', async () => {
+      mockFetchOnce(simV1([approvalForAllLog(NFT, WALLET, ATTACKER, true)]));
+      const { nftApprovals } = await simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET });
+      expect(nftApprovals).toEqual([{ standard: 'ERC-721/1155 (all)', token: NFT, operator: ATTACKER }]);
+    });
+
+    it('does not flag NFT revokes (approve-to-zero or ApprovalForAll false)', async () => {
+      mockFetchOnce(simV1([
+        erc721ApprovalLog(NFT, WALLET, ZERO, 7n), // single-token revoke
+        approvalForAllLog(NFT, WALLET, ATTACKER, false), // operator revoke
+      ]));
+      const { nftApprovals } = await simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET });
+      expect(nftApprovals).toEqual([]);
+    });
+
+    it('throws SIM_REVERTED when the swap reverts in simulation', async () => {
+      mockFetchOnce(simV1([], { status: '0x0' }));
+      await expect(
+        simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET }),
+      ).rejects.toMatchObject({ code: 'SIM_REVERTED' });
+    });
+
+    it('does not throw or mis-block on a non-conformant bare "0x" status', async () => {
+      // A bare '0x' status is indeterminate: BigInt('0x') would throw a plain
+      // TypeError that isn't a SwapSimulationError, so verifySwapOutcome would
+      // hard-block (proceed:false) with an opaque message. It must instead be
+      // treated as non-revert and let the deltas judge the real outcome.
+      mockFetchOnce(simV1(
+        [transferLog(USDC, WALLET, ROUTER, 1000000n), transferLog(DAI, ROUTER, WALLET, 5n)],
+        { status: '0x' },
+      ));
+      const { deltas } = await simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET });
+      expect(deltas[USDC]).toBe(-1000000n);
+      expect(deltas[DAI]).toBe(5n);
+    });
+
+    it('throws NO_SIM_RPC when no endpoint is configured', async () => {
+      SIMULATION_RPCS.base = null;
+      await expect(
+        simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET }),
+      ).rejects.toMatchObject({ code: 'NO_SIM_RPC' });
+    });
+
+    it('throws SIM_RPC_ERROR on a non-JSON response', async () => {
+      mockFetchOnce('<html>gateway timeout</html>');
+      await expect(
+        simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET }),
+      ).rejects.toMatchObject({ code: 'SIM_RPC_ERROR' });
+    });
+
+    it('degrades with an actionable message on a non-2xx (e.g. 401 Invalid API key), not "no call result"', async () => {
+      // The hosted proxy phrases auth failures as `{message}` with an HTTP 401,
+      // not a JSON-RPC `{error}`. postSim must surface the status + message rather
+      // than letting the body flow on to a misleading "returned no call result".
+      global.fetch = vi.fn().mockResolvedValue({
+        status: 401,
+        ok: false,
+        text: async () => JSON.stringify({ message: 'Invalid API key. Get your key at https://app.nansen.ai/api' }),
+      });
+      await expect(
+        simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET }),
+      ).rejects.toMatchObject({ code: 'SIM_RPC_ERROR', message: expect.stringContaining('HTTP 401') });
+      await expect(
+        simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET }),
+      ).rejects.toMatchObject({ message: expect.stringContaining('Invalid API key') });
+    });
+
+    it('blocks (SIM_REVERTED) when a revert surfaces as a top-level error, not a per-call status', async () => {
+      // A proxy may collapse a reverting simulation into a top-level `error`
+      // instead of calls[0].status='0x0'. That must fail closed (block), not be
+      // classified SIM_RPC_ERROR — which the caller degrades (warn + proceed).
+      mockFetchOnce({ jsonrpc: '2.0', id: 1, error: { message: 'execution reverted: TRANSFER_FROM_FAILED' } });
+      await expect(
+        simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET }),
+      ).rejects.toMatchObject({ code: 'SIM_REVERTED' });
+    });
+
+    it('still classifies a non-revert top-level error as SIM_RPC_ERROR (degrade)', async () => {
+      mockFetchOnce({ jsonrpc: '2.0', id: 1, error: { message: 'invalid params: bad block tag' } });
+      await expect(
+        simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET }),
+      ).rejects.toMatchObject({ code: 'SIM_RPC_ERROR' });
+    });
+
+    it('does not hard-block on a transport error that merely contains the word "revert"', async () => {
+      // "gas estimation would revert" / "reverted by upstream policy" are not
+      // execution reverts — they must DEGRADE (SIM_RPC_ERROR), not block, so a
+      // transient proxy message never false-rejects a valid quote.
+      mockFetchOnce({ jsonrpc: '2.0', id: 1, error: { message: 'request reverted by upstream policy' } });
+      await expect(
+        simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET }),
+      ).rejects.toMatchObject({ code: 'SIM_RPC_ERROR' });
+    });
+
+    it('blocks on the EIP-1474 execution-revert error code (3) even without the phrase', async () => {
+      mockFetchOnce({ jsonrpc: '2.0', id: 1, error: { code: 3, message: 'reverted' } });
+      await expect(
+        simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET }),
+      ).rejects.toMatchObject({ code: 'SIM_REVERTED' });
+    });
+  });
+
+  describe('fallback to debug_traceCall', () => {
+    it('falls back when eth_simulateV1 is unsupported and derives native from frame values', async () => {
+      const calls = [];
+      global.fetch = vi.fn().mockImplementation((url, opts) => {
+        const req = JSON.parse(opts.body);
+        calls.push(req.method);
+        if (req.method === 'eth_simulateV1') {
+          return Promise.resolve({
+            status: 200,
+            text: async () => JSON.stringify({ error: { code: -32601, message: 'the method eth_simulateV1 does not exist/is not available' } }),
+          });
+        }
+        // callTracer frame tree: ERC-20 output arrives via a log; native input is
+        // the top-level CALL frame value from the wallet. A nested STATICCALL
+        // carries a spurious non-zero `value` (some nodes populate it) that must
+        // NOT be counted — STATICCALL cannot move ETH.
+        return Promise.resolve({
+          status: 200,
+          text: async () => JSON.stringify({
+            result: {
+              type: 'CALL',
+              from: WALLET,
+              to: ROUTER,
+              value: hex(1_500_000_000_000_000n),
+              logs: [transferLog(USDC, ROUTER, WALLET, 5_000_000n)],
+              calls: [
+                { type: 'STATICCALL', from: WALLET, to: ROUTER, value: hex(9_999_000_000_000_000n), logs: [], calls: [] },
+              ],
+            },
+          }),
+        });
+      });
+      const { deltas, method } = await simulateAssetChanges(
+        'base',
+        { to: ROUTER, data: '0x', value: hex(1_500_000_000_000_000n) },
+        { from: WALLET },
+      );
+      expect(calls).toEqual(['eth_simulateV1', 'debug_traceCall']);
+      expect(method).toBe('debug_traceCall');
+      // Only the CALL frame's value counts; the STATICCALL's is ignored.
+      expect(deltas[EVM_NATIVE_SENTINEL]).toBe(-1_500_000_000_000_000n);
+      expect(deltas[USDC]).toBe(5_000_000n);
+    });
+
+    it('ignores a SELFDESTRUCT refund frame so it cannot offset the wallet native outflow', async () => {
+      // The wallet spends native via the top-level CALL. A nested SELFDESTRUCT
+      // frame refunds value to the wallet — some nodes surface it, and counting
+      // it as an inflow would cancel/offset the real outflow and let a mismatched
+      // outcome pass. It must be ignored: the full outflow stays on the books.
+      global.fetch = vi.fn().mockImplementation((url, opts) => {
+        const req = JSON.parse(opts.body);
+        if (req.method === 'eth_simulateV1') {
+          return Promise.resolve({ status: 200, text: async () => JSON.stringify({ error: { code: -32601, message: 'not available' } }) });
+        }
+        return Promise.resolve({
+          status: 200,
+          text: async () => JSON.stringify({
+            result: {
+              type: 'CALL',
+              from: WALLET,
+              to: ROUTER,
+              value: hex(1_500_000_000_000_000n),
+              logs: [transferLog(USDC, ROUTER, WALLET, 5_000_000n)],
+              calls: [
+                { type: 'SELFDESTRUCT', from: ROUTER, to: WALLET, value: hex(1_500_000_000_000_000n), logs: [], calls: [] },
+              ],
+            },
+          }),
+        });
+      });
+      const { deltas } = await simulateAssetChanges(
+        'base',
+        { to: ROUTER, data: '0x', value: hex(1_500_000_000_000_000n) },
+        { from: WALLET },
+      );
+      // Only the CALL outflow counts; the SELFDESTRUCT inflow is ignored, so the
+      // net native delta is the full outflow rather than a cancelled-out zero.
+      expect(deltas[EVM_NATIVE_SENTINEL]).toBe(-1_500_000_000_000_000n);
+      expect(deltas[USDC]).toBe(5_000_000n);
+    });
+
+    it('surfaces a silently-reverting sub-call as SIM_REVERTED (not an empty outcome)', async () => {
+      // eth_simulateV1 unavailable → debug_traceCall. The top-level frame has no
+      // error, but a sub-call reverted and nothing moved: report the revert
+      // rather than returning empty deltas that fail downstream as a mismatch.
+      global.fetch = vi.fn().mockImplementation((url, opts) => {
+        const req = JSON.parse(opts.body);
+        if (req.method === 'eth_simulateV1') {
+          return Promise.resolve({ status: 200, text: async () => JSON.stringify({ error: { code: -32601, message: 'not available' } }) });
+        }
+        return Promise.resolve({
+          status: 200,
+          text: async () => JSON.stringify({
+            result: { from: WALLET, to: ROUTER, value: '0x0', logs: [], calls: [{ from: ROUTER, to: USDC, value: '0x0', error: 'execution reverted', logs: [], calls: [] }] },
+          }),
+        });
+      });
+      await expect(
+        simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET }),
+      ).rejects.toMatchObject({ code: 'SIM_REVERTED' });
+    });
+
+    it('surfaces NOT_SIM_CAPABLE when both methods are unavailable', async () => {
+      global.fetch = vi.fn().mockResolvedValue({
+        status: 200,
+        text: async () => JSON.stringify({ error: { code: -32601, message: 'method not found' } }),
+      });
+      await expect(
+        simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET }),
+      ).rejects.toMatchObject({ code: 'NOT_SIM_CAPABLE' });
+    });
+  });
+
+  it('SwapSimulationError carries its code', () => {
+    const e = new SwapSimulationError('NO_SIM_RPC', 'nope');
+    expect(e).toBeInstanceOf(Error);
+    expect(e.code).toBe('NO_SIM_RPC');
+  });
+});

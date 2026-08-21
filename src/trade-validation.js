@@ -840,9 +840,11 @@ const BARE_ERC20_OUTER_SELECTORS = {
 };
 
 /**
- * Reject a same-chain swap whose transaction calldata is a bare ERC-20
- * transfer/approve/transferFrom rather than a router call. No-op when the
- * calldata is absent or too short to carry a 4-byte selector.
+ * Reject a swap or bridge whose transaction calldata is a bare ERC-20
+ * transfer/approve/transferFrom rather than a router call. Applies to both
+ * same-chain and cross-chain EVM quotes (a legit bridge also routes through a
+ * router). No-op when the calldata is absent or too short to carry a 4-byte
+ * selector.
  *
  * @param {string} data - The swap transaction's calldata (quote.transaction.data)
  */
@@ -855,4 +857,214 @@ export function assertSwapCalldataNotBareTransfer(data) {
       `Swap transaction is a bare ERC-20 ${method}, not a routed swap. A real swap routes through an aggregator, not a direct token transfer/approval. Refusing to sign.`,
     );
   }
+}
+
+// ============= Swap-outcome verification (balance-delta simulation) =============
+
+/**
+ * Assert that a SIMULATED swap's asset changes match the user's intent, failing
+ * closed on any mismatch. This is a defence-in-depth outcome check that
+ * complements the static calldata checks (validateSwapTarget /
+ * assertSwapCalldataNotBareTransfer): it verifies what the swap actually does to
+ * the wallet's balances, not just what the calldata looks like.
+ *
+ * Run it on the swap-call-alone simulation AFTER any required approval is
+ * confirmed on-chain, so the live allowance is reflected on `latest` and a
+ * single-transaction sim matches the broadcast swap (see swap-simulation.js).
+ *
+ * Four assertions, all derived from the persisted request intent + the quote:
+ *   1. the input token leaves the wallet by no MORE than maxInputAmount. Native
+ *      input excludes gas: the sim deltas are log-based, so gas (not a transfer
+ *      log) is never counted.
+ *   2. the output token arrives by AT LEAST minOut — exactOut: >= the requested
+ *      output; exactIn: the quoted output reduced by the slippage in effect.
+ *   3. NO token other than the input leaves the wallet.
+ *   4. the wallet grants no Approval to a spender outside `expectedSpenders`.
+ *
+ * @param {object} request - persisted intent (quoteData.request); required
+ * @param {object} quote - the quote being executed
+ * @param {{deltas: Record<string, bigint|string|number>, approvals?: Array<{token?:string, spender?:string, amount?:any}>}} sim
+ *   - the normalised result from simulateAssetChanges()
+ * @param {object} [ctx]
+ * @param {number} [ctx.slippage] - slippage fraction in effect (quoteData.slippage);
+ *   defaults to 3% to match approvalAmountForSwap when omitted
+ * @param {Set<string>|string[]} [ctx.expectedSpenders] - spenders the wallet may
+ *   legitimately (re)approve during the swap (e.g. the approval target and the
+ *   router); anything else fails assertion 4. Compared case-insensitively.
+ * @param {bigint} [ctx.siblingDustThreshold=0n] - non-input outflow tolerated
+ *   before assertion 3 fires (for fee-on-transfer / rounding). Strict 0 default.
+ * @throws {Error} with `code = 'SWAP_OUTCOME_MISMATCH'` on any failed assertion.
+ */
+export function assertSwapOutcome(request, quote, sim, { slippage, expectedSpenders, siblingDustThreshold = 0n } = {}) {
+  const fail = (detail) => {
+    const e = new Error(`Swap outcome mismatch (SWAP_OUTCOME_MISMATCH): ${detail} Refusing to sign.`);
+    e.code = 'SWAP_OUTCOME_MISMATCH';
+    return e;
+  };
+
+  if (!request) throw fail('no request intent to verify the outcome against.');
+  if (!sim || typeof sim !== 'object' || sim.deltas == null) {
+    throw fail('simulation returned no asset changes to verify.');
+  }
+
+  // Normalise deltas to a lowercased-key BigInt map. A non-integer delta is a
+  // corrupt sim result — fail closed rather than coerce it to 0.
+  const deltas = {};
+  for (const [k, v] of Object.entries(sim.deltas)) {
+    let amt;
+    try {
+      amt = typeof v === 'bigint' ? v : BigInt(v);
+    } catch {
+      throw fail(`simulated delta for ${k} (${v}) is not an integer.`);
+    }
+    deltas[k.toLowerCase()] = amt;
+  }
+
+  const inputToken = quote?.inputMint ? String(quote.inputMint).toLowerCase() : null;
+  const outputToken = quote?.outputMint ? String(quote.outputMint).toLowerCase() : null;
+  if (!inputToken || !outputToken) {
+    throw fail('quote is missing the input or output token address.');
+  }
+  // Fail closed on a same-token quote: assertion 3 skips the input token, so if
+  // output == input a drain of that token would slip past unverified. A real
+  // swap never sells and buys the same token (also rejected upstream).
+  if (inputToken === outputToken) {
+    throw fail(`quote input and output tokens are the same (${inputToken}); refusing to verify.`);
+  }
+
+  // --- Assertion 1: input outflow within the spend ceiling ---
+  // This bounds the outflow by maxInputAmount (the slippage-buffered ceiling),
+  // NOT the exact expected input: for exactOut the aggregator may legitimately
+  // pull anywhere up to that ceiling. The tighter exactIn bound (outflow ==
+  // request.amount) is enforced by assertQuoteMatchesRequest, which the execute
+  // paths run earlier in the same iteration. Keep that call ahead of this one on
+  // any new signing path — Assertion 1 alone does not re-check exactIn inflation.
+  if (request.maxInputAmount == null) {
+    throw fail('request has no maximum input to bound the outflow against.');
+  }
+  let cap;
+  try {
+    cap = BigInt(request.maxInputAmount);
+  } catch {
+    throw fail(`maximum input (${request.maxInputAmount}) is not an integer.`);
+  }
+  const inputDelta = deltas[inputToken] || 0n;
+  const outflow = inputDelta < 0n ? -inputDelta : 0n;
+  if (outflow > cap) {
+    throw fail(`the input token (${inputToken}) left the wallet by ${outflow}, exceeding your maximum input (${cap}).`);
+  }
+
+  // --- Assertion 2: output arrives at or above the minimum acceptable ---
+  const swapMode = request.swapMode ?? 'exactIn';
+  const outputDelta = deltas[outputToken] || 0n;
+  let minOut;
+  if (swapMode === 'exactOut') {
+    if (request.amount == null) throw fail('exactOut request is missing the requested output amount.');
+    try {
+      minOut = BigInt(request.amount);
+    } catch {
+      throw fail(`requested output amount (${request.amount}) is not an integer.`);
+    }
+    // Mirror the exactIn non-positive guard: a zero/negative requested output
+    // makes minOut <= 0 and turns assertion 2 into a no-op (outputDelta >= 0
+    // always holds), so a swap delivering nothing would pass. Upstream rejects
+    // zero amounts, but this helper is a self-contained fail-closed boundary.
+    if (minOut <= 0n) {
+      throw fail(`exactOut request has a non-positive output amount (${minOut}); cannot compute a minimum acceptable output.`);
+    }
+  } else {
+    const quotedRaw = quote.outAmount ?? quote.outputAmount;
+    if (quotedRaw == null) {
+      throw fail('quote is missing the quoted output amount; cannot compute the minimum acceptable output.');
+    }
+    let quoted;
+    try {
+      quoted = BigInt(quotedRaw);
+    } catch {
+      throw fail(`quoted output amount (${quotedRaw}) is not an integer.`);
+    }
+    // A non-positive quoted output makes minOut <= 0, so a sim receiving nothing
+    // (or losing the output token) would pass assertion 2 (outputDelta < minOut is
+    // false when minOut <= 0). exactIn has no upstream positive-output guard
+    // (unlike exactOut), so a rogue outAmount of "0" or a negative value would
+    // otherwise slip through.
+    if (quoted <= 0n) {
+      throw fail(`quote has a non-positive output amount (${quoted}); cannot compute a minimum acceptable output.`);
+    }
+    // Floor of quoted × (1 − slippage), in basis points to stay in BigInt. This
+    // mirrors the slippage the user actually set (quoteData.slippage), defaulting
+    // to 3% to match approvalAmountForSwap when it wasn't supplied.
+    //
+    // Cap the slippage used HERE at 50%, independent of what the user accepted:
+    // the upstream quote command allows --slippage up to 1.0 (100%), which would
+    // make minOut 0 and neuter this assertion — a route delivering nothing would
+    // pass (outputDelta >= 0). This is a defence-in-depth floor, not the user's
+    // execution tolerance; a real swap never loses more than half the quoted
+    // output, so requiring at least 50% keeps the guard meaningful while leaving
+    // enormous headroom over a normal few-percent deviation.
+    const rawSlip = Number.isFinite(slippage) && slippage >= 0 ? slippage : 0.03;
+    const slip = Math.min(rawSlip, 0.5);
+    const bps = BigInt(Math.min(10000, Math.round(slip * 10000)));
+    minOut = (quoted * (10000n - bps)) / 10000n;
+  }
+  if (outputDelta < minOut) {
+    throw fail(`the output token (${outputToken}) increased by only ${outputDelta}, below the minimum acceptable output (${minOut}).`);
+  }
+
+  // --- Assertion 3: no token other than the input leaves the wallet ---
+  const dust = siblingDustThreshold > 0n ? siblingDustThreshold : 0n;
+  for (const [token, delta] of Object.entries(deltas)) {
+    if (token === inputToken) continue; // its outflow is bounded by assertion 1
+    if (delta < 0n && -delta > dust) {
+      throw fail(`a token other than the one you are selling (${token}) left the wallet (delta ${delta}); a swap must not move any token except the input.`);
+    }
+  }
+
+  // --- Assertion 3b: no non-fungible asset leaves the wallet ---
+  // The signed `deltas` map only models native + ERC-20 balances, so an NFT
+  // drain is invisible to assertion 3. A DEX swap should never move an ERC-721 or
+  // ERC-1155 out of the wallet, so fail closed if the sim surfaced one. (Inbound
+  // NFTs are harmless and are not recorded by foldLogs.)
+  for (const nft of sim.nftOut || []) {
+    throw fail(
+      `a non-fungible asset (${nft.standard}${nft.token ? ` ${nft.token}` : ''}) left the wallet; a swap must not transfer any NFT.`,
+    );
+  }
+
+  // --- Assertion 3c: no non-fungible approval is granted ---
+  // A DEX swap never needs to approve an NFT, so any ERC-721 / ERC-1155 approval
+  // the wallet grants (single-token Approval or ApprovalForAll) is fail-closed —
+  // it would let the operator move the NFT out AFTER the swap, invisibly to the
+  // transfer checks above. The ERC-20 spender allowlist (assertion 4) does NOT
+  // cover these: a single-NFT Approval folds in as a zero-amount "revoke" and an
+  // ApprovalForAll is not an ERC-20 Approval at all.
+  for (const ap of sim.nftApprovals || []) {
+    throw fail(
+      `the swap grants a non-fungible approval (${ap.standard}${ap.token ? ` ${ap.token}` : ''}) to ${ap.operator || 'an operator'}; a swap must not approve any NFT.`,
+    );
+  }
+
+  // --- Assertion 4: no approval to an unexpected spender ---
+  const allowed = new Set(
+    (expectedSpenders instanceof Set ? [...expectedSpenders] : expectedSpenders || [])
+      .filter(Boolean)
+      .map((s) => String(s).toLowerCase()),
+  );
+  for (const ap of sim.approvals || []) {
+    if (!ap || !ap.spender) continue;
+    // A revoke (approve to 0) grants no allowance, so it is never a concern.
+    if (ap.amount != null) {
+      try {
+        if (BigInt(ap.amount) === 0n) continue;
+      } catch { /* non-integer amount → treat as a real approval below */ }
+    }
+    const spender = String(ap.spender).toLowerCase();
+    if (!allowed.has(spender)) {
+      throw fail(
+        `the swap grants an approval to an unexpected spender (${spender}); a swap should only (re)approve ${allowed.size ? [...allowed].join(', ') : 'nothing'}.`,
+      );
+    }
+  }
+
+  return { verified: true };
 }

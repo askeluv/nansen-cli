@@ -13,9 +13,10 @@ import { base58Decode } from './transfer.js';
 import { keccak256, signSecp256k1, rlpEncode } from './crypto.js';
 import { getWalletConnectAddress, sendTransactionViaWalletConnect, sendSolanaTransactionViaWalletConnect, sendApprovalViaWalletConnect } from './walletconnect-trading.js';
 import { retrievePassword } from './keychain.js';
-import { validateQuoteInput, validateBalance, resolvePercentAmount, validateGasBalance, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertSwapCalldataNotBareTransfer, approvalAmountForSwap, needsAllowanceRevoke, OVERSIZED_ALLOWANCE_MULTIPLIER } from './trade-validation.js';
+import { validateQuoteInput, validateBalance, resolvePercentAmount, validateGasBalance, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertSwapCalldataNotBareTransfer, assertSwapOutcome, approvalAmountForSwap, needsAllowanceRevoke, OVERSIZED_ALLOWANCE_MULTIPLIER } from './trade-validation.js';
 import { CHAIN_RPCS } from './rpc-urls.js';
-import { packageVersion, CommandError, telemetryHeaders } from './api.js';
+import { simulateAssetChanges, SwapSimulationError, hasSimulationRpc } from './swap-simulation.js';
+import { packageVersion, CommandError, telemetryHeaders, loadConfig } from './api.js';
 
 // ============= Constants =============
 
@@ -698,6 +699,92 @@ export async function simulateEvmCall(chain, { from, to, data, value, gas }) {
     }
     // Network/infrastructure errors (fetch failure, rate limit, non-JSON response) → non-blocking
     return { success: true };
+  }
+}
+
+/**
+ * Normalise an aggregator's transaction `value` to a 0x-hex string the RPC
+ * accepts. The field may be a decimal string ('1000000'), a 0x-hex string, a
+ * bare '0x' (no digits — `BigInt('0x')` throws), or absent. Anything unparseable
+ * becomes '0x0' rather than throwing, so a malformed value can't crash the
+ * degrade path or misfire as an outcome mismatch. Note: unlike swap-simulation's
+ * hexToBigInt, this keeps BigInt's decimal parsing (tx.value is often decimal).
+ */
+function toRpcHexValue(value) {
+  if (!value || value === '0x') return '0x0';
+  try {
+    return '0x' + BigInt(value).toString(16);
+  } catch {
+    return '0x0';
+  }
+}
+
+/**
+ * Verify — via balance-delta simulation — that a swap does to the wallet what
+ * the user asked and no more. Defence-in-depth on top of the static calldata
+ * guards: the cheap eth_call sim answers "will it revert", this answers "does the
+ * outcome match intent" (see assertSwapOutcome in trade-validation.js).
+ *
+ * EVM-only, and on its own gate independent of --no-simulate/gasless. Skipped
+ * for cross-chain bridges (the output lands on the destination chain, so a
+ * source-chain simulation can't observe it). When no simulation-capable endpoint
+ * is configured it DEGRADES — logs a warning, then proceeds — so a simulation
+ * outage never blocks trading. --no-verify-outcome skips it entirely.
+ *
+ * Returns { proceed, reason }. proceed=false means this quote failed
+ * verification: the caller should fall through to the next candidate WITHOUT
+ * signing or broadcasting the swap. proceed=true covers a clean pass AND a
+ * degrade (the warning is logged here).
+ *
+ * @param {object} args
+ * @param {string} args.chain
+ * @param {string} args.from - the wallet that will sign (the sender simulated)
+ * @param {object} args.quote - the quote about to be executed (currentQuote)
+ * @param {object} args.quoteData - the loaded quote record (.request, .slippage)
+ * @param {string|null} [args.apiKey] - Nansen API key for the hosted endpoint
+ * @param {function} [args.log]
+ */
+export async function verifySwapOutcome({ chain, from, quote, quoteData, apiKey = null, log = () => {} }) {
+  if (CHAIN_MAP[chain?.toLowerCase()]?.type !== 'evm') return { proceed: true }; // EVM-only
+  // Cross-chain: the output token settles on the destination chain, so it can
+  // never appear in a source-chain simulation and the output-received assertion
+  // would always fail. The source-chain leg only spends/locks the input here;
+  // skip outcome verification for bridges (mirrors the bridge branch below).
+  if (quoteData?.toChain && quoteData.toChain !== quoteData.chain) return { proceed: true };
+  // No request intent recorded (a pre-intent quote): assertSwapOutcome has
+  // nothing to compare the simulated deltas against and would raise a misleading
+  // SWAP_OUTCOME_MISMATCH. Degrade cleanly — the static guards still ran, and a
+  // re-quote re-enables this check.
+  if (!quoteData?.request) {
+    log('  ⚠ Swap-outcome verification skipped (no request intent — re-quote to enable it).');
+    return { proceed: true };
+  }
+  if (!hasSimulationRpc(chain)) {
+    log(`  ⚠ Swap-outcome verification unavailable (no simulation endpoint for ${chain}); proceeding without it.`);
+    return { proceed: true };
+  }
+  const tx = quote?.transaction || {};
+  // Spenders the wallet may legitimately (re)approve mid-swap: the approval
+  // target and the router it routes through. Anything else fails assertion 4.
+  const expectedSpenders = [quote?.approvalAddress, tx.to].filter(Boolean);
+  try {
+    const sim = await simulateAssetChanges(
+      chain,
+      { to: tx.to, data: tx.data, value: toRpcHexValue(tx.value) },
+      { from, apiKey },
+    );
+    assertSwapOutcome(quoteData.request, quote, sim, { slippage: quoteData.slippage, expectedSpenders });
+    log(`  ✓ Swap outcome verified (via ${sim.method}).`);
+    return { proceed: true };
+  } catch (e) {
+    // Degrade (warn + proceed) when the simulation itself could not run; block
+    // (fall through to the next quote) when the outcome did not match or the
+    // swap reverts in simulation.
+    if (e instanceof SwapSimulationError && ['NO_SIM_RPC', 'NOT_SIM_CAPABLE', 'SIM_RPC_ERROR'].includes(e.code)) {
+      log(`  ⚠ Swap-outcome verification could not run (${e.message}); proceeding without it.`);
+      return { proceed: true };
+    }
+    return { proceed: false, reason: e.message };
   }
 }
 
@@ -1776,7 +1863,18 @@ CROSS-CHAIN NOTES (when using --to-chain):
       const walletName = options.wallet;
       const noSimulate = flags['no-simulate'];
       const noRevokeExcessiveAllowance = flags['no-revoke-excessive-allowance'];
+      const noVerifyOutcome = flags['no-verify-outcome'];
       const gasless = Boolean(flags.gasless);
+      // Read the API key for the swap-outcome sim endpoint. It's optional (the
+      // check degrades to a warning if the endpoint can't authenticate), so a
+      // malformed config must not crash an in-progress trade — fall back to null.
+      const apiKey = (() => {
+        try {
+          return loadConfig().apiKey;
+        } catch {
+          return null;
+        }
+      })();
 
       if (!quoteId) {
         throw new CommandError(`Usage: nansen trade execute --quote <quoteId> [options]
@@ -1784,7 +1882,8 @@ CROSS-CHAIN NOTES (when using --to-chain):
 OPTIONS:
   --quote <id>              Quote ID from 'nansen quote'
   --wallet <name>           Wallet name (default: default wallet)
-  --no-simulate             Skip pre-broadcast simulation
+  --no-simulate             Skip pre-broadcast simulation (the eth_call revert check)
+  --no-verify-outcome       Skip EVM swap-outcome verification (balance-delta check)
   --no-revoke-excessive-allowance
                             Skip auto-revoking an oversized/legacy allowance before re-approving
   --gasless                 Relay-only: have Relay's solver pay gas (no WalletConnect)
@@ -1956,15 +2055,15 @@ EXAMPLES:
               assertCompleteEvmRequestIntent(quoteData.request);
               assertQuoteMatchesRequest(quoteData.request, currentQuote, { chain, walletAddress, slippage: quoteData.slippage });
 
-              // Same-chain only: a legit swap's outer call is a router method,
-              // never a bare ERC-20 transfer/approve. Reject that drain shape.
-              // Cross-chain routes skip THIS selector check, but a bare transfer
-              // still targets the token contract, so validateSwapTarget's
-              // `to === inputMint` gate above already refuses it on both paths —
-              // cross-chain bare transfers are not actually waved through here.
-              if (!quoteData.toChain) {
-                assertSwapCalldataNotBareTransfer(currentQuote.transaction.data);
-              }
+              // Reject a bare ERC-20 transfer/approve/transferFrom as the outer
+              // call: a real swap or bridge routes through an aggregator/router,
+              // never a direct token method. Runs on cross-chain too — the
+              // validateSwapTarget gate above only refuses `to === inputMint`, so
+              // a bare transfer to a SIBLING token the wallet holds would
+              // otherwise slip through the bridge path (which doesn't parse the
+              // calldata recipient) and drain it. Legitimate bridges route through
+              // a router selector, so this never fires on a real cross-chain quote.
+              assertSwapCalldataNotBareTransfer(currentQuote.transaction.data);
 
               // Validate transaction.value (same checks as local wallet)
               const isNative = isNativeToken(currentQuote.inputMint);
@@ -2030,7 +2129,10 @@ EXAMPLES:
                     });
                     const signedRevoke = revokeSignResult.data?.signed_transaction || revokeSignResult.signed_transaction;
                     if (!signedRevoke) {
-                      throw new Error('Privy returned no signed revoke transaction; refusing to proceed');
+                      log(`  ❌ Allowance revoke failed for ${quoteName}: Privy returned no signed transaction`);
+                      if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                      lastQuoteError = `${quoteName} allowance revoke failed`;
+                      continue;
                     }
                     const revokeResult = await executeTransaction({ signedTransaction: signedRevoke, chain, simulate: !noSimulate });
                     if (revokeResult.status !== 'Success') {
@@ -2106,6 +2208,20 @@ EXAMPLES:
                   log(`  ⚠ Simulation failed for ${quoteName}: ${sim.reason}`);
                   if (qi + 1 < endIndex) log(`  Trying next quote...`);
                   lastQuoteError = `${quoteName} simulation failed: ${sim.reason}`;
+                  continue;
+                }
+              }
+
+              // Verify the swap's simulated on-chain outcome matches intent.
+              // Its own gate (runs even when --no-simulate/gasless skip the
+              // cheap revert check above); degrades with a warning if no
+              // simulation endpoint is available.
+              if (!noVerifyOutcome) {
+                const outcome = await verifySwapOutcome({ chain, from: walletAddress, quote: currentQuote, quoteData, apiKey, log });
+                if (!outcome.proceed) {
+                  log(`  ❌ ${quoteName} failed swap-outcome verification: ${outcome.reason}`);
+                  if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                  lastQuoteError = `${quoteName} outcome verification failed: ${outcome.reason}`;
                   continue;
                 }
               }
@@ -2237,15 +2353,15 @@ EXAMPLES:
               assertCompleteEvmRequestIntent(quoteData.request);
               assertQuoteMatchesRequest(quoteData.request, currentQuote, { chain, walletAddress: wcAddress, slippage: quoteData.slippage });
 
-              // Same-chain only: a legit swap's outer call is a router method,
-              // never a bare ERC-20 transfer/approve. Reject that drain shape.
-              // Cross-chain routes skip THIS selector check, but a bare transfer
-              // still targets the token contract, so validateSwapTarget's
-              // `to === inputMint` gate above already refuses it on both paths —
-              // cross-chain bare transfers are not actually waved through here.
-              if (!quoteData.toChain) {
-                assertSwapCalldataNotBareTransfer(currentQuote.transaction.data);
-              }
+              // Reject a bare ERC-20 transfer/approve/transferFrom as the outer
+              // call: a real swap or bridge routes through an aggregator/router,
+              // never a direct token method. Runs on cross-chain too — the
+              // validateSwapTarget gate above only refuses `to === inputMint`, so
+              // a bare transfer to a SIBLING token the wallet holds would
+              // otherwise slip through the bridge path (which doesn't parse the
+              // calldata recipient) and drain it. Legitimate bridges route through
+              // a router selector, so this never fires on a real cross-chain quote.
+              assertSwapCalldataNotBareTransfer(currentQuote.transaction.data);
 
               // Validate transaction.value (same checks as local wallet)
               const txValue = BigInt(currentQuote.transaction.value || '0');
@@ -2390,6 +2506,20 @@ EXAMPLES:
                 }
               }
 
+              // Verify the swap's simulated on-chain outcome matches intent. Its
+              // own gate: runs even when --no-simulate/gasless skip the cheap
+              // eth_call revert check above; degrades with a warning when no
+              // simulation endpoint is set.
+              if (!noVerifyOutcome) {
+                const outcome = await verifySwapOutcome({ chain, from: wcAddress, quote: currentQuote, quoteData, apiKey, log });
+                if (!outcome.proceed) {
+                  log(`  ❌ ${quoteName} failed swap-outcome verification: ${outcome.reason}`);
+                  if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                  lastQuoteError = `${quoteName} outcome verification failed: ${outcome.reason}`;
+                  continue;
+                }
+              }
+
               // Resolve gas
               const txData = currentQuote.transaction;
               const apiGas = parseInt(currentQuote.gas || "0");
@@ -2487,15 +2617,15 @@ EXAMPLES:
               assertCompleteEvmRequestIntent(quoteData.request);
               assertQuoteMatchesRequest(quoteData.request, currentQuote, { chain, walletAddress, slippage: quoteData.slippage });
 
-              // Same-chain only: a legit swap's outer call is a router method,
-              // never a bare ERC-20 transfer/approve. Reject that drain shape.
-              // Cross-chain routes skip THIS selector check, but a bare transfer
-              // still targets the token contract, so validateSwapTarget's
-              // `to === inputMint` gate above already refuses it on both paths —
-              // cross-chain bare transfers are not actually waved through here.
-              if (!quoteData.toChain) {
-                assertSwapCalldataNotBareTransfer(currentQuote.transaction.data);
-              }
+              // Reject a bare ERC-20 transfer/approve/transferFrom as the outer
+              // call: a real swap or bridge routes through an aggregator/router,
+              // never a direct token method. Runs on cross-chain too — the
+              // validateSwapTarget gate above only refuses `to === inputMint`, so
+              // a bare transfer to a SIBLING token the wallet holds would
+              // otherwise slip through the bridge path (which doesn't parse the
+              // calldata recipient) and drain it. Legitimate bridges route through
+              // a router selector, so this never fires on a real cross-chain quote.
+              assertSwapCalldataNotBareTransfer(currentQuote.transaction.data);
 
               // Handle approval if needed — skip for native ETH
               // Check existing allowance first to avoid unnecessary approve txs
@@ -2654,6 +2784,20 @@ EXAMPLES:
                   log(`  ⚠ Simulation failed for ${quoteName}: ${sim.reason}`);
                   if (qi + 1 < endIndex) log(`  Trying next quote...`);
                   lastQuoteError = `${quoteName} simulation failed: ${sim.reason}`;
+                  continue;
+                }
+              }
+
+              // Verify the swap's simulated on-chain outcome matches intent. Its
+              // own gate: runs even when --no-simulate/gasless skip the cheap
+              // eth_call revert check above; degrades with a warning when no
+              // simulation endpoint is set.
+              if (!noVerifyOutcome) {
+                const outcome = await verifySwapOutcome({ chain, from: walletAddress, quote: currentQuote, quoteData, apiKey, log });
+                if (!outcome.proceed) {
+                  log(`  ❌ ${quoteName} failed swap-outcome verification: ${outcome.reason}`);
+                  if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                  lastQuoteError = `${quoteName} outcome verification failed: ${outcome.reason}`;
                   continue;
                 }
               }
