@@ -857,6 +857,14 @@ export function approvalCapForQuote(quoteData) {
   return quoteData?.swapMode === 'exactOut' ? undefined : quoteData?.request?.amount;
 }
 
+// Decide what to do with a pre-existing on-chain allowance before a swap.
+// `shouldRevoke` describes the allowance ("it's oversized"), NOT the action taken:
+// callers use it both to gate the actual revoke (in the !reuseAllowance branch)
+// and to warn when reuse is forced by --no-revoke-excessive-allowance (in the
+// reuseAllowance branch). Note shouldRevoke ⟹ existingAllowance > approveAmt*10 ⟹
+// existingAllowance >= approveAmt, so with the flag set reuseAllowance is always
+// true and the revoke/"after revoking (now 0)" paths (all in the else branch) are
+// never reached spuriously — keep that invariant if you add branches here.
 function resolveAllowanceAction(existingAllowance, approveAmt, noRevokeExcessiveAllowance) {
   const shouldRevoke = existingAllowance > 0n && needsAllowanceRevoke(existingAllowance, approveAmt);
   const reuseAllowance = existingAllowance >= approveAmt && existingAllowance > 0n
@@ -2151,7 +2159,7 @@ EXAMPLES:
                       const receipt = await waitForReceipt(chain, revokeResult.txHash);
                       log(`  ✓ Allowance revoked in block ${parseInt(receipt.blockNumber, 16)}: ${revokeResult.txHash}`);
                     } catch (receiptErr) {
-                      log(`  ❌ Allowance revoke may not have confirmed: ${receiptErr.message}`);
+                      log(`  ❌ Allowance revoke may not have confirmed for ${quoteName}: ${receiptErr.message}`);
                       if (qi + 1 < endIndex) log(`  Trying next quote...`);
                       lastQuoteError = `${quoteName} allowance revoke unconfirmed`;
                       continue;
@@ -2729,7 +2737,7 @@ EXAMPLES:
                       const receipt = await waitForReceipt(chain, revokeResult.txHash);
                       log(`  ✓ Allowance revoked in block ${parseInt(receipt.blockNumber, 16)}: ${revokeResult.txHash}`);
                     } catch (receiptErr) {
-                      log(`  ❌ Allowance revoke may not have confirmed: ${receiptErr.message}`);
+                      log(`  ❌ Allowance revoke may not have confirmed for ${quoteName}: ${receiptErr.message}`);
                       if (qi + 1 < endIndex) log(`  Trying next quote...`);
                       lastQuoteError = `${quoteName} allowance revoke unconfirmed`;
                       continue;
