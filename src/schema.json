@@ -1889,6 +1889,37 @@
         "nansen doctor --json --pretty"
       ]
     },
+    "mcp": {
+      "description": "Install and verify the Nansen MCP server in local MCP clients",
+      "subcommands": {
+        "install": {
+          "description": "Write the Nansen MCP server entry (native url + headers) into the client's mcp.json, merging with existing servers and restricting file permissions",
+          "options": {
+            "api-key": {
+              "description": "API key to embed (defaults to saved login or NANSEN_API_KEY)"
+            },
+            "config-path": {
+              "description": "Override the client's default config file path"
+            }
+          },
+          "examples": [
+            "nansen mcp install cursor",
+            "nansen mcp install cursor --api-key <key>"
+          ]
+        },
+        "verify": {
+          "description": "Check the installed entry: MCP endpoint handshake plus a credit-free auth check of the configured key (the handshake alone succeeds unauthenticated)",
+          "options": {
+            "config-path": {
+              "description": "Override the client's default config file path"
+            }
+          },
+          "examples": [
+            "nansen mcp verify cursor"
+          ]
+        }
+      }
+    },
     "web": {
       "description": "Web search and fetch commands",
       "subcommands": {

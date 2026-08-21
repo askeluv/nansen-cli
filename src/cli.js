@@ -11,6 +11,7 @@ import { buildTradingCommands } from './trading.js';
 import { buildLimitOrderCommands } from './limit-order.js';
 import { formatAlertsTable, buildAlertsCommands } from './commands/alerts.js';
 import { buildAgentCommands } from './commands/agent.js';
+import { buildMcpCommands } from './commands/mcp.js';
 import { buildResearchCommands, RESEARCH_HISTORICAL_SUBCOMMANDS } from './commands/research.js';
 import { resolveAddress, isEnsName } from './ens.js';
 import fs from 'fs';
@@ -734,6 +735,7 @@ COMMANDS:
   agent       Ask the Nansen AI research agent (fast/expert modes)
   alerts      list, create, update, toggle, delete
   web         search, fetch
+  mcp         install/verify the Nansen MCP server in local clients (cursor)
   account     Show API key status, plan, and remaining credits
   auth        status — offline auth status: key source, wallets (no network)
   login       Save API key (--api-key <key>, --human, or NANSEN_API_KEY env var)
@@ -1871,7 +1873,7 @@ export async function runCLI(rawArgs, deps = {}) {
     return '';
   };
 
-  const commands = { ...buildCommands(deps), ...buildWalletCommands(deps), ...buildTradingCommands(deps), ...buildAlertsCommands(deps), ...buildAgentCommands(deps), ...commandOverrides };
+  const commands = { ...buildCommands(deps), ...buildWalletCommands(deps), ...buildTradingCommands(deps), ...buildAlertsCommands(deps), ...buildAgentCommands(deps), ...buildMcpCommands(deps), ...commandOverrides };
 
   if (flags.version || flags.v) {
     output(VERSION);

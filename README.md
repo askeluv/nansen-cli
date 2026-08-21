@@ -59,7 +59,14 @@ Connect any MCP client to Nansen's streamable HTTP server:
 - **Authentication:** `NANSEN-API-KEY` header
 - **API key:** [app.nansen.ai/auth/agent-setup](https://app.nansen.ai/auth/agent-setup)
 
-**Claude Desktop and Cursor:** setup instructions for both — the Claude Desktop `.dxt` bundle and the Cursor install deep link — are in the connection docs: [docs.nansen.ai/mcp/connecting](https://docs.nansen.ai/mcp/connecting).
+**Claude Desktop and Cursor:** setup instructions for both — the Claude Desktop `.dxt` bundle and the Cursor configuration — are in the connection docs: [docs.nansen.ai/mcp/connecting](https://docs.nansen.ai/mcp/connecting).
+
+**One-command (Cursor):** after `nansen login`, install and check the config with:
+
+```bash
+nansen mcp install cursor
+nansen mcp verify cursor
+```
 
 **One-command (Claude Code):**
 
