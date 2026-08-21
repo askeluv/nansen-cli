@@ -1871,7 +1871,7 @@ describe('quote handler rejects decimal amounts before API call', () => {
   });
 });
 
-describe('exactOut --max-input requirement is EVM-only', () => {
+describe('exactOut --max-input requirement applies to every chain', () => {
   it('base exactOut without --max-input is rejected before any API call', async () => {
     const origFetch = global.fetch;
     global.fetch = vi.fn();
@@ -1886,19 +1886,19 @@ describe('exactOut --max-input requirement is EVM-only', () => {
     global.fetch = origFetch;
   });
 
-  it('solana exactOut does NOT require --max-input (Solana has no EVM approval to scope)', async () => {
-    // The spend-ceiling guards live only in the EVM execute paths, so requiring
-    // the flag on Solana would break existing users for no security gain. The
-    // quote may still reject at a later stage (wallet/network), but it must not
-    // reject on the missing --max-input flag the way an EVM exactOut quote does.
+  it('solana exactOut without --max-input is rejected before any API call', async () => {
+    // A cap derived from the API's own quote response would just check that
+    // quote against itself and could never reject anything — --max-input must
+    // be an independently supplied ceiling, same as EVM.
     const origFetch = global.fetch;
-    global.fetch = vi.fn().mockRejectedValue(new Error('network stubbed off'));
+    global.fetch = vi.fn();
 
     const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
 
     await expect(cmds.quote([], null, {}, {
       chain: 'solana', from: 'SOL', to: 'USDC', amount: '1000000', 'swap-mode': 'exactOut',
-    })).rejects.not.toThrow(/requires --max-input/i);
+    })).rejects.toThrow(/requires --max-input/i);
+    expect(global.fetch).not.toHaveBeenCalled();
 
     global.fetch = origFetch;
   });
@@ -2082,6 +2082,7 @@ describe('quote command with --amount-unit token', () => {
       amount: '1',
       'amount-unit': 'token',
       'swap-mode': 'exactOut',
+      'max-input': '2000000000',
     });
 
     const quoteCall = fetchCalls.find(c => c.url.includes('quote'));
@@ -2225,6 +2226,7 @@ describe('quote command with --amount-unit usd', () => {
       amount: '50',
       'amount-unit': 'usd',
       'swap-mode': 'exactOut',
+      'max-input': '2000000000',
     });
 
     // Should have searched for USDC (the --to token), not SOL
@@ -2360,6 +2362,7 @@ describe('quote command with --amount-unit usd', () => {
       amount: '50',
       'amount-unit': 'usd',
       'swap-mode': 'exactOut',
+      'max-input': '2000000000',
     });
 
     // exactOut should skip balance check and succeed (reach quote API)
@@ -5205,53 +5208,10 @@ describe('Solana intent binding (adversarial)', () => {
   });
 });
 
-describe('Solana exactOut ceiling — derived maxInputAmount', () => {
+describe('Solana exactOut ceiling — requires an explicit --max-input', () => {
   afterEach(() => { delete process.env.NANSEN_WALLET_PASSWORD; });
 
-  it('persists a slippage-buffered maxInputAmount when --max-input is omitted', async () => {
-    createWallet('default', 'testpass');
-    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
-
-    const origFetch = global.fetch;
-    global.fetch = vi.fn().mockImplementation(async (url) => {
-      const urlStr = url.toString();
-      if (urlStr.includes('/quote')) {
-        return {
-          ok: true,
-          text: async () => JSON.stringify({
-            success: true,
-            quotes: [
-              { aggregator: 'jupiter', inputMint: SOL_MINT, outputMint: SOL_USDC, inAmount: '1000000000', outAmount: '50000000' },
-              // Widest quote — the derived cap must be based on this one, not the first.
-              { aggregator: 'okx', inputMint: SOL_MINT, outputMint: SOL_USDC, inAmount: '1200000000', outAmount: '50000000' },
-            ],
-          }),
-        };
-      }
-      return { ok: true, text: async () => JSON.stringify({ jsonrpc: '2.0', id: 1, result: null }) };
-    });
-
-    const logs = [];
-    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
-
-    await cmds.quote([], null, {}, {
-      chain: 'solana', from: 'SOL', to: 'USDC', amount: '50000000', 'swap-mode': 'exactOut',
-    });
-
-    const idLine = logs.find(l => l.includes('Quote ID:'));
-    expect(idLine).toBeDefined();
-    const quoteId = idLine.split('Quote ID:')[1].trim();
-    const loaded = loadQuote(quoteId);
-
-    // Widest quote input (1,200,000,000) at the default 3% exactOut slippage buffer.
-    const expectedCap = approvalAmountForSwap({ inputAmount: '1200000000', swapMode: 'exactOut', slippage: 0.03 });
-    expect(loaded.request.maxInputAmount).toBe(expectedCap.toString());
-    expect(() => assertCompleteSolanaRequestIntent(loaded.request)).not.toThrow();
-
-    global.fetch = origFetch;
-  });
-
-  it('an explicit --max-input still wins over the derived default', async () => {
+  it('persists the explicit --max-input as maxInputAmount', async () => {
     createWallet('default', 'testpass');
     process.env.NANSEN_WALLET_PASSWORD = 'testpass';
 

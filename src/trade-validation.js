@@ -760,8 +760,9 @@ export function assertQuoteMatchesRequest(request, quote, { chain, walletAddress
  *     more than the user approved leave the wallet.
  *   - exactIn with no cap → no-op (request.amount already binds the input).
  *
- * Applies to native and ERC-20 swaps alike; the caller runs it before any
- * approval, transaction signing, or WalletConnect call.
+ * Applies to native, ERC-20, and Solana swaps alike (Solana has no approval step,
+ * so the "buffered spend" ceiling is just the spend itself); the caller runs it
+ * before any approval, transaction signing, or WalletConnect call.
  *
  * @param {object} request - Persisted intent (quoteData.request)
  * @param {object} quote - The quote being executed
@@ -817,10 +818,15 @@ export function assertInputWithinMax(request, quote, slippage) {
     );
   }
   if (spend > cap) {
+    const isSolana = request.chain === 'solana';
     throw new Error(
       swapMode === 'exactOut'
-        ? `Quote needs an approval of ${spend} base units (input ${input} + slippage buffer) to guarantee the exact output, which exceeds your maximum input (${cap}). Raise --max-input or lower the requested output. Refusing to sign.`
-        : `Quote input amount (${input}) exceeds your maximum input (${cap}). A larger input would enlarge the approval and native value beyond what you approved. Refusing to sign.`,
+        ? isSolana
+          ? `Quote needs ${spend} base units (input ${input} + slippage buffer) to guarantee the exact output, which exceeds your maximum input (${cap}). Raise --max-input or lower the requested output. Refusing to sign.`
+          : `Quote needs an approval of ${spend} base units (input ${input} + slippage buffer) to guarantee the exact output, which exceeds your maximum input (${cap}). Raise --max-input or lower the requested output. Refusing to sign.`
+        : isSolana
+          ? `Quote input amount (${input}) exceeds your maximum input (${cap}). Refusing to sign.`
+          : `Quote input amount (${input}) exceeds your maximum input (${cap}). A larger input would enlarge the approval and native value beyond what you approved. Refusing to sign.`,
     );
   }
 }

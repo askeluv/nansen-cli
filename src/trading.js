@@ -1615,9 +1615,9 @@ OPTIONS:
   --swap-mode <mode>        exactIn (default) or exactOut
   --max-input <baseUnits>   exactOut only: hard ceiling on the sell-token spend
                             (base units), measured against the slippage-buffered
-                            approval (input + slippage), not the bare quote input.
-                            Required for EVM (Base) exactOut and enforced before
-                            signing; optional on Solana (no ERC-20 approval to scope).
+                            spend (input + slippage), not the bare quote input.
+                            Required for exactOut on every chain and enforced
+                            before signing.
   --aggregator <name>       Force a specific aggregator (lifi, relay, jupiter, okx).
                             Filters the quote list client-side; errors if none match.
 
@@ -1652,12 +1652,9 @@ CROSS-CHAIN NOTES (when using --to-chain):
         throw new CommandError('Error: --amount-unit percent is not supported with --swap-mode exactOut. Percentage is relative to your sell-token balance.', 'INVALID_INPUT');
       }
 
-      // The exactOut spend-ceiling requirements below only guard the EVM signing
-      // path: the ERC-20 approval scoping, request-intent binding, and
-      // assertInputWithinMax checks are wired into the EVM execute paths only.
-      // Solana signs the API transaction verbatim (no approval to scope), so
-      // requiring --max-input there would break existing Solana exactOut users
-      // without buying any of that path a security guarantee. Gate on EVM source.
+      // isEvmSource gates the ERC-20-approval-specific check just below (auto-slippage
+      // sizing an approval has no Solana equivalent). The --max-input requirement
+      // itself is NOT gated on it — see the check after maxInputOverride is parsed.
       const isEvmSource = CHAIN_MAP[chain?.toLowerCase()]?.type === 'evm';
 
       // exactOut scopes the ERC-20 approval to a slippage-buffered max input. With
@@ -1691,7 +1688,10 @@ CROSS-CHAIN NOTES (when using --to-chain):
           throw new CommandError(`Error: invalid --max-input "${maxInputRaw}": must be an integer in base units of the sell token.`, 'INVALID_INPUT');
         }
       }
-      if (isEvmSource && swapMode === 'exactOut' && maxInputOverride == null) {
+      // Required on every chain: an exactOut cap derived from the API's own quote
+      // response would just check that quote against itself and could never reject
+      // anything (there is no independent signal to catch an inflated input).
+      if (swapMode === 'exactOut' && maxInputOverride == null) {
         throw new CommandError('Error: --swap-mode exactOut requires --max-input (base units of the sell token) so the input is independently capped before signing.', 'INVALID_INPUT');
       }
 
@@ -1946,28 +1946,8 @@ CROSS-CHAIN NOTES (when using --to-chain):
         const signerType = isWalletConnect ? 'walletconnect' : walletProvider;
         // exactOut has no request.amount input bound (amount is the OUTPUT), so
         // maxInputAmount is the only spend ceiling assertInputWithinMax can enforce.
-        // EVM requires --max-input explicitly (checked above); Solana has no
-        // approval to scope so --max-input stays optional there, but the ceiling
-        // must still exist — derive the same slippage-buffered bound --max-input
-        // would have enforced, from the widest quote actually returned.
-        let maxInputAmount;
-        if (swapMode === 'exactOut') {
-          if (maxInputOverride != null) {
-            maxInputAmount = maxInputOverride;
-          } else {
-            const derivedCap = response.quotes.reduce((max, q) => {
-              const spend = approvalAmountForSwap({
-                inputAmount: q.inputAmount ?? q.inAmount ?? '0',
-                swapMode: 'exactOut',
-                slippage: effectiveSlippage,
-              });
-              return spend > 0n && (max == null || spend > max) ? spend : max;
-            }, null);
-            maxInputAmount = derivedCap != null ? derivedCap.toString() : null;
-          }
-        } else {
-          maxInputAmount = String(resolvedAmount);
-        }
+        // Required explicitly via --max-input on every chain (checked above).
+        const maxInputAmount = swapMode === 'exactOut' ? maxInputOverride : String(resolvedAmount);
         const quoteId = saveQuote(response, chain, signerType, privyWalletIds, isCrossChain ? toChainRaw : null, {
           swapMode,
           slippage: effectiveSlippage,
