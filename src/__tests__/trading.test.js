@@ -3863,6 +3863,72 @@ describe('ERC-20 excessive allowance handling', () => {
   });
 });
 
+describe('Solana execute: static instruction safety check', () => {
+  function encodeCompactU16(value) {
+    if (value < 0x80) return Buffer.from([value]);
+    if (value < 0x4000) return Buffer.from([(value & 0x7f) | 0x80, (value >> 7) & 0x7f]);
+    return Buffer.from([(value & 0x7f) | 0x80, ((value >> 7) & 0x7f) | 0x80, (value >> 14) & 0x03]);
+  }
+
+  // A Jupiter-shaped (plain base64) transaction whose sole instruction is an
+  // SPL Token CloseAccount authorized by `walletAddress` that sends the
+  // reclaimed rent to a stranger instead of back to the wallet.
+  function buildCloseToStrangerTransaction(walletAddress, strangerAddress) {
+    const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+    const tokenAccount = generateSolanaWallet().address;
+    const accountKeys = [walletAddress, tokenAccount, strangerAddress, TOKEN_PROGRAM];
+    const parts = [Buffer.from([1, 0, 3])];
+    parts.push(encodeCompactU16(accountKeys.length));
+    for (const k of accountKeys) parts.push(base58Decode(k));
+    parts.push(base58Decode(walletAddress)); // recentBlockhash placeholder
+    parts.push(encodeCompactU16(1));
+    // CloseAccount: [account, destination(=stranger), authority(=wallet, signer)]
+    parts.push(Buffer.from([3])); // programIdIndex → TOKEN_PROGRAM
+    parts.push(encodeCompactU16(3));
+    parts.push(Buffer.from([1, 2, 0]));
+    parts.push(encodeCompactU16(1));
+    parts.push(Buffer.from([9])); // CloseAccount discriminator
+    const messageBytes = Buffer.concat(parts);
+    return Buffer.concat([Buffer.from([1]), Buffer.alloc(64), messageBytes]).toString('base64');
+  }
+
+  it('blocks execute before signing when the compiled instructions close an account to a stranger', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    const wallet = showWallet('default');
+    const stranger = generateSolanaWallet().address;
+
+    const fetchCalls = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url) => {
+      fetchCalls.push(typeof url === 'string' ? url : url.toString());
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ status: 'Success' })) });
+    }));
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'jupiter',
+        inputMint: '11111111111111111111111111111111',
+        outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+        inAmount: '1000000000',
+        outAmount: '100000000',
+        transaction: buildCloseToStrangerTransaction(wallet.solana, stranger),
+      }],
+    }, 'solana', 'local');
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow();
+
+    expect(fetchCalls.some(u => u.includes('trading-api') && u.endsWith('/execute'))).toBe(false);
+    expect(logs.some(l => l.includes('reclaimed rent'))).toBe(true);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+    vi.unstubAllGlobals();
+  });
+});
+
+
 describe('Relay aggregator: --gasless flag dispatch', () => {
   it('forwards aggregator/gasless/steps/requestId to /execute when gasless flag is set', async () => {
     createWallet('default', 'testpass');

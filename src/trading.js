@@ -13,7 +13,7 @@ import { base58Decode } from './transfer.js';
 import { keccak256, signSecp256k1, rlpEncode } from './crypto.js';
 import { getWalletConnectAddress, sendTransactionViaWalletConnect, sendSolanaTransactionViaWalletConnect, sendApprovalViaWalletConnect } from './walletconnect-trading.js';
 import { retrievePassword } from './keychain.js';
-import { validateQuoteInput, validateBalance, resolvePercentAmount, validateGasBalance, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertSwapCalldataNotBareTransfer, assertSwapOutcome, approvalAmountForSwap, needsAllowanceRevoke, OVERSIZED_ALLOWANCE_MULTIPLIER } from './trade-validation.js';
+import { validateQuoteInput, validateBalance, resolvePercentAmount, validateGasBalance, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertSwapCalldataNotBareTransfer, assertSwapOutcome, assertSolanaInstructionsSafe, approvalAmountForSwap, needsAllowanceRevoke, OVERSIZED_ALLOWANCE_MULTIPLIER } from './trade-validation.js';
 import { CHAIN_RPCS } from './rpc-urls.js';
 import { simulateAssetChanges, SwapSimulationError, hasSimulationRpc } from './swap-simulation.js';
 import { packageVersion, CommandError, telemetryHeaders, loadConfig } from './api.js';
@@ -2141,9 +2141,16 @@ EXAMPLES:
               if (typeof txBase64 === 'object' && txBase64.data) {
                 txBase64 = base58Decode(txBase64.data).toString('base64');
               }
-              log('  Signing Solana transaction via Privy...');
               const solWalletId = quoteData.privyWalletIds?.solana;
               if (!solWalletId) throw new Error('No Solana Privy wallet ID in quote');
+              const privySolWallet = await privyClient.getWallet(solWalletId);
+
+              // Static instruction check ahead of signing — catches a delegate
+              // grant, authority change, close-to-stranger, or excessive fee that
+              // a balance-delta simulation alone wouldn't see.
+              assertSolanaInstructionsSafe(txBase64, { walletAddress: privySolWallet.address });
+
+              log('  Signing Solana transaction via Privy...');
               const signResult = await privyClient.signSolanaTransaction(solWalletId, txBase64);
               signedTransaction = signResult.data?.signed_transaction || signResult.signed_transaction;
               requestId = currentQuote.metadata?.requestId;
@@ -2410,16 +2417,22 @@ EXAMPLES:
             } else if (chainType === 'solana') {
               // NB: validateSwapTarget (the EVM `to`/`data` guard) intentionally does
               // not apply here — Solana quotes are a pre-built serialized
-              // VersionedTransaction with no `to`/`data`/approval split to validate,
-              // and this path (including the WalletConnect sub-branch below) signs it
-              // as supplied. Deeper Solana inspection (e.g. checking instruction
-              // program IDs) is tracked as a follow-up, not an oversight.
+              // VersionedTransaction with no `to`/`data`/approval split to validate.
               // Solana: transaction is either a base64 string (Jupiter) or an object
               // with a base58-encoded `data` field (OKX). Normalize to base64.
               let txBase64 = currentQuote.transaction;
               if (typeof txBase64 === 'object' && txBase64.data) {
                 txBase64 = base58Decode(txBase64.data).toString('base64');
               }
+
+              const solanaWalletAddress = isWalletConnect ? await getWalletConnectAddress(chainType) : exported.solana.address;
+              if (!solanaWalletAddress) {
+                throw new CommandError('WalletConnect session lost during execute. Reconnect with `walletconnect connect` and retry.', 'NO_WALLET');
+              }
+              // Static instruction check ahead of signing — catches a delegate
+              // grant, authority change, close-to-stranger, or excessive fee that
+              // a balance-delta simulation alone wouldn't see.
+              assertSolanaInstructionsSafe(txBase64, { walletAddress: solanaWalletAddress });
 
               if (isWalletConnect) {
                 // Solana via WalletConnect: convert base64 → base58 for WC protocol
