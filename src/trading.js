@@ -473,8 +473,7 @@ export function cleanupQuotes() {
  * @param {string} privateKeyHex - 128-char hex (64 bytes: seed + pubkey)
  * @returns {string} Base64-encoded signed transaction
  */
-// Pure Solana encode/sign primitive. Quote authorization and request-intent
-// binding happen upstream before this function receives transaction bytes.
+// ⚠️ SECURITY: Solana transaction signing - requires thorough review before production use
 export function signSolanaTransaction(transactionBase64, privateKeyHex) {
   const txBytes = Buffer.from(transactionBase64, 'base64');
 
@@ -818,7 +817,13 @@ export async function checkErc20Allowance(chain, tokenAddress, ownerAddress, spe
     const result = await evmRpcCall(chain, 'eth_call', [{ to: tokenAddress, data }, 'latest']);
     if (!result) return 0n;
     return BigInt(result);
-  } catch {
+  } catch (err) {
+    // Treat an unreadable allowance as 0 so the caller re-approves a fresh scoped
+    // amount (a normal approve() overwrites any real on-chain allowance) rather
+    // than trusting a value we couldn't verify. Surface it so a persistent RPC
+    // problem — which would otherwise silently skip the excessive-allowance
+    // revoke — isn't invisible.
+    process.stderr.write(`⚠️  Could not read ERC-20 allowance on ${chain} (${err.message}); treating as 0.\n`);
     return 0n;
   }
 }
@@ -2196,7 +2201,7 @@ EXAMPLES:
                     const receipt = await waitForReceipt(chain, approvalResult.txHash);
                     log(`  ✓ Approval confirmed in block ${parseInt(receipt.blockNumber, 16)}: ${approvalResult.txHash}`);
                   } catch (receiptErr) {
-                    log(`  ❌ Approval may not have confirmed: ${receiptErr.message}`);
+                    log(`  ❌ Approval may not have confirmed${shouldRevoke ? ' after revoking the prior allowance (now 0)' : ''}: ${receiptErr.message}`);
                     if (qi + 1 < endIndex) log(`  Trying next quote...`);
                     lastQuoteError = `${quoteName} approval unconfirmed`;
                     continue;
@@ -2767,7 +2772,7 @@ EXAMPLES:
                     const receipt = await waitForReceipt(chain, approvalResult.txHash);
                     log(`  ✓ Approval confirmed in block ${parseInt(receipt.blockNumber, 16)}: ${approvalResult.txHash}`);
                   } catch (receiptErr) {
-                    log(`  ❌ Approval may not have confirmed: ${receiptErr.message}`);
+                    log(`  ❌ Approval may not have confirmed${shouldRevoke ? ' after revoking the prior allowance (now 0)' : ''}: ${receiptErr.message}`);
                     if (qi + 1 < endIndex) log(`  Trying next quote...`);
                     lastQuoteError = `${quoteName} approval unconfirmed`;
                     continue;
