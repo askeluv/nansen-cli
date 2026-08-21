@@ -1165,9 +1165,12 @@ export function assertSolanaInstructionsSafe(txBase64, { walletAddress } = {}) {
       }
     } else if (programId === COMPUTE_BUDGET_PROGRAM) {
       const discriminator = ix.data[0];
-      if (discriminator === COMPUTE_BUDGET_SET_UNIT_LIMIT) {
+      if (discriminator === COMPUTE_BUDGET_SET_UNIT_LIMIT && ix.data.length >= 5) {
         computeUnitLimit = ix.data.readUInt32LE(1);
       } else if (discriminator === COMPUTE_BUDGET_SET_UNIT_PRICE) {
+        if (ix.data.length < 9) {
+          throw new Error('Solana transaction has a malformed compute-budget price instruction. Refusing to sign.');
+        }
         computeUnitPriceMicroLamports = ix.data.readBigUInt64LE(1);
       }
     }

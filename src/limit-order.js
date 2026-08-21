@@ -11,6 +11,7 @@ import path from 'path';
 import { base58Encode, exportWallet, getWalletConfig, showWallet } from './wallet.js';
 import { signEd25519, base58Decode, parseAmount, getTokenInfo } from './transfer.js';
 import { signSolanaTransaction, resolveTokenAddress } from './trading.js';
+import { assertSolanaInstructionsSafe } from './trade-validation.js';
 import { validateTokenAddress, telemetryHeaders, packageVersion } from './api.js';
 import { getWalletConnectAddress, sendSolanaTransactionViaWalletConnect, signSolanaMessageViaWalletConnect } from './walletconnect-trading.js';
 import { retrievePassword } from './keychain.js';
@@ -673,6 +674,7 @@ EXAMPLES:
         });
 
         // 5. Sign deposit transaction
+        assertSolanaInstructionsSafe(deposit.transaction, { walletAddress: pubkey });
         log('  Signing deposit transaction...');
         const signedDepositTx = await signTransaction(deposit.transaction, walletType, walletInfo);
 
@@ -807,6 +809,7 @@ EXAMPLES:
         const cancelResult = await cancelOrderRequest(token, orderId);
 
         // 3. Sign the withdrawal transaction
+        assertSolanaInstructionsSafe(cancelResult.transaction, { walletAddress: pubkey });
         log('  Signing withdrawal transaction...');
         const signedTx = await signTransaction(cancelResult.transaction, walletType, walletInfo);
 
