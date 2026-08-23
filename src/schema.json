@@ -1826,7 +1826,17 @@
           }
         },
         "export": {
-          "description": "Export private keys"
+          "description": "Export private keys (redacted by default; pass --reveal or --file <path> for the actual keys)",
+          "options": {
+            "reveal": {
+              "type": "boolean",
+              "description": "Print private keys in plaintext to stdout (explicit acknowledgement; warns on interactive terminals)"
+            },
+            "file": {
+              "type": "string",
+              "description": "Write private keys to this path instead of stdout (created with 0600 permissions, refuses to overwrite)"
+            }
+          }
         },
         "delete": {
           "description": "Delete a wallet"

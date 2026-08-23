@@ -751,7 +751,44 @@ export function buildWalletCommands(deps = {}) {
         'export': async () => {
           const name = options.name || args[1];
           if (!name) {
-            throw new CommandError('Usage: nansen wallet export <name>', 'MISSING_ARGS');
+            throw new CommandError('Usage: nansen wallet export <name> [--reveal | --file <path>]', 'MISSING_ARGS');
+          }
+
+          // Bare `--file` parses as flags.file, and `--file true` JSON-parses
+          // to a boolean — both would silently drop the path, so reject them
+          // before any secret is decrypted.
+          const wantsFile = options.file !== undefined || flags.file;
+          if (wantsFile && typeof options.file !== 'string') {
+            throw new CommandError('--file requires a path: nansen wallet export <name> --file <path>', 'INVALID_INPUT');
+          }
+          if (wantsFile && flags.reveal) {
+            throw new CommandError('Choose one of --reveal or --file <path>, not both.', 'INVALID_INPUT');
+          }
+
+          // Default: redacted. No decryption, no password — secrets never
+          // materialize unless the caller explicitly asked for them.
+          if (!flags.reveal && !wantsFile) {
+            try {
+              const result = showWallet(name);
+              if (result.provider !== 'local') {
+                throw new Error(`${result.provider} wallets don't support key export. Keys are managed by the provider.`);
+              }
+              log(`\n  Wallet "${result.name}" — private keys are NOT shown by default.\n`);
+              log(`  EVM:`);
+              log(`    Address:     ${result.evm}`);
+              log(`    Private Key: [REDACTED]`);
+              log(`  Solana:`);
+              log(`    Address:     ${result.solana}`);
+              log(`    Private Key: [REDACTED]`);
+              log('');
+              log('  To export the private keys:');
+              log(`    nansen wallet export ${result.name} --file <path>   safer: writes a file only you can read (0600)`);
+              log(`    nansen wallet export ${result.name} --reveal        prints them in plaintext to stdout`);
+              log('');
+              return;
+            } catch (err) {
+              throw new CommandError(`❌ ${err.message}`, 'EXPORT_FAILED');
+            }
           }
 
           const config = getWalletConfig();
@@ -761,6 +798,58 @@ export function buildWalletCommands(deps = {}) {
           }
           try {
             const result = exportWallet(name, password);
+
+            if (wantsFile) {
+              // Exclusive create first, write second: unlink-on-failure below
+              // is only safe on a file THIS invocation created — a blind 'wx'
+              // writeFileSync can fail (e.g. EMFILE) without telling us whether
+              // the path pre-existed. Errors are rewrapped so no raw fs message
+              // (key-free, but noisy) reaches the envelope.
+              let fd;
+              try {
+                fd = fs.openSync(options.file, 'wx', 0o600);
+              } catch (err) {
+                if (err.code === 'EEXIST') {
+                  throw new Error(`File already exists: ${options.file} — refusing to overwrite. Delete it or choose another path.`, { cause: err });
+                }
+                throw new Error(`Could not create ${options.file} (${err.code || 'open failed'}). Nothing was written.`, { cause: err });
+              }
+              // Linear lifecycle: exactly one write attempt, exactly one close
+              // attempt (a failed closeSync may still have released the fd, so
+              // it is never retried), then a single failure gate.
+              let ioErr = null;
+              try {
+                fs.writeFileSync(fd, JSON.stringify(result, null, 2) + '\n');
+              } catch (err) {
+                ioErr = err;
+              }
+              try {
+                fs.closeSync(fd);
+              } catch (err) {
+                ioErr = ioErr || err;
+              }
+              if (ioErr) {
+                // A failure mid-write or at close (e.g. ENOSPC) can leave a
+                // partial file holding key fragments — remove what we created.
+                let disk = 'Nothing was left on disk.';
+                try {
+                  fs.unlinkSync(options.file);
+                } catch (rmErr) {
+                  if (rmErr.code !== 'ENOENT') {
+                    disk = `A partial file may remain at ${options.file} — delete it manually.`;
+                  }
+                }
+                throw new Error(`Could not write ${options.file} (${ioErr.code || 'write failed'}). ${disk}`, { cause: ioErr });
+              }
+              log(`\n✓ Private keys for "${result.name}" written to ${options.file} (permissions 0600).`);
+              log('  Delete the file as soon as the keys are imported elsewhere.');
+              log('');
+              return;
+            }
+
+            if (deps.isTTY ?? process.stdout.isTTY) {
+              process.stderr.write('⚠️  Printing private keys to an interactive terminal. They will remain in your scrollback and may be captured by screen sharing or terminal logging. Prefer --file <path>.\n');
+            }
             log(`\n⚠️  Private keys for "${result.name}" — do not share!\n`);
             log(`  EVM:`);
             log(`    Address:     ${result.evm.address}`);
@@ -1005,7 +1094,10 @@ COMMANDS:
                              Create a new wallet pair (EVM + Solana)
   list                       List all wallets
   show <name>                Show wallet addresses
-  export <name>              Export private keys (local wallets only, requires password)
+  export <name> [--reveal | --file <path>]
+                             Export private keys (local wallets only, requires password).
+                             Redacted by default: --reveal prints plaintext to stdout,
+                             --file writes them to a new file only you can read (0600)
   default <name>             Set the default wallet
   delete <name>              Delete a wallet
   send --to <address> --amount <number> --chain <evm|solana> [--token <address>] [--wallet <name>] [--max] [--dry-run]
@@ -1023,6 +1115,8 @@ OPTIONS:
   --token <address>          Token contract/mint address (optional, sends native if omitted)
   --wallet <name>            Wallet to use (optional, uses default if omitted; use "walletconnect" or "wc" for WalletConnect, EVM only)
   --max                      Send entire balance (deducts gas for native transfers)
+  --reveal                   Export: print private keys in plaintext to stdout (explicit acknowledgement)
+  --file <path>              Export: write private keys to <path> (created 0600, refuses to overwrite)
   --unsafe-no-password       Skip encryption — private keys stored UNENCRYPTED on disk (local only)
   --human                    Enable interactive prompts (for human terminal use only)
 
@@ -1044,7 +1138,9 @@ EXAMPLES:
   NANSEN_WALLET_PASSWORD=mypass nansen wallet create --name trading
   nansen wallet create --name agent-wallet --provider privy
   nansen wallet list
-  nansen wallet export trading
+  nansen wallet export trading                     # redacted (addresses only)
+  nansen wallet export trading --file backup.json  # keys → 0600 file, nothing on stdout
+  nansen wallet export trading --reveal            # keys → stdout (plaintext)
   nansen wallet default trading
   nansen wallet send --to 0x742d35Cc... --amount 1.5 --chain evm
   nansen wallet send --to 9WzDXw... --amount 0.1 --chain solana --token So11...

@@ -50,7 +50,7 @@ Interpret `x402.password.source`:
 - `null` → password not persisted anywhere (Path C or D)
 - `"env"` → `NANSEN_WALLET_PASSWORD` is set; check where it is being exported from (a `.env` file → Path A)
 
-Do NOT use `nansen wallet export` to probe the password state — it prints private keys.
+Do NOT use `nansen wallet export` to probe the password state — the default is redacted and never loads the password, so it proves nothing (and `--reveal` prints private keys).
 
 ## Migration paths
 
@@ -76,13 +76,15 @@ source ~/.nansen/.env 2>/dev/null && nansen wallet secure
 **Step 3 — Verify the password actually decrypts the wallet:**
 
 ```bash
-# Unset env var to prove keychain works, then export to verify decryption
+# Unset env var to prove keychain works, then run a decrypting export with
+# all output discarded — the exit code alone is the signal, so no key
+# material can land in a transcript or log
 unset NANSEN_WALLET_PASSWORD
-nansen wallet export default 2>&1
+if nansen wallet export default --reveal > /dev/null 2>&1; then echo "decryption OK"; else echo "decryption FAILED"; fi
 ```
 
-If export succeeds (shows private keys), the migration worked. If it shows
-`Incorrect password`, the wrong password was migrated — run `nansen wallet
+If the export exits 0 (`decryption OK`), the migration worked. If it fails,
+the wrong password was migrated — run `nansen wallet
 forget-password` and retry with the correct password.
 
 **Step 4 — Clean up the insecure file:**
@@ -102,10 +104,11 @@ nansen wallet secure
 If the keychain is still unavailable (e.g. containerized Linux without D-Bus),
 `nansen wallet secure` will explain the situation and suggest alternatives.
 
-After migrating, verify decryption works:
+After migrating, verify decryption works (output discarded on purpose —
+branch on the exit code):
 
 ```bash
-nansen wallet export default 2>&1
+if nansen wallet export default --reveal > /dev/null 2>&1; then echo "decryption OK"; else echo "decryption FAILED"; fi
 ```
 
 ### Path C: Password only in `NANSEN_WALLET_PASSWORD` env var
@@ -115,11 +118,12 @@ nansen wallet export default 2>&1
 nansen wallet secure
 ```
 
-Then verify without the env var:
+Then verify without the env var (exit code is the signal; output is
+discarded so no keys are disclosed):
 
 ```bash
 unset NANSEN_WALLET_PASSWORD
-nansen wallet export default 2>&1
+if nansen wallet export default --reveal > /dev/null 2>&1; then echo "decryption OK"; else echo "decryption FAILED"; fi
 ```
 
 ### Path D: Password lost entirely
@@ -147,11 +151,12 @@ the keychain password can actually decrypt the wallet:
 # Unset env var to prove keychain works
 unset NANSEN_WALLET_PASSWORD
 
-# This MUST succeed — it proves the keychain password decrypts the wallet
-nansen wallet export default 2>&1
+# This MUST exit 0 — it proves the keychain password decrypts the wallet.
+# Output is discarded on purpose: the exit code alone is the signal.
+if nansen wallet export default --reveal > /dev/null 2>&1; then echo "decryption OK"; else echo "decryption FAILED"; fi
 ```
 
-If export shows `Incorrect password`, the wrong password was saved to the
+If the export fails, the wrong password was saved to the
 keychain. Fix with:
 
 ```bash
@@ -182,4 +187,4 @@ wallet operations will require `NANSEN_WALLET_PASSWORD` env var or re-running
 - **NEVER use `--human` flag** — interactive prompts break agents
 - If the human authorizes reading `~/.nansen/.env`, read it in the same command
   (`source ~/.nansen/.env && nansen wallet secure`) — do not echo or log the value
-- **ALWAYS verify after migration** with `nansen wallet export default` — `wallet show` does NOT prove the password works (it never loads the password)
+- **ALWAYS verify after migration** with `nansen wallet export default --reveal > /dev/null 2>&1` (branch on the exit code; never let the output print) — `wallet show` does NOT prove the password works (it never loads the password)
