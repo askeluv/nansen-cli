@@ -6,3 +6,7 @@
 re-approving when it is more than 10x the current trade's scoped amount, such
 as a legacy unlimited approval or an allowance granted by another app. Most
 trades are unaffected. Opt out with `--no-revoke-excessive-allowance`.
+
+After each revoke or reapproval, the CLI reads the resulting allowance back
+on-chain and fails closed (instead of proceeding to the swap) if it doesn't
+match what was expected or can't be read.

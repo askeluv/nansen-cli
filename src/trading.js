@@ -803,20 +803,29 @@ export async function estimateEvmGas(chain, { from, to, data, value }) {
 }
 
 /**
+ * Read the current on-chain ERC-20 allowance, throwing on any RPC failure
+ * instead of masking it. checkErc20Allowance below wraps this with a
+ * catch-to-0 fallback for the pre-trade check (safe there, since a follow-up
+ * approve() overwrites whatever the prior value was); post-action
+ * verification needs the raw, fail-closed read instead.
+ */
+async function readErc20AllowanceOrThrow(chain, tokenAddress, ownerAddress, spenderAddress) {
+  if (!CHAIN_RPCS[chain]) throw new Error(`no RPC configured for chain ${chain}`);
+  // allowance(address,address) selector = 0xdd62ed3e
+  const data = '0xdd62ed3e'
+    + ownerAddress.slice(2).toLowerCase().padStart(64, '0')
+    + spenderAddress.slice(2).toLowerCase().padStart(64, '0');
+  const result = await evmRpcCall(chain, 'eth_call', [{ to: tokenAddress, data }, 'latest']);
+  return result ? BigInt(result) : 0n;
+}
+
+/**
  * Check ERC-20 allowance for a given owner/spender pair.
  * Returns the allowance as a BigInt, or 0n on failure.
  */
 export async function checkErc20Allowance(chain, tokenAddress, ownerAddress, spenderAddress) {
-  if (!CHAIN_RPCS[chain]) return 0n;
-
   try {
-    // allowance(address,address) selector = 0xdd62ed3e
-    const data = '0xdd62ed3e'
-      + ownerAddress.slice(2).toLowerCase().padStart(64, '0')
-      + spenderAddress.slice(2).toLowerCase().padStart(64, '0');
-    const result = await evmRpcCall(chain, 'eth_call', [{ to: tokenAddress, data }, 'latest']);
-    if (!result) return 0n;
-    return BigInt(result);
+    return await readErc20AllowanceOrThrow(chain, tokenAddress, ownerAddress, spenderAddress);
   } catch (err) {
     // Treat an unreadable allowance as 0 so the caller re-approves a fresh scoped
     // amount (a normal approve() overwrites any real on-chain allowance) rather
@@ -825,6 +834,38 @@ export async function checkErc20Allowance(chain, tokenAddress, ownerAddress, spe
     // revoke — isn't invisible.
     process.stderr.write(`⚠️  Could not read ERC-20 allowance on ${chain} (${err.message}); treating as 0.\n`);
     return 0n;
+  }
+}
+
+/**
+ * A successful receipt only proves the revoke/approval call didn't revert —
+ * not that approve() actually produced the allowance we expect (a
+ * non-standard token, a stale read, or a race with another approval could
+ * still leave the wrong value on-chain). Read the allowance back after each
+ * step and fail closed — including when it can't be read at all — rather
+ * than trusting receipt status alone.
+ */
+async function assertAllowanceRevoked(chain, tokenAddress, ownerAddress, spenderAddress) {
+  let allowance;
+  try {
+    allowance = await readErc20AllowanceOrThrow(chain, tokenAddress, ownerAddress, spenderAddress);
+  } catch (err) {
+    throw new Error(`could not verify the allowance was cleared (${err.message})`, { cause: err });
+  }
+  if (allowance !== 0n) {
+    throw new Error(`allowance is still ${allowance}, not 0`);
+  }
+}
+
+async function assertAllowanceAtLeast(chain, tokenAddress, ownerAddress, spenderAddress, minAmount) {
+  let allowance;
+  try {
+    allowance = await readErc20AllowanceOrThrow(chain, tokenAddress, ownerAddress, spenderAddress);
+  } catch (err) {
+    throw new Error(`could not verify the approval took effect (${err.message})`, { cause: err });
+  }
+  if (allowance < minAmount) {
+    throw new Error(`allowance is ${allowance}, below the ${minAmount} this trade requires`);
   }
 }
 
@@ -2158,6 +2199,7 @@ EXAMPLES:
                     try {
                       const receipt = await waitForReceipt(chain, revokeResult.txHash);
                       log(`  ✓ Allowance revoked in block ${parseInt(receipt.blockNumber, 16)}: ${revokeResult.txHash}`);
+                      await assertAllowanceRevoked(chain, currentQuote.inputMint, walletAddress, currentQuote.approvalAddress);
                     } catch (receiptErr) {
                       log(`  ❌ Allowance revoke may not have confirmed for ${quoteName}: ${receiptErr.message}`);
                       if (qi + 1 < endIndex) log(`  Trying next quote...`);
@@ -2208,6 +2250,7 @@ EXAMPLES:
                   try {
                     const receipt = await waitForReceipt(chain, approvalResult.txHash);
                     log(`  ✓ Approval confirmed in block ${parseInt(receipt.blockNumber, 16)}: ${approvalResult.txHash}`);
+                    await assertAllowanceAtLeast(chain, currentQuote.inputMint, walletAddress, currentQuote.approvalAddress, approveAmt);
                   } catch (receiptErr) {
                     log(`  ❌ Approval may not have confirmed${shouldRevoke ? ' after revoking the prior allowance (now 0)' : ''}: ${receiptErr.message}`);
                     if (qi + 1 < endIndex) log(`  Trying next quote...`);
@@ -2460,6 +2503,7 @@ EXAMPLES:
                       log(`  Waiting for allowance revoke confirmation...`);
                       const receipt = await waitForReceipt(chain, revokeTxHash);
                       log(`  ✓ Allowance revoked in block ${parseInt(receipt.blockNumber, 16)}: ${revokeTxHash}`);
+                      await assertAllowanceRevoked(chain, currentQuote.inputMint, wcAddress, currentQuote.approvalAddress);
                     } catch (revokeErr) {
                       log(`  ❌ Allowance revoke failed for ${quoteName}: ${revokeErr.message}`);
                       if (qi + 1 < endIndex) log(`  Trying next quote...`);
@@ -2503,6 +2547,7 @@ EXAMPLES:
                     log(`  Waiting for approval confirmation...`);
                     const receipt = await waitForReceipt(chain, approvalTxHash);
                     log(`  ✓ Approval confirmed in block ${parseInt(receipt.blockNumber, 16)}: ${approvalTxHash}`);
+                    await assertAllowanceAtLeast(chain, currentQuote.inputMint, wcAddress, currentQuote.approvalAddress, approveAmt);
                   } catch (approvalErr) {
                     const revokedMsg = shouldRevoke
                       ? ' after revoking the prior allowance (now 0)'
@@ -2742,6 +2787,7 @@ EXAMPLES:
                     try {
                       const receipt = await waitForReceipt(chain, revokeResult.txHash);
                       log(`  ✓ Allowance revoked in block ${parseInt(receipt.blockNumber, 16)}: ${revokeResult.txHash}`);
+                      await assertAllowanceRevoked(chain, currentQuote.inputMint, walletAddress, currentQuote.approvalAddress);
                     } catch (receiptErr) {
                       log(`  ❌ Allowance revoke may not have confirmed for ${quoteName}: ${receiptErr.message}`);
                       if (qi + 1 < endIndex) log(`  Trying next quote...`);
@@ -2785,6 +2831,7 @@ EXAMPLES:
                   try {
                     const receipt = await waitForReceipt(chain, approvalResult.txHash);
                     log(`  ✓ Approval confirmed in block ${parseInt(receipt.blockNumber, 16)}: ${approvalResult.txHash}`);
+                    await assertAllowanceAtLeast(chain, currentQuote.inputMint, walletAddress, currentQuote.approvalAddress, approveAmt);
                   } catch (receiptErr) {
                     log(`  ❌ Approval may not have confirmed${shouldRevoke ? ' after revoking the prior allowance (now 0)' : ''}: ${receiptErr.message}`);
                     if (qi + 1 < endIndex) log(`  Trying next quote...`);

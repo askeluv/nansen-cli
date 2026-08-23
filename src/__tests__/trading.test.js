@@ -1475,6 +1475,9 @@ describe('Privy execute support', () => {
     });
 
     const rpcCalls = [];
+    // Post-approval allowance verification re-reads eth_call, so track the
+    // simulated on-chain value: 0 until the approval broadcasts successfully.
+    let currentAllowance = 0n;
     vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       // Privy getWallet
@@ -1501,9 +1504,9 @@ describe('Privy execute support', () => {
         if (body.method === 'eth_getCode') {
           return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
         }
-        // eth_call for allowance check — return 0 (needs approval)
+        // eth_call for allowance check
         if (body.method === 'eth_call') {
-          return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x0000000000000000000000000000000000000000000000000000000000000000' })) });
+          return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' + currentAllowance.toString(16).padStart(64, '0') })) });
         }
         // eth_getTransactionReceipt (for waitForReceipt)
         if (body.method === 'eth_getTransactionReceipt') {
@@ -1513,6 +1516,7 @@ describe('Privy execute support', () => {
       }
       // Trading API executeTransaction
       if (urlStr.includes('trading-api')) {
+        currentAllowance = 1000000n; // the approval that was just broadcast lands on-chain
         return Promise.resolve({
           ok: true,
           text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: '0xApprovalHash', chainType: 'evm', broadcaster: 'test' })),
@@ -1649,11 +1653,15 @@ describe('Privy execute support', () => {
     // Privy signs the revoke (1st POST) but returns an empty response for the
     // approval (2nd POST) — the allowance has already been zeroed on-chain.
     let privyPostCount = 0;
+    let currentAllowance = 2000000n; // Oversized existing allowance (2 USDC) → triggers revoke-then-reapprove
     const executeBodies = [];
     vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
         executeBodies.push(JSON.parse(opts.body));
+        // The broadcast revoke lands on-chain, so the post-revoke allowance
+        // verification reads back 0.
+        currentAllowance = 0n;
         return Promise.resolve({
           ok: true,
           text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: '0xRevokeHash', chainType: 'evm', broadcaster: 'test' })),
@@ -1676,8 +1684,7 @@ describe('Privy execute support', () => {
           return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
         }
         if (body.method === 'eth_call') {
-          // Oversized existing allowance (2 USDC) → triggers revoke-then-reapprove
-          return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' + (2000000n).toString(16).padStart(64, '0') })) });
+          return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' + currentAllowance.toString(16).padStart(64, '0') })) });
         }
         if (body.method === 'eth_getTransactionCount') {
           return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
@@ -3482,6 +3489,10 @@ describe('ERC-20 excessive allowance handling', () => {
   function mockLocalEvmExecute({ allowance, executeResponses }) {
     const executeBodies = [];
     const sequence = [];
+    // Post-action allowance verification re-reads eth_call, so track the
+    // simulated on-chain value and update it when a broadcast approve()
+    // (revoke-to-zero or scoped reapproval) actually lands.
+    let currentAllowance = BigInt(allowance);
     vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       const body = opts?.body ? JSON.parse(opts.body) : {};
@@ -3490,6 +3501,11 @@ describe('ERC-20 excessive allowance handling', () => {
         const response = executeResponses[executeBodies.length] ?? executeResponses.at(-1);
         executeBodies.push(body);
         sequence.push({ type: 'execute', txHash: response.txHash, signedTransaction: body.signedTransaction });
+        const selectorIdx = body.signedTransaction?.indexOf(approveSelector);
+        if (response.status === 'Success' && selectorIdx >= 0) {
+          const amountStart = selectorIdx + approveSelector.length + 64;
+          currentAllowance = BigInt('0x' + body.signedTransaction.slice(amountStart, amountStart + 64));
+        }
         return Promise.resolve({
           ok: true,
           text: () => Promise.resolve(JSON.stringify(response)),
@@ -3509,13 +3525,13 @@ describe('ERC-20 excessive allowance handling', () => {
       }
       if (body.method === 'eth_call') {
         const data = body.params?.[0]?.data || '';
-        const result = data.startsWith('0xdd62ed3e') ? hexResult(allowance) : '0x';
+        const result = data.startsWith('0xdd62ed3e') ? hexResult(currentAllowance) : '0x';
         return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result })) });
       }
 
       return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
     }));
-    return { executeBodies, sequence };
+    return { executeBodies, sequence, setAllowance: (v) => { currentAllowance = BigInt(v); } };
   }
 
   afterEach(() => {
@@ -3581,6 +3597,97 @@ describe('ERC-20 excessive allowance handling', () => {
     expect(executeBodies[0].signedTransaction).toContain(amountWord(0n));
     expect(executeBodies[1].signedTransaction).toContain(amountWord(100000n));
     expect(logs.some(l => l.includes('Approval failed for #1 after revoking the prior allowance (now 0)'))).toBe(true);
+  });
+
+  it('fails closed when a revoke receipt succeeds but the allowance does not actually clear', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    const walletAddress = showWallet('default').evm;
+    const quoteId = saveLocalErc20Quote(walletAddress);
+    const executeBodies = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const body = opts?.body ? JSON.parse(opts.body) : {};
+      if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
+        executeBodies.push(body);
+        return Promise.resolve({
+          ok: true,
+          text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: '0xRevokeHash', chainType: 'evm', broadcaster: 'test' })),
+        });
+      }
+      if (body.method === 'eth_getCode') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      }
+      if (body.method === 'eth_getTransactionCount') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+      }
+      if (body.method === 'eth_getTransactionReceipt') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { status: '0x1', blockNumber: '0x100' } })) });
+      }
+      if (body.method === 'eth_call') {
+        // The revoke's receipt reports success, but the allowance never actually
+        // clears on-chain (e.g. a broadcaster that confirmed the wrong tx).
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: hexResult(2000000n) })) });
+      }
+      return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    await expect(cmds.execute([], null, { 'no-simulate': true }, { quote: quoteId })).rejects.toThrow(/All quotes failed/i);
+
+    // Only the revoke was broadcast; the reapproval and swap never ran.
+    expect(executeBodies).toHaveLength(1);
+    expect(logs.some(l => l.includes('Allowance revoke may not have confirmed for #1: allowance is still 2000000, not 0'))).toBe(true);
+  });
+
+  it('fails closed when a reapproval receipt succeeds but the allowance does not actually increase', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    const walletAddress = showWallet('default').evm;
+    const quoteId = saveLocalErc20Quote(walletAddress);
+    const executeBodies = [];
+    let executeCount = 0;
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const body = opts?.body ? JSON.parse(opts.body) : {};
+      if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
+        executeBodies.push(body);
+        executeCount++;
+        return Promise.resolve({
+          ok: true,
+          text: () => Promise.resolve(JSON.stringify({
+            status: 'Success',
+            txHash: executeCount === 1 ? '0xRevokeHash' : '0xApprovalHash',
+            chainType: 'evm',
+            broadcaster: 'test',
+          })),
+        });
+      }
+      if (body.method === 'eth_getCode') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      }
+      if (body.method === 'eth_getTransactionCount') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+      }
+      if (body.method === 'eth_getTransactionReceipt') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { status: '0x1', blockNumber: '0x100' } })) });
+      }
+      if (body.method === 'eth_call') {
+        // Revoke actually clears the allowance, but the reapproval's receipt
+        // reports success without the allowance ever increasing.
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: hexResult(executeCount === 0 ? 2000000n : 0n) })) });
+      }
+      return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    await expect(cmds.execute([], null, { 'no-simulate': true }, { quote: quoteId })).rejects.toThrow(/All quotes failed/i);
+
+    // Both the revoke and the reapproval were broadcast; the swap never ran.
+    expect(executeBodies).toHaveLength(2);
+    expect(logs.some(l => l.includes('Approval may not have confirmed after revoking the prior allowance (now 0): allowance is 0, below the 100000 this trade requires'))).toBe(true);
   });
 
   it('reuses a sufficient allowance below the excessive threshold without approval transactions', async () => {
@@ -3662,18 +3769,19 @@ describe('ERC-20 excessive allowance handling', () => {
   it('fails closed when WalletConnect approval returns no confirmable transaction after a revoke', async () => {
     const wcAddress = '0x742d35Cc6bF4F3f4e0e3a8DD7e37ff4e4Be4E4B4';
     vi.spyOn(wcTrading, 'getWalletConnectAddress').mockResolvedValue(wcAddress);
-    // Revoke confirms (returns a tx hash); the reapproval returns nothing.
-    const approvalSpy = vi.spyOn(wcTrading, 'sendApprovalViaWalletConnect')
-      .mockResolvedValueOnce({ txHash: '0xRevokeHash' })
-      .mockResolvedValueOnce({});
-    const sendSpy = vi.spyOn(wcTrading, 'sendTransactionViaWalletConnect').mockResolvedValue({ txHash: '0xshouldnothappen' });
     const quoteId = saveWalletConnectErc20Quote(wcAddress);
-    const { executeBodies } = mockLocalEvmExecute({
+    const { executeBodies, setAllowance } = mockLocalEvmExecute({
       allowance: 2000000n,
       executeResponses: [
         { status: 'Success', txHash: '0xshouldnothappen', chainType: 'evm', broadcaster: 'test' },
       ],
     });
+    // Revoke confirms (returns a tx hash, simulating the allowance clearing
+    // on-chain); the reapproval returns nothing.
+    const approvalSpy = vi.spyOn(wcTrading, 'sendApprovalViaWalletConnect')
+      .mockImplementationOnce(async () => { setAllowance(0n); return { txHash: '0xRevokeHash' }; })
+      .mockResolvedValueOnce({});
+    const sendSpy = vi.spyOn(wcTrading, 'sendTransactionViaWalletConnect').mockResolvedValue({ txHash: '0xshouldnothappen' });
 
     const logs = [];
     const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
