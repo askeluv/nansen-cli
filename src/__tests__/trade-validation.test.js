@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { validateQuoteInput, fetchNativeBalance, fetchTokenBalance, validateBalance, resolvePercentAmount, validateGasBalance, GASLESS_MIN_TRADE_USD, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertInputWithinMax, assertSwapCalldataNotBareTransfer, assertSwapOutcome, assertSolanaInstructionsSafe, MAX_UINT256, needsAllowanceRevoke } from '../trade-validation.js';
+import { validateQuoteInput, fetchNativeBalance, fetchTokenBalance, validateBalance, resolvePercentAmount, validateGasBalance, GASLESS_MIN_TRADE_USD, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertInputWithinMax, assertSwapCalldataNotBareTransfer, assertSwapOutcome, assertSolanaInstructionsSafe, assertSolanaSwapOutcome, MAX_UINT256, needsAllowanceRevoke } from '../trade-validation.js';
+import { SOL_SENTINEL } from '../solana-simulation.js';
 import { base58Decode, generateSolanaWallet } from '../wallet.js';
 
 describe('validateQuoteInput', () => {
@@ -1657,6 +1658,95 @@ describe('assertSwapOutcome', () => {
   it('fails closed on a corrupt (non-integer) simulated delta', () => {
     const sim = { deltas: { [USDC]: 'not-a-number' }, approvals: [] };
     expect(() => assertSwapOutcome(exactInRequest, exactInQuote, sim, {})).toThrow(/SWAP_OUTCOME_MISMATCH/i);
+  });
+});
+
+describe('assertSolanaSwapOutcome', () => {
+  const SOL_USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+  const SOL_USDT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
+
+  // exactIn: sell 1,000,000 SPL_A for SPL_B, quoted 1,000,000 out, 3% slippage.
+  const splInRequest = {
+    chain: 'solana', walletAddress: 'Wallet1111111111111111111111111111111111',
+    fromToken: SOL_USDC, toToken: SOL_USDT, swapMode: 'exactIn', amount: '1000000', maxInputAmount: '1000000',
+  };
+  const splInQuote = { inputMint: SOL_USDC, outputMint: SOL_USDT, inAmount: '1000000', outAmount: '1000000' };
+
+  it('passes a benign SPL-in swap within cap and above min output', () => {
+    const sim = { deltas: { [SOL_USDC]: -1000000n, [SOL_USDT]: 1000000n } };
+    expect(() => assertSolanaSwapOutcome(splInRequest, splInQuote, sim, { slippage: 0.03 })).not.toThrow();
+  });
+
+  it('rejects an SPL input outflow exceeding maxInputAmount (assertion 1)', () => {
+    const sim = { deltas: { [SOL_USDC]: -1000001n, [SOL_USDT]: 1000000n } };
+    expect(() => assertSolanaSwapOutcome(splInRequest, splInQuote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*maximum input/i);
+  });
+
+  it('rejects an output below the minimum acceptable (assertion 2)', () => {
+    const sim = { deltas: { [SOL_USDC]: -1000000n, [SOL_USDT]: 900000n } }; // below 970,000 floor
+    expect(() => assertSolanaSwapOutcome(splInRequest, splInQuote, sim, { slippage: 0.03 }))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*minimum acceptable output/i);
+  });
+
+  it('rejects a non-positive output', () => {
+    const sim = { deltas: { [SOL_USDC]: -1000000n, [SOL_USDT]: 0n } };
+    expect(() => assertSolanaSwapOutcome(splInRequest, splInQuote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*minimum acceptable output/i);
+  });
+
+  it('rejects a sibling SPL-token drain (assertion 3, zero tolerance)', () => {
+    const otherMint = 'Other11111111111111111111111111111111111';
+    const sim = { deltas: { [SOL_USDC]: -1000000n, [SOL_USDT]: 1000000n, [otherMint]: -1n } };
+    expect(() => assertSolanaSwapOutcome(splInRequest, splInQuote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*other than the one you are selling/i);
+  });
+
+  it('tolerates native-SOL fee/rent dust as a sibling on an SPL-in swap', () => {
+    // Fee + one transient ATA's rent, well under NATIVE_SIBLING_DUST_LAMPORTS.
+    const sim = { deltas: { [SOL_USDC]: -1000000n, [SOL_USDT]: 1000000n, [SOL_SENTINEL]: -2_000_000n } };
+    expect(() => assertSolanaSwapOutcome(splInRequest, splInQuote, sim, {})).not.toThrow();
+  });
+
+  it('rejects a native-SOL sibling drain beyond the dust tolerance', () => {
+    const sim = { deltas: { [SOL_USDC]: -1000000n, [SOL_USDT]: 1000000n, [SOL_SENTINEL]: -10_000_000n } };
+    expect(() => assertSolanaSwapOutcome(splInRequest, splInQuote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*other than the one you are selling/i);
+  });
+
+  it('allows a custom siblingDustThreshold to override the native default', () => {
+    const sim = { deltas: { [SOL_USDC]: -1000000n, [SOL_USDT]: 1000000n, [SOL_SENTINEL]: -10_000_000n } };
+    expect(() => assertSolanaSwapOutcome(splInRequest, splInQuote, sim, { siblingDustThreshold: 20_000_000n })).not.toThrow();
+  });
+
+  it('is metadata-bound (not tightly bounded) on native-SOL input, tolerating fee/rent noise', () => {
+    const nativeInRequest = {
+      chain: 'solana', walletAddress: 'Wallet1111111111111111111111111111111111',
+      fromToken: SOL_SENTINEL, toToken: SOL_USDC, swapMode: 'exactIn', amount: '1000000000', maxInputAmount: '1000000000',
+    };
+    const nativeInQuote = { inputMint: SOL_SENTINEL, outputMint: SOL_USDC, inAmount: '1000000000', outAmount: '50000000' };
+    // Native delta is the input PLUS fee/rent noise — no tight ceiling applies.
+    const sim = { deltas: { [SOL_SENTINEL]: -1_005_123n * 1000n, [SOL_USDC]: 50_000_000n } };
+    expect(() => assertSolanaSwapOutcome(nativeInRequest, nativeInQuote, sim, { slippage: 0.03 })).not.toThrow();
+  });
+
+  it('fails closed when input and output tokens are the same', () => {
+    const req = { ...splInRequest, toToken: SOL_USDC };
+    const quote = { inputMint: SOL_USDC, outputMint: SOL_USDC, inAmount: '1000000', outAmount: '1000000' };
+    const sim = { deltas: { [SOL_USDC]: -1000000n } };
+    expect(() => assertSolanaSwapOutcome(req, quote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*input and output tokens are the same/i);
+  });
+
+  it('fails closed with no request intent', () => {
+    const sim = { deltas: { [SOL_USDC]: -1000000n, [SOL_USDT]: 1000000n } };
+    expect(() => assertSolanaSwapOutcome(null, splInQuote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*no request intent/i);
+  });
+
+  it('fails closed on a corrupt (non-integer) simulated delta', () => {
+    const sim = { deltas: { [SOL_USDC]: 'not-a-number' } };
+    expect(() => assertSolanaSwapOutcome(splInRequest, splInQuote, sim, {})).toThrow(/SWAP_OUTCOME_MISMATCH/i);
   });
 });
 
