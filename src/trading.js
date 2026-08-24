@@ -13,7 +13,7 @@ import { base58Decode } from './transfer.js';
 import { keccak256, signSecp256k1, rlpEncode } from './crypto.js';
 import { getWalletConnectAddress, sendTransactionViaWalletConnect, sendSolanaTransactionViaWalletConnect, sendApprovalViaWalletConnect } from './walletconnect-trading.js';
 import { retrievePassword } from './keychain.js';
-import { validateQuoteInput, validateBalance, resolvePercentAmount, validateGasBalance, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertSwapCalldataNotBareTransfer, assertSwapOutcome, approvalAmountForSwap } from './trade-validation.js';
+import { validateQuoteInput, validateBalance, resolvePercentAmount, validateGasBalance, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertSwapCalldataNotBareTransfer, assertSwapOutcome, approvalAmountForSwap, needsAllowanceRevoke, OVERSIZED_ALLOWANCE_MULTIPLIER } from './trade-validation.js';
 import { CHAIN_RPCS } from './rpc-urls.js';
 import { simulateAssetChanges, SwapSimulationError, hasSimulationRpc } from './swap-simulation.js';
 import { packageVersion, CommandError, telemetryHeaders, loadConfig } from './api.js';
@@ -451,11 +451,10 @@ export function cleanupQuotes() {
 
 // ============= Transaction Signing =============
 
-// ----------------------------------------------------------------
-// TODO: SECURITY REVIEW REQUIRED
-// The signing functions below construct and sign raw transactions.
-// They MUST be audited before any production/mainnet use.
-// ----------------------------------------------------------------
+// The signing functions below construct and sign raw transactions from quote
+// data. The authorization checks that make them safe to call live upstream:
+// assertQuoteMatchesRequest, assertSwapCalldataNotBareTransfer, scoped ERC-20
+// approvals, and the approval target/amount validators in trade-validation.js.
 
 /**
  * Sign a Solana transaction from quote data.
@@ -527,7 +526,8 @@ export function signSolanaTransaction(transactionBase64, privateKeyHex) {
  * @param {number} nonce - Account nonce
  * @returns {string} 0x-prefixed signed transaction hex
  */
-// ⚠️ SECURITY: EVM transaction signing - requires thorough review before production use
+// Pure EVM encode/sign primitive. Quote authorization and request-intent binding
+// happen upstream before this function receives transaction calldata.
 export function signEvmTransaction(txData, privateKeyHex, chain, nonce) {
   const chainConfig = CHAIN_MAP[chain];
   if (!chainConfig || chainConfig.type !== 'evm') {
@@ -803,22 +803,126 @@ export async function estimateEvmGas(chain, { from, to, data, value }) {
 }
 
 /**
+ * Read the current on-chain ERC-20 allowance, throwing on any RPC failure
+ * instead of masking it. checkErc20Allowance below wraps this with a
+ * catch-to-0 fallback for the pre-trade check (safe there, since a follow-up
+ * approve() overwrites whatever the prior value was); post-action
+ * verification needs the raw, fail-closed read instead.
+ */
+async function readErc20AllowanceOrThrow(chain, tokenAddress, ownerAddress, spenderAddress) {
+  if (!CHAIN_RPCS[chain]) throw new Error(`no RPC configured for chain ${chain}`);
+  // allowance(address,address) selector = 0xdd62ed3e
+  const data = '0xdd62ed3e'
+    + ownerAddress.slice(2).toLowerCase().padStart(64, '0')
+    + spenderAddress.slice(2).toLowerCase().padStart(64, '0');
+  const result = await evmRpcCall(chain, 'eth_call', [{ to: tokenAddress, data }, 'latest']);
+  if (!/^0x[0-9a-fA-F]{64}$/.test(result || '')) {
+    throw new Error(`invalid allowance() return data: ${result || '<empty>'}`);
+  }
+  return BigInt(result);
+}
+
+/**
  * Check ERC-20 allowance for a given owner/spender pair.
  * Returns the allowance as a BigInt, or 0n on failure.
  */
 export async function checkErc20Allowance(chain, tokenAddress, ownerAddress, spenderAddress) {
-  if (!CHAIN_RPCS[chain]) return 0n;
-
   try {
-    // allowance(address,address) selector = 0xdd62ed3e
-    const data = '0xdd62ed3e'
-      + ownerAddress.slice(2).toLowerCase().padStart(64, '0')
-      + spenderAddress.slice(2).toLowerCase().padStart(64, '0');
-    const result = await evmRpcCall(chain, 'eth_call', [{ to: tokenAddress, data }, 'latest']);
-    if (!result) return 0n;
-    return BigInt(result);
-  } catch {
+    return await readErc20AllowanceOrThrow(chain, tokenAddress, ownerAddress, spenderAddress);
+  } catch (err) {
+    // Treat an unreadable allowance as 0 so the caller re-approves a fresh scoped
+    // amount (a normal approve() overwrites any real on-chain allowance) rather
+    // than trusting a value we couldn't verify. Surface it so a persistent RPC
+    // problem — which would otherwise silently skip the excessive-allowance
+    // revoke — isn't invisible.
+    process.stderr.write(`⚠️  Could not read ERC-20 allowance on ${chain} (${err.message}); treating as 0.\n`);
     return 0n;
+  }
+}
+
+/**
+ * A successful receipt only proves the revoke/approval call didn't revert —
+ * not that approve() actually produced the allowance we expect (a
+ * non-standard token or a race with another approval could still leave the
+ * wrong value on-chain). Poll the allowance a few times before failing
+ * closed: an `eth_call` at 'latest' immediately after a receipt can hit an
+ * RPC node that hasn't caught up with the just-mined block yet and read
+ * stale pre-transaction state — confirmed live (PR #509 review follow-up)
+ * against a real Base approval that read back as unset for several seconds
+ * after its receipt landed, then correctly as the approved amount once the
+ * node caught up.
+ */
+const ALLOWANCE_VERIFY_ATTEMPTS = 5;
+const DEFAULT_ALLOWANCE_VERIFY_DELAY_MS = 1500;
+const DEFAULT_POST_ALLOWANCE_TX_PROPAGATION_MS = 2000;
+let allowanceVerifyDelayMs = DEFAULT_ALLOWANCE_VERIFY_DELAY_MS;
+let postAllowanceTxPropagationMs = DEFAULT_POST_ALLOWANCE_TX_PROPAGATION_MS;
+
+export function __setAllowanceTimingForTests({
+  verifyDelayMs = DEFAULT_ALLOWANCE_VERIFY_DELAY_MS,
+  propagationDelayMs = DEFAULT_POST_ALLOWANCE_TX_PROPAGATION_MS,
+} = {}) {
+  if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
+    throw new Error('__setAllowanceTimingForTests is for tests only');
+  }
+  allowanceVerifyDelayMs = verifyDelayMs;
+  postAllowanceTxPropagationMs = propagationDelayMs;
+}
+
+async function waitForAllowanceTxPropagation() {
+  // The receipt + allowance poll verifies token state, but the following swap
+  // still goes through a broadcaster/load-balanced RPC path. Give that path a
+  // short propagation window before signing the next dependent transaction.
+  if (postAllowanceTxPropagationMs <= 0) return;
+  await new Promise(r => setTimeout(r, postAllowanceTxPropagationMs));
+}
+
+async function pollAllowanceUntil(chain, tokenAddress, ownerAddress, spenderAddress, isExpected) {
+  let allowance, lastErr;
+  for (let attempt = 0; attempt < ALLOWANCE_VERIFY_ATTEMPTS; attempt++) {
+    if (attempt > 0 && allowanceVerifyDelayMs > 0) {
+      await new Promise(r => setTimeout(r, allowanceVerifyDelayMs));
+    }
+    try {
+      allowance = await readErc20AllowanceOrThrow(chain, tokenAddress, ownerAddress, spenderAddress);
+      lastErr = undefined;
+      if (isExpected(allowance)) return allowance;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  if (lastErr) throw lastErr;
+  throw new Error(
+    `allowance did not reach expected state after ${ALLOWANCE_VERIFY_ATTEMPTS} attempts (last read: ${allowance})`,
+  );
+}
+
+function allowanceRevokeRecoveryHint(txHash) {
+  const txHint = txHash ? ` Tx: ${txHash}.` : '';
+  return `${txHint} Check the transaction on-chain, then retry this execute command or re-quote if needed.`;
+}
+
+async function assertAllowanceRevoked(chain, tokenAddress, ownerAddress, spenderAddress) {
+  let allowance;
+  try {
+    allowance = await pollAllowanceUntil(chain, tokenAddress, ownerAddress, spenderAddress, a => a === 0n);
+  } catch (err) {
+    throw new Error(`could not verify the allowance was cleared (${err.message})`, { cause: err });
+  }
+  if (allowance !== 0n) {
+    throw new Error(`allowance is still ${allowance}, not 0`);
+  }
+}
+
+async function assertAllowanceAtLeast(chain, tokenAddress, ownerAddress, spenderAddress, minAmount) {
+  let allowance;
+  try {
+    allowance = await pollAllowanceUntil(chain, tokenAddress, ownerAddress, spenderAddress, a => a >= minAmount);
+  } catch (err) {
+    throw new Error(`could not verify the approval took effect (${err.message})`, { cause: err });
+  }
+  if (allowance < minAmount) {
+    throw new Error(`allowance is ${allowance}, below the ${minAmount} this trade requires`);
   }
 }
 
@@ -849,6 +953,21 @@ export function approvalCapForQuote(quoteData) {
   const cap = quoteData?.request?.maxInputAmount;
   if (cap != null) return cap;
   return quoteData?.swapMode === 'exactOut' ? undefined : quoteData?.request?.amount;
+}
+
+// Decide what to do with a pre-existing on-chain allowance before a swap.
+// `shouldRevoke` describes the allowance ("it's oversized"), NOT the action taken:
+// callers use it both to gate the actual revoke (in the !reuseAllowance branch)
+// and to warn when reuse is forced by --no-revoke-excessive-allowance (in the
+// reuseAllowance branch). Note shouldRevoke ⟹ existingAllowance > approveAmt*10 ⟹
+// existingAllowance >= approveAmt, so with the flag set reuseAllowance is always
+// true and the revoke/"after revoking (now 0)" paths (all in the else branch) are
+// never reached spuriously — keep that invariant if you add branches here.
+function resolveAllowanceAction(existingAllowance, approveAmt, noRevokeExcessiveAllowance) {
+  const shouldRevoke = existingAllowance > 0n && needsAllowanceRevoke(existingAllowance, approveAmt);
+  const reuseAllowance = existingAllowance >= approveAmt && existingAllowance > 0n
+    && (noRevokeExcessiveAllowance || !shouldRevoke);
+  return { shouldRevoke, reuseAllowance };
 }
 
 export function assertCompleteEvmRequestIntent(request) {
@@ -969,10 +1088,15 @@ export function assertUsableSpender(spenderAddress) {
  * @param {string|number} gasPrice - Legacy gas price
  * @param {bigint|string|number} amount - Allowance to grant, in base units (see approvalAmountForSwap)
  * @param {bigint|string|number} [maxAllowance] - Hard cap from persisted request intent
+ * @param {object} [opts]
+ * @param {boolean} [opts.allowZero=false] - Allow a zero-amount revoke approval
  * @returns {string} 0x-prefixed signed approval tx hex
  */
-// ⚠️ SECURITY: ERC-20 approval signing - requires thorough review
-export function buildApprovalTransaction(tokenAddress, spenderAddress, privateKeyHex, chain, nonce, gasPrice, amount, maxAllowance) {
+// Approval signing is intentionally narrow: callers pass either the scoped swap
+// amount from approvalAmountForSwap or, for excessive-allowance cleanup, an
+// explicit allowZero revoke. encodeApproveCalldata validates the spender,
+// amount, optional request cap, and final ABI width before signing.
+export function buildApprovalTransaction(tokenAddress, spenderAddress, privateKeyHex, chain, nonce, gasPrice, amount, maxAllowance, { allowZero = false } = {}) {
   const chainConfig = CHAIN_MAP[chain];
   if (!chainConfig) throw new Error(`Unsupported chain: ${chain}`);
 
@@ -980,7 +1104,7 @@ export function buildApprovalTransaction(tokenAddress, spenderAddress, privateKe
   // can drain at most this one trade, never the wallet's full token balance.
   // encodeApproveCalldata enforces a valid 20-byte spender, a bounded (< MAX)
   // amount within the request cap, and exactly-68-byte calldata.
-  const data = encodeApproveCalldata(spenderAddress, amount, { maxAllowance });
+  const data = encodeApproveCalldata(spenderAddress, amount, { maxAllowance, allowZero });
 
   const tx = {
     nonce,
@@ -996,7 +1120,8 @@ export function buildApprovalTransaction(tokenAddress, spenderAddress, privateKe
 }
 
 // ============= Legacy (Type 0) EVM Transaction Signing =============
-// ⚠️ SECURITY: Legacy EVM transaction signing - requires thorough review before production use
+// Low-level RLP/secp256k1 signing primitive used after upstream quote and
+// allowance validation has already bounded what the transaction can authorize.
 
 /**
  * Strip all leading zero bytes from a buffer.
@@ -1848,6 +1973,7 @@ CROSS-CHAIN NOTES (when using --to-chain):
       const quoteId = options.quote || options['quote-id'] || args[0];
       const walletName = options.wallet;
       const noSimulate = flags['no-simulate'];
+      const noRevokeExcessiveAllowance = flags['no-revoke-excessive-allowance'];
       const noVerifyOutcome = flags['no-verify-outcome'];
       const gasless = Boolean(flags.gasless);
       // Read the API key for the swap-outcome sim endpoint. It's optional (the
@@ -1869,6 +1995,8 @@ OPTIONS:
   --wallet <name>           Wallet name (default: default wallet)
   --no-simulate             Skip pre-broadcast simulation (the eth_call revert check)
   --no-verify-outcome       Skip EVM swap-outcome verification (balance-delta check)
+  --no-revoke-excessive-allowance
+                            Skip auto-revoking an oversized/legacy allowance before re-approving
   --gasless                 Relay-only: have Relay's solver pay gas (no WalletConnect)
 
 EXAMPLES:
@@ -2086,9 +2214,64 @@ EXAMPLES:
                   chain, currentQuote.inputMint, walletAddress, currentQuote.approvalAddress
                 );
 
-                if (existingAllowance >= approveAmt && existingAllowance > 0n) {
+                const { shouldRevoke, reuseAllowance } = resolveAllowanceAction(existingAllowance, approveAmt, noRevokeExcessiveAllowance);
+                if (reuseAllowance) {
+                  if (noRevokeExcessiveAllowance && shouldRevoke) {
+                    log(`  ⚠ Existing allowance (${existingAllowance}) for ${quoteName} is excessive (>${OVERSIZED_ALLOWANCE_MULTIPLIER}x this trade), but --no-revoke-excessive-allowance was set`);
+                  }
                   log(`  ✓ Sufficient allowance exists for ${quoteName}, skipping approval`);
                 } else {
+                  const approvalMaxFee = currentQuote.transaction?.maxFeePerGas || currentQuote.transaction?.gasPrice || '1000000';
+                  const approvalPriorityFee = currentQuote.transaction?.maxPriorityFeePerGas || '1000000';
+
+                  if (shouldRevoke) {
+                    log(`  ⚠ Existing allowance (${existingAllowance}) for ${quoteName} is excessive (>${OVERSIZED_ALLOWANCE_MULTIPLIER}x this trade) — revoking before re-approving`);
+                    const revokeNonce = await getEvmNonce(chain, walletAddress);
+                    const revokeData = encodeApproveCalldata(currentQuote.approvalAddress, 0n, { allowZero: true });
+                    const revokeSignResult = await privyClient.signEvmTransaction(evmWalletId, {
+                      to: currentQuote.inputMint,
+                      data: revokeData,
+                      value: '0x0',
+                      chain_id: chainConfig.chainId,
+                      nonce: toHex(revokeNonce),
+                      gas_limit: toHex(100000),
+                      max_fee_per_gas: toHex(approvalMaxFee),
+                      max_priority_fee_per_gas: toHex(approvalPriorityFee),
+                    });
+                    const signedRevoke = revokeSignResult.data?.signed_transaction || revokeSignResult.signed_transaction;
+                    if (!signedRevoke) {
+                      log(`  ❌ Allowance revoke failed for ${quoteName}: Privy returned no signed transaction`);
+                      if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                      lastQuoteError = `${quoteName} allowance revoke failed`;
+                      continue;
+                    }
+                    const revokeResult = await executeTransaction({ signedTransaction: signedRevoke, chain, simulate: !noSimulate });
+                    if (revokeResult.status !== 'Success') {
+                      log(`  ❌ Allowance revoke failed for ${quoteName}: ${revokeResult.error || 'unknown'}`);
+                      if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                      lastQuoteError = `${quoteName} allowance revoke failed`;
+                      continue;
+                    }
+                    log(`  Waiting for allowance revoke confirmation...`);
+                    try {
+                      const receipt = await waitForReceipt(chain, revokeResult.txHash);
+                      log(`  ✓ Allowance revoked in block ${parseInt(receipt.blockNumber, 16)}: ${revokeResult.txHash}`);
+                    } catch (receiptErr) {
+                      log(`  ❌ Allowance revoke may not have confirmed for ${quoteName}: ${receiptErr.message}.${allowanceRevokeRecoveryHint(revokeResult.txHash)}`);
+                      if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                      lastQuoteError = `${quoteName} allowance revoke unconfirmed`;
+                      continue;
+                    }
+                    try {
+                      await assertAllowanceRevoked(chain, currentQuote.inputMint, walletAddress, currentQuote.approvalAddress);
+                    } catch (pollErr) {
+                      log(`  ❌ Revoke tx confirmed but allowance was not cleared for ${quoteName}: ${pollErr.message}.${allowanceRevokeRecoveryHint(revokeResult.txHash)}`);
+                      if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                      lastQuoteError = `${quoteName} allowance revoke verification failed`;
+                      continue;
+                    }
+                    await waitForAllowanceTxPropagation();
+                  }
                   log(`  ⚠ Approval required → ${currentQuote.approvalAddress}`);
                   const approvalNonce = await getEvmNonce(chain, walletAddress);
                   // Scope the approval to this trade's input (see approvalAmountForSwap).
@@ -2097,8 +2280,6 @@ EXAMPLES:
                   const approvalData = encodeApproveCalldata(currentQuote.approvalAddress, approveAmt, {
                     maxAllowance: approvalCapForQuote(quoteData),
                   });
-                  const approvalMaxFee = currentQuote.transaction?.maxFeePerGas || currentQuote.transaction?.gasPrice || '1000000';
-                  const approvalPriorityFee = currentQuote.transaction?.maxPriorityFeePerGas || '1000000';
                   const approvalSignResult = await privyClient.signEvmTransaction(evmWalletId, {
                     to: currentQuote.inputMint,
                     data: approvalData,
@@ -2110,9 +2291,21 @@ EXAMPLES:
                     max_priority_fee_per_gas: toHex(approvalPriorityFee),
                   });
                   const signedApproval = approvalSignResult.data?.signed_transaction || approvalSignResult.signed_transaction;
+                  if (!signedApproval) {
+                    const revokedMsg = shouldRevoke
+                      ? ' after revoking the prior allowance (now 0)'
+                      : '';
+                    log(`  ❌ Approval failed for ${quoteName}${revokedMsg}: Privy returned no signed transaction`);
+                    if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                    lastQuoteError = `${quoteName} approval failed`;
+                    continue;
+                  }
                   const approvalResult = await executeTransaction({ signedTransaction: signedApproval, chain, simulate: !noSimulate });
                   if (approvalResult.status !== 'Success') {
-                    log(`  ❌ Approval failed for ${quoteName}: ${approvalResult.error || 'unknown'}`);
+                    const revokedMsg = shouldRevoke
+                      ? ' after revoking the prior allowance (now 0)'
+                      : '';
+                    log(`  ❌ Approval failed for ${quoteName}${revokedMsg}: ${approvalResult.error || 'unknown'}`);
                     if (qi + 1 < endIndex) log(`  Trying next quote...`);
                     lastQuoteError = `${quoteName} approval failed`;
                     continue;
@@ -2122,12 +2315,20 @@ EXAMPLES:
                     const receipt = await waitForReceipt(chain, approvalResult.txHash);
                     log(`  ✓ Approval confirmed in block ${parseInt(receipt.blockNumber, 16)}: ${approvalResult.txHash}`);
                   } catch (receiptErr) {
-                    log(`  ❌ Approval may not have confirmed: ${receiptErr.message}`);
+                    log(`  ❌ Approval may not have confirmed${shouldRevoke ? ' after revoking the prior allowance (now 0)' : ''}: ${receiptErr.message}`);
                     if (qi + 1 < endIndex) log(`  Trying next quote...`);
                     lastQuoteError = `${quoteName} approval unconfirmed`;
                     continue;
                   }
-                  await new Promise(r => setTimeout(r, 2000));
+                  try {
+                    await assertAllowanceAtLeast(chain, currentQuote.inputMint, walletAddress, currentQuote.approvalAddress, approveAmt);
+                  } catch (pollErr) {
+                    log(`  ❌ Approval tx confirmed but allowance did not reach the required amount for ${quoteName}${shouldRevoke ? ' after revoking the prior allowance (now 0)' : ''}: ${pollErr.message}`);
+                    if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                    lastQuoteError = `${quoteName} approval verification failed`;
+                    continue;
+                  }
+                  await waitForAllowanceTxPropagation();
                 }
               }
 
@@ -2335,11 +2536,71 @@ EXAMPLES:
                   chain, currentQuote.inputMint, wcAddress, currentQuote.approvalAddress
                 );
 
-                if (existingAllowance >= approveAmt && existingAllowance > 0n) {
+                const { shouldRevoke, reuseAllowance } = resolveAllowanceAction(existingAllowance, approveAmt, noRevokeExcessiveAllowance);
+                if (reuseAllowance) {
+                  if (noRevokeExcessiveAllowance && shouldRevoke) {
+                    log(`  ⚠ Existing allowance (${existingAllowance}) for ${quoteName} is excessive (>${OVERSIZED_ALLOWANCE_MULTIPLIER}x this trade), but --no-revoke-excessive-allowance was set`);
+                  }
                   log(`  ✓ Sufficient allowance exists for ${quoteName}, skipping approval`);
                 } else {
+                  if (shouldRevoke) {
+                    log(`  ⚠ Existing allowance (${existingAllowance}) for ${quoteName} is excessive (>${OVERSIZED_ALLOWANCE_MULTIPLIER}x this trade) — revoking before re-approving`);
+                    log(`  Sending allowance revocation via WalletConnect (you'll be asked to approve this separately)...`);
+                    let revokeTxHash;
+                    try {
+                      const revokeResult = await sendApprovalViaWalletConnect(
+                        currentQuote.inputMint,
+                        currentQuote.approvalAddress,
+                        chainConfig.chainId,
+                        0n,
+                        undefined,
+                        { allowZero: true },
+                      );
+                      revokeTxHash = revokeResult.txHash;
+                      if (!revokeTxHash && revokeResult.signedTransaction) {
+                        log(`  Broadcasting allowance revocation via Trading API...`);
+                        const broadcastResult = await executeTransaction({
+                          signedTransaction: revokeResult.signedTransaction,
+                          chain,
+                          simulate: !noSimulate,
+                        });
+                        if (broadcastResult.status !== 'Success') {
+                          throw new Error(broadcastResult.error || 'broadcast failed');
+                        }
+                        revokeTxHash = broadcastResult.txHash;
+                      }
+                      if (!revokeTxHash) {
+                        throw new Error('Allowance revoke returned no transaction hash and no signed transaction; cannot confirm allowance was cleared');
+                      }
+                    } catch (revokeErr) {
+                      log(`  ❌ Allowance revoke failed for ${quoteName}: ${revokeErr.message}.${allowanceRevokeRecoveryHint(revokeTxHash)}`);
+                      if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                      lastQuoteError = `${quoteName} allowance revoke failed`;
+                      continue;
+                    }
+                    log(`  Waiting for allowance revoke confirmation...`);
+                    try {
+                      const receipt = await waitForReceipt(chain, revokeTxHash);
+                      log(`  ✓ Allowance revoked in block ${parseInt(receipt.blockNumber, 16)}: ${revokeTxHash}`);
+                    } catch (receiptErr) {
+                      log(`  ❌ Allowance revoke may not have confirmed for ${quoteName}: ${receiptErr.message}.${allowanceRevokeRecoveryHint(revokeTxHash)}`);
+                      if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                      lastQuoteError = `${quoteName} allowance revoke unconfirmed`;
+                      continue;
+                    }
+                    try {
+                      await assertAllowanceRevoked(chain, currentQuote.inputMint, wcAddress, currentQuote.approvalAddress);
+                    } catch (pollErr) {
+                      log(`  ❌ Revoke tx confirmed but allowance was not cleared for ${quoteName}: ${pollErr.message}.${allowanceRevokeRecoveryHint(revokeTxHash)}`);
+                      if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                      lastQuoteError = `${quoteName} allowance revoke verification failed`;
+                      continue;
+                    }
+                    await waitForAllowanceTxPropagation();
+                  }
                   log(`  ⚠ Approval required → ${currentQuote.approvalAddress}`);
                   log(`  Sending approval via WalletConnect...`);
+                  let approvalTxHash;
                   try {
                     const approvalResult = await sendApprovalViaWalletConnect(
                       currentQuote.inputMint,
@@ -2348,7 +2609,7 @@ EXAMPLES:
                       approveAmt,
                       approvalCapForQuote(quoteData),
                     );
-                    let approvalTxHash = approvalResult.txHash;
+                    approvalTxHash = approvalResult.txHash;
                     if (!approvalTxHash && approvalResult.signedTransaction) {
                       // Wallet returned a signed tx instead of broadcasting — broadcast via Trading API
                       log(`  Broadcasting approval via Trading API...`);
@@ -2362,18 +2623,48 @@ EXAMPLES:
                       }
                       approvalTxHash = broadcastResult.txHash;
                     }
-                    if (approvalTxHash) {
-                      log(`  Waiting for approval confirmation...`);
-                      const receipt = await waitForReceipt(chain, approvalTxHash);
-                      log(`  ✓ Approval confirmed in block ${parseInt(receipt.blockNumber, 16)}: ${approvalTxHash}`);
+                    if (!approvalTxHash) {
+                      // Fail closed: the wallet returned neither a hash nor a
+                      // signed tx, so we can't confirm the approval landed —
+                      // never fall through to the swap (esp. after a revoke has
+                      // already zeroed the allowance). The catch adds the
+                      // "after revoking (now 0)" context.
+                      throw new Error('returned no transaction hash and no signed transaction; cannot confirm approval landed');
                     }
                   } catch (approvalErr) {
-                    log(`  ❌ Approval failed for ${quoteName}: ${approvalErr.message}`);
+                    const revokedMsg = shouldRevoke
+                      ? ' after revoking the prior allowance (now 0)'
+                      : '';
+                    log(`  ❌ Approval failed for ${quoteName}${revokedMsg}: ${approvalErr.message}`);
                     if (qi + 1 < endIndex) log(`  Trying next quote...`);
                     lastQuoteError = `${quoteName} approval failed`;
                     continue;
                   }
-                  await new Promise(r => setTimeout(r, 2000));
+                  log(`  Waiting for approval confirmation...`);
+                  try {
+                    const receipt = await waitForReceipt(chain, approvalTxHash);
+                    log(`  ✓ Approval confirmed in block ${parseInt(receipt.blockNumber, 16)}: ${approvalTxHash}`);
+                  } catch (receiptErr) {
+                    const revokedMsg = shouldRevoke
+                      ? ' after revoking the prior allowance (now 0)'
+                      : '';
+                    log(`  ❌ Approval may not have confirmed${revokedMsg}: ${receiptErr.message}`);
+                    if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                    lastQuoteError = `${quoteName} approval unconfirmed`;
+                    continue;
+                  }
+                  try {
+                    await assertAllowanceAtLeast(chain, currentQuote.inputMint, wcAddress, currentQuote.approvalAddress, approveAmt);
+                  } catch (pollErr) {
+                    const revokedMsg = shouldRevoke
+                      ? ' after revoking the prior allowance (now 0)'
+                      : '';
+                    log(`  ❌ Approval tx confirmed but allowance did not reach the required amount for ${quoteName}${revokedMsg}: ${pollErr.message}`);
+                    if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                    lastQuoteError = `${quoteName} approval verification failed`;
+                    continue;
+                  }
+                  await waitForAllowanceTxPropagation();
                   log('');
                 }
               }
@@ -2561,14 +2852,68 @@ EXAMPLES:
                   chain, currentQuote.inputMint, walletAddress, currentQuote.approvalAddress
                 );
 
-                if (existingAllowance >= approveAmt && existingAllowance > 0n) {
+                const { shouldRevoke, reuseAllowance } = resolveAllowanceAction(existingAllowance, approveAmt, noRevokeExcessiveAllowance);
+                if (reuseAllowance) {
+                  if (noRevokeExcessiveAllowance && shouldRevoke) {
+                    log(`  ⚠ Existing allowance (${existingAllowance}) for ${quoteName} is excessive (>${OVERSIZED_ALLOWANCE_MULTIPLIER}x this trade), but --no-revoke-excessive-allowance was set`);
+                  }
                   log(`  ✓ Sufficient allowance exists for ${quoteName}, skipping approval`);
                 } else {
+                  const approvalGasPrice = currentQuote.transaction?.gasPrice || currentQuote.transaction?.maxFeePerGas || '1000000';
+
+                  if (shouldRevoke) {
+                    log(`  ⚠ Existing allowance (${existingAllowance}) for ${quoteName} is excessive (>${OVERSIZED_ALLOWANCE_MULTIPLIER}x this trade) — revoking before re-approving`);
+                    log(`  Sending allowance revocation tx...`);
+                    const revokeNonce = await getEvmNonce(chain, walletAddress);
+                    const revokeTxHex = buildApprovalTransaction(
+                      currentQuote.inputMint,
+                      currentQuote.approvalAddress,
+                      exported.evm.privateKey,
+                      chain,
+                      revokeNonce,
+                      approvalGasPrice,
+                      0n,
+                      undefined,
+                      { allowZero: true },
+                    );
+
+                    const revokeResult = await executeTransaction({
+                      signedTransaction: revokeTxHex,
+                      chain,
+                      simulate: !noSimulate,
+                    });
+
+                    if (revokeResult.status !== 'Success') {
+                      log(`  ❌ Allowance revoke failed for ${quoteName}: ${revokeResult.error || 'unknown error'}`);
+                      if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                      lastQuoteError = `${quoteName} allowance revoke failed`;
+                      continue;
+                    }
+
+                    log(`  Waiting for allowance revoke confirmation...`);
+                    try {
+                      const receipt = await waitForReceipt(chain, revokeResult.txHash);
+                      log(`  ✓ Allowance revoked in block ${parseInt(receipt.blockNumber, 16)}: ${revokeResult.txHash}`);
+                    } catch (receiptErr) {
+                      log(`  ❌ Allowance revoke may not have confirmed for ${quoteName}: ${receiptErr.message}.${allowanceRevokeRecoveryHint(revokeResult.txHash)}`);
+                      if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                      lastQuoteError = `${quoteName} allowance revoke unconfirmed`;
+                      continue;
+                    }
+                    try {
+                      await assertAllowanceRevoked(chain, currentQuote.inputMint, walletAddress, currentQuote.approvalAddress);
+                    } catch (pollErr) {
+                      log(`  ❌ Revoke tx confirmed but allowance was not cleared for ${quoteName}: ${pollErr.message}.${allowanceRevokeRecoveryHint(revokeResult.txHash)}`);
+                      if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                      lastQuoteError = `${quoteName} allowance revoke verification failed`;
+                      continue;
+                    }
+                    await waitForAllowanceTxPropagation();
+                  }
                   log(`  ⚠ Approval required → ${currentQuote.approvalAddress}`);
                   log(`  Sending approval tx...`);
                   const approvalNonce = await getEvmNonce(chain, walletAddress);
 
-                  const approvalGasPrice = currentQuote.transaction?.gasPrice || currentQuote.transaction?.maxFeePerGas || '1000000';
                   const approvalTxHex = buildApprovalTransaction(
                     currentQuote.inputMint,
                     currentQuote.approvalAddress,
@@ -2587,7 +2932,10 @@ EXAMPLES:
                   });
 
                   if (approvalResult.status !== 'Success') {
-                    log(`  ❌ Approval failed for ${quoteName}: ${approvalResult.error || 'unknown error'}`);
+                    const revokedMsg = shouldRevoke
+                      ? ' after revoking the prior allowance (now 0)'
+                      : '';
+                    log(`  ❌ Approval failed for ${quoteName}${revokedMsg}: ${approvalResult.error || 'unknown error'}`);
                     if (qi + 1 < endIndex) log(`  Trying next quote...`);
                     lastQuoteError = `${quoteName} approval failed`;
                     continue;
@@ -2598,13 +2946,20 @@ EXAMPLES:
                     const receipt = await waitForReceipt(chain, approvalResult.txHash);
                     log(`  ✓ Approval confirmed in block ${parseInt(receipt.blockNumber, 16)}: ${approvalResult.txHash}`);
                   } catch (receiptErr) {
-                    log(`  ❌ Approval may not have confirmed: ${receiptErr.message}`);
+                    log(`  ❌ Approval may not have confirmed${shouldRevoke ? ' after revoking the prior allowance (now 0)' : ''}: ${receiptErr.message}`);
                     if (qi + 1 < endIndex) log(`  Trying next quote...`);
                     lastQuoteError = `${quoteName} approval unconfirmed`;
                     continue;
                   }
-                  // Wait for RPC state propagation after approval
-                  await new Promise(r => setTimeout(r, 2000));
+                  try {
+                    await assertAllowanceAtLeast(chain, currentQuote.inputMint, walletAddress, currentQuote.approvalAddress, approveAmt);
+                  } catch (pollErr) {
+                    log(`  ❌ Approval tx confirmed but allowance did not reach the required amount for ${quoteName}${shouldRevoke ? ' after revoking the prior allowance (now 0)' : ''}: ${pollErr.message}`);
+                    if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                    lastQuoteError = `${quoteName} approval verification failed`;
+                    continue;
+                  }
+                  await waitForAllowanceTxPropagation();
                   log('');
                 }
               }

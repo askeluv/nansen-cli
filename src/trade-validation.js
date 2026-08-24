@@ -437,7 +437,8 @@ export function assertValidApprovalSpender(spender) {
  *
  * Guarantees on the returned string:
  *   - spender is a valid 20-byte address (see assertValidApprovalSpender)
- *   - amount is a positive integer strictly below MAX_UINT256 (never unlimited)
+ *   - amount is a positive integer strictly below MAX_UINT256 (never unlimited),
+ *     unless `allowZero` is explicitly set for a revoke-to-zero approval
  *   - amount does not exceed `maxAllowance` when the caller supplies one
  *     (the user's persisted request intent — see assertQuoteMatchesRequest)
  *   - the encoded calldata is exactly 68 bytes (4-byte selector + two 32-byte
@@ -447,9 +448,10 @@ export function assertValidApprovalSpender(spender) {
  * @param {bigint|string|number} amount - Allowance in base units
  * @param {object} [opts]
  * @param {bigint|string|number} [opts.maxAllowance] - Hard cap from request intent
+ * @param {boolean} [opts.allowZero=false] - Allow encoding a zero-amount revoke approval
  * @returns {string} 0x-prefixed approve() calldata (exactly 68 bytes)
  */
-export function encodeApproveCalldata(spender, amount, { maxAllowance } = {}) {
+export function encodeApproveCalldata(spender, amount, { maxAllowance, allowZero = false } = {}) {
   assertValidApprovalSpender(spender);
 
   let amt;
@@ -458,7 +460,7 @@ export function encodeApproveCalldata(spender, amount, { maxAllowance } = {}) {
   } catch {
     throw new Error(`Approval amount is not an integer (${amount}). Refusing to sign an approval.`);
   }
-  if (amt <= 0n) {
+  if (amt < 0n || (amt === 0n && !allowZero)) {
     throw new Error(`Approval amount must be positive (got ${amt}). Refusing to sign an approval.`);
   }
   if (amt >= MAX_UINT256) {
@@ -542,6 +544,23 @@ export function approvalAmountForSwap({ inputAmount, swapMode, slippage }) {
     return buffered;
   }
   return amt;
+}
+
+// Existing allowances above this multiple of the current trade's scoped amount
+// are treated as stale/oversized rather than reusable dust from a prior swap.
+export const OVERSIZED_ALLOWANCE_MULTIPLIER = 10n;
+
+/**
+ * Decide whether an existing on-chain ERC-20 allowance should be revoked before
+ * granting the current trade's scoped approval.
+ *
+ * @param {bigint} existingAllowance - Current on-chain allowance
+ * @param {bigint} approveAmt - This trade's scoped approval amount
+ * @returns {boolean}
+ */
+export function needsAllowanceRevoke(existingAllowance, approveAmt) {
+  if (approveAmt <= 0n) return false;
+  return existingAllowance > approveAmt * OVERSIZED_ALLOWANCE_MULTIPLIER;
 }
 
 // ============= Quote vs. request-intent revalidation =============

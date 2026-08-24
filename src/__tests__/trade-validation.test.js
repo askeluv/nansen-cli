@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { validateQuoteInput, fetchNativeBalance, fetchTokenBalance, validateBalance, resolvePercentAmount, validateGasBalance, GASLESS_MIN_TRADE_USD, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertInputWithinMax, assertSwapCalldataNotBareTransfer, assertSwapOutcome, MAX_UINT256 } from '../trade-validation.js';
+import { validateQuoteInput, fetchNativeBalance, fetchTokenBalance, validateBalance, resolvePercentAmount, validateGasBalance, GASLESS_MIN_TRADE_USD, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertInputWithinMax, assertSwapCalldataNotBareTransfer, assertSwapOutcome, MAX_UINT256, needsAllowanceRevoke } from '../trade-validation.js';
 
 describe('validateQuoteInput', () => {
   const validSolana = {
@@ -1150,11 +1150,33 @@ describe('encodeApproveCalldata', () => {
     expect(() => encodeApproveCalldata(VALID_SPENDER, '1.5e6')).toThrow(/not an integer/i);
   });
 
+  it('allows zero only for explicit revoke approvals', () => {
+    const data = encodeApproveCalldata(VALID_SPENDER, 0n, { allowZero: true });
+    expect(decodeApprove(data).amount).toBe(0n);
+  });
+
   it('enforces the request-intent cap (maxAllowance)', () => {
     // exactly at the cap is fine
     expect(() => encodeApproveCalldata(VALID_SPENDER, 1000n, { maxAllowance: 1000n })).not.toThrow();
     // one unit over the cap is refused
     expect(() => encodeApproveCalldata(VALID_SPENDER, 1001n, { maxAllowance: 1000n })).toThrow(/exceeds the request/i);
+  });
+});
+
+describe('needsAllowanceRevoke', () => {
+  it('does not revoke zero or sufficient scoped allowances', () => {
+    expect(needsAllowanceRevoke(0n, 1000n)).toBe(false);
+    expect(needsAllowanceRevoke(1000n, 1000n)).toBe(false);
+  });
+
+  it('uses a strict more-than-10x boundary', () => {
+    expect(needsAllowanceRevoke(10000n, 1000n)).toBe(false);
+    expect(needsAllowanceRevoke(10001n, 1000n)).toBe(true);
+  });
+
+  it('ignores invalid approval amounts defensively', () => {
+    expect(needsAllowanceRevoke(1000000n, 0n)).toBe(false);
+    expect(needsAllowanceRevoke(1000000n, -1n)).toBe(false);
   });
 });
 

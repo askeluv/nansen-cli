@@ -1625,6 +1625,10 @@
             "no-verify-outcome": {
               "type": "boolean",
               "description": "Skip EVM swap-outcome verification. That check simulates the swap and confirms the wallet's balance changes match the quote (input spent within your max, expected output received, no other token moved) before broadcasting; it needs a simulation-capable endpoint (NANSEN_BASE_SIM_RPC) and degrades with a warning when none is available. No effect on Solana."
+            },
+            "no-revoke-excessive-allowance": {
+              "type": "boolean",
+              "description": "Skip revoking an existing on-chain ERC-20 allowance before re-approving when it exceeds 10x this trade's scoped amount. By default, an oversized or legacy allowance is revoked to zero and a fresh trade-scoped allowance is granted. WalletConnect users will see separate wallet prompts for the revoke and re-approval."
             }
           }
         },
