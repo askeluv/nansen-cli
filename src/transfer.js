@@ -135,10 +135,14 @@ async function buildEvmTransaction({ to, amount, token, privateKey, chain, max =
   const latestNonce = BigInt(latestHex);
   const gap = Number(nonce - latestNonce);
   if (gap > MAX_PENDING_NONCE_GAP) {
+    // wallet send has no --nonce/--priority-fee, so don't tell the user to
+    // replace via this CLI. Also note the two-RPC race on load-balanced
+    // endpoints (same caveat as trading.js getEvmNonce).
     throw new Error(
       `${from} has ${gap} unmined transactions queued on ${chain} (next mined nonce ${latestNonce}, next pending ${nonce}). ` +
       `Signing another would queue behind them and stay unexecutable until they clear. ` +
-      `Replace the stuck transaction at nonce ${latestNonce} with a higher fee first.`,
+      `Wait for them to clear (or replace them with a higher fee from where they were sent) before retrying. ` +
+      `Note that a load-balanced public RPC may report a transaction it isn't actually holding, so don't diagnose from a single endpoint.`,
     );
   }
 

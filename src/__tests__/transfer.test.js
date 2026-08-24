@@ -357,7 +357,12 @@ describe('sendTokens integration', () => {
       });
       await expect(
         sendTokens({ to: '0x742d35Cc6bF4F3f4e0e3a8DD7e37ff4e4Be4E4B4', amount: '0.01', chain: 'evm', password: 'test' }),
-      ).rejects.toThrow(/unmined transactions queued/);
+      ).rejects.toThrow(
+        /unmined transactions queued[\s\S]*Wait for them to clear[\s\S]*load-balanced public RPC/,
+      );
+      await expect(
+        sendTokens({ to: '0x742d35Cc6bF4F3f4e0e3a8DD7e37ff4e4Be4E4B4', amount: '0.01', chain: 'evm', password: 'test' }),
+      ).rejects.not.toThrow(/Replace the stuck transaction|--nonce|--priority-fee/);
     });
 
     test('sends on Base chain', async () => {
