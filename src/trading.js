@@ -816,7 +816,10 @@ async function readErc20AllowanceOrThrow(chain, tokenAddress, ownerAddress, spen
     + ownerAddress.slice(2).toLowerCase().padStart(64, '0')
     + spenderAddress.slice(2).toLowerCase().padStart(64, '0');
   const result = await evmRpcCall(chain, 'eth_call', [{ to: tokenAddress, data }, 'latest']);
-  return result ? BigInt(result) : 0n;
+  if (!/^0x[0-9a-fA-F]{64}$/.test(result || '')) {
+    throw new Error(`invalid allowance() return data: ${result || '<empty>'}`);
+  }
+  return BigInt(result);
 }
 
 /**
@@ -850,12 +853,33 @@ export async function checkErc20Allowance(chain, tokenAddress, ownerAddress, spe
  * node caught up.
  */
 const ALLOWANCE_VERIFY_ATTEMPTS = 5;
-const ALLOWANCE_VERIFY_DELAY_MS = 1500;
+const DEFAULT_ALLOWANCE_VERIFY_DELAY_MS = 1500;
+const DEFAULT_POST_ALLOWANCE_TX_PROPAGATION_MS = 2000;
+let allowanceVerifyDelayMs = DEFAULT_ALLOWANCE_VERIFY_DELAY_MS;
+let postAllowanceTxPropagationMs = DEFAULT_POST_ALLOWANCE_TX_PROPAGATION_MS;
+
+export function __setAllowanceTimingForTests({
+  verifyDelayMs = DEFAULT_ALLOWANCE_VERIFY_DELAY_MS,
+  propagationDelayMs = DEFAULT_POST_ALLOWANCE_TX_PROPAGATION_MS,
+} = {}) {
+  allowanceVerifyDelayMs = verifyDelayMs;
+  postAllowanceTxPropagationMs = propagationDelayMs;
+}
+
+async function waitForAllowanceTxPropagation() {
+  // The receipt + allowance poll verifies token state, but the following swap
+  // still goes through a broadcaster/load-balanced RPC path. Give that path a
+  // short propagation window before signing the next dependent transaction.
+  if (postAllowanceTxPropagationMs <= 0) return;
+  await new Promise(r => setTimeout(r, postAllowanceTxPropagationMs));
+}
 
 async function pollAllowanceUntil(chain, tokenAddress, ownerAddress, spenderAddress, isExpected) {
   let allowance, lastErr;
   for (let attempt = 0; attempt < ALLOWANCE_VERIFY_ATTEMPTS; attempt++) {
-    if (attempt > 0) await new Promise(r => setTimeout(r, ALLOWANCE_VERIFY_DELAY_MS));
+    if (attempt > 0 && allowanceVerifyDelayMs > 0) {
+      await new Promise(r => setTimeout(r, allowanceVerifyDelayMs));
+    }
     try {
       allowance = await readErc20AllowanceOrThrow(chain, tokenAddress, ownerAddress, spenderAddress);
       lastErr = undefined;
@@ -2229,7 +2253,7 @@ EXAMPLES:
                       lastQuoteError = `${quoteName} allowance revoke unconfirmed`;
                       continue;
                     }
-                    await new Promise(r => setTimeout(r, 2000));
+                    await waitForAllowanceTxPropagation();
                   }
                   log(`  ⚠ Approval required → ${currentQuote.approvalAddress}`);
                   const approvalNonce = await getEvmNonce(chain, walletAddress);
@@ -2280,7 +2304,7 @@ EXAMPLES:
                     lastQuoteError = `${quoteName} approval unconfirmed`;
                     continue;
                   }
-                  await new Promise(r => setTimeout(r, 2000));
+                  await waitForAllowanceTxPropagation();
                 }
               }
 
@@ -2533,7 +2557,7 @@ EXAMPLES:
                       lastQuoteError = `${quoteName} allowance revoke failed`;
                       continue;
                     }
-                    await new Promise(r => setTimeout(r, 2000));
+                    await waitForAllowanceTxPropagation();
                   }
                   log(`  ⚠ Approval required → ${currentQuote.approvalAddress}`);
                   log(`  Sending approval via WalletConnect...`);
@@ -2580,7 +2604,7 @@ EXAMPLES:
                     lastQuoteError = `${quoteName} approval failed`;
                     continue;
                   }
-                  await new Promise(r => setTimeout(r, 2000));
+                  await waitForAllowanceTxPropagation();
                   log('');
                 }
               }
@@ -2817,7 +2841,7 @@ EXAMPLES:
                       lastQuoteError = `${quoteName} allowance revoke unconfirmed`;
                       continue;
                     }
-                    await new Promise(r => setTimeout(r, 2000));
+                    await waitForAllowanceTxPropagation();
                   }
                   log(`  ⚠ Approval required → ${currentQuote.approvalAddress}`);
                   log(`  Sending approval tx...`);
@@ -2861,8 +2885,7 @@ EXAMPLES:
                     lastQuoteError = `${quoteName} approval unconfirmed`;
                     continue;
                   }
-                  // Wait for RPC state propagation after approval
-                  await new Promise(r => setTimeout(r, 2000));
+                  await waitForAllowanceTxPropagation();
                   log('');
                 }
               }

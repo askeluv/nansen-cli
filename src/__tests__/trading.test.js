@@ -42,6 +42,7 @@ import {
   pollBridgeStatus,
   saveTxRecord,
   loadTxRecord,
+  __setAllowanceTimingForTests,
 } from '../trading.js';
 import { SIMULATION_RPCS } from '../rpc-urls.js';
 import { keccak256, rlpEncode } from '../crypto.js';
@@ -3534,7 +3535,12 @@ describe('ERC-20 excessive allowance handling', () => {
     return { executeBodies, sequence, setAllowance: (v) => { currentAllowance = BigInt(v); } };
   }
 
+  beforeEach(() => {
+    __setAllowanceTimingForTests({ verifyDelayMs: 0, propagationDelayMs: 0 });
+  });
+
   afterEach(() => {
+    __setAllowanceTimingForTests();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     delete process.env.NANSEN_WALLET_PASSWORD;
@@ -3688,6 +3694,49 @@ describe('ERC-20 excessive allowance handling', () => {
     // Both the revoke and the reapproval were broadcast; the swap never ran.
     expect(executeBodies).toHaveLength(2);
     expect(logs.some(l => l.includes('Approval may not have confirmed after revoking the prior allowance (now 0): allowance is 0, below the 100000 this trade requires'))).toBe(true);
+  });
+
+  it('fails closed when post-revoke allowance verification returns empty data', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    const walletAddress = showWallet('default').evm;
+    const quoteId = saveLocalErc20Quote(walletAddress);
+    const executeBodies = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const body = opts?.body ? JSON.parse(opts.body) : {};
+      if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
+        executeBodies.push(body);
+        return Promise.resolve({
+          ok: true,
+          text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: '0xRevokeHash', chainType: 'evm', broadcaster: 'test' })),
+        });
+      }
+      if (body.method === 'eth_getCode') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      }
+      if (body.method === 'eth_getTransactionCount') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+      }
+      if (body.method === 'eth_getTransactionReceipt') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { status: '0x1', blockNumber: '0x100' } })) });
+      }
+      if (body.method === 'eth_call') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({
+          jsonrpc: '2.0',
+          id: body.id,
+          result: executeBodies.length === 0 ? hexResult(2000000n) : '0x',
+        })) });
+      }
+      return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    await expect(cmds.execute([], null, { 'no-simulate': true }, { quote: quoteId })).rejects.toThrow(/All quotes failed/i);
+
+    expect(executeBodies).toHaveLength(1);
+    expect(logs.some(l => l.includes('invalid allowance() return data: 0x'))).toBe(true);
   });
 
   it('reuses a sufficient allowance below the excessive threshold without approval transactions', async () => {
