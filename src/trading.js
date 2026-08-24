@@ -840,15 +840,38 @@ export async function checkErc20Allowance(chain, tokenAddress, ownerAddress, spe
 /**
  * A successful receipt only proves the revoke/approval call didn't revert —
  * not that approve() actually produced the allowance we expect (a
- * non-standard token, a stale read, or a race with another approval could
- * still leave the wrong value on-chain). Read the allowance back after each
- * step and fail closed — including when it can't be read at all — rather
- * than trusting receipt status alone.
+ * non-standard token or a race with another approval could still leave the
+ * wrong value on-chain). Poll the allowance a few times before failing
+ * closed: an `eth_call` at 'latest' immediately after a receipt can hit an
+ * RPC node that hasn't caught up with the just-mined block yet and read
+ * stale pre-transaction state — confirmed live (PR #509 review follow-up)
+ * against a real Base approval that read back as unset for several seconds
+ * after its receipt landed, then correctly as the approved amount once the
+ * node caught up.
  */
+const ALLOWANCE_VERIFY_ATTEMPTS = 5;
+const ALLOWANCE_VERIFY_DELAY_MS = 1500;
+
+async function pollAllowanceUntil(chain, tokenAddress, ownerAddress, spenderAddress, isExpected) {
+  let allowance, lastErr;
+  for (let attempt = 0; attempt < ALLOWANCE_VERIFY_ATTEMPTS; attempt++) {
+    if (attempt > 0) await new Promise(r => setTimeout(r, ALLOWANCE_VERIFY_DELAY_MS));
+    try {
+      allowance = await readErc20AllowanceOrThrow(chain, tokenAddress, ownerAddress, spenderAddress);
+      lastErr = undefined;
+      if (isExpected(allowance)) return allowance;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  if (lastErr) throw lastErr;
+  return allowance;
+}
+
 async function assertAllowanceRevoked(chain, tokenAddress, ownerAddress, spenderAddress) {
   let allowance;
   try {
-    allowance = await readErc20AllowanceOrThrow(chain, tokenAddress, ownerAddress, spenderAddress);
+    allowance = await pollAllowanceUntil(chain, tokenAddress, ownerAddress, spenderAddress, a => a === 0n);
   } catch (err) {
     throw new Error(`could not verify the allowance was cleared (${err.message})`, { cause: err });
   }
@@ -860,7 +883,7 @@ async function assertAllowanceRevoked(chain, tokenAddress, ownerAddress, spender
 async function assertAllowanceAtLeast(chain, tokenAddress, ownerAddress, spenderAddress, minAmount) {
   let allowance;
   try {
-    allowance = await readErc20AllowanceOrThrow(chain, tokenAddress, ownerAddress, spenderAddress);
+    allowance = await pollAllowanceUntil(chain, tokenAddress, ownerAddress, spenderAddress, a => a >= minAmount);
   } catch (err) {
     throw new Error(`could not verify the approval took effect (${err.message})`, { cause: err });
   }
