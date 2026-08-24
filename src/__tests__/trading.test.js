@@ -3644,7 +3644,7 @@ describe('ERC-20 excessive allowance handling', () => {
 
     // Only the revoke was broadcast; the reapproval and swap never ran.
     expect(executeBodies).toHaveLength(1);
-    expect(logs.some(l => l.includes('Allowance revoke may not have confirmed for #1: allowance is still 2000000, not 0'))).toBe(true);
+    expect(logs.some(l => l.includes('Allowance revoke may not have confirmed for #1: could not verify the allowance was cleared (allowance did not reach expected state after 5 attempts (last read: 2000000))'))).toBe(true);
   });
 
   it('fails closed when a reapproval receipt succeeds but the allowance does not actually increase', async () => {
@@ -3693,7 +3693,7 @@ describe('ERC-20 excessive allowance handling', () => {
 
     // Both the revoke and the reapproval were broadcast; the swap never ran.
     expect(executeBodies).toHaveLength(2);
-    expect(logs.some(l => l.includes('Approval may not have confirmed after revoking the prior allowance (now 0): allowance is 0, below the 100000 this trade requires'))).toBe(true);
+    expect(logs.some(l => l.includes('Approval may not have confirmed after revoking the prior allowance (now 0): could not verify the approval took effect (allowance did not reach expected state after 5 attempts (last read: 0))'))).toBe(true);
   });
 
   it('fails closed when post-revoke allowance verification returns empty data', async () => {

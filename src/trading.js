@@ -889,7 +889,14 @@ async function pollAllowanceUntil(chain, tokenAddress, ownerAddress, spenderAddr
     }
   }
   if (lastErr) throw lastErr;
-  return allowance;
+  throw new Error(
+    `allowance did not reach expected state after ${ALLOWANCE_VERIFY_ATTEMPTS} attempts (last read: ${allowance})`,
+  );
+}
+
+function allowanceRevokeRecoveryHint(txHash) {
+  const txHint = txHash ? ` Tx: ${txHash}.` : '';
+  return `${txHint} Check the transaction on-chain, then retry this execute command or re-quote if needed.`;
 }
 
 async function assertAllowanceRevoked(chain, tokenAddress, ownerAddress, spenderAddress) {
@@ -2248,7 +2255,7 @@ EXAMPLES:
                       log(`  ✓ Allowance revoked in block ${parseInt(receipt.blockNumber, 16)}: ${revokeResult.txHash}`);
                       await assertAllowanceRevoked(chain, currentQuote.inputMint, walletAddress, currentQuote.approvalAddress);
                     } catch (receiptErr) {
-                      log(`  ❌ Allowance revoke may not have confirmed for ${quoteName}: ${receiptErr.message}`);
+                      log(`  ❌ Allowance revoke may not have confirmed for ${quoteName}: ${receiptErr.message}.${allowanceRevokeRecoveryHint(revokeResult.txHash)}`);
                       if (qi + 1 < endIndex) log(`  Trying next quote...`);
                       lastQuoteError = `${quoteName} allowance revoke unconfirmed`;
                       continue;
@@ -2522,6 +2529,7 @@ EXAMPLES:
                   if (shouldRevoke) {
                     log(`  ⚠ Existing allowance (${existingAllowance}) for ${quoteName} is excessive (>${OVERSIZED_ALLOWANCE_MULTIPLIER}x this trade) — revoking before re-approving`);
                     log(`  Sending allowance revocation via WalletConnect (you'll be asked to approve this separately)...`);
+                    let revokeTxHash;
                     try {
                       const revokeResult = await sendApprovalViaWalletConnect(
                         currentQuote.inputMint,
@@ -2531,7 +2539,7 @@ EXAMPLES:
                         undefined,
                         { allowZero: true },
                       );
-                      let revokeTxHash = revokeResult.txHash;
+                      revokeTxHash = revokeResult.txHash;
                       if (!revokeTxHash && revokeResult.signedTransaction) {
                         log(`  Broadcasting allowance revocation via Trading API...`);
                         const broadcastResult = await executeTransaction({
@@ -2552,7 +2560,7 @@ EXAMPLES:
                       log(`  ✓ Allowance revoked in block ${parseInt(receipt.blockNumber, 16)}: ${revokeTxHash}`);
                       await assertAllowanceRevoked(chain, currentQuote.inputMint, wcAddress, currentQuote.approvalAddress);
                     } catch (revokeErr) {
-                      log(`  ❌ Allowance revoke failed for ${quoteName}: ${revokeErr.message}`);
+                      log(`  ❌ Allowance revoke failed for ${quoteName}: ${revokeErr.message}.${allowanceRevokeRecoveryHint(revokeTxHash)}`);
                       if (qi + 1 < endIndex) log(`  Trying next quote...`);
                       lastQuoteError = `${quoteName} allowance revoke failed`;
                       continue;
@@ -2836,7 +2844,7 @@ EXAMPLES:
                       log(`  ✓ Allowance revoked in block ${parseInt(receipt.blockNumber, 16)}: ${revokeResult.txHash}`);
                       await assertAllowanceRevoked(chain, currentQuote.inputMint, walletAddress, currentQuote.approvalAddress);
                     } catch (receiptErr) {
-                      log(`  ❌ Allowance revoke may not have confirmed for ${quoteName}: ${receiptErr.message}`);
+                      log(`  ❌ Allowance revoke may not have confirmed for ${quoteName}: ${receiptErr.message}.${allowanceRevokeRecoveryHint(revokeResult.txHash)}`);
                       if (qi + 1 < endIndex) log(`  Trying next quote...`);
                       lastQuoteError = `${quoteName} allowance revoke unconfirmed`;
                       continue;
