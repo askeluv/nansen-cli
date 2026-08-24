@@ -1624,7 +1624,7 @@
             },
             "no-verify-outcome": {
               "type": "boolean",
-              "description": "Skip EVM swap-outcome verification. That check simulates the swap and confirms the wallet's balance changes match the quote (input spent within your max, expected output received, no other token moved) before broadcasting; it needs a simulation-capable endpoint (NANSEN_BASE_SIM_RPC) and degrades with a warning when none is available. No effect on Solana."
+              "description": "Skip swap-outcome verification. That check simulates the swap and confirms the wallet's balance changes match the quote (input spent within your max, expected output received, no other asset moved) before broadcasting; it needs a simulation-capable endpoint (NANSEN_BASE_SIM_RPC on EVM, NANSEN_SOLANA_SIM_RPC on Solana) and degrades with a warning when none is available."
             },
             "no-revoke-excessive-allowance": {
               "type": "boolean",

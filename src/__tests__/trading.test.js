@@ -1408,15 +1408,22 @@ describe('WalletConnect execute support', () => {
 
 describe('Privy execute support', () => {
   let originalEnv;
+  let origSolanaSimRpc;
 
   beforeEach(() => {
     originalEnv = { ...process.env };
     process.env.PRIVY_APP_ID = 'test-app-id';
     process.env.PRIVY_APP_SECRET = 'test-secret';
+    // These tests use placeholder (non-parseable) transaction bytes and aren't
+    // testing swap-outcome verification, so disable it here rather than
+    // mocking a full Solana RPC round trip.
+    origSolanaSimRpc = SIMULATION_RPCS.solana;
+    SIMULATION_RPCS.solana = null;
   });
 
   afterEach(() => {
     process.env = originalEnv;
+    SIMULATION_RPCS.solana = origSolanaSimRpc;
     vi.unstubAllGlobals();
   });
 
@@ -4579,6 +4586,10 @@ describe('Relay aggregator: --aggregator override on bridge-status', () => {
 });
 
 describe('Relay aggregator: Solana non-gasless omits requestId', () => {
+  let origSolanaSimRpc;
+  beforeEach(() => { origSolanaSimRpc = SIMULATION_RPCS.solana; SIMULATION_RPCS.solana = null; });
+  afterEach(() => { SIMULATION_RPCS.solana = origSolanaSimRpc; });
+
   it('non-gasless Solana Relay execute does NOT send requestId (backend 502s otherwise)', async () => {
     createWallet('default', 'testpass');
     process.env.NANSEN_WALLET_PASSWORD = 'testpass';
@@ -5193,8 +5204,14 @@ describe('Solana intent binding (adversarial)', () => {
     return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: 1, result: null })) });
   });
   const noBroadcast = (calls) => expect(calls.some(c => c.includes('/execute'))).toBe(false);
+  let origSolanaSimRpc;
 
-  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); delete process.env.NANSEN_WALLET_PASSWORD; delete process.env.PRIVY_APP_ID; delete process.env.PRIVY_APP_SECRET; });
+  beforeEach(() => { origSolanaSimRpc = SIMULATION_RPCS.solana; SIMULATION_RPCS.solana = null; });
+  afterEach(() => {
+    SIMULATION_RPCS.solana = origSolanaSimRpc;
+    vi.unstubAllGlobals(); vi.restoreAllMocks();
+    delete process.env.NANSEN_WALLET_PASSWORD; delete process.env.PRIVY_APP_ID; delete process.env.PRIVY_APP_SECRET;
+  });
 
   it('local wallet: refuses a quote with a tampered token pair', async () => {
     createWallet('default', 'testpass');

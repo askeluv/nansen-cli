@@ -7,6 +7,7 @@
 import { validateAddress } from './api.js';
 import { CHAIN_RPCS } from './rpc-urls.js';
 import { parseTransactionMessage, resolveStaticAccount } from './solana-tx.js';
+import { SOL_SENTINEL } from './solana-simulation.js';
 
 const SUPPORTED_CHAINS = ['solana', 'base'];
 
@@ -1113,6 +1114,151 @@ export function assertSwapOutcome(request, quote, sim, { slippage, expectedSpend
       throw fail(
         `the swap grants an approval to an unexpected spender (${spender}); a swap should only (re)approve ${allowed.size ? [...allowed].join(', ') : 'nothing'}.`,
       );
+    }
+  }
+
+  return { verified: true };
+}
+
+// Native-SOL dust tolerated on a non-input sibling in assertSolanaSwapOutcome —
+// covers the base tx fee plus one transient ATA's rent (e.g. a WSOL account
+// opened and closed within the swap). SPL-token siblings get no such tolerance
+// (dust threshold 0n); only native SOL legitimately moves as a byproduct of fees
+// and rent rather than the swap itself.
+const NATIVE_SIBLING_DUST_LAMPORTS = 3_000_000n; // ~0.003 SOL
+
+/**
+ * The Solana sibling of assertSwapOutcome. Solana signs the aggregator's
+ * serialized transaction verbatim and has no approval/calldata split to
+ * validate, so this verifies the balance-delta simulation result (see
+ * solana-simulation.js) against the persisted request intent directly.
+ *
+ * Three assertions (no assertion 4 sibling — an unexpected authority grant is
+ * already rejected statically, RPC-free, by assertSolanaInstructionsSafe
+ * before this ever runs):
+ *   1. the input token leaves the wallet by no more than maxInputAmount.
+ *      Native-SOL input is intentionally metadata-bound only: the lamport
+ *      delta also carries the base fee, priority fee, and net ATA rent
+ *      (opened minus reclaimed), which is too noisy to bound tightly from a
+ *      raw balance delta. Tightness instead comes from assertQuoteMatchesRequest
+ *      (binds exactIn input == request.amount) plus assertSolanaInstructionsSafe's
+ *      fee-payer/fee-cap checks and assertions 2/3 below. A precise fee/rent
+ *      model is explicitly deferred.
+ *   2. the output token arrives by at least the minimum acceptable amount.
+ *   3. no OTHER tracked asset leaves the wallet. SPL-token siblings get zero
+ *      tolerance; native SOL, when it's a sibling (not the input), tolerates
+ *      NATIVE_SIBLING_DUST_LAMPORTS of fee/rent dust.
+ *
+ * @param {object} request - persisted intent (quoteData.request); required
+ * @param {object} quote - the quote being executed
+ * @param {{deltas: Record<string, bigint|string|number>}} sim - the normalised
+ *   result from simulateSolanaAssetChanges()
+ * @param {object} [ctx]
+ * @param {number} [ctx.slippage] - slippage fraction in effect; defaults to 3%
+ * @param {bigint} [ctx.siblingDustThreshold] - overrides NATIVE_SIBLING_DUST_LAMPORTS
+ * @throws {Error} with `code = 'SWAP_OUTCOME_MISMATCH'` on any failed assertion.
+ */
+export function assertSolanaSwapOutcome(request, quote, sim, { slippage, siblingDustThreshold } = {}) {
+  const fail = (detail) => {
+    const e = new Error(`Swap outcome mismatch (SWAP_OUTCOME_MISMATCH): ${detail} Refusing to sign.`);
+    e.code = 'SWAP_OUTCOME_MISMATCH';
+    return e;
+  };
+
+  if (!request) throw fail('no request intent to verify the outcome against.');
+  if (!sim || typeof sim !== 'object' || sim.deltas == null) {
+    throw fail('simulation returned no asset changes to verify.');
+  }
+
+  const deltas = {};
+  for (const [k, v] of Object.entries(sim.deltas)) {
+    let amt;
+    try {
+      amt = typeof v === 'bigint' ? v : BigInt(v);
+    } catch {
+      throw fail(`simulated delta for ${k} (${v}) is not an integer.`);
+    }
+    deltas[k] = amt;
+  }
+
+  const foldNative = (mint) => (mint && SOLANA_NATIVE_MINTS.has(mint) ? SOL_SENTINEL : mint);
+  const inputAsset = quote?.inputMint ? foldNative(quote.inputMint) : null;
+  const outputAsset = quote?.outputMint ? foldNative(quote.outputMint) : null;
+  if (!inputAsset || !outputAsset) {
+    throw fail('quote is missing the input or output token address.');
+  }
+  if (inputAsset === outputAsset) {
+    throw fail(`quote input and output tokens are the same (${inputAsset}); refusing to verify.`);
+  }
+
+  const inputIsNative = inputAsset === SOL_SENTINEL;
+
+  // --- Assertion 1: input outflow within the spend ceiling (SPL input only) ---
+  if (!inputIsNative) {
+    if (request.maxInputAmount == null) {
+      throw fail('request has no maximum input to bound the outflow against.');
+    }
+    let cap;
+    try {
+      cap = BigInt(request.maxInputAmount);
+    } catch {
+      throw fail(`maximum input (${request.maxInputAmount}) is not an integer.`);
+    }
+    const inputDelta = deltas[inputAsset] || 0n;
+    const outflow = inputDelta < 0n ? -inputDelta : 0n;
+    if (outflow > cap) {
+      throw fail(`the input token (${inputAsset}) left the wallet by ${outflow}, exceeding your maximum input (${cap}).`);
+    }
+  }
+
+  // --- Assertion 2: output arrives at or above the minimum acceptable ---
+  const swapMode = request.swapMode ?? 'exactIn';
+  const outputDelta = deltas[outputAsset] || 0n;
+  let minOut;
+  if (swapMode === 'exactOut') {
+    if (request.amount == null) throw fail('exactOut request is missing the requested output amount.');
+    try {
+      minOut = BigInt(request.amount);
+    } catch {
+      throw fail(`requested output amount (${request.amount}) is not an integer.`);
+    }
+    if (minOut <= 0n) {
+      throw fail(`exactOut request has a non-positive output amount (${minOut}); cannot compute a minimum acceptable output.`);
+    }
+  } else {
+    const quotedRaw = quote?.outAmount ?? quote?.outputAmount;
+    if (quotedRaw == null) {
+      throw fail('quote is missing the quoted output amount; cannot compute the minimum acceptable output.');
+    }
+    let quoted;
+    try {
+      quoted = BigInt(quotedRaw);
+    } catch {
+      throw fail(`quoted output amount (${quotedRaw}) is not an integer.`);
+    }
+    if (quoted <= 0n) {
+      throw fail(`quote has a non-positive output amount (${quoted}); cannot compute a minimum acceptable output.`);
+    }
+    // Floor of quoted × (1 − slippage), capped at 50% independent of what the
+    // user set (mirrors assertSwapOutcome's rationale: a defence-in-depth
+    // floor, not the user's execution tolerance).
+    const rawSlip = Number.isFinite(slippage) && slippage >= 0 ? slippage : 0.03;
+    const slip = Math.min(rawSlip, 0.5);
+    const bps = BigInt(Math.min(10000, Math.round(slip * 10000)));
+    minOut = (quoted * (10000n - bps)) / 10000n;
+  }
+  if (outputDelta < minOut) {
+    throw fail(`the output token (${outputAsset}) increased by only ${outputDelta}, below the minimum acceptable output (${minOut}).`);
+  }
+
+  // --- Assertion 3: no other tracked asset leaves the wallet ---
+  const nativeDust = siblingDustThreshold != null ? siblingDustThreshold : NATIVE_SIBLING_DUST_LAMPORTS;
+  for (const [token, delta] of Object.entries(deltas)) {
+    if (token === inputAsset) continue; // bounded by assertion 1 (or metadata-bound, for native input)
+    if (delta >= 0n) continue;
+    const dust = token === SOL_SENTINEL ? nativeDust : 0n;
+    if (-delta > dust) {
+      throw fail(`a token other than the one you are selling (${token}) left the wallet (delta ${delta}); a swap must not move any token except the input.`);
     }
   }
 
