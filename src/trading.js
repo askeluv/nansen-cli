@@ -862,6 +862,9 @@ export function __setAllowanceTimingForTests({
   verifyDelayMs = DEFAULT_ALLOWANCE_VERIFY_DELAY_MS,
   propagationDelayMs = DEFAULT_POST_ALLOWANCE_TX_PROPAGATION_MS,
 } = {}) {
+  if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
+    throw new Error('__setAllowanceTimingForTests is for tests only');
+  }
   allowanceVerifyDelayMs = verifyDelayMs;
   postAllowanceTxPropagationMs = propagationDelayMs;
 }
@@ -2253,11 +2256,18 @@ EXAMPLES:
                     try {
                       const receipt = await waitForReceipt(chain, revokeResult.txHash);
                       log(`  ✓ Allowance revoked in block ${parseInt(receipt.blockNumber, 16)}: ${revokeResult.txHash}`);
-                      await assertAllowanceRevoked(chain, currentQuote.inputMint, walletAddress, currentQuote.approvalAddress);
                     } catch (receiptErr) {
                       log(`  ❌ Allowance revoke may not have confirmed for ${quoteName}: ${receiptErr.message}.${allowanceRevokeRecoveryHint(revokeResult.txHash)}`);
                       if (qi + 1 < endIndex) log(`  Trying next quote...`);
                       lastQuoteError = `${quoteName} allowance revoke unconfirmed`;
+                      continue;
+                    }
+                    try {
+                      await assertAllowanceRevoked(chain, currentQuote.inputMint, walletAddress, currentQuote.approvalAddress);
+                    } catch (pollErr) {
+                      log(`  ❌ Revoke tx confirmed but allowance was not cleared for ${quoteName}: ${pollErr.message}.${allowanceRevokeRecoveryHint(revokeResult.txHash)}`);
+                      if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                      lastQuoteError = `${quoteName} allowance revoke verification failed`;
                       continue;
                     }
                     await waitForAllowanceTxPropagation();
@@ -2304,11 +2314,18 @@ EXAMPLES:
                   try {
                     const receipt = await waitForReceipt(chain, approvalResult.txHash);
                     log(`  ✓ Approval confirmed in block ${parseInt(receipt.blockNumber, 16)}: ${approvalResult.txHash}`);
-                    await assertAllowanceAtLeast(chain, currentQuote.inputMint, walletAddress, currentQuote.approvalAddress, approveAmt);
                   } catch (receiptErr) {
                     log(`  ❌ Approval may not have confirmed${shouldRevoke ? ' after revoking the prior allowance (now 0)' : ''}: ${receiptErr.message}`);
                     if (qi + 1 < endIndex) log(`  Trying next quote...`);
                     lastQuoteError = `${quoteName} approval unconfirmed`;
+                    continue;
+                  }
+                  try {
+                    await assertAllowanceAtLeast(chain, currentQuote.inputMint, walletAddress, currentQuote.approvalAddress, approveAmt);
+                  } catch (pollErr) {
+                    log(`  ❌ Approval tx confirmed but allowance did not reach the required amount for ${quoteName}${shouldRevoke ? ' after revoking the prior allowance (now 0)' : ''}: ${pollErr.message}`);
+                    if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                    lastQuoteError = `${quoteName} approval verification failed`;
                     continue;
                   }
                   await waitForAllowanceTxPropagation();
@@ -2555,20 +2572,35 @@ EXAMPLES:
                       if (!revokeTxHash) {
                         throw new Error('Allowance revoke returned no transaction hash and no signed transaction; cannot confirm allowance was cleared');
                       }
-                      log(`  Waiting for allowance revoke confirmation...`);
-                      const receipt = await waitForReceipt(chain, revokeTxHash);
-                      log(`  ✓ Allowance revoked in block ${parseInt(receipt.blockNumber, 16)}: ${revokeTxHash}`);
-                      await assertAllowanceRevoked(chain, currentQuote.inputMint, wcAddress, currentQuote.approvalAddress);
                     } catch (revokeErr) {
                       log(`  ❌ Allowance revoke failed for ${quoteName}: ${revokeErr.message}.${allowanceRevokeRecoveryHint(revokeTxHash)}`);
                       if (qi + 1 < endIndex) log(`  Trying next quote...`);
                       lastQuoteError = `${quoteName} allowance revoke failed`;
                       continue;
                     }
+                    log(`  Waiting for allowance revoke confirmation...`);
+                    try {
+                      const receipt = await waitForReceipt(chain, revokeTxHash);
+                      log(`  ✓ Allowance revoked in block ${parseInt(receipt.blockNumber, 16)}: ${revokeTxHash}`);
+                    } catch (receiptErr) {
+                      log(`  ❌ Allowance revoke may not have confirmed for ${quoteName}: ${receiptErr.message}.${allowanceRevokeRecoveryHint(revokeTxHash)}`);
+                      if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                      lastQuoteError = `${quoteName} allowance revoke unconfirmed`;
+                      continue;
+                    }
+                    try {
+                      await assertAllowanceRevoked(chain, currentQuote.inputMint, wcAddress, currentQuote.approvalAddress);
+                    } catch (pollErr) {
+                      log(`  ❌ Revoke tx confirmed but allowance was not cleared for ${quoteName}: ${pollErr.message}.${allowanceRevokeRecoveryHint(revokeTxHash)}`);
+                      if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                      lastQuoteError = `${quoteName} allowance revoke verification failed`;
+                      continue;
+                    }
                     await waitForAllowanceTxPropagation();
                   }
                   log(`  ⚠ Approval required → ${currentQuote.approvalAddress}`);
                   log(`  Sending approval via WalletConnect...`);
+                  let approvalTxHash;
                   try {
                     const approvalResult = await sendApprovalViaWalletConnect(
                       currentQuote.inputMint,
@@ -2577,7 +2609,7 @@ EXAMPLES:
                       approveAmt,
                       approvalCapForQuote(quoteData),
                     );
-                    let approvalTxHash = approvalResult.txHash;
+                    approvalTxHash = approvalResult.txHash;
                     if (!approvalTxHash && approvalResult.signedTransaction) {
                       // Wallet returned a signed tx instead of broadcasting — broadcast via Trading API
                       log(`  Broadcasting approval via Trading API...`);
@@ -2599,10 +2631,6 @@ EXAMPLES:
                       // "after revoking (now 0)" context.
                       throw new Error('returned no transaction hash and no signed transaction; cannot confirm approval landed');
                     }
-                    log(`  Waiting for approval confirmation...`);
-                    const receipt = await waitForReceipt(chain, approvalTxHash);
-                    log(`  ✓ Approval confirmed in block ${parseInt(receipt.blockNumber, 16)}: ${approvalTxHash}`);
-                    await assertAllowanceAtLeast(chain, currentQuote.inputMint, wcAddress, currentQuote.approvalAddress, approveAmt);
                   } catch (approvalErr) {
                     const revokedMsg = shouldRevoke
                       ? ' after revoking the prior allowance (now 0)'
@@ -2610,6 +2638,30 @@ EXAMPLES:
                     log(`  ❌ Approval failed for ${quoteName}${revokedMsg}: ${approvalErr.message}`);
                     if (qi + 1 < endIndex) log(`  Trying next quote...`);
                     lastQuoteError = `${quoteName} approval failed`;
+                    continue;
+                  }
+                  log(`  Waiting for approval confirmation...`);
+                  try {
+                    const receipt = await waitForReceipt(chain, approvalTxHash);
+                    log(`  ✓ Approval confirmed in block ${parseInt(receipt.blockNumber, 16)}: ${approvalTxHash}`);
+                  } catch (receiptErr) {
+                    const revokedMsg = shouldRevoke
+                      ? ' after revoking the prior allowance (now 0)'
+                      : '';
+                    log(`  ❌ Approval may not have confirmed${revokedMsg}: ${receiptErr.message}`);
+                    if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                    lastQuoteError = `${quoteName} approval unconfirmed`;
+                    continue;
+                  }
+                  try {
+                    await assertAllowanceAtLeast(chain, currentQuote.inputMint, wcAddress, currentQuote.approvalAddress, approveAmt);
+                  } catch (pollErr) {
+                    const revokedMsg = shouldRevoke
+                      ? ' after revoking the prior allowance (now 0)'
+                      : '';
+                    log(`  ❌ Approval tx confirmed but allowance did not reach the required amount for ${quoteName}${revokedMsg}: ${pollErr.message}`);
+                    if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                    lastQuoteError = `${quoteName} approval verification failed`;
                     continue;
                   }
                   await waitForAllowanceTxPropagation();
@@ -2842,11 +2894,18 @@ EXAMPLES:
                     try {
                       const receipt = await waitForReceipt(chain, revokeResult.txHash);
                       log(`  ✓ Allowance revoked in block ${parseInt(receipt.blockNumber, 16)}: ${revokeResult.txHash}`);
-                      await assertAllowanceRevoked(chain, currentQuote.inputMint, walletAddress, currentQuote.approvalAddress);
                     } catch (receiptErr) {
                       log(`  ❌ Allowance revoke may not have confirmed for ${quoteName}: ${receiptErr.message}.${allowanceRevokeRecoveryHint(revokeResult.txHash)}`);
                       if (qi + 1 < endIndex) log(`  Trying next quote...`);
                       lastQuoteError = `${quoteName} allowance revoke unconfirmed`;
+                      continue;
+                    }
+                    try {
+                      await assertAllowanceRevoked(chain, currentQuote.inputMint, walletAddress, currentQuote.approvalAddress);
+                    } catch (pollErr) {
+                      log(`  ❌ Revoke tx confirmed but allowance was not cleared for ${quoteName}: ${pollErr.message}.${allowanceRevokeRecoveryHint(revokeResult.txHash)}`);
+                      if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                      lastQuoteError = `${quoteName} allowance revoke verification failed`;
                       continue;
                     }
                     await waitForAllowanceTxPropagation();
@@ -2886,11 +2945,18 @@ EXAMPLES:
                   try {
                     const receipt = await waitForReceipt(chain, approvalResult.txHash);
                     log(`  ✓ Approval confirmed in block ${parseInt(receipt.blockNumber, 16)}: ${approvalResult.txHash}`);
-                    await assertAllowanceAtLeast(chain, currentQuote.inputMint, walletAddress, currentQuote.approvalAddress, approveAmt);
                   } catch (receiptErr) {
                     log(`  ❌ Approval may not have confirmed${shouldRevoke ? ' after revoking the prior allowance (now 0)' : ''}: ${receiptErr.message}`);
                     if (qi + 1 < endIndex) log(`  Trying next quote...`);
                     lastQuoteError = `${quoteName} approval unconfirmed`;
+                    continue;
+                  }
+                  try {
+                    await assertAllowanceAtLeast(chain, currentQuote.inputMint, walletAddress, currentQuote.approvalAddress, approveAmt);
+                  } catch (pollErr) {
+                    log(`  ❌ Approval tx confirmed but allowance did not reach the required amount for ${quoteName}${shouldRevoke ? ' after revoking the prior allowance (now 0)' : ''}: ${pollErr.message}`);
+                    if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                    lastQuoteError = `${quoteName} approval verification failed`;
                     continue;
                   }
                   await waitForAllowanceTxPropagation();

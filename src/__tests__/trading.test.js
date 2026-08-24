@@ -3644,7 +3644,7 @@ describe('ERC-20 excessive allowance handling', () => {
 
     // Only the revoke was broadcast; the reapproval and swap never ran.
     expect(executeBodies).toHaveLength(1);
-    expect(logs.some(l => l.includes('Allowance revoke may not have confirmed for #1: could not verify the allowance was cleared (allowance did not reach expected state after 5 attempts (last read: 2000000))'))).toBe(true);
+    expect(logs.some(l => l.includes('Revoke tx confirmed but allowance was not cleared for #1: could not verify the allowance was cleared (allowance did not reach expected state after 5 attempts (last read: 2000000))'))).toBe(true);
   });
 
   it('fails closed when a reapproval receipt succeeds but the allowance does not actually increase', async () => {
@@ -3693,7 +3693,7 @@ describe('ERC-20 excessive allowance handling', () => {
 
     // Both the revoke and the reapproval were broadcast; the swap never ran.
     expect(executeBodies).toHaveLength(2);
-    expect(logs.some(l => l.includes('Approval may not have confirmed after revoking the prior allowance (now 0): could not verify the approval took effect (allowance did not reach expected state after 5 attempts (last read: 0))'))).toBe(true);
+    expect(logs.some(l => l.includes('Approval tx confirmed but allowance did not reach the required amount for #1 after revoking the prior allowance (now 0): could not verify the approval took effect (allowance did not reach expected state after 5 attempts (last read: 0))'))).toBe(true);
   });
 
   it('fails closed when post-revoke allowance verification returns empty data', async () => {
@@ -3737,6 +3737,24 @@ describe('ERC-20 excessive allowance handling', () => {
 
     expect(executeBodies).toHaveLength(1);
     expect(logs.some(l => l.includes('invalid allowance() return data: 0x'))).toBe(true);
+  });
+
+  it('guards the allowance timing override outside test environments', () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    const originalVitest = process.env.VITEST;
+    process.env.NODE_ENV = 'production';
+    delete process.env.VITEST;
+
+    try {
+      expect(() => __setAllowanceTimingForTests({ verifyDelayMs: 0 })).toThrow(/tests only/i);
+    } finally {
+      process.env.NODE_ENV = originalNodeEnv;
+      if (originalVitest == null) {
+        delete process.env.VITEST;
+      } else {
+        process.env.VITEST = originalVitest;
+      }
+    }
   });
 
   it('reuses a sufficient allowance below the excessive threshold without approval transactions', async () => {
