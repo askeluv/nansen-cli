@@ -743,13 +743,15 @@ export function assertQuoteMatchesRequest(request, quote, { chain, walletAddress
  * exactOut gap where the API chooses the input and nothing capped it.
  *
  * The amount compared against the cap is the maximum that can actually leave the
- * wallet — for exactOut that is the slippage-buffered approval, NOT the raw quote
- * input. The approval encoder (encodeApproveCalldata) scopes the ERC-20 approval
- * to that same buffered amount and caps it at maxInputAmount, so validating the
- * raw input here would let a quote pass this check and then be refused at signing
- * (a 1,000,000 input at 3% slippage needs a 1,030,000 approval, which a 1,000,000
- * cap rejects). Comparing the same amount approvalAmountForSwap produces keeps
- * this check and the encoder in lockstep.
+ * wallet — for exactOut that is the slippage-buffered spend, NOT the raw quote
+ * input. On EVM the approval encoder (encodeApproveCalldata) scopes the ERC-20
+ * approval to that same buffered amount and caps it at maxInputAmount, so
+ * validating the raw input here would let a quote pass this check and then be
+ * refused at signing (a 1,000,000 input at 3% slippage needs a 1,030,000
+ * approval, which a 1,000,000 cap rejects). On Solana there is no approval step,
+ * but the swap can still consume up to that buffered amount, so the same ceiling
+ * applies. Comparing the amount approvalAmountForSwap produces keeps this check
+ * consistent with what the execute path can actually spend.
  *
  * Behaviour:
  *   - exactOut with no persisted `maxInputAmount` → throws (fail closed). The

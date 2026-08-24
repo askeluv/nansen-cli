@@ -2171,12 +2171,17 @@ EXAMPLES:
               if (!solWalletId) throw new Error('No Solana Privy wallet ID in quote');
               const walletResult = await privyClient.getWallet(solWalletId);
               const walletAddress = walletResult.address;
+              // Fail closed if the signer address doesn't resolve: without it the
+              // wallet-binding comparison below would silently skip, leaving the
+              // quote unbound to the wallet that will sign it.
+              if (!walletAddress) {
+                throw new Error('Could not resolve the Solana Privy wallet address; cannot confirm the quote was built for this wallet. Refusing to sign.');
+              }
 
-              // Bind the opaque Solana transaction to the persisted request intent.
-              // Solana signs the aggregator's serialized VersionedTransaction
-              // verbatim with no approval/calldata to independently check, so this
-              // is the only guard between a compromised quote and a signed drain —
-              // a wrong token pair, an inflated input, or a tx built for another signer.
+              // Bind the serialized Solana transaction to the persisted request
+              // intent. Solana signs the aggregator's transaction as returned, so
+              // these checks confirm the quote still matches what was requested
+              // (token pair, amounts, signer) before it is signed.
               assertCompleteSolanaRequestIntent(quoteData.request);
               assertQuoteMatchesRequest(quoteData.request, currentQuote, { chain, walletAddress, slippage: quoteData.slippage });
 
