@@ -3145,11 +3145,11 @@ EXAMPLES:
             const result = await executeTransaction(execParams);
 
             if (result.status === 'Success') {
-              const txId = result.signature || result.txHash;
-              const explorerUrl = chainConfig.explorer + txId;
+              let txId = result.signature || result.txHash;
+              let explorerUrl = chainConfig.explorer + txId;
 
               // For EVM: verify the tx actually succeeded on-chain
-              if (chainType === 'evm' && result.txHash) {
+              if (chainType === 'evm') {
                 log('  Verifying on-chain status...');
                 try {
                   // Gasless: the Relay solver wraps and broadcasts its OWN on-chain tx, so
@@ -3158,12 +3158,16 @@ EXAMPLES:
                   if (gasless) {
                     await waitForReceipt(chain, result.txHash);
                   } else {
-                    await confirmEvmBroadcast(chain, signedTransaction, result.txHash);
+                    txId = evmTxHash(signedTransaction);
+                    explorerUrl = chainConfig.explorer + txId;
+                    const { hash } = await confirmEvmBroadcast(chain, signedTransaction, result.txHash);
+                    txId = hash;
+                    explorerUrl = chainConfig.explorer + txId;
                   }
                 } catch (receiptErr) {
                   if (receiptErr.code === 'TXHASH_MISMATCH') throw receiptErr;
                   log(`\n  ⚠ Transaction was broadcast but REVERTED on-chain!`);
-                  log(`    Tx Hash:   ${result.txHash}`);
+                  log(`    Tx Hash:   ${txId || result.txHash}`);
                   log(`    Explorer:  ${explorerUrl}`);
                   log(`    Error:     ${receiptErr.message}`);
                   if (qi + 1 < endIndex) {
@@ -3171,7 +3175,7 @@ EXAMPLES:
                     lastQuoteError = `${quoteName} reverted on-chain`;
                     continue;
                   }
-                  throw new CommandError(`\n  ⚠ Transaction was broadcast but REVERTED on-chain!\n    Tx Hash:   ${result.txHash}\n    Explorer:  ${explorerUrl}\n    Error:     ${receiptErr.message}\n\n  The trading API reported success, but the contract execution failed.\n  This can happen due to: stale quotes, insufficient gas, or liquidity changes.`, 'TX_REVERTED');
+                  throw new CommandError(`\n  ⚠ Transaction was broadcast but REVERTED on-chain!\n    Tx Hash:   ${txId || result.txHash}\n    Explorer:  ${explorerUrl}\n    Error:     ${receiptErr.message}\n\n  The trading API reported success, but the contract execution failed.\n  This can happen due to: stale quotes, insufficient gas, or liquidity changes.`, 'TX_REVERTED');
                 }
               }
 

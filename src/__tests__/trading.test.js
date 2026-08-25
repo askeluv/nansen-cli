@@ -3144,6 +3144,80 @@ describe('confirmEvmBroadcast: binds receipt confirmation to the locally-derived
     vi.unstubAllGlobals();
   });
 
+  it('main EVM swap polls and logs the locally-derived hash when /execute returns no txHash', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const executeBodies = [];
+    const queriedHashes = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const body = opts?.body ? (() => { try { return JSON.parse(opts.body); } catch { return {}; } })() : {};
+      if (body.method === 'eth_getTransactionCount') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+      }
+      if (body.method === 'eth_getCode') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      }
+      if (body.method === 'eth_call') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' })) });
+      }
+      if (body.method === 'eth_getTransactionReceipt') {
+        const asked = body.params[0];
+        queriedHashes.push(asked);
+        const localHash = executeBodies[0]?.signedTransaction
+          ? evmTxHash(executeBodies[0].signedTransaction)
+          : null;
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({
+          jsonrpc: '2.0',
+          id: body.id,
+          result: localHash && asked.toLowerCase() === localHash.toLowerCase()
+            ? { status: '0x1', blockNumber: '0x100' }
+            : null,
+        })) });
+      }
+      if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
+        executeBodies.push(body);
+        return Promise.resolve({
+          ok: true,
+          text: () => Promise.resolve(JSON.stringify({ status: 'Success', chainType: 'evm', broadcaster: 'test' })),
+        });
+      }
+      return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'lifi',
+        inputMint: BASE_USDC,
+        outputMint: OUT_TOKEN,
+        inAmount: '10000000',
+        outAmount: '50000000',
+        approvalAddress: '',
+        transaction: { to: LIFI_ROUTER, data: '0x12345678', value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
+      }],
+    }, 'base', 'local', null, null, {
+      swapMode: 'exactIn',
+      request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: BASE_USDC, toToken: OUT_TOKEN, amount: '10000000', maxInputAmount: '10000000' }),
+    });
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    await cmds.execute([], null, {}, { quote: quoteId });
+
+    const localHash = evmTxHash(executeBodies[0].signedTransaction);
+    expect(queriedHashes.length).toBeGreaterThan(0);
+    expect(queriedHashes.every(h => h.toLowerCase() === localHash.toLowerCase())).toBe(true);
+    expect(logs.some(l => l.includes(`Tx Hash:   ${localHash}`))).toBe(true);
+    expect(logs.some(l => l.includes(`${resolveChain('base').explorer}${localHash}`))).toBe(true);
+    expect(logs.some(l => l.includes('Tx Hash:   undefined'))).toBe(false);
+    expect(logs.some(l => l.includes(`${resolveChain('base').explorer}undefined`))).toBe(false);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+    vi.unstubAllGlobals();
+  });
+
   it('confirms a gasless swap on the broadcaster hash without a mismatch error', async () => {
     createWallet('default', 'testpass');
     process.env.NANSEN_WALLET_PASSWORD = 'testpass';
