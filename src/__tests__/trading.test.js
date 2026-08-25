@@ -1755,171 +1755,6 @@ describe('Privy execute support', () => {
   });
 });
 
-// ============= Solana execute-path intent binding =============
-//
-// The heart of PR #512: prove that assertQuoteMatchesRequest /
-// assertCompleteSolanaRequestIntent are actually WIRED into all three Solana
-// signing paths (local, Privy, WalletConnect) — not merely unit-tested in
-// isolation. Each test poisons a different field of the quote and asserts the
-// execute path refuses to sign before it reaches the signer. A future refactor
-// that drops one of the three call sites turns the matching test red.
-//
-// The mismatch throws inside the per-quote try, is logged as `❌ Quote … failed`,
-// and (single quote) surfaces as ALL_QUOTES_FAILED — so each test asserts both
-// the top-level rejection and the specific binding message in the logs.
-describe('Solana execute binds to persisted request intent', () => {
-  const BONK = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    vi.restoreAllMocks();
-    delete process.env.NANSEN_WALLET_PASSWORD;
-  });
-
-  it('local: refuses a Solana quote whose output token differs from the request', async () => {
-    createWallet('default', 'testpass');
-    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
-    const solAddr = showWallet('default').solana;
-
-    // Any stray network call fails loudly — the binding check runs before signing.
-    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('unexpected network call'))));
-
-    const quoteId = saveQuote({
-      success: true,
-      quotes: [{
-        aggregator: 'jupiter',
-        inputMint: SOL_MINT,
-        outputMint: BONK, // poisoned: request asked for SOL_USDC
-        inAmount: '1000000000',
-        inputAmount: '1000000000',
-        outAmount: '50000000',
-        transaction: 'AQAAAA==',
-      }],
-    }, 'solana', 'local', null, null, {
-      swapMode: 'exactIn',
-      slippage: 0.03,
-      request: solanaIntent({ walletAddress: solAddr }), // toToken defaults to SOL_USDC
-    });
-
-    const logs = [];
-    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
-
-    await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/All quotes failed/);
-    expect(logs.some(l => /buy token .* does not match the requested token/i.test(l))).toBe(true);
-  });
-
-  it('local: refuses a Solana quote built for a different wallet (signer swap)', async () => {
-    createWallet('default', 'testpass');
-    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
-
-    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('unexpected network call'))));
-
-    const quoteId = saveQuote({
-      success: true,
-      quotes: [{
-        aggregator: 'jupiter',
-        inputMint: SOL_MINT,
-        outputMint: SOL_USDC,
-        inAmount: '1000000000',
-        inputAmount: '1000000000',
-        outAmount: '50000000',
-        transaction: 'AQAAAA==',
-      }],
-    }, 'solana', 'local', null, null, {
-      swapMode: 'exactIn',
-      slippage: 0.03,
-      // Persisted for a wallet the local signer does not control.
-      request: solanaIntent({ walletAddress: 'AttackerWa11et1111111111111111111111111111' }),
-    });
-
-    const logs = [];
-    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
-
-    await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/All quotes failed/);
-    expect(logs.some(l => /built for wallet .* but the signer is/i.test(l))).toBe(true);
-  });
-
-  it('Privy: refuses a Solana quote whose input is inflated above the request', async () => {
-    process.env.PRIVY_APP_ID = 'test-app-id';
-    process.env.PRIVY_APP_SECRET = 'test-secret';
-
-    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
-      const urlStr = typeof url === 'string' ? url : url.toString();
-      if (urlStr.includes('privy.io') && opts?.method === 'GET') {
-        return Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve({ id: 'wl_sol_1', address: 'SolPrivyAddr1111111111111111111111111111', chain_type: 'solana' }),
-        });
-      }
-      // Signing must never be reached; if it is, surface it as a failure.
-      return Promise.reject(new Error('unexpected network call (signing reached despite mismatch)'));
-    }));
-
-    const quoteId = saveQuote({
-      success: true,
-      quotes: [{
-        aggregator: 'jupiter',
-        inputMint: SOL_MINT,
-        outputMint: SOL_USDC,
-        inAmount: '2000000000', // poisoned: request bound the input to 1,000,000,000
-        inputAmount: '2000000000',
-        outAmount: '50000000',
-        transaction: 'AQAAAA==',
-      }],
-    }, 'solana', 'privy', { evm: 'wl_evm_1', solana: 'wl_sol_1' }, null, {
-      swapMode: 'exactIn',
-      slippage: 0.03,
-      request: solanaIntent({
-        walletAddress: 'SolPrivyAddr1111111111111111111111111111',
-        amount: '1000000000',
-        maxInputAmount: '1000000000',
-      }),
-    });
-
-    const logs = [];
-    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
-
-    delete process.env.NANSEN_WALLET_PASSWORD;
-    await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/All quotes failed/);
-    expect(logs.some(l => /input amount .* does not match the requested input/i.test(l))).toBe(true);
-    // The signing call is never made.
-    expect(logs.some(l => l.includes('Signing Solana transaction via Privy'))).toBe(false);
-  });
-
-  it('WalletConnect: refuses a Solana quote when the connected signer differs from the request', async () => {
-    vi.spyOn(wcTrading, 'getWalletConnectAddress').mockResolvedValue('AttackerWa11et1111111111111111111111111111');
-    const sendSpy = vi.spyOn(wcTrading, 'sendSolanaTransactionViaWalletConnect').mockResolvedValue({ signedTransaction: 'x' });
-
-    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) })));
-
-    const quoteId = saveQuote({
-      success: true,
-      quotes: [{
-        aggregator: 'jupiter',
-        inputMint: SOL_MINT,
-        outputMint: SOL_USDC,
-        inAmount: '1000000000',
-        inputAmount: '1000000000',
-        outAmount: '50000000',
-        transaction: 'AQAAAA==',
-      }],
-    }, 'solana', 'walletconnect', null, null, {
-      swapMode: 'exactIn',
-      slippage: 0.03,
-      request: solanaIntent({ walletAddress: '9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM' }),
-    });
-
-    const logs = [];
-    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
-
-    delete process.env.NANSEN_WALLET_PASSWORD;
-    await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/All quotes failed/);
-    expect(logs.some(l => /built for wallet .* but the signer is/i.test(l))).toBe(true);
-    // The WalletConnect signing call is never made.
-    expect(sendSpy).not.toHaveBeenCalled();
-  });
-});
-
 // ============= stripLeadingZeros =============
 
 describe('stripLeadingZeros', () => {
@@ -5192,6 +5027,7 @@ describe('verifySwapOutcome (execute-path wiring)', () => {
 // across all three Solana signing paths (local, Privy, WalletConnect).
 // ===========================================================================
 describe('Solana intent binding (adversarial)', () => {
+  const BONK = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
   const stubRpcFetch = (calls) => vi.fn().mockImplementation((url) => {
     calls.push(typeof url === 'string' ? url : url.toString());
     return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: 1, result: null })) });
@@ -5222,6 +5058,31 @@ describe('Solana intent binding (adversarial)', () => {
 
     const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
     await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/sell token .* does not match/i);
+    noBroadcast(calls);
+  });
+
+  it('local wallet: refuses a quote whose output token differs from the request', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    const calls = [];
+    vi.stubGlobal('fetch', stubRpcFetch(calls));
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'jupiter',
+        inputMint: SOL_MINT,
+        outputMint: BONK, // tampered — request asked for SOL_USDC
+        inAmount: '1000000000', outAmount: '50000000',
+        transaction: 'AA==',
+      }],
+    }, 'solana', 'local', null, null, {
+      swapMode: 'exactIn',
+      request: solanaIntent({ walletAddress: showWallet('default').solana }), // toToken defaults to SOL_USDC
+    });
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/buy token .* does not match the requested token/i);
     noBroadcast(calls);
   });
 
@@ -5317,6 +5178,44 @@ describe('Solana intent binding (adversarial)', () => {
 
     const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
     await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/built for wallet .* but the signer is/i);
+    // Never reached signSolanaTransaction (the only privy.io POST on this path).
+    expect(calls.some(c => c.url.includes('privy.io') && c.method === 'POST')).toBe(false);
+    expect(calls.some(c => c.url.includes('/execute'))).toBe(false);
+  });
+
+  it('Privy: refuses a quote whose input is inflated above the request', async () => {
+    process.env.PRIVY_APP_ID = 'test-app-id';
+    process.env.PRIVY_APP_SECRET = 'test-secret';
+    const calls = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      calls.push({ url: urlStr, method: opts?.method });
+      if (urlStr.includes('privy.io') && opts?.method === 'GET') {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ id: 'wl_sol_1', address: 'SolPrivyAddr1111111111111111111111111111', chain_type: 'solana' }) });
+      }
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: 1, result: null })), json: () => Promise.resolve({}) });
+    }));
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'jupiter',
+        inputMint: SOL_MINT, outputMint: SOL_USDC,
+        inAmount: '2000000000', // poisoned: request bound the input to 1,000,000,000
+        outAmount: '50000000',
+        transaction: 'AA==',
+      }],
+    }, 'solana', 'privy', { evm: 'wl_evm_1', solana: 'wl_sol_1' }, null, {
+      swapMode: 'exactIn',
+      request: solanaIntent({
+        walletAddress: 'SolPrivyAddr1111111111111111111111111111',
+        amount: '1000000000',
+        maxInputAmount: '1000000000',
+      }),
+    });
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/does not match the requested input/i);
     // Never reached signSolanaTransaction (the only privy.io POST on this path).
     expect(calls.some(c => c.url.includes('privy.io') && c.method === 'POST')).toBe(false);
     expect(calls.some(c => c.url.includes('/execute'))).toBe(false);

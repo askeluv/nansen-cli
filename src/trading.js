@@ -2178,10 +2178,11 @@ EXAMPLES:
                 throw new Error('Could not resolve the Solana Privy wallet address; cannot confirm the quote was built for this wallet. Refusing to sign.');
               }
 
-              // Bind the serialized Solana transaction to the persisted request
-              // intent. Solana signs the aggregator's transaction as returned, so
-              // these checks confirm the quote still matches what was requested
-              // (token pair, amounts, signer) before it is signed.
+              // Validate the persisted request/quote metadata (token pair, amounts,
+              // signer) before signing the aggregator's serialized transaction as
+              // returned. This does not inspect the serialized transaction's own
+              // instructions — Solana quotes have no `to`/`data`/approval split to
+              // check independently, unlike EVM's validateSwapTarget.
               assertCompleteSolanaRequestIntent(quoteData.request);
               assertQuoteMatchesRequest(quoteData.request, currentQuote, { chain, walletAddress, slippage: quoteData.slippage });
 
@@ -2473,11 +2474,18 @@ EXAMPLES:
                 }
               } else {
                 solanaWalletAddress = exported.solana.address;
+                // Fail closed if the signer address doesn't resolve: without it the
+                // wallet-binding comparison below would silently skip, leaving the
+                // quote unbound to the wallet that will sign it.
+                if (!solanaWalletAddress) {
+                  throw new Error("Could not resolve the local wallet's Solana address; cannot confirm the quote was built for this wallet. Refusing to sign.");
+                }
               }
 
-              // Bind the opaque Solana transaction to the persisted request intent.
-              // A compromised API can't swap in a different token pair, inflate the
-              // input, or build the transaction for another signer.
+              // Validate the persisted request/quote metadata (token pair, amounts,
+              // signer) before signing the opaque Solana transaction. This does not
+              // inspect the serialized transaction's own instructions — see the note
+              // above where the Solana branch starts.
               assertCompleteSolanaRequestIntent(quoteData.request);
               assertQuoteMatchesRequest(quoteData.request, currentQuote, { chain, walletAddress: solanaWalletAddress, slippage: quoteData.slippage });
 
