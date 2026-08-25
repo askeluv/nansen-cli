@@ -401,6 +401,17 @@ export function parseExpiry(expiryStr) {
   throw new Error(`Invalid expiry format: "${expiryStr}". Use "24h", "7d", "30d", or epoch ms.`);
 }
 
+// Whole integer bps in [0, 10000], matching bridge parseSlippageBps.
+// Number() would accept "1.5", "1e2", "0x10", and boolean true.
+function parseSlippageBps(raw) {
+  const s = String(raw).trim();
+  const bad = 'Error: --slippage-bps must be a whole integer between 0 and 10000 basis points.';
+  if (!/^\d+$/.test(s)) throw new Error(bad);
+  const n = parseInt(s, 10);
+  if (!Number.isInteger(n) || n < 0 || n > 10000) throw new Error(bad);
+  return n;
+}
+
 // ============= Order Formatting =============
 
 function formatOrderStatus(status) {
@@ -501,7 +512,7 @@ export function buildLimitOrderCommands(deps = {}) {
       const triggerPrice = options['trigger-price'];
       const triggerCondition = options['trigger-condition'];
       const triggerMintRaw = options['trigger-mint'];
-      const slippageBps = options['slippage-bps'] != null ? Number(options['slippage-bps']) : undefined;
+      const slippageBpsRaw = options['slippage-bps'];
       const expiresStr = options.expires || '30d';
       const walletName = options.wallet;
 
@@ -516,7 +527,7 @@ OPTIONS:
   --trigger-mint <symbol|addr>   Token whose price triggers the order (e.g. SOL)
   --trigger-condition <cond>     "above" or "below"
   --trigger-price <usd>          Trigger price in USD (must be a positive number)
-  --slippage-bps <bps>               Slippage in basis points (100 = 1%), omit for auto
+  --slippage-bps <bps>           Whole integer bps, 0-10000 (100 = 1%), omit for auto
   --expires <duration>           Expiry duration: "24h", "7d", "30d" (default: 30d)
   --wallet <name>                Wallet name (or "walletconnect"/"wc")
 
@@ -579,6 +590,18 @@ EXAMPLES:
         log('Error: --trigger-condition must be "above" or "below".');
         exit(1);
         return;
+      }
+
+      // Same bounds as update / bridge: whole-integer bps in 0–10000.
+      let slippageBps;
+      if (slippageBpsRaw != null) {
+        try {
+          slippageBps = parseSlippageBps(slippageBpsRaw);
+        } catch (err) {
+          log(err.message);
+          exit(1);
+          return;
+        }
       }
 
       let expiresAt;
@@ -820,7 +843,7 @@ Usage: nansen trade limit-order update --order <orderId> [--trigger-price <usd>]
 OPTIONS:
   --order <id>            Order ID to update
   --trigger-price <usd>   New trigger price in USD
-  --slippage-bps <bps>    Slippage in basis points (100 = 1%)
+  --slippage-bps <bps>    Whole integer bps, 0-10000 (100 = 1%)
   --wallet <name>         Wallet name (or "walletconnect"/"wc")
 
 NOTE: Only provided fields are updated. Auto slippage can only be set at creation time
@@ -850,13 +873,13 @@ EXAMPLES:
         updateBody.triggerPriceUsd = price;
       }
       if (slippageBps != null) {
-        const bps = Number(slippageBps);
-        if (isNaN(bps) || bps < 0 || bps > 10000) {
-          log('Error: --slippage-bps must be between 0 and 10000 basis points.');
+        try {
+          updateBody.slippageBps = parseSlippageBps(slippageBps);
+        } catch (err) {
+          log(err.message);
           exit(1);
           return;
         }
-        updateBody.slippageBps = bps;
       }
 
       try {

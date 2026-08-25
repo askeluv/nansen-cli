@@ -1694,7 +1694,7 @@
                 },
                 "slippage-bps": {
                   "type": "number",
-                  "description": "Slippage tolerance in basis points (e.g. 50 = 0.5%)"
+                  "description": "Slippage as a whole integer in basis points, 0-10000 (50 = 0.5%), omit for auto"
                 },
                 "expires": {
                   "type": "string",
@@ -1783,7 +1783,7 @@
                 },
                 "slippage-bps": {
                   "type": "number",
-                  "description": "New slippage in basis points (0-10000)"
+                  "description": "New slippage as a whole integer in basis points (0-10000)"
                 },
                 "wallet": {
                   "type": "string",
