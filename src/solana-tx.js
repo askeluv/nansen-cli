@@ -11,6 +11,9 @@ function readCompactU16(buf, offset) {
   let shift = 0;
   let size = 0;
   for (let i = 0; i < 3; i++) {
+    if (offset + i >= buf.length) {
+      throw new Error('Malformed Solana transaction: compact-u16 length runs past end of buffer');
+    }
     const byte = buf[offset + i];
     value |= (byte & 0x7f) << shift;
     size++;
@@ -28,13 +31,23 @@ function readCompactU16(buf, offset) {
  */
 export function parseTransactionMessage(base64) {
   const bytes = Buffer.from(base64, 'base64');
+  // Fail closed on any read past the end of the buffer: a truncated or crafted
+  // transaction must throw here rather than silently misparse into a wrong
+  // (possibly drain-hiding) instruction list before signing.
+  const requireBytes = (off, need) => {
+    if (off + need > bytes.length) {
+      throw new Error('Malformed Solana transaction: read past end of buffer');
+    }
+  };
   const { value: numSignatures, size: sigCountSize } = readCompactU16(bytes, 0);
   let offset = sigCountSize + numSignatures * 64;
 
+  requireBytes(offset, 1);
   const first = bytes[offset];
   const isVersioned = (first & 0x80) !== 0;
   if (isVersioned) offset += 1; // skip the version-prefix byte; header follows
 
+  requireBytes(offset, 3);
   const numRequiredSignatures = bytes[offset];
   const numReadonlySignedAccounts = bytes[offset + 1];
   const numReadonlyUnsignedAccounts = bytes[offset + 2];
@@ -44,10 +57,12 @@ export function parseTransactionMessage(base64) {
   offset += keysCountSize;
   const staticAccountKeys = [];
   for (let i = 0; i < numAccountKeys; i++) {
+    requireBytes(offset, 32);
     staticAccountKeys.push(base58Encode(bytes.subarray(offset, offset + 32)));
     offset += 32;
   }
 
+  requireBytes(offset, 32);
   const recentBlockhash = base58Encode(bytes.subarray(offset, offset + 32));
   offset += 32;
 
@@ -55,10 +70,12 @@ export function parseTransactionMessage(base64) {
   offset += ixCountSize;
   const instructions = [];
   for (let i = 0; i < numInstructions; i++) {
+    requireBytes(offset, 1);
     const programIdIndex = bytes[offset];
     offset += 1;
     const { value: numAccounts, size: accCountSize } = readCompactU16(bytes, offset);
     offset += accCountSize;
+    requireBytes(offset, numAccounts);
     const accountIndexes = [];
     for (let j = 0; j < numAccounts; j++) {
       accountIndexes.push(bytes[offset]);
@@ -66,6 +83,7 @@ export function parseTransactionMessage(base64) {
     }
     const { value: dataLen, size: dataLenSize } = readCompactU16(bytes, offset);
     offset += dataLenSize;
+    requireBytes(offset, dataLen);
     const data = bytes.subarray(offset, offset + dataLen);
     offset += dataLen;
     instructions.push({ programIdIndex, accountIndexes, data });
@@ -76,10 +94,12 @@ export function parseTransactionMessage(base64) {
     const { value: numLookups, size: lookupCountSize } = readCompactU16(bytes, offset);
     offset += lookupCountSize;
     for (let i = 0; i < numLookups; i++) {
+      requireBytes(offset, 32);
       const lookupTableAddress = base58Encode(bytes.subarray(offset, offset + 32));
       offset += 32;
       const { value: numWritable, size: writableCountSize } = readCompactU16(bytes, offset);
       offset += writableCountSize;
+      requireBytes(offset, numWritable);
       const writableIndexes = [];
       for (let j = 0; j < numWritable; j++) {
         writableIndexes.push(bytes[offset]);
@@ -87,6 +107,7 @@ export function parseTransactionMessage(base64) {
       }
       const { value: numReadonly, size: readonlyCountSize } = readCompactU16(bytes, offset);
       offset += readonlyCountSize;
+      requireBytes(offset, numReadonly);
       const readonlyIndexes = [];
       for (let j = 0; j < numReadonly; j++) {
         readonlyIndexes.push(bytes[offset]);

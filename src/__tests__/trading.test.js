@@ -1413,14 +1413,23 @@ describe('Privy execute support', () => {
         outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
         inAmount: '1000000000',
         outAmount: '50000000',
-        transaction: 'AQAAAA==',
+        // A valid, parseable benign transaction (one non-SPL instruction) — the
+        // pre-signing safety check now parses this before Privy signs it.
+        transaction: 'AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAECAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAQEBAAEA',
         metadata: { requestId: 'req-123' },
       }],
     }, 'solana', 'privy', { evm: 'wl_evm_1', solana: 'wl_sol_1' });
 
-    vi.stubGlobal('fetch', vi.fn().mockImplementation((url) => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
-      // Privy signSolanaTransaction
+      // Privy getWallet (GET) — resolves the signing wallet's address
+      if (urlStr.includes('privy.io') && opts?.method === 'GET') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ id: 'wl_sol_1', address: 'So11111111111111111111111111111111111111112', chain_type: 'solana' }),
+        });
+      }
+      // Privy signSolanaTransaction (POST)
       if (urlStr.includes('privy.io')) {
         return Promise.resolve({
           ok: true,

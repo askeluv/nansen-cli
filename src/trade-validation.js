@@ -1127,6 +1127,14 @@ export function assertSwapOutcome(request, quote, sim, { slippage, expectedSpend
  * Throws on any of those patterns. Returns the parsed transaction otherwise.
  */
 export function assertSolanaInstructionsSafe(txBase64, { walletAddress } = {}) {
+  // Fail closed on a missing wallet address: every authority check below is
+  // `authority === walletAddress`, so a null/undefined address would make each
+  // comparison silently false and disable the drain protection rather than
+  // over-reject. Refuse to run the check without knowing whose signature we're
+  // guarding.
+  if (!walletAddress) {
+    throw new Error('Cannot verify Solana instruction safety without the signing wallet address. Refusing to sign.');
+  }
   const parsed = parseTransactionMessage(txBase64);
   const accountAt = (ix, position) => resolveStaticAccount(parsed, ix.accountIndexes[position]);
 

@@ -97,6 +97,24 @@ describe('parseTransactionMessage', () => {
     expect(isSignerIndex(parsed, 2)).toBe(false);
   });
 
+  it('throws on a truncated transaction rather than silently misparsing', () => {
+    const signer = generateSolanaWallet().address;
+    const programId = generateSolanaWallet().address;
+    const recentBlockhash = generateSolanaWallet().address;
+    const messageBytes = buildMessageBytes({
+      versioned: false,
+      accountKeys: [signer, programId],
+      header: { numRequiredSignatures: 1, numReadonlySignedAccounts: 0, numReadonlyUnsignedAccounts: 1 },
+      recentBlockhash,
+      instructions: [{ programIdIndex: 1, accountIndexes: [0], data: Buffer.from([0xde, 0xad]) }],
+    });
+    const full = Buffer.from(wrapTransaction(messageBytes), 'base64');
+    // Cut the buffer partway through the account-key section: a naive parser
+    // would read `undefined` bytes and drift its offset; this one must fail closed.
+    const truncated = full.subarray(0, full.length - 40).toString('base64');
+    expect(() => parseTransactionMessage(truncated)).toThrow(/past end of buffer/);
+  });
+
   it('decodes a real base58 pubkey identically to the existing wallet helper', () => {
     // Sanity check against a known-good encode/decode pair rather than relying
     // solely on this module's own round-trip.

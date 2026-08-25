@@ -1664,6 +1664,22 @@ describe('assertSolanaInstructionsSafe', () => {
     expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: wallet })).not.toThrow();
   });
 
+  it('fails closed when no wallet address is provided rather than silently passing', () => {
+    // An Approve authorized by the (unknown) signer must not slip through just
+    // because walletAddress is missing — the check would otherwise compare
+    // against undefined and never fire.
+    const wallet = generateSolanaWallet().address;
+    const sourceAccount = generateSolanaWallet().address;
+    const delegate = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, sourceAccount, delegate, TOKEN_PROGRAM],
+      instructions: [{ programIdIndex: 3, accountIndexes: [1, 2, 0], data: Buffer.from([4]) }],
+    });
+    expect(() => assertSolanaInstructionsSafe(tx, {})).toThrow(/without the signing wallet address/);
+    expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: null })).toThrow(/without the signing wallet address/);
+    expect(() => assertSolanaInstructionsSafe(tx)).toThrow(/without the signing wallet address/);
+  });
+
   it('rejects an Approve instruction authorized by the wallet', () => {
     const wallet = generateSolanaWallet().address;
     const sourceAccount = generateSolanaWallet().address;
