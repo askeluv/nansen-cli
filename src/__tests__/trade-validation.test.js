@@ -1403,6 +1403,34 @@ describe('assertInputWithinMax', () => {
     expect(() => assertInputWithinMax({ maxInputAmount: '1000000' }, {})).toThrow(/missing the input amount/i);
     expect(() => assertInputWithinMax({ maxInputAmount: '1000000' }, { inAmount: '1.5' })).toThrow(/not an integer/i);
   });
+
+  it('uses Solana-specific wording (no EVM approval/native-value language) for a Solana over-cap', () => {
+    // Solana has no ERC-20 approval step, so the over-cap message must not
+    // mention "approval" or "native value" — those are EVM-only concepts.
+    const err = (() => {
+      try { assertInputWithinMax({ chain: 'solana', swapMode: 'exactOut', maxInputAmount: '999999' }, base, 0); }
+      catch (e) { return e.message; }
+    })();
+    expect(err).toMatch(/exceeds your maximum input/i);
+    expect(err).not.toMatch(/approval/i);
+    // exactIn variant likewise omits the EVM approval/native-value clause.
+    const errIn = (() => {
+      try { assertInputWithinMax({ chain: 'solana', swapMode: 'exactIn', maxInputAmount: '999999' }, base, 0); }
+      catch (e) { return e.message; }
+    })();
+    expect(errIn).not.toMatch(/approval|native value/i);
+  });
+
+  it('picks the Solana wording case-insensitively (chain persisted as "Solana")', () => {
+    // request.chain is stored verbatim from --chain, so a mixed-case value must
+    // still route to the Solana-worded message, not the EVM one.
+    const err = (() => {
+      try { assertInputWithinMax({ chain: 'Solana', swapMode: 'exactIn', maxInputAmount: '999999' }, base, 0); }
+      catch (e) { return e.message; }
+    })();
+    expect(err).toMatch(/exceeds your maximum input/i);
+    expect(err).not.toMatch(/approval|native value/i);
+  });
 });
 
 // ---------------------------------------------------------------------------

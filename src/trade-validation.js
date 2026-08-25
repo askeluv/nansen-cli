@@ -820,7 +820,10 @@ export function assertInputWithinMax(request, quote, slippage) {
     );
   }
   if (spend > cap) {
-    const isSolana = request.chain === 'solana';
+    // Normalize case: request.chain is persisted verbatim from the user's
+    // --chain input (e.g. `--chain Solana`), so an exact === would mislabel a
+    // Solana swap with the EVM-worded (approval/native-value) message.
+    const isSolana = String(request.chain).toLowerCase() === 'solana';
     throw new Error(
       swapMode === 'exactOut'
         ? isSolana
