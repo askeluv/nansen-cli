@@ -1316,6 +1316,30 @@ describe('assertQuoteMatchesRequest', () => {
     const mangled = { ...q, outputMint: SOL_TOKEN.toLowerCase() };
     expect(() => assertQuoteMatchesRequest(xchain, mangled, { chain: 'base' })).toThrow(/buy token .* does not match/i);
   });
+
+  it('treats the two native-SOL spellings as the same asset (cross-chain destination)', () => {
+    // Regression: `--to SOL` resolves to the wrapped-SOL mint (stored as the
+    // request intent), but a Relay bridge quote names native SOL as the System
+    // Program sentinel. They are the same asset and must not be rejected as a
+    // token mismatch, which previously blocked every bridge into native SOL.
+    const WSOL = 'So11111111111111111111111111111111111111112';
+    const NATIVE_SOL_SENTINEL = '11111111111111111111111111111111';
+    const USDC_SOL = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+    const xchain = {
+      chain: 'base', toChain: 'solana', walletAddress: '0xWallet',
+      fromToken: USDC, toToken: WSOL, swapMode: 'exactIn', amount: '1000000',
+    };
+    const q = { inputMint: USDC, outputMint: NATIVE_SOL_SENTINEL, inputAmount: '1000000', inAmount: '1000000' };
+    // WSOL requested, native-sentinel delivered — same asset, passes.
+    expect(() => assertQuoteMatchesRequest(xchain, q, { chain: 'base' })).not.toThrow();
+    // Reverse spelling (sentinel requested, WSOL delivered) also passes.
+    const xchain2 = { ...xchain, toToken: NATIVE_SOL_SENTINEL };
+    const q2 = { ...q, outputMint: WSOL };
+    expect(() => assertQuoteMatchesRequest(xchain2, q2, { chain: 'base' })).not.toThrow();
+    // A genuinely different Solana token is still rejected.
+    const qBad = { ...q, outputMint: USDC_SOL };
+    expect(() => assertQuoteMatchesRequest(xchain, qBad, { chain: 'base' })).toThrow(/buy token .* does not match/i);
+  });
 });
 
 describe('assertInputWithinMax', () => {
