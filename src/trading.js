@@ -3156,7 +3156,10 @@ EXAMPLES:
                   // result.txHash legitimately is not the hash of the bytes we signed — poll it
                   // directly and skip the equality check. Otherwise bind to our local hash.
                   if (gasless) {
-                    await waitForReceipt(chain, result.txHash);
+                    // No local hash to bind to here (the Relay solver broadcasts its
+                    // own tx). If it reported no hash, there is nothing to poll — skip
+                    // rather than block on eth_getTransactionReceipt(undefined).
+                    if (result.txHash) await waitForReceipt(chain, result.txHash);
                   } else {
                     txId = evmTxHash(signedTransaction);
                     explorerUrl = chainConfig.explorer + txId;
