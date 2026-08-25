@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.40.1
+
+### Patch Changes
+
+- [#516](https://github.com/nansen-ai/nansen-cli/pull/516) [`48722ef`](https://github.com/nansen-ai/nansen-cli/commit/48722ef0c7e6c0a7ce8c4c026245afb6e6f47e79) Thanks [@kome12](https://github.com/kome12)! - Fix cross-chain bridges into native SOL being refused at execute time. The quote/intent binding compared the wrapped-SOL mint (how `--to SOL` resolves) against the System Program address that aggregators use as the native-SOL sentinel and rejected them as different tokens. Both spellings are now treated as the same asset.
+
 ## 1.40.0
 
 ### Minor Changes
