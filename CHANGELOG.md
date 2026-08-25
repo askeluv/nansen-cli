@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.40.0
+
+### Minor Changes
+
+- [#509](https://github.com/nansen-ai/nansen-cli/pull/509) [`430c300`](https://github.com/nansen-ai/nansen-cli/commit/430c3003d28a44bd1bfb123eef9290a7350a7e1e) Thanks [@kome12](https://github.com/kome12)! - `trade execute` now revokes an existing on-chain ERC-20 allowance before
+  re-approving when it is more than 10x the current trade's scoped amount, such
+  as a legacy unlimited approval or an allowance granted by another app. Most
+  trades are unaffected. Opt out with `--no-revoke-excessive-allowance`.
+
+  After each revoke or reapproval, the CLI reads the resulting allowance back
+  on-chain and fails closed (instead of proceeding to the swap) if it doesn't
+  match what was expected or can't be read.
+
+### Patch Changes
+
+- [#498](https://github.com/nansen-ai/nansen-cli/pull/498) [`a964dd1`](https://github.com/nansen-ai/nansen-cli/commit/a964dd19c826f5231d2651547212d8169a74e7fe) Thanks [@crazywriter1](https://github.com/crazywriter1)! - Use `pending` nonce block tag for EVM sends: back-to-back transfers no longer risk reusing the same nonce when mempool transactions are queued.
+
+- [#493](https://github.com/nansen-ai/nansen-cli/pull/493) [`bc89fef`](https://github.com/nansen-ai/nansen-cli/commit/bc89fef74489da3df32a12079effbdfa899373fd) Thanks [@crazywriter1](https://github.com/crazywriter1)! - Validate `--slippage-bps` on `limit-order create`: values outside 0-10000 now fail with a clear error before any auth/API call.
+
 ## 1.39.0
 
 ### Minor Changes
