@@ -22,6 +22,7 @@ import {
   signLegacyTransaction,
   signSolanaTransaction,
   signEvmTransaction,
+  evmTxHash,
   buildApprovalTransaction,
   approvalAmountForSwap,
   approvalCapForQuote,
@@ -599,6 +600,51 @@ describe('signEvmTransaction (API response format)', () => {
     const sig0 = signEvmTransaction(txData, wallet.privateKey, 'base', 0);
     const sig1 = signEvmTransaction(txData, wallet.privateKey, 'base', 1);
     expect(sig0).not.toBe(sig1);
+  });
+});
+
+describe('evmTxHash', () => {
+  it('hashes to the known keccak256 vector for the underlying bytes', () => {
+    // 0x616263 decodes to the ASCII bytes "abc", whose keccak256 is the same
+    // known-good vector crypto.test.js verifies independently — this checks
+    // evmTxHash's hex decoding lines up with that, not just self-consistency.
+    expect(evmTxHash('0x616263')).toBe(
+      '0x4e03657aea45a94fc7d47ba826c8d667c0d1e6e33a64a036ec44f58fa12d6c45',
+    );
+  });
+
+  it('accepts hex without a 0x prefix', () => {
+    expect(evmTxHash('616263')).toBe(evmTxHash('0x616263'));
+  });
+
+  it('rejects non-hex / odd-length / empty / non-string input', () => {
+    expect(() => evmTxHash('0xzz')).toThrow();
+    expect(() => evmTxHash('0x123')).toThrow();
+    expect(() => evmTxHash('0x')).toThrow();
+    expect(() => evmTxHash(123)).toThrow();
+  });
+
+  it('hashes a signed EIP-1559 (type 2) transaction to keccak256 of its raw bytes', () => {
+    const wallet = generateEvmWallet();
+    const txData = {
+      to: '0x' + 'ab'.repeat(20), data: '0x', value: '0', gas: '21000',
+      maxFeePerGas: '1000000', maxPriorityFeePerGas: '1000000',
+    };
+    const signedHex = signEvmTransaction(txData, wallet.privateKey, 'base', 0);
+    expect(signedHex.startsWith('0x02')).toBe(true);
+    const expected = '0x' + keccak256(Buffer.from(signedHex.slice(2), 'hex')).toString('hex');
+    expect(evmTxHash(signedHex)).toBe(expected);
+  });
+
+  it('hashes a signed legacy (type 0) transaction to keccak256 of its raw bytes', () => {
+    const wallet = generateEvmWallet();
+    const tx = {
+      nonce: 0, gasPrice: '0x3B9ACA00', gasLimit: '0x5208',
+      to: '0x' + 'ab'.repeat(20), value: '0x0', data: '0x', chainId: 8453,
+    };
+    const signedHex = signLegacyTransaction(tx, wallet.privateKey);
+    const expected = '0x' + keccak256(Buffer.from(signedHex.slice(2), 'hex')).toString('hex');
+    expect(evmTxHash(signedHex)).toBe(expected);
   });
 });
 
@@ -1359,7 +1405,7 @@ describe('Privy execute support', () => {
       if (urlStr.includes('privy.io') && opts?.method === 'POST') {
         return Promise.resolve({
           ok: true,
-          json: () => Promise.resolve({ data: { signed_transaction: '0xSignedTxHex' } }),
+          json: () => Promise.resolve({ data: { signed_transaction: '0xdeadbeef01' } }),
         });
       }
       // RPC call (nonce, simulation, waitForReceipt)
@@ -1381,9 +1427,10 @@ describe('Privy execute support', () => {
       }
       // Trading API executeTransaction
       if (urlStr.includes('trading-api')) {
+        const body = JSON.parse(opts.body);
         return Promise.resolve({
           ok: true,
-          text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: '0xTxHash', chainType: 'evm', broadcaster: 'test' })),
+          text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: evmTxHash(body.signedTransaction), chainType: 'evm', broadcaster: 'test' })),
         });
       }
       return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
@@ -1492,7 +1539,7 @@ describe('Privy execute support', () => {
       if (urlStr.includes('privy.io') && opts?.method === 'POST') {
         return Promise.resolve({
           ok: true,
-          json: () => Promise.resolve({ data: { signed_transaction: '0xSignedTxHex' } }),
+          json: () => Promise.resolve({ data: { signed_transaction: '0xdeadbeef02' } }),
         });
       }
       // RPC calls
@@ -1518,9 +1565,10 @@ describe('Privy execute support', () => {
       // Trading API executeTransaction
       if (urlStr.includes('trading-api')) {
         currentAllowance = 1000000n; // the approval that was just broadcast lands on-chain
+        const body = JSON.parse(opts.body);
         return Promise.resolve({
           ok: true,
-          text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: '0xApprovalHash', chainType: 'evm', broadcaster: 'test' })),
+          text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: evmTxHash(body.signedTransaction), chainType: 'evm', broadcaster: 'test' })),
         });
       }
       return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
@@ -1659,13 +1707,14 @@ describe('Privy execute support', () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
       if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
-        executeBodies.push(JSON.parse(opts.body));
+        const body = JSON.parse(opts.body);
+        executeBodies.push(body);
         // The broadcast revoke lands on-chain, so the post-revoke allowance
         // verification reads back 0.
         currentAllowance = 0n;
         return Promise.resolve({
           ok: true,
-          text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: '0xRevokeHash', chainType: 'evm', broadcaster: 'test' })),
+          text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: evmTxHash(body.signedTransaction), chainType: 'evm', broadcaster: 'test' })),
         });
       }
       if (urlStr.includes('privy.io') && opts?.method === 'GET') {
@@ -1676,7 +1725,7 @@ describe('Privy execute support', () => {
       }
       if (urlStr.includes('privy.io') && opts?.method === 'POST') {
         privyPostCount++;
-        const data = privyPostCount === 1 ? { signed_transaction: '0xSignedRevoke' } : {};
+        const data = privyPostCount === 1 ? { signed_transaction: '0xdeadbeef03' } : {};
         return Promise.resolve({ ok: true, json: () => Promise.resolve({ data }) });
       }
       if (urlStr.includes('base') || urlStr.includes('mainnet')) {
@@ -3032,6 +3081,130 @@ describe('Relay aggregator: empty approvalAddress', () => {
   });
 });
 
+describe('confirmEvmBroadcast: binds receipt confirmation to the locally-derived tx hash', () => {
+  it('rejects a broadcaster txHash that does not match the signed transaction', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const executeBodies = [];
+    const wrongHash = '0x' + 'de'.repeat(32);
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const body = opts?.body ? (() => { try { return JSON.parse(opts.body); } catch { return {}; } })() : {};
+      if (body.method === 'eth_getTransactionCount') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+      }
+      if (body.method === 'eth_getCode') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      }
+      if (body.method === 'eth_call') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' })) });
+      }
+      if (body.method === 'eth_getTransactionReceipt') {
+        // A misbehaving/compromised broadcaster: the receipt "confirms" for
+        // ANY hash we ask it about, including one we never signed.
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { status: '0x1', blockNumber: '0x100' } })) });
+      }
+      if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
+        executeBodies.push(body);
+        return Promise.resolve({
+          ok: true,
+          text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: wrongHash, chainType: 'evm', broadcaster: 'test' })),
+        });
+      }
+      return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'lifi',
+        inputMint: BASE_USDC,
+        outputMint: OUT_TOKEN,
+        inAmount: '10000000',
+        outAmount: '50000000',
+        approvalAddress: '', // no approval needed — go straight to the swap broadcast
+        transaction: { to: LIFI_ROUTER, data: '0x12345678', value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
+      }],
+    }, 'base', 'local', null, null, {
+      swapMode: 'exactIn',
+      request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: BASE_USDC, toToken: OUT_TOKEN, amount: '10000000', maxInputAmount: '10000000' }),
+    });
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    await expect(cmds.execute([], null, {}, { quote: quoteId }))
+      .rejects.toThrow(/did not sign|TXHASH_MISMATCH/);
+
+    expect(executeBodies).toHaveLength(1);
+    expect(logs.some(l => l.includes('Transaction successful'))).toBe(false);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+    vi.unstubAllGlobals();
+  });
+
+  it('confirms a gasless swap on the broadcaster hash without a mismatch error', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const executeBodies = [];
+    // Legitimate for gasless: the Relay solver broadcasts its OWN tx, so this
+    // is never evmTxHash(signedTransaction) — must NOT trip TXHASH_MISMATCH.
+    const solverHash = '0x' + 'ab'.repeat(32);
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const body = opts?.body ? (() => { try { return JSON.parse(opts.body); } catch { return {}; } })() : {};
+      if (body.method === 'eth_getTransactionCount') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+      }
+      if (body.method === 'eth_getCode') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      }
+      if (body.method === 'eth_call') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' })) });
+      }
+      if (body.method === 'eth_getTransactionReceipt') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { status: '0x1', blockNumber: '0x100' } })) });
+      }
+      if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
+        executeBodies.push(body);
+        return Promise.resolve({
+          ok: true,
+          text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: solverHash, chainType: 'evm', broadcaster: 'relay' })),
+        });
+      }
+      return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'relay',
+        inputMint: BASE_USDC,
+        outputMint: OUT_TOKEN,
+        inAmount: '10000000',
+        outAmount: '50000000',
+        approvalAddress: '',
+        transaction: { to: RELAY_ROUTER, data: '0x12345678', value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
+        metadata: { requestId: 'relay-gasless-req', steps: [{ kind: 'evm-tx' }] },
+      }],
+    }, 'base', 'local', null, null, {
+      swapMode: 'exactIn',
+      request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: BASE_USDC, toToken: OUT_TOKEN, amount: '10000000', maxInputAmount: '10000000' }),
+    });
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    await cmds.execute([], null, { gasless: true }, { quote: quoteId });
+
+    expect(executeBodies).toHaveLength(1);
+    expect(logs.some(l => l.includes('Transaction successful'))).toBe(true);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+    vi.unstubAllGlobals();
+  });
+});
+
 describe('Swap target validation blocks a poisoned quote (security hardening)', () => {
   it('does not broadcast when the swap target is an EOA (no contract code)', async () => {
     createWallet('default', 'testpass');
@@ -3501,7 +3674,11 @@ describe('ERC-20 excessive allowance handling', () => {
       if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
         const response = executeResponses[executeBodies.length] ?? executeResponses.at(-1);
         executeBodies.push(body);
-        sequence.push({ type: 'execute', txHash: response.txHash, signedTransaction: body.signedTransaction });
+        // Echo the real hash of the signed bytes, like a correct broadcaster would.
+        const txHash = response.status === 'Success' && body.signedTransaction
+          ? evmTxHash(body.signedTransaction)
+          : response.txHash;
+        sequence.push({ type: 'execute', txHash, signedTransaction: body.signedTransaction });
         const selectorIdx = body.signedTransaction?.indexOf(approveSelector);
         if (response.status === 'Success' && selectorIdx >= 0) {
           const amountStart = selectorIdx + approveSelector.length + 64;
@@ -3509,7 +3686,7 @@ describe('ERC-20 excessive allowance handling', () => {
         }
         return Promise.resolve({
           ok: true,
-          text: () => Promise.resolve(JSON.stringify(response)),
+          text: () => Promise.resolve(JSON.stringify({ ...response, txHash })),
         });
       }
 
@@ -3570,13 +3747,14 @@ describe('ERC-20 excessive allowance handling', () => {
     expect(executeBodies[1].signedTransaction).toContain(approveSelector);
     expect(executeBodies[1].signedTransaction).toContain(amountWord(100000n));
     expect(executeBodies[2].signedTransaction).not.toContain(approveSelector);
+    const [revokeHash, approvalHash, swapHash] = executeBodies.map(b => evmTxHash(b.signedTransaction));
     expect(sequence.map(e => `${e.type}:${e.txHash}`)).toEqual([
-      'execute:0xRevokeHash',
-      'receipt:0xRevokeHash',
-      'execute:0xApprovalHash',
-      'receipt:0xApprovalHash',
-      'execute:0xSwapHash',
-      'receipt:0xSwapHash',
+      `execute:${revokeHash}`,
+      `receipt:${revokeHash}`,
+      `execute:${approvalHash}`,
+      `receipt:${approvalHash}`,
+      `execute:${swapHash}`,
+      `receipt:${swapHash}`,
     ]);
     expect(logs.some(l => l.includes('Existing allowance (2000000)'))).toBe(true);
     expect(logs.some(l => l.includes('Allowance revoked in block'))).toBe(true);
@@ -3618,7 +3796,7 @@ describe('ERC-20 excessive allowance handling', () => {
         executeBodies.push(body);
         return Promise.resolve({
           ok: true,
-          text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: '0xRevokeHash', chainType: 'evm', broadcaster: 'test' })),
+          text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: evmTxHash(body.signedTransaction), chainType: 'evm', broadcaster: 'test' })),
         });
       }
       if (body.method === 'eth_getCode') {
@@ -3664,7 +3842,7 @@ describe('ERC-20 excessive allowance handling', () => {
           ok: true,
           text: () => Promise.resolve(JSON.stringify({
             status: 'Success',
-            txHash: executeCount === 1 ? '0xRevokeHash' : '0xApprovalHash',
+            txHash: evmTxHash(body.signedTransaction),
             chainType: 'evm',
             broadcaster: 'test',
           })),
@@ -3709,7 +3887,7 @@ describe('ERC-20 excessive allowance handling', () => {
         executeBodies.push(body);
         return Promise.resolve({
           ok: true,
-          text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: '0xRevokeHash', chainType: 'evm', broadcaster: 'test' })),
+          text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: evmTxHash(body.signedTransaction), chainType: 'evm', broadcaster: 'test' })),
         });
       }
       if (body.method === 'eth_getCode') {
