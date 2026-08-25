@@ -23,6 +23,7 @@ import {
   signSolanaTransaction,
   signEvmTransaction,
   evmTxHash,
+  confirmEvmBroadcast,
   buildApprovalTransaction,
   approvalAmountForSwap,
   approvalCapForQuote,
@@ -3201,6 +3202,41 @@ describe('confirmEvmBroadcast: binds receipt confirmation to the locally-derived
     expect(logs.some(l => l.includes('Transaction successful'))).toBe(true);
 
     delete process.env.NANSEN_WALLET_PASSWORD;
+    vi.unstubAllGlobals();
+  });
+
+  it('polls OUR locally-derived hash — not the broadcaster hash — when the broadcaster returns none (guarantee #2)', async () => {
+    // A signed tx whose bytes are ours; the broadcaster returns no hash at all.
+    const signedTx = '0x02' + 'ab'.repeat(96);
+    const localHash = evmTxHash(signedTx);
+    // A tx we never signed: it HAS a valid receipt on-chain. If confirmEvmBroadcast
+    // polled anything other than our own hash, it could confirm this one by mistake.
+    const foreignHash = '0x' + 'cd'.repeat(32);
+
+    const queriedHashes = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const body = opts?.body ? (() => { try { return JSON.parse(opts.body); } catch { return {}; } })() : {};
+      if (body.method === 'eth_getTransactionReceipt') {
+        const asked = body.params[0];
+        queriedHashes.push(asked);
+        // ONLY our locally-derived hash has a receipt. The foreign hash also has
+        // one, to prove we never fall back to querying it.
+        const known = asked.toLowerCase() === localHash.toLowerCase()
+          || asked.toLowerCase() === foreignHash.toLowerCase();
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({
+          jsonrpc: '2.0', id: body.id, result: known ? { status: '0x1', blockNumber: '0x100' } : null,
+        })) });
+      }
+      return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    // No broadcaster hash supplied — guarantee #2 path.
+    const receipt = await confirmEvmBroadcast('base', signedTx, undefined);
+    expect(parseInt(receipt.blockNumber, 16)).toBe(256);
+    // Every receipt poll was for OUR hash; the foreign hash was never queried.
+    expect(queriedHashes.length).toBeGreaterThan(0);
+    expect(queriedHashes.every(h => h.toLowerCase() === localHash.toLowerCase())).toBe(true);
+
     vi.unstubAllGlobals();
   });
 });

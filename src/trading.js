@@ -686,34 +686,49 @@ export async function waitForReceipt(chain, txHash, timeoutMs = 180000, pollMs =
 }
 
 /**
- * Confirm a broadcast EVM transaction against the hash we derived locally from
- * the signed bytes — not the hash the broadcaster reported.
+ * Assert the broadcaster reported the transaction we actually signed, and return
+ * our locally-derived hash.
  *
- * Two guarantees:
- *  1. If the broadcaster's returned hash differs from ours, fail closed. A
- *     mismatch means the broadcaster is reporting on a transaction we did not
- *     sign, so we must not treat its receipt as proof our transaction landed.
- *  2. We poll waitForReceipt on OUR hash, so even absent a returned hash a
- *     substituted transaction times out ("receipt not found") rather than
- *     falsely confirming.
+ * Fails closed (TXHASH_MISMATCH) when the broadcaster's returned hash differs
+ * from keccak256 of our signed bytes: a mismatch means its receipt would confirm
+ * a transaction we never signed, so nothing has been verified. When the
+ * broadcaster returns no hash we cannot compare, so the returned local hash is
+ * what callers must poll for a receipt — a substituted transaction then times
+ * out rather than falsely confirming.
+ *
+ * @param {string} signedTxHex - the raw signed tx we sent to /execute
+ * @param {string} broadcasterTxHash - the txHash /execute returned (may be empty)
+ * @param {string} [label] - describes the tx for the error, e.g. "allowance-revoke"
+ * @returns {string} our locally-derived transaction hash
+ */
+function assertTxHashMatch(signedTxHex, broadcasterTxHash, label = '') {
+  const localHash = evmTxHash(signedTxHex);
+  if (broadcasterTxHash && localHash.toLowerCase() !== broadcasterTxHash.toLowerCase()) {
+    const what = label ? `the ${label} transaction this CLI signed` : 'the transaction this CLI signed';
+    throw new CommandError(
+      `Aborting: the broadcaster reported transaction ${broadcasterTxHash}, but ${what} `
+      + `hashes to ${localHash}. These must match — a mismatch means the receipt would confirm `
+      + `a transaction you did not sign, so nothing has been verified and no further steps will `
+      + `run. Check both hashes on a block explorer to see what was actually broadcast before retrying.`,
+      'TXHASH_MISMATCH',
+    );
+  }
+  return localHash;
+}
+
+/**
+ * Confirm a broadcast EVM transaction against the hash we derived locally from
+ * the signed bytes — not the hash the broadcaster reported. See
+ * {@link assertTxHashMatch} for the two guarantees (fail closed on mismatch;
+ * poll our own hash so a silent substitution times out rather than confirms).
  *
  * @param {string} chain
  * @param {string} signedTxHex - the raw signed tx we sent to /execute
  * @param {string} broadcasterTxHash - the txHash /execute returned
  * @returns {Promise<object>} the transaction receipt
  */
-async function confirmEvmBroadcast(chain, signedTxHex, broadcasterTxHash) {
-  const localHash = evmTxHash(signedTxHex);
-  if (broadcasterTxHash && localHash.toLowerCase() !== broadcasterTxHash.toLowerCase()) {
-    throw new CommandError(
-      `Aborting: the broadcaster reported transaction ${broadcasterTxHash}, but the transaction `
-      + `this CLI signed hashes to ${localHash}. These must match — a mismatch means the receipt `
-      + `would confirm a transaction you did not sign, so nothing has been verified and no further `
-      + `steps will run. Check both hashes on a block explorer to see what was actually broadcast `
-      + `before retrying.`,
-      'TXHASH_MISMATCH',
-    );
-  }
+export async function confirmEvmBroadcast(chain, signedTxHex, broadcasterTxHash) {
+  const localHash = assertTxHashMatch(signedTxHex, broadcasterTxHash);
   return waitForReceipt(chain, localHash);
 }
 
@@ -2625,18 +2640,7 @@ EXAMPLES:
                         if (broadcastResult.status !== 'Success') {
                           throw new Error(broadcastResult.error || 'broadcast failed');
                         }
-                        const localRevokeHash = evmTxHash(revokeResult.signedTransaction);
-                        if (broadcastResult.txHash && localRevokeHash.toLowerCase() !== broadcastResult.txHash.toLowerCase()) {
-                          throw new CommandError(
-                            `Aborting: the broadcaster reported transaction ${broadcastResult.txHash}, but the `
-                            + `allowance-revoke transaction this CLI signed hashes to ${localRevokeHash}. These must `
-                            + `match — a mismatch means the receipt would confirm a transaction you did not sign, so `
-                            + `nothing has been verified and no further steps will run. Check both hashes on a block `
-                            + `explorer to see what was actually broadcast before retrying.`,
-                            'TXHASH_MISMATCH',
-                          );
-                        }
-                        revokeTxHash = localRevokeHash;
+                        revokeTxHash = assertTxHashMatch(revokeResult.signedTransaction, broadcastResult.txHash, 'allowance-revoke');
                       }
                       if (!revokeTxHash) {
                         throw new Error('Allowance revoke returned no transaction hash and no signed transaction; cannot confirm allowance was cleared');
@@ -2691,18 +2695,7 @@ EXAMPLES:
                       if (broadcastResult.status !== 'Success') {
                         throw new Error(broadcastResult.error || 'broadcast failed');
                       }
-                      const localApprovalHash = evmTxHash(approvalResult.signedTransaction);
-                      if (broadcastResult.txHash && localApprovalHash.toLowerCase() !== broadcastResult.txHash.toLowerCase()) {
-                        throw new CommandError(
-                          `Aborting: the broadcaster reported transaction ${broadcastResult.txHash}, but the `
-                          + `allowance-approval transaction this CLI signed hashes to ${localApprovalHash}. These must `
-                          + `match — a mismatch means the receipt would confirm a transaction you did not sign, so `
-                          + `nothing has been verified and no further steps will run. Check both hashes on a block `
-                          + `explorer to see what was actually broadcast before retrying.`,
-                          'TXHASH_MISMATCH',
-                        );
-                      }
-                      approvalTxHash = localApprovalHash;
+                      approvalTxHash = assertTxHashMatch(approvalResult.signedTransaction, broadcastResult.txHash, 'allowance-approval');
                     }
                     if (!approvalTxHash) {
                       // Fail closed: the wallet returned neither a hash nor a
