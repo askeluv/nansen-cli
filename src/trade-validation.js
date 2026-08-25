@@ -122,6 +122,17 @@ const NATIVE_TOKEN_ADDRESSES = {
   base: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
 };
 
+// Native SOL has two on-chain spellings that denote the same asset: the
+// canonical wrapped-SOL mint (what the CLI resolves `SOL` to and persists as
+// the request intent) and the System Program address that aggregators and
+// bridges (e.g. Relay) use as the native-lamport sentinel in their quotes.
+// tokensEqual treats them as equivalent so the intent-binding check doesn't
+// false-reject a legitimate quote that names native SOL the other way.
+const SOLANA_NATIVE_SOL_ALIASES = new Set([
+  'So11111111111111111111111111111111111111112', // wrapped SOL mint
+  '11111111111111111111111111111111', // System Program — native SOL sentinel
+]);
+
 // USDC contract addresses per chain.
 const USDC_ADDRESSES = {
   solana: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
@@ -571,7 +582,11 @@ export function needsAllowanceRevoke(existingAllowance, approveAmt) {
  */
 function tokensEqual(a, b, chain) {
   if (!a || !b) return false;
-  if (chain === 'solana') return a === b;
+  if (chain === 'solana') {
+    // Both sides naming native SOL (in either spelling) is a match.
+    if (SOLANA_NATIVE_SOL_ALIASES.has(a) && SOLANA_NATIVE_SOL_ALIASES.has(b)) return true;
+    return a === b;
+  }
   return a.toLowerCase() === b.toLowerCase();
 }
 
