@@ -725,11 +725,14 @@ function assertTxHashMatch(signedTxHex, broadcasterTxHash, label = '') {
  * @param {string} chain
  * @param {string} signedTxHex - the raw signed tx we sent to /execute
  * @param {string} broadcasterTxHash - the txHash /execute returned
- * @returns {Promise<object>} the transaction receipt
+ * @returns {Promise<{receipt: object, hash: string}>} the receipt and the
+ *   locally-derived hash it was confirmed against (log THIS, not the
+ *   broadcaster's hash — it is the transaction we actually verified landed)
  */
 export async function confirmEvmBroadcast(chain, signedTxHex, broadcasterTxHash) {
-  const localHash = assertTxHashMatch(signedTxHex, broadcasterTxHash);
-  return waitForReceipt(chain, localHash);
+  const hash = assertTxHashMatch(signedTxHex, broadcasterTxHash);
+  const receipt = await waitForReceipt(chain, hash);
+  return { receipt, hash };
 }
 
 /**
@@ -2325,8 +2328,8 @@ EXAMPLES:
                     }
                     log(`  Waiting for allowance revoke confirmation...`);
                     try {
-                      const receipt = await confirmEvmBroadcast(chain, signedRevoke, revokeResult.txHash);
-                      log(`  ✓ Allowance revoked in block ${parseInt(receipt.blockNumber, 16)}: ${revokeResult.txHash}`);
+                      const { receipt, hash: revokeHash } = await confirmEvmBroadcast(chain, signedRevoke, revokeResult.txHash);
+                      log(`  ✓ Allowance revoked in block ${parseInt(receipt.blockNumber, 16)}: ${revokeHash}`);
                     } catch (receiptErr) {
                       if (receiptErr.code === 'TXHASH_MISMATCH') throw receiptErr;
                       log(`  ❌ Allowance revoke may not have confirmed for ${quoteName}: ${receiptErr.message}.${allowanceRevokeRecoveryHint(revokeResult.txHash)}`);
@@ -2384,8 +2387,8 @@ EXAMPLES:
                   }
                   log(`  Waiting for approval confirmation...`);
                   try {
-                    const receipt = await confirmEvmBroadcast(chain, signedApproval, approvalResult.txHash);
-                    log(`  ✓ Approval confirmed in block ${parseInt(receipt.blockNumber, 16)}: ${approvalResult.txHash}`);
+                    const { receipt, hash: approvalHash } = await confirmEvmBroadcast(chain, signedApproval, approvalResult.txHash);
+                    log(`  ✓ Approval confirmed in block ${parseInt(receipt.blockNumber, 16)}: ${approvalHash}`);
                   } catch (receiptErr) {
                     if (receiptErr.code === 'TXHASH_MISMATCH') throw receiptErr;
                     log(`  ❌ Approval may not have confirmed${shouldRevoke ? ' after revoking the prior allowance (now 0)' : ''}: ${receiptErr.message}`);
@@ -2967,8 +2970,8 @@ EXAMPLES:
 
                     log(`  Waiting for allowance revoke confirmation...`);
                     try {
-                      const receipt = await confirmEvmBroadcast(chain, revokeTxHex, revokeResult.txHash);
-                      log(`  ✓ Allowance revoked in block ${parseInt(receipt.blockNumber, 16)}: ${revokeResult.txHash}`);
+                      const { receipt, hash: revokeHash } = await confirmEvmBroadcast(chain, revokeTxHex, revokeResult.txHash);
+                      log(`  ✓ Allowance revoked in block ${parseInt(receipt.blockNumber, 16)}: ${revokeHash}`);
                     } catch (receiptErr) {
                       if (receiptErr.code === 'TXHASH_MISMATCH') throw receiptErr;
                       log(`  ❌ Allowance revoke may not have confirmed for ${quoteName}: ${receiptErr.message}.${allowanceRevokeRecoveryHint(revokeResult.txHash)}`);
@@ -3019,8 +3022,8 @@ EXAMPLES:
 
                   log(`  Waiting for approval confirmation...`);
                   try {
-                    const receipt = await confirmEvmBroadcast(chain, approvalTxHex, approvalResult.txHash);
-                    log(`  ✓ Approval confirmed in block ${parseInt(receipt.blockNumber, 16)}: ${approvalResult.txHash}`);
+                    const { receipt, hash: approvalHash } = await confirmEvmBroadcast(chain, approvalTxHex, approvalResult.txHash);
+                    log(`  ✓ Approval confirmed in block ${parseInt(receipt.blockNumber, 16)}: ${approvalHash}`);
                   } catch (receiptErr) {
                     if (receiptErr.code === 'TXHASH_MISMATCH') throw receiptErr;
                     log(`  ❌ Approval may not have confirmed${shouldRevoke ? ' after revoking the prior allowance (now 0)' : ''}: ${receiptErr.message}`);

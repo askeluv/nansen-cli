@@ -3231,8 +3231,11 @@ describe('confirmEvmBroadcast: binds receipt confirmation to the locally-derived
     }));
 
     // No broadcaster hash supplied — guarantee #2 path.
-    const receipt = await confirmEvmBroadcast('base', signedTx, undefined);
+    const { receipt, hash } = await confirmEvmBroadcast('base', signedTx, undefined);
     expect(parseInt(receipt.blockNumber, 16)).toBe(256);
+    // The confirmed-against hash returned to callers is OUR local hash (so the
+    // success log shows the tx we actually verified, not the broadcaster's).
+    expect(hash.toLowerCase()).toBe(localHash.toLowerCase());
     // Every receipt poll was for OUR hash; the foreign hash was never queried.
     expect(queriedHashes.length).toBeGreaterThan(0);
     expect(queriedHashes.every(h => h.toLowerCase() === localHash.toLowerCase())).toBe(true);
