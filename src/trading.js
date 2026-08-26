@@ -13,11 +13,12 @@ import { base58Decode } from './transfer.js';
 import { keccak256, signSecp256k1, rlpEncode } from './crypto.js';
 import { getWalletConnectAddress, sendTransactionViaWalletConnect, sendSolanaTransactionViaWalletConnect, sendApprovalViaWalletConnect } from './walletconnect-trading.js';
 import { retrievePassword } from './keychain.js';
-import { validateQuoteInput, validateBalance, resolvePercentAmount, validateGasBalance, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertSwapCalldataNotBareTransfer, assertSwapOutcome, assertSolanaInstructionsSafe, approvalAmountForSwap, needsAllowanceRevoke, OVERSIZED_ALLOWANCE_MULTIPLIER } from './trade-validation.js';
+import { validateQuoteInput, validateBalance, resolvePercentAmount, validateGasBalance, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertSwapCalldataNotBareTransfer, assertSwapOutcome, assertSolanaInstructionsSafe, assertSolanaSwapOutcome, approvalAmountForSwap, needsAllowanceRevoke, OVERSIZED_ALLOWANCE_MULTIPLIER } from './trade-validation.js';
 import { readCompactU16 } from './solana-tx.js';
 export { readCompactU16 };
 import { CHAIN_RPCS } from './rpc-urls.js';
 import { simulateAssetChanges, SwapSimulationError, hasSimulationRpc } from './swap-simulation.js';
+import { simulateSolanaAssetChanges, SolanaSimulationError, hasSolanaSimulationRpc } from './solana-simulation.js';
 import { packageVersion, CommandError, telemetryHeaders, loadConfig } from './api.js';
 
 // ============= Constants =============
@@ -908,6 +909,43 @@ export async function verifySwapOutcome({ chain, from, quote, quoteData, apiKey 
     // (fall through to the next quote) when the outcome did not match or the
     // swap reverts in simulation.
     if (e instanceof SwapSimulationError && ['NO_SIM_RPC', 'NOT_SIM_CAPABLE', 'SIM_RPC_ERROR'].includes(e.code)) {
+      log(`  ⚠ Swap-outcome verification could not run (${e.message}); proceeding without it.`);
+      return { proceed: true };
+    }
+    return { proceed: false, reason: e.message };
+  }
+}
+
+/**
+ * The Solana sibling of verifySwapOutcome: simulates the swap transaction via
+ * simulateTransaction and checks the resulting balance deltas against the
+ * persisted request intent, degrading (warn + proceed) on any RPC/sim outage
+ * so an outage never blocks a trade — only a real outcome mismatch or an
+ * in-simulation revert blocks (falls through to the next quote).
+ */
+export async function verifySolanaSwapOutcome({ chain, walletAddress, txBase64, quote, quoteData, log = () => {} }) {
+  if (chain !== 'solana') return { proceed: true };
+  // Cross-chain: the output settles on the destination chain and can never
+  // appear in a source-chain simulation (mirrors the EVM bridge skip above).
+  if (quoteData?.toChain && quoteData.toChain !== quoteData.chain) return { proceed: true };
+  if (!quoteData?.request) {
+    log('  ⚠ Swap-outcome verification skipped (no request intent — re-quote to enable it).');
+    return { proceed: true };
+  }
+  if (!hasSolanaSimulationRpc(chain)) {
+    log(`  ⚠ Swap-outcome verification unavailable (no simulation endpoint for ${chain}); proceeding without it.`);
+    return { proceed: true };
+  }
+  try {
+    const sim = await simulateSolanaAssetChanges(chain, txBase64, { walletAddress });
+    const outcome = assertSolanaSwapOutcome(quoteData.request, quote, sim, { slippage: quoteData.slippage });
+    if (outcome.inputAssertionSkipped) {
+      log('  ℹ Native-SOL input spend is bounded with fee/rent slack, not exactly delta-verified; output and sibling checks still ran.');
+    }
+    log(`  ✓ Swap outcome verified (via ${sim.method}).`);
+    return { proceed: true };
+  } catch (e) {
+    if (e instanceof SolanaSimulationError && ['NO_SIM_RPC', 'SIM_RPC_ERROR'].includes(e.code)) {
       log(`  ⚠ Swap-outcome verification could not run (${e.message}); proceeding without it.`);
       return { proceed: true };
     }
@@ -2130,7 +2168,7 @@ OPTIONS:
   --quote <id>              Quote ID from 'nansen quote'
   --wallet <name>           Wallet name (default: default wallet)
   --no-simulate             Skip pre-broadcast simulation (the eth_call revert check)
-  --no-verify-outcome       Skip EVM swap-outcome verification (balance-delta check)
+  --no-verify-outcome       Skip swap-outcome verification (balance-delta check)
   --no-revoke-excessive-allowance
                             Skip auto-revoking an oversized/legacy allowance before re-approving
   --gasless                 Relay-only: have Relay's solver pay gas (no WalletConnect)
@@ -2298,11 +2336,22 @@ EXAMPLES:
               // Then statically inspect the serialized transaction's own
               // instructions ahead of signing — catches a delegate grant, authority
               // change, close-to-stranger, or excessive fee that the metadata check
-              // alone wouldn't see. Solana has no balance-delta simulation (that
-              // layer is Base-only), so this static check plus the metadata binding
-              // are the only transaction-level guards here — see
-              // assertSolanaInstructionsSafe for the residual sibling-transfer gap.
+              // alone wouldn't see. The residual sibling-transfer gap is closed by
+              // verifySolanaSwapOutcome below (degrades gracefully when no sim RPC
+              // is available, so this static check remains a guard when sim is off).
               assertSolanaInstructionsSafe(txBase64, { walletAddress });
+
+              // Verify the swap's simulated on-chain outcome matches intent.
+              // Degrades with a warning if no simulation endpoint is available.
+              if (!noVerifyOutcome) {
+                const outcome = await verifySolanaSwapOutcome({ chain, walletAddress, txBase64, quote: currentQuote, quoteData, log });
+                if (!outcome.proceed) {
+                  log(`  ❌ ${quoteName} failed swap-outcome verification: ${outcome.reason}`);
+                  if (qi + 1 < endIndex) log('  Trying next quote...');
+                  lastQuoteError = `${quoteName} outcome verification failed: ${outcome.reason}`;
+                  continue;
+                }
+              }
 
               log('  Signing Solana transaction via Privy...');
               const signResult = await privyClient.signSolanaTransaction(solWalletId, txBase64);
@@ -2610,11 +2659,22 @@ EXAMPLES:
               // Then statically inspect the serialized transaction's own
               // instructions ahead of signing — catches a delegate grant, authority
               // change, close-to-stranger, or excessive fee that the metadata check
-              // alone wouldn't see. Solana has no balance-delta simulation (that
-              // layer is Base-only), so this static check plus the metadata binding
-              // are the only transaction-level guards here — see
-              // assertSolanaInstructionsSafe for the residual sibling-transfer gap.
+              // alone wouldn't see. The residual sibling-transfer gap is closed by
+              // verifySolanaSwapOutcome below (degrades gracefully when no sim RPC
+              // is available, so this static check remains a guard when sim is off).
               assertSolanaInstructionsSafe(txBase64, { walletAddress: solanaWalletAddress });
+
+              // Verify the swap's simulated on-chain outcome matches intent.
+              // Degrades with a warning if no simulation endpoint is available.
+              if (!noVerifyOutcome) {
+                const outcome = await verifySolanaSwapOutcome({ chain, walletAddress: solanaWalletAddress, txBase64, quote: currentQuote, quoteData, log });
+                if (!outcome.proceed) {
+                  log(`  ❌ ${quoteName} failed swap-outcome verification: ${outcome.reason}`);
+                  if (qi + 1 < endIndex) log('  Trying next quote...');
+                  lastQuoteError = `${quoteName} outcome verification failed: ${outcome.reason}`;
+                  continue;
+                }
+              }
 
               if (isWalletConnect) {
                 // Solana via WalletConnect: convert base64 → base58 for WC protocol

@@ -7,6 +7,7 @@
 import { validateAddress } from './api.js';
 import { CHAIN_RPCS } from './rpc-urls.js';
 import { parseTransactionMessage, resolveStaticAccount } from './solana-tx.js';
+import { SOL_SENTINEL } from './solana-simulation.js';
 
 const SUPPORTED_CHAINS = ['solana', 'base'];
 
@@ -1119,6 +1120,215 @@ export function assertSwapOutcome(request, quote, sim, { slippage, expectedSpend
   return { verified: true };
 }
 
+// Native-SOL dust tolerated on a non-input sibling in assertSolanaSwapOutcome —
+// covers the base tx fee plus one transient ATA's rent (e.g. a WSOL account
+// opened and closed within the swap). SPL-token siblings get no such tolerance
+// (dust threshold 0n); only native SOL legitimately moves as a byproduct of fees
+// and rent rather than the swap itself.
+const NATIVE_SIBLING_DUST_LAMPORTS = 3_000_000n; // ~0.003 SOL
+
+// Full native-SOL fee/rent noise budget: the dust above PLUS the priority fee
+// a transaction may legitimately pay, up to the ceiling assertSolanaInstructionsSafe
+// enforces. NATIVE_SIBLING_DUST_LAMPORTS alone only covers the base fee + rent —
+// a real, legal priority fee (anywhere up to MAX_PRIORITY_FEE_LAMPORTS) also
+// leaves the wallet as native SOL regardless of whether SOL is the input,
+// output, or an uninvolved sibling of the swap, so all three assertions below
+// need the same combined slack or a legitimate high-priority-fee trade false-blocks.
+const NATIVE_FEE_RENT_SLACK_LAMPORTS = MAX_PRIORITY_FEE_LAMPORTS + NATIVE_SIBLING_DUST_LAMPORTS;
+
+/**
+ * The Solana sibling of assertSwapOutcome. Solana signs the aggregator's
+ * serialized transaction verbatim and has no approval/calldata split to
+ * validate, so this verifies the balance-delta simulation result (see
+ * solana-simulation.js) against the persisted request intent directly.
+ *
+ * REQUIRES assertSolanaInstructionsSafe to have already run, RPC-free, on the
+ * same transaction (both current signing paths in trading.js call it first):
+ * an unexpected authority grant is rejected there (no assertion 4 sibling
+ * needed here), and assertion 1's native-input slack below is only a safe
+ * bound because that check has already enforced the priority-fee ceiling —
+ * skip it on any future signing path and native-input drains widen from a
+ * fixed slack to an unbounded priority fee.
+ *
+ * Three assertions:
+ *   1. the input token leaves the wallet by no more than maxInputAmount.
+ *      Native-SOL input can't be bound at the exact cap the way an SPL input
+ *      can: its lamport delta also carries the base fee, priority fee, and net
+ *      ATA rent (opened minus reclaimed), which is too noisy for a tight
+ *      bound. It is still bounded, not skipped — the cap is relaxed by a
+ *      fee/rent slack (the priority-fee ceiling assertSolanaInstructionsSafe
+ *      enforces, plus one transient ATA's rent) so a real outflow beyond any
+ *      realistic transaction cost is still caught. Without this, a
+ *      transaction with an extra unaccounted native-SOL outflow (e.g. a plain
+ *      System-Program transfer, which assertSolanaInstructionsSafe does not
+ *      classify) would sail through as long as the declared output arrived —
+ *      neither assertQuoteMatchesRequest (checks the quote's declared
+ *      metadata, not the transaction's real effects) nor assertion 3 (which
+ *      exempts the input asset, assuming assertion 1 already bounded it)
+ *      would catch it.
+ *   2. the output token arrives by at least the minimum acceptable amount.
+ *      Native-SOL output relaxes this floor by NATIVE_FEE_RENT_SLACK_LAMPORTS
+ *      because its lamport delta also nets out the base fee, priority fee, and
+ *      ATA rent (same noise as native input); SPL output keeps the exact floor.
+ *   3. no OTHER tracked asset leaves the wallet. SPL-token siblings get zero
+ *      tolerance; native SOL, when it's a sibling (not the input), tolerates
+ *      NATIVE_FEE_RENT_SLACK_LAMPORTS of fee/rent dust. All three assertions
+ *      share this one slack value — splitting it (e.g. a smaller tolerance for
+ *      assertion 2/3 than assertion 1) would false-block a legitimate trade
+ *      paying close to the priority-fee ceiling on whichever assertion has the
+ *      smaller number, since the same fee leaves the wallet as native SOL
+ *      regardless of SOL's role in that particular swap.
+ *
+ * @param {object} request - persisted intent (quoteData.request); required
+ * @param {object} quote - the quote being executed
+ * @param {{deltas: Record<string, bigint|string|number>}} sim - the normalised
+ *   result from simulateSolanaAssetChanges()
+ * @param {object} [ctx]
+ * @param {number} [ctx.slippage] - slippage fraction in effect; defaults to 3%
+ * @param {bigint} [ctx.siblingDustThreshold] - overrides NATIVE_FEE_RENT_SLACK_LAMPORTS
+ * @returns {{verified: true, inputAssertionSkipped: boolean}} inputAssertionSkipped
+ *   is true when the input was native SOL, meaning assertion 1 ran with the
+ *   fee/rent slack applied instead of an exact bound (see assertion 1's
+ *   rationale above) — the caller should surface this.
+ * @throws {Error} with `code = 'SWAP_OUTCOME_MISMATCH'` on any failed assertion.
+ */
+export function assertSolanaSwapOutcome(request, quote, sim, { slippage, siblingDustThreshold } = {}) {
+  const fail = (detail) => {
+    const e = new Error(`Swap outcome mismatch (SWAP_OUTCOME_MISMATCH): ${detail} Refusing to sign.`);
+    e.code = 'SWAP_OUTCOME_MISMATCH';
+    return e;
+  };
+
+  if (!request) throw fail('no request intent to verify the outcome against.');
+  if (!sim || typeof sim !== 'object' || sim.deltas == null) {
+    throw fail('simulation returned no asset changes to verify.');
+  }
+
+  const deltas = {};
+  for (const [k, v] of Object.entries(sim.deltas)) {
+    let amt;
+    try {
+      amt = typeof v === 'bigint' ? v : BigInt(v);
+    } catch {
+      throw fail(`simulated delta for ${k} (${v}) is not an integer.`);
+    }
+    deltas[k] = amt;
+  }
+
+  const foldNative = (mint) => (mint && SOLANA_NATIVE_SOL_ALIASES.has(mint) ? SOL_SENTINEL : mint);
+  const inputAsset = quote?.inputMint ? foldNative(quote.inputMint) : null;
+  const outputAsset = quote?.outputMint ? foldNative(quote.outputMint) : null;
+  if (!inputAsset || !outputAsset) {
+    throw fail('quote is missing the input or output token address.');
+  }
+  if (inputAsset === outputAsset) {
+    throw fail(`quote input and output tokens are the same (${inputAsset}); refusing to verify.`);
+  }
+
+  const inputIsNative = inputAsset === SOL_SENTINEL;
+
+  // --- Assertion 1: input outflow within the spend ceiling ---
+  if (request.maxInputAmount == null) {
+    throw fail('request has no maximum input to bound the outflow against.');
+  }
+  let cap;
+  try {
+    cap = BigInt(request.maxInputAmount);
+  } catch {
+    throw fail(`maximum input (${request.maxInputAmount}) is not an integer.`);
+  }
+  // Native-SOL input's lamport delta also carries the base fee, priority fee,
+  // and net ATA rent (opened minus reclaimed), so it can't be bound at the
+  // exact cap the way an SPL input can — but it must still be BOUNDED, not
+  // skipped: without this, a transaction with an extra unaccounted native-SOL
+  // outflow (e.g. a plain System-Program transfer, which assertSolanaInstructionsSafe
+  // does not classify) sails through as long as the declared output still
+  // arrives. The slack allows the worst realistic fee/rent noise — the same
+  // priority-fee ceiling assertSolanaInstructionsSafe enforces, plus one
+  // transient ATA's rent — without opening the cap back up to an unbounded drain.
+  const effectiveCap = inputIsNative ? cap + NATIVE_FEE_RENT_SLACK_LAMPORTS : cap;
+  const inputDelta = deltas[inputAsset] || 0n;
+  const outflow = inputDelta < 0n ? -inputDelta : 0n;
+  if (outflow > effectiveCap) {
+    throw fail(`the input token (${inputAsset}) left the wallet by ${outflow}, exceeding your maximum input (${cap}${inputIsNative ? ` plus fee/rent slack` : ''}).`);
+  }
+
+  // --- Assertion 2: output arrives at or above the minimum acceptable ---
+  const swapMode = request.swapMode ?? 'exactIn';
+  const outputIsNative = outputAsset === SOL_SENTINEL;
+  const outputDelta = deltas[outputAsset] || 0n;
+  let minOut;
+  if (swapMode === 'exactOut') {
+    if (request.amount == null) throw fail('exactOut request is missing the requested output amount.');
+    try {
+      minOut = BigInt(request.amount);
+    } catch {
+      throw fail(`requested output amount (${request.amount}) is not an integer.`);
+    }
+    if (minOut <= 0n) {
+      throw fail(`exactOut request has a non-positive output amount (${minOut}); cannot compute a minimum acceptable output.`);
+    }
+  } else {
+    const quotedRaw = quote?.outAmount ?? quote?.outputAmount;
+    if (quotedRaw == null) {
+      throw fail('quote is missing the quoted output amount; cannot compute the minimum acceptable output.');
+    }
+    let quoted;
+    try {
+      quoted = BigInt(quotedRaw);
+    } catch {
+      throw fail(`quoted output amount (${quotedRaw}) is not an integer.`);
+    }
+    if (quoted <= 0n) {
+      throw fail(`quote has a non-positive output amount (${quoted}); cannot compute a minimum acceptable output.`);
+    }
+    // Floor of quoted × (1 − slippage), capped at 50% independent of what the
+    // user set (mirrors assertSwapOutcome's rationale: a defence-in-depth
+    // floor, not the user's execution tolerance).
+    const rawSlip = Number.isFinite(slippage) && slippage >= 0 ? slippage : 0.03;
+    const slip = Math.min(rawSlip, 0.5);
+    const bps = BigInt(Math.min(10000, Math.round(slip * 10000)));
+    minOut = (quoted * (10000n - bps)) / 10000n;
+  }
+  // Native-SOL output carries the same fee/rent noise as native input: the
+  // lamport delta is (SOL received − base/priority fee − net ATA rent), so a
+  // legitimate trade can land a few million lamports under the quoted amount at
+  // tight slippage or on a congested-network priority fee. Relax the floor by
+  // the same combined fee/rent slack used for native siblings (assertion 3) and
+  // native input (assertion 1) so fee noise never false-blocks; the slippage
+  // floor still bounds any real shortfall. SPL output has no such noise and
+  // keeps the exact floor.
+  const outputFloorSlack = outputIsNative
+    ? (siblingDustThreshold != null ? siblingDustThreshold : NATIVE_FEE_RENT_SLACK_LAMPORTS)
+    : 0n;
+  // minOut can be smaller than the dust tolerance for a dust-quoted swap; clamp
+  // the floor at 0 so the subtraction never goes negative and silently admits
+  // any non-negative outputDelta (including zero). The explicit outputDelta <= 0n
+  // check below then restores the invariant assertSwapOutcome (the EVM sibling)
+  // gets for free because its minOut can never collapse to <= 0: a swap must
+  // deliver SOME positive output, even when the dust-adjusted floor is 0.
+  const adjustedFloor = minOut > outputFloorSlack ? minOut - outputFloorSlack : 0n;
+  if (outputDelta <= 0n || outputDelta < adjustedFloor) {
+    throw fail(`the output token (${outputAsset}) increased by only ${outputDelta}, below the minimum acceptable output (${minOut}).`);
+  }
+
+  // --- Assertion 3: no other tracked asset leaves the wallet ---
+  const nativeDust = siblingDustThreshold != null ? siblingDustThreshold : NATIVE_FEE_RENT_SLACK_LAMPORTS;
+  for (const [token, delta] of Object.entries(deltas)) {
+    if (token === inputAsset) continue; // bounded by assertion 1 (with fee/rent slack, for native input)
+    if (delta >= 0n) continue;
+    const dust = token === SOL_SENTINEL ? nativeDust : 0n;
+    if (-delta > dust) {
+      throw fail(`a token other than the one you are selling (${token}) left the wallet (delta ${delta}); a swap must not move any token except the input.`);
+    }
+  }
+
+  // inputAssertionSkipped tells the caller assertion 1 ran with the fee/rent
+  // slack applied (native-SOL input, per the JSDoc above), so it can surface
+  // that instead of implying the input spend was tightly delta-verified.
+  return { verified: true, inputAssertionSkipped: inputIsNative };
+}
+
 /**
  * Statically inspect a Solana transaction's instructions for drain vectors a
  * balance-delta simulation can't see — granting a token delegate, changing a
@@ -1133,21 +1343,24 @@ export function assertSwapOutcome(request, quote, sim, { slippage, expectedSpend
  * (paired with the intent-binding metadata check), not a complete
  * authorization audit of the transaction.
  *
- * IMPORTANT — no outcome simulation backs this on Solana. Unlike the EVM path,
- * which pairs its static calldata checks with a balance-delta simulation
- * (verifySwapOutcome), there is no Solana simulation RPC (SIMULATION_RPCS is
- * Base-only), so this static check plus the metadata binding are the ONLY
- * transaction-level guards on the Solana signing path. In particular this
- * check does NOT classify SPL Transfer/TransferChecked: a legitimate swap or
- * vault deposit moves the input token (and WSOL) with exactly those
- * instructions, so they can't be blanket-rejected, and without a balance-delta
- * simulation there's nothing here to bound their destination or amount. The
- * consequence is a residual gap: a transaction that also transfers an
- * unrelated ("sibling") token the wallet holds, authorized by the wallet,
- * would pass. Closing it needs either a Solana outcome simulation or a positive
- * check that every wallet-authorized transfer moves only the declared input
- * mint (TransferChecked carries the mint; plain Transfer does not, so this
- * needs an RPC account lookup) — tracked as a follow-up, not covered here.
+ * IMPORTANT — this static check does NOT classify SPL Transfer/TransferChecked:
+ * a legitimate swap or vault deposit moves the input token (and WSOL) with
+ * exactly those instructions, so they can't be blanket-rejected, and there is
+ * nothing here to bound their destination or amount. On its own this leaves a
+ * residual gap: a transaction that also transfers an unrelated ("sibling")
+ * token the wallet holds, authorized by the wallet, would pass this check.
+ * That gap is now closed, for swap execution, by outcome simulation —
+ * assertSolanaSwapOutcome, run via verifySolanaSwapOutcome immediately after
+ * this check on all Solana swap-execute signing paths (trading.js), simulates
+ * the transaction and rejects any balance delta on a token other than the
+ * declared input/output. That simulation degrades gracefully (warns and
+ * proceeds) when no simulation RPC endpoint is configured, so this static
+ * check plus the metadata binding remain the ONLY transaction-level guards
+ * whenever a sim RPC is unavailable. Limit-order vault deposit/cancel
+ * (limit-order.js) call only this static check, not verifySolanaSwapOutcome —
+ * they have no swap quote (no declared input/output pair) to bind an outcome
+ * check against, so the sibling-transfer gap described above is still open
+ * there; tracked as a follow-up, not covered here.
  *
  * Within that scope, the SPL Token program requires the *authority* of
  * Approve/ApproveChecked/SetAuthority/CloseAccount to sign the transaction,
@@ -1160,7 +1373,10 @@ export function assertSwapOutcome(request, quote, sim, { slippage, expectedSpend
  * Address-lookup-table-resolved accounts can never be signers, so those
  * positions are always statically resolvable; only CloseAccount's destination
  * can legitimately be ALT-resolved, and an unresolvable destination is treated
- * the same as a stranger (fail closed).
+ * the same as a stranger (fail closed). The instruction's own program ID must
+ * also be statically resolvable — an ALT-resolved program ID can't be checked
+ * against SPL_TOKEN_PROGRAMS/COMPUTE_BUDGET_PROGRAM, so it's rejected outright
+ * rather than silently skipped.
  *
  * Throws on any of those patterns. Returns the parsed transaction otherwise.
  */
@@ -1197,7 +1413,18 @@ export function assertSolanaInstructionsSafe(txBase64, { walletAddress } = {}) {
 
   for (const ix of parsed.instructions) {
     const programId = resolveStaticAccount(parsed, ix.programIdIndex);
-    if (!programId) continue; // program invoked via an ALT entry — not a pattern we classify
+    // A program ID that's only ALT-resolvable can't be checked against
+    // SPL_TOKEN_PROGRAMS/COMPUTE_BUDGET_PROGRAM without an RPC call this
+    // static check intentionally doesn't make — and skipping it here would
+    // let an Approve/SetAuthority/CloseAccount instruction bypass the drain
+    // protection above just by routing the program ID through an ALT entry.
+    // Real swap/vault transactions reference these well-known programs as
+    // static keys, so fail closed rather than silently skip classification.
+    if (!programId) {
+      throw new Error(
+        'Solana transaction invokes a program only resolvable via an address-lookup-table entry, which cannot be safety-classified. Refusing to sign.',
+      );
+    }
 
     if (SPL_TOKEN_PROGRAMS.has(programId)) {
       // No discriminator byte — not a valid SPL Token instruction (the runtime

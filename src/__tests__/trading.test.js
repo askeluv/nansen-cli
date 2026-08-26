@@ -42,6 +42,7 @@ import {
   formatQuote,
   simulateEvmCall,
   verifySwapOutcome,
+  verifySolanaSwapOutcome,
   getBridgeStatus,
   pollBridgeStatus,
   saveTxRecord,
@@ -1456,15 +1457,22 @@ describe('WalletConnect execute support', () => {
 
 describe('Privy execute support', () => {
   let originalEnv;
+  let origSolanaSimRpc;
 
   beforeEach(() => {
     originalEnv = { ...process.env };
     process.env.PRIVY_APP_ID = 'test-app-id';
     process.env.PRIVY_APP_SECRET = 'test-secret';
+    // These tests use placeholder (non-parseable) transaction bytes and aren't
+    // testing swap-outcome verification, so disable it here rather than
+    // mocking a full Solana RPC round trip.
+    origSolanaSimRpc = SIMULATION_RPCS.solana;
+    SIMULATION_RPCS.solana = null;
   });
 
   afterEach(() => {
     process.env = originalEnv;
+    SIMULATION_RPCS.solana = origSolanaSimRpc;
     vi.unstubAllGlobals();
   });
 
@@ -5117,6 +5125,10 @@ describe('Relay aggregator: --aggregator override on bridge-status', () => {
 });
 
 describe('Relay aggregator: Solana non-gasless omits requestId', () => {
+  let origSolanaSimRpc;
+  beforeEach(() => { origSolanaSimRpc = SIMULATION_RPCS.solana; SIMULATION_RPCS.solana = null; });
+  afterEach(() => { SIMULATION_RPCS.solana = origSolanaSimRpc; });
+
   it('non-gasless Solana Relay execute does NOT send requestId (backend 502s otherwise)', async () => {
     createWallet('default', 'testpass');
     process.env.NANSEN_WALLET_PASSWORD = 'testpass';
@@ -5731,8 +5743,14 @@ describe('Solana intent binding (adversarial)', () => {
     return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: 1, result: null })) });
   });
   const noBroadcast = (calls) => expect(calls.some(c => c.includes('/execute'))).toBe(false);
+  let origSolanaSimRpc;
 
-  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); delete process.env.NANSEN_WALLET_PASSWORD; delete process.env.PRIVY_APP_ID; delete process.env.PRIVY_APP_SECRET; });
+  beforeEach(() => { origSolanaSimRpc = SIMULATION_RPCS.solana; SIMULATION_RPCS.solana = null; });
+  afterEach(() => {
+    SIMULATION_RPCS.solana = origSolanaSimRpc;
+    vi.unstubAllGlobals(); vi.restoreAllMocks();
+    delete process.env.NANSEN_WALLET_PASSWORD; delete process.env.PRIVY_APP_ID; delete process.env.PRIVY_APP_SECRET;
+  });
 
   it('local wallet: refuses a quote with a tampered token pair', async () => {
     createWallet('default', 'testpass');
@@ -5967,6 +5985,368 @@ describe('Solana intent binding (adversarial)', () => {
     await cmds.execute([], null, {}, { quote: quoteId });
 
     expect(logs.some(l => l.includes('Transaction successful'))).toBe(true);
+  });
+});
+
+// Hand-rolled Solana tx builder, independent of solana-tx.js (see the same
+// convention in solana-tx.test.js / solana-simulation.test.js).
+function encodeSolanaCompactU16(value) {
+  if (value < 0x80) return Buffer.from([value]);
+  if (value < 0x4000) return Buffer.from([(value & 0x7f) | 0x80, (value >> 7) & 0x7f]);
+  return Buffer.from([(value & 0x7f) | 0x80, ((value >> 7) & 0x7f) | 0x80, (value >> 14) & 0x03]);
+}
+
+// A minimal legacy tx: [wallet (signer, writable), tokenAccountIn (writable),
+// tokenAccountOut (writable), programId (readonly)]. Contents of the single
+// instruction are irrelevant — simulation only reads the accounts snapshot.
+function buildSolanaSwapTx({ wallet, tokenAccountIn, tokenAccountOut }) {
+  const programId = generateSolanaWallet().address;
+  const recentBlockhash = generateSolanaWallet().address;
+  const accountKeys = [wallet, tokenAccountIn, tokenAccountOut, programId];
+  const parts = [Buffer.from([1, 0, 1])]; // 1 required sig, 0 readonly signed, 1 readonly unsigned (programId)
+  parts.push(encodeSolanaCompactU16(accountKeys.length));
+  for (const k of accountKeys) parts.push(base58Decode(k));
+  parts.push(base58Decode(recentBlockhash));
+  parts.push(encodeSolanaCompactU16(1));
+  parts.push(Buffer.from([3])); // programIdIndex
+  parts.push(encodeSolanaCompactU16(1));
+  parts.push(Buffer.from([0]));
+  parts.push(encodeSolanaCompactU16(1));
+  parts.push(Buffer.from([0x01]));
+  const messageBytes = Buffer.concat(parts);
+  return Buffer.concat([Buffer.from([1]), Buffer.alloc(64), messageBytes]).toString('base64');
+}
+
+function solanaNativeAccountInfo(lamports) {
+  return { lamports, owner: '11111111111111111111111111111111', data: ['', 'base64'], executable: false, rentEpoch: 0 };
+}
+function solanaTokenAccountInfo({ mint, owner, amount }) {
+  return {
+    lamports: 2039280,
+    owner: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+    data: { program: 'spl-token', parsed: { type: 'account', info: { mint, owner, tokenAmount: { amount: String(amount), decimals: 6 } } } },
+    executable: false,
+    rentEpoch: 0,
+  };
+}
+function solanaJsonRpcResponse(result) {
+  return { ok: true, status: 200, text: async () => JSON.stringify({ jsonrpc: '2.0', id: 1, result }) };
+}
+// pre/post are keyed by pubkey; `pre` classifies (and seeds) tracked accounts,
+// `post` supplies the simulated result in the order the caller requested.
+function mockSolanaSimRpc({ pre, post }) {
+  return vi.fn().mockImplementation(async (url, opts) => {
+    const body = JSON.parse(opts.body);
+    if (body.method === 'getMultipleAccounts') {
+      const [pubkeys] = body.params;
+      return solanaJsonRpcResponse({ value: pubkeys.map((pk) => pre[pk] ?? null) });
+    }
+    if (body.method === 'simulateTransaction') {
+      const addrs = body.params[1].accounts.addresses;
+      return solanaJsonRpcResponse({ value: { err: null, accounts: addrs.map((a) => post[a] ?? null) } });
+    }
+    throw new Error(`unhandled RPC method in test: ${body.method}`);
+  });
+}
+
+describe('verifySolanaSwapOutcome (execute-path wiring)', () => {
+  const wallet = generateSolanaWallet().address;
+  const tokenIn = generateSolanaWallet().address;
+  const tokenOut = generateSolanaWallet().address;
+  const mintIn = SOL_USDC;
+  const mintOut = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'; // SOL_USDT
+
+  const quote = { inputMint: mintIn, outputMint: mintOut, inAmount: '1000000', outAmount: '1000000' };
+  const quoteData = {
+    chain: 'solana',
+    slippage: 0.03,
+    request: { chain: 'solana', walletAddress: wallet, fromToken: mintIn, toToken: mintOut, swapMode: 'exactIn', amount: '1000000', maxInputAmount: '1000000' },
+  };
+  const txBase64 = buildSolanaSwapTx({ wallet, tokenAccountIn: tokenIn, tokenAccountOut: tokenOut });
+
+  let origSolanaSimRpc;
+  beforeEach(() => { origSolanaSimRpc = SIMULATION_RPCS.solana; SIMULATION_RPCS.solana = 'http://sol-sim.test'; });
+  afterEach(() => { SIMULATION_RPCS.solana = origSolanaSimRpc; vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+  const pre = {
+    [wallet]: solanaNativeAccountInfo(1_000_000_000),
+    [tokenIn]: solanaTokenAccountInfo({ mint: mintIn, owner: wallet, amount: 1_000_000 }),
+    [tokenOut]: solanaTokenAccountInfo({ mint: mintOut, owner: wallet, amount: 0 }),
+  };
+
+  it('proceeds on a clean swap', async () => {
+    const post = {
+      [wallet]: solanaNativeAccountInfo(999_995_000),
+      [tokenIn]: solanaTokenAccountInfo({ mint: mintIn, owner: wallet, amount: 0 }),
+      [tokenOut]: solanaTokenAccountInfo({ mint: mintOut, owner: wallet, amount: 1_000_000 }),
+    };
+    vi.stubGlobal('fetch', mockSolanaSimRpc({ pre, post }));
+    const r = await verifySolanaSwapOutcome({ chain: 'solana', walletAddress: wallet, txBase64, quote, quoteData });
+    expect(r.proceed).toBe(true);
+  });
+
+  it('blocks (proceed=false) when a sibling token is drained', async () => {
+    const siblingPre = { ...pre, [tokenOut]: solanaTokenAccountInfo({ mint: 'SiblingMint111111111111111111111111111111', owner: wallet, amount: 500 }) };
+    const post = {
+      [wallet]: solanaNativeAccountInfo(999_995_000),
+      [tokenIn]: solanaTokenAccountInfo({ mint: mintIn, owner: wallet, amount: 0 }),
+      [tokenOut]: solanaTokenAccountInfo({ mint: 'SiblingMint111111111111111111111111111111', owner: wallet, amount: 0 }), // drained, not the swap's output
+    };
+    vi.stubGlobal('fetch', mockSolanaSimRpc({ pre: siblingPre, post }));
+    const r = await verifySolanaSwapOutcome({ chain: 'solana', walletAddress: wallet, txBase64, quote, quoteData });
+    expect(r.proceed).toBe(false);
+    expect(r.reason).toMatch(/SWAP_OUTCOME_MISMATCH/i);
+  });
+
+  it('blocks when the output falls short', async () => {
+    const post = {
+      [wallet]: solanaNativeAccountInfo(999_995_000),
+      [tokenIn]: solanaTokenAccountInfo({ mint: mintIn, owner: wallet, amount: 0 }),
+      [tokenOut]: solanaTokenAccountInfo({ mint: mintOut, owner: wallet, amount: 900_000 }), // below 970,000 floor
+    };
+    vi.stubGlobal('fetch', mockSolanaSimRpc({ pre, post }));
+    const r = await verifySolanaSwapOutcome({ chain: 'solana', walletAddress: wallet, txBase64, quote, quoteData });
+    expect(r.proceed).toBe(false);
+  });
+
+  it('blocks when the transaction reverts in simulation', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url, opts) => {
+      const body = JSON.parse(opts.body);
+      if (body.method === 'getMultipleAccounts') {
+        const [pubkeys] = body.params;
+        return solanaJsonRpcResponse({ value: pubkeys.map((pk) => pre[pk] ?? null) });
+      }
+      return solanaJsonRpcResponse({ value: { err: { InstructionError: [0, 'Custom'] }, accounts: null } });
+    }));
+    const r = await verifySolanaSwapOutcome({ chain: 'solana', walletAddress: wallet, txBase64, quote, quoteData });
+    expect(r.proceed).toBe(false);
+  });
+
+  it('degrades (proceed=true) when no simulation endpoint is configured', async () => {
+    SIMULATION_RPCS.solana = null;
+    const logs = [];
+    const r = await verifySolanaSwapOutcome({ chain: 'solana', walletAddress: wallet, txBase64, quote, quoteData, log: (m) => logs.push(m) });
+    expect(r.proceed).toBe(true);
+    expect(logs.some((l) => /unavailable|proceeding without/i.test(l))).toBe(true);
+  });
+
+  it('degrades (proceed=true) on an RPC transport failure', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')));
+    const logs = [];
+    const r = await verifySolanaSwapOutcome({ chain: 'solana', walletAddress: wallet, txBase64, quote, quoteData, log: (m) => logs.push(m) });
+    expect(r.proceed).toBe(true);
+    expect(logs.some((l) => /could not run|proceeding without/i.test(l))).toBe(true);
+  });
+
+  it('skips non-Solana chains', async () => {
+    vi.stubGlobal('fetch', vi.fn()); // must not be called
+    const r = await verifySolanaSwapOutcome({ chain: 'base', walletAddress: wallet, txBase64, quote, quoteData });
+    expect(r.proceed).toBe(true);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('skips cross-chain bridge quotes', async () => {
+    vi.stubGlobal('fetch', vi.fn()); // must not be called
+    const crossChainData = { ...quoteData, chain: 'solana', toChain: 'base' };
+    const r = await verifySolanaSwapOutcome({ chain: 'solana', walletAddress: wallet, txBase64, quote, quoteData: crossChainData });
+    expect(r.proceed).toBe(true);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('degrades (proceed=true) for a pre-intent quote with no request recorded', async () => {
+    vi.stubGlobal('fetch', vi.fn()); // must not be called
+    const logs = [];
+    const r = await verifySolanaSwapOutcome({ chain: 'solana', walletAddress: wallet, txBase64, quote, quoteData: { chain: 'solana' }, log: (m) => logs.push(m) });
+    expect(r.proceed).toBe(true);
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(logs.some((l) => /no request intent/i.test(l))).toBe(true);
+  });
+
+  it('tolerates native-SOL fee/rent dust without false-blocking', async () => {
+    const post = {
+      [wallet]: solanaNativeAccountInfo(999_998_000), // ~2000 lamports of fee/rent noise
+      [tokenIn]: solanaTokenAccountInfo({ mint: mintIn, owner: wallet, amount: 0 }),
+      [tokenOut]: solanaTokenAccountInfo({ mint: mintOut, owner: wallet, amount: 1_000_000 }),
+    };
+    vi.stubGlobal('fetch', mockSolanaSimRpc({ pre, post }));
+    const r = await verifySolanaSwapOutcome({ chain: 'solana', walletAddress: wallet, txBase64, quote, quoteData });
+    expect(r.proceed).toBe(true);
+  });
+});
+
+describe('Solana execute: swap-outcome verification blocks signing (adversarial)', () => {
+  const mintOut = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'; // SOL_USDT
+  afterEach(() => {
+    delete process.env.NANSEN_WALLET_PASSWORD;
+    delete process.env.PRIVY_APP_ID;
+    delete process.env.PRIVY_APP_SECRET;
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('local wallet: a sibling-drain outcome blocks before signing (no broadcast)', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    const wallet = showWallet('default').solana;
+    const tokenIn = generateSolanaWallet().address;
+    const tokenOut = generateSolanaWallet().address; // will report a sibling mint, not mintOut
+    const txBase64 = buildSolanaSwapTx({ wallet, tokenAccountIn: tokenIn, tokenAccountOut: tokenOut });
+
+    const pre = {
+      [wallet]: solanaNativeAccountInfo(1_000_000_000),
+      [tokenIn]: solanaTokenAccountInfo({ mint: SOL_USDC, owner: wallet, amount: 1_000_000 }),
+      [tokenOut]: solanaTokenAccountInfo({ mint: 'SiblingMint111111111111111111111111111111', owner: wallet, amount: 500 }),
+    };
+    const post = {
+      [wallet]: solanaNativeAccountInfo(999_995_000),
+      [tokenIn]: solanaTokenAccountInfo({ mint: SOL_USDC, owner: wallet, amount: 0 }),
+      [tokenOut]: solanaTokenAccountInfo({ mint: 'SiblingMint111111111111111111111111111111', owner: wallet, amount: 0 }),
+    };
+    const calls = [];
+    const rpcMock = mockSolanaSimRpc({ pre, post });
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      calls.push(typeof url === 'string' ? url : url.toString());
+      return rpcMock(url, opts);
+    }));
+    SIMULATION_RPCS.solana = 'http://sol-sim.test';
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{ aggregator: 'jupiter', inputMint: SOL_USDC, outputMint: mintOut, inAmount: '1000000', outAmount: '1000000', transaction: txBase64 }],
+    }, 'solana', 'local', null, null, {
+      swapMode: 'exactIn',
+      request: solanaIntent({ walletAddress: wallet, fromToken: SOL_USDC, toToken: mintOut, amount: '1000000', maxInputAmount: '1000000' }),
+    });
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/outcome verification failed/i);
+    expect(calls.some((c) => c.includes('/execute'))).toBe(false);
+  });
+
+  it('Privy: a short-output outcome blocks before signing (never reaches signSolanaTransaction)', async () => {
+    process.env.PRIVY_APP_ID = 'test-app-id';
+    process.env.PRIVY_APP_SECRET = 'test-secret';
+    const wallet = generateSolanaWallet().address;
+    const tokenIn = generateSolanaWallet().address;
+    const tokenOut = generateSolanaWallet().address;
+    const txBase64 = buildSolanaSwapTx({ wallet, tokenAccountIn: tokenIn, tokenAccountOut: tokenOut });
+
+    const pre = {
+      [wallet]: solanaNativeAccountInfo(1_000_000_000),
+      [tokenIn]: solanaTokenAccountInfo({ mint: SOL_USDC, owner: wallet, amount: 1_000_000 }),
+      [tokenOut]: solanaTokenAccountInfo({ mint: mintOut, owner: wallet, amount: 0 }),
+    };
+    const post = {
+      [wallet]: solanaNativeAccountInfo(999_995_000),
+      [tokenIn]: solanaTokenAccountInfo({ mint: SOL_USDC, owner: wallet, amount: 0 }),
+      [tokenOut]: solanaTokenAccountInfo({ mint: mintOut, owner: wallet, amount: 900_000 }), // short
+    };
+    const rpcMock = mockSolanaSimRpc({ pre, post });
+    const calls = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      calls.push({ url: urlStr, method: opts?.method });
+      if (urlStr.includes('privy.io') && opts?.method === 'GET') {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ id: 'wl_sol_1', address: wallet, chain_type: 'solana' }) });
+      }
+      if (urlStr.includes('privy.io')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: { signed_transaction: 'c2lnbmVkVHg=' } }) });
+      }
+      return rpcMock(url, opts);
+    }));
+    SIMULATION_RPCS.solana = 'http://sol-sim.test';
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{ aggregator: 'jupiter', inputMint: SOL_USDC, outputMint: mintOut, inAmount: '1000000', outAmount: '1000000', transaction: txBase64 }],
+    }, 'solana', 'privy', { evm: 'wl_evm_1', solana: 'wl_sol_1' }, null, {
+      swapMode: 'exactIn',
+      request: solanaIntent({ walletAddress: wallet, fromToken: SOL_USDC, toToken: mintOut, amount: '1000000', maxInputAmount: '1000000' }),
+    });
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/outcome verification failed/i);
+    expect(calls.some((c) => c.url.includes('privy.io') && c.method === 'POST')).toBe(false);
+    expect(calls.some((c) => c.url.includes('/execute'))).toBe(false);
+  });
+
+  it('WalletConnect: a blocked outcome never reaches sendSolanaTransactionViaWalletConnect', async () => {
+    const wallet = generateSolanaWallet().address;
+    vi.spyOn(wcTrading, 'getWalletConnectAddress').mockResolvedValue(wallet);
+    const sendSpy = vi.spyOn(wcTrading, 'sendSolanaTransactionViaWalletConnect').mockResolvedValue({ signedTransaction: '5K4Ld...' });
+
+    const tokenIn = generateSolanaWallet().address;
+    const tokenOut = generateSolanaWallet().address;
+    const txBase64 = buildSolanaSwapTx({ wallet, tokenAccountIn: tokenIn, tokenAccountOut: tokenOut });
+
+    const pre = {
+      [wallet]: solanaNativeAccountInfo(1_000_000_000),
+      [tokenIn]: solanaTokenAccountInfo({ mint: SOL_USDC, owner: wallet, amount: 1_000_000 }),
+      [tokenOut]: solanaTokenAccountInfo({ mint: mintOut, owner: wallet, amount: 0 }),
+    };
+    const post = {
+      [wallet]: solanaNativeAccountInfo(999_995_000),
+      [tokenIn]: solanaTokenAccountInfo({ mint: SOL_USDC, owner: wallet, amount: 0 }),
+      [tokenOut]: solanaTokenAccountInfo({ mint: mintOut, owner: wallet, amount: 900_000 }), // short
+    };
+    vi.stubGlobal('fetch', mockSolanaSimRpc({ pre, post }));
+    SIMULATION_RPCS.solana = 'http://sol-sim.test';
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{ aggregator: 'jupiter', inputMint: SOL_USDC, outputMint: mintOut, inAmount: '1000000', outAmount: '1000000', transaction: txBase64 }],
+    }, 'solana', 'walletconnect', null, null, {
+      swapMode: 'exactIn',
+      request: solanaIntent({ walletAddress: wallet, fromToken: SOL_USDC, toToken: mintOut, amount: '1000000', maxInputAmount: '1000000' }),
+    });
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/outcome verification failed/i);
+    expect(sendSpy).not.toHaveBeenCalled();
+  });
+
+  it('regression: a benign Solana quote passes real outcome verification and still signs', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    const wallet = showWallet('default').solana;
+    const tokenIn = generateSolanaWallet().address;
+    const tokenOut = generateSolanaWallet().address;
+    const txBase64 = buildSolanaSwapTx({ wallet, tokenAccountIn: tokenIn, tokenAccountOut: tokenOut });
+
+    const pre = {
+      [wallet]: solanaNativeAccountInfo(1_000_000_000),
+      [tokenIn]: solanaTokenAccountInfo({ mint: SOL_USDC, owner: wallet, amount: 1_000_000 }),
+      [tokenOut]: solanaTokenAccountInfo({ mint: mintOut, owner: wallet, amount: 0 }),
+    };
+    const post = {
+      [wallet]: solanaNativeAccountInfo(999_995_000),
+      [tokenIn]: solanaTokenAccountInfo({ mint: SOL_USDC, owner: wallet, amount: 0 }),
+      [tokenOut]: solanaTokenAccountInfo({ mint: mintOut, owner: wallet, amount: 1_000_000 }),
+    };
+    const rpcMock = mockSolanaSimRpc({ pre, post });
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
+        return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ status: 'Success', signature: 'SolSig', chainType: 'solana', broadcaster: 'jupiter' })) });
+      }
+      return rpcMock(url, opts);
+    }));
+    SIMULATION_RPCS.solana = 'http://sol-sim.test';
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{ aggregator: 'jupiter', inputMint: SOL_USDC, outputMint: mintOut, inAmount: '1000000', outAmount: '1000000', transaction: txBase64 }],
+    }, 'solana', 'local', null, null, {
+      swapMode: 'exactIn',
+      request: solanaIntent({ walletAddress: wallet, fromToken: SOL_USDC, toToken: mintOut, amount: '1000000', maxInputAmount: '1000000' }),
+    });
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    await cmds.execute([], null, {}, { quote: quoteId });
+
+    expect(logs.some((l) => l.includes('Swap outcome verified'))).toBe(true);
+    expect(logs.some((l) => l.includes('Transaction successful'))).toBe(true);
   });
 });
 

@@ -12,6 +12,7 @@
  *   NANSEN_XLAYER_RPC     Custom X Layer RPC
  *   NANSEN_SOLANA_RPC     Custom Solana RPC
  *   NANSEN_BASE_SIM_RPC   Custom Base simulation RPC (see SIMULATION_RPCS below)
+ *   NANSEN_SOLANA_SIM_RPC Custom Solana simulation RPC (see SIMULATION_RPCS below)
  *
  * Simulation RPCs (SIMULATION_RPCS) are a SEPARATE registry from the cheap
  * defaults above. Swap-outcome verification (src/swap-simulation.js) needs an
@@ -76,8 +77,16 @@ const DEFAULT_BASE_SIM_RPC = 'https://api.nansen.ai/api/v1/trade/simulate-swap';
 // Intentionally a mutable export: unit tests override an entry in-place (e.g.
 // `SIMULATION_RPCS.base = ...`) to point at a mock or to null out the endpoint,
 // restoring it in afterEach. Runtime code only ever reads it.
+//
+// Solana's `simulateTransaction` (with `accounts` + `replaceRecentBlockhash`) is
+// a standard public-RPC method, unlike the EVM entry above — no trace RPC or
+// Nansen-hosted proxy is needed, so this defaults to the same public endpoint as
+// CHAIN_RPCS.solana. It is called anonymously (see isNansenHostedUrl); a public
+// node may throttle simulation-with-accounts, in which case the check degrades
+// (warns and proceeds) rather than blocking a trade.
 export const SIMULATION_RPCS = {
   base: process.env.NANSEN_BASE_SIM_RPC || DEFAULT_BASE_SIM_RPC,
+  solana: process.env.NANSEN_SOLANA_SIM_RPC || CHAIN_RPCS.solana,
 };
 
 // Nansen hosts the API key may be forwarded to. Kept to an explicit allowlist
