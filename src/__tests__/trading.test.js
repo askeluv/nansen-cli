@@ -6386,3 +6386,94 @@ describe('Solana exactOut ceiling — requires an explicit --max-input', () => {
     global.fetch = origFetch;
   });
 });
+
+describe('Relay Solana-source bridge: raw-instruction transaction shape', () => {
+  it('execute compiles and signs a Relay raw {instructions} quote instead of crashing', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    const wallet = showWallet('default');
+
+    const executeBodies = [];
+    const FAKE_BLOCKHASH = generateSolanaWallet().address;
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const body = opts?.body ? (() => { try { return JSON.parse(opts.body); } catch { return {}; } })() : {};
+      if (body.method === 'getLatestBlockhash') {
+        return Promise.resolve({ json: () => Promise.resolve({ result: { value: { blockhash: FAKE_BLOCKHASH } } }) });
+      }
+      if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
+        executeBodies.push(body);
+        return Promise.resolve({
+          ok: true,
+          text: () => Promise.resolve(JSON.stringify({ status: 'Success', signature: 'SolSig', chainType: 'solana', broadcaster: 'relay' })),
+        });
+      }
+      if (urlStr.includes('/bridge/status')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          text: () => Promise.resolve(JSON.stringify({ status: 'DONE', receiving: { status: 'DONE', txHash: 'destTx' } })),
+        });
+      }
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: 1, result: null })) });
+    }));
+
+    const otherAccount = generateSolanaWallet().address;
+    const programId = generateSolanaWallet().address;
+    const inputMint = '11111111111111111111111111111111';
+    const outputMint = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
+    const inAmount = '1000000000';
+    const quoteId = saveQuote({
+      success: true,
+      metadata: { quoteId: 'backend-relay-quote-id' },
+      quotes: [{
+        aggregator: 'relay',
+        inputMint,
+        outputMint,
+        inAmount,
+        outAmount: '180000000',
+        approvalAddress: '',
+        transaction: {
+          instructions: [{
+            keys: [
+              { pubkey: wallet.solana, isSigner: true, isWritable: true },
+              { pubkey: otherAccount, isSigner: false, isWritable: true },
+            ],
+            programId,
+            data: 'deadbeef',
+          }],
+          addressLookupTableAddresses: ['Hm9fUgcn7qwDaiNTFiGh6pNtVATgnaRcmK6Bbx6EMZfP'],
+        },
+        metadata: {
+          requestId: 'relay-req-raw-ix',
+          isCrossChain: true,
+          bridgeTool: 'relay',
+        },
+      }],
+    }, 'solana', 'local', null, 'base', {
+      swapMode: 'exactIn',
+      request: solanaIntent({
+        walletAddress: wallet.solana,
+        fromToken: inputMint,
+        toToken: outputMint,
+        amount: inAmount,
+        maxInputAmount: inAmount,
+        toChain: 'base',
+      }),
+    });
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    try { await cmds.execute([], null, {}, { quote: quoteId }); } catch { /* bridge polling may fail in test, that's fine */ }
+
+    expect(executeBodies.length).toBeGreaterThanOrEqual(1);
+    // The signed transaction the API actually receives should decode to a
+    // non-empty (filled) signature — proof it was compiled AND signed, not
+    // just passed through opaquely.
+    const signedTx = Buffer.from(executeBodies[0].signedTransaction, 'base64');
+    expect(signedTx.subarray(1, 65).every(b => b === 0)).toBe(false);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+    vi.unstubAllGlobals();
+  });
+});
