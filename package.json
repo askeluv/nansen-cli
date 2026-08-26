@@ -1,6 +1,6 @@
 {
   "name": "nansen-cli",
-  "version": "1.40.1",
+  "version": "1.41.0",
   "description": "AI-agent CLI for Nansen API analytics, DEX swaps, and cross-chain trading",
   "main": "src/index.js",
   "type": "module",

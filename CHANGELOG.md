@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.41.0
+
+### Minor Changes
+
+- [#512](https://github.com/nansen-ai/nansen-cli/pull/512) [`ba42a9c`](https://github.com/nansen-ai/nansen-cli/commit/ba42a9c51d75b0cf909c1f14a8e509d7a4ca77ad) Thanks [@kome12](https://github.com/kome12)! - Validate Solana swap quotes against the original request before signing (local, Privy, and WalletConnect wallets). The CLI now checks that a quote's chain, token pair, amounts, and target wallet match what was requested at quote time and refuses to sign when they don't, bringing Solana in line with the existing EVM checks. `--swap-mode exactOut` now also requires `--max-input` on Solana (previously EVM-only), so the maximum spend is bounded by a value you supply rather than one taken from the quote itself.
+
+- [#514](https://github.com/nansen-ai/nansen-cli/pull/514) [`1bc7337`](https://github.com/nansen-ai/nansen-cli/commit/1bc73378db87fed5c362e04b52ae8da8c69fbff7) Thanks [@kome12](https://github.com/kome12)! - `trade execute` and `trade limit-order` on Solana now statically check the aggregator's compiled instructions before signing, and reject a transaction that grants a token delegate, changes a token account's authority, closes an account with its rent redirected to a stranger, or sets an excessive compute-budget priority fee — closing a class of drain vector a balance-delta simulation alone can't see.
+
+- [#522](https://github.com/nansen-ai/nansen-cli/pull/522) [`820bf05`](https://github.com/nansen-ai/nansen-cli/commit/820bf058de615a818fa099c8bf527a94339c8f9e) Thanks [@kome12](https://github.com/kome12)! - Verify a Solana swap's simulated on-chain outcome before signing (local, Privy, and WalletConnect wallets), mirroring the existing EVM balance-delta check. The CLI simulates the aggregator's transaction and confirms the wallet's balance changes match the quote — input spent within your max, expected output received, no other asset drained — refusing to sign on a mismatch or an in-simulation revert. Covered by the existing `--no-verify-outcome` flag; degrades with a warning (and still signs) when no simulation-capable RPC is available, so an RPC outage never blocks a trade. New env var: `NANSEN_SOLANA_SIM_RPC`.
+
+### Patch Changes
+
+- [#519](https://github.com/nansen-ai/nansen-cli/pull/519) [`55ab7db`](https://github.com/nansen-ai/nansen-cli/commit/55ab7dbdc46ff7181b303d421146691b6eb7c9a7) Thanks [@kome12](https://github.com/kome12)! - trade execute: confirm EVM transactions against the hash derived locally from
+  the signed bytes instead of trusting the broadcaster's reported hash, and fail
+  closed if they disagree. Once a transaction has been broadcast, every uncertain
+  outcome now aborts the whole execute instead of silently trying the next quote
+  (which could broadcast a second transaction): a hash mismatch, a signed
+  transaction we cannot re-derive a hash for, and a receipt-confirmation timeout
+  (distinguished from a genuine on-chain revert) are all fatal across the swap,
+  approval, and revoke paths. Broadcaster hashes are also compared
+  prefix-insensitively, so a bare (0x-less) hash is no longer a false mismatch.
+
+- [#521](https://github.com/nansen-ai/nansen-cli/pull/521) [`977e326`](https://github.com/nansen-ai/nansen-cli/commit/977e3269246cc1c25d03e837c9ce4ac03c5d70b9) Thanks [@aikido-autofix](https://github.com/apps/aikido-autofix)! - Fix potential path traversal in safeQuotesPath by rejecting absolute relative paths (Windows cross-drive escape).
+
+- [#497](https://github.com/nansen-ai/nansen-cli/pull/497) [`223a9d5`](https://github.com/nansen-ai/nansen-cli/commit/223a9d501c0e624f3986a547ace3adf621c00896) Thanks [@crazywriter1](https://github.com/crazywriter1)! - Reject `--oid` values above 2^53-1 on `perp cancel`: large Hyperliquid uint64 order IDs would be silently rounded by JS Number, potentially cancelling the wrong order.
+
 ## 1.40.1
 
 ### Patch Changes
