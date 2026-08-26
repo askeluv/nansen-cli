@@ -1127,30 +1127,57 @@ export function assertSwapOutcome(request, quote, sim, { slippage, expectedSpend
 // and rent rather than the swap itself.
 const NATIVE_SIBLING_DUST_LAMPORTS = 3_000_000n; // ~0.003 SOL
 
+// Full native-SOL fee/rent noise budget: the dust above PLUS the priority fee
+// a transaction may legitimately pay, up to the ceiling assertSolanaInstructionsSafe
+// enforces. NATIVE_SIBLING_DUST_LAMPORTS alone only covers the base fee + rent —
+// a real, legal priority fee (anywhere up to MAX_PRIORITY_FEE_LAMPORTS) also
+// leaves the wallet as native SOL regardless of whether SOL is the input,
+// output, or an uninvolved sibling of the swap, so all three assertions below
+// need the same combined slack or a legitimate high-priority-fee trade false-blocks.
+const NATIVE_FEE_RENT_SLACK_LAMPORTS = MAX_PRIORITY_FEE_LAMPORTS + NATIVE_SIBLING_DUST_LAMPORTS;
+
 /**
  * The Solana sibling of assertSwapOutcome. Solana signs the aggregator's
  * serialized transaction verbatim and has no approval/calldata split to
  * validate, so this verifies the balance-delta simulation result (see
  * solana-simulation.js) against the persisted request intent directly.
  *
- * Three assertions (no assertion 4 sibling — an unexpected authority grant is
- * already rejected statically, RPC-free, by assertSolanaInstructionsSafe
- * before this ever runs):
+ * REQUIRES assertSolanaInstructionsSafe to have already run, RPC-free, on the
+ * same transaction (both current signing paths in trading.js call it first):
+ * an unexpected authority grant is rejected there (no assertion 4 sibling
+ * needed here), and assertion 1's native-input slack below is only a safe
+ * bound because that check has already enforced the priority-fee ceiling —
+ * skip it on any future signing path and native-input drains widen from a
+ * fixed slack to an unbounded priority fee.
+ *
+ * Three assertions:
  *   1. the input token leaves the wallet by no more than maxInputAmount.
- *      Native-SOL input is intentionally metadata-bound only: the lamport
- *      delta also carries the base fee, priority fee, and net ATA rent
- *      (opened minus reclaimed), which is too noisy to bound tightly from a
- *      raw balance delta. Tightness instead comes from assertQuoteMatchesRequest
- *      (binds exactIn input == request.amount) plus assertSolanaInstructionsSafe's
- *      fee-payer/fee-cap checks and assertions 2/3 below. A precise fee/rent
- *      model is explicitly deferred.
+ *      Native-SOL input can't be bound at the exact cap the way an SPL input
+ *      can: its lamport delta also carries the base fee, priority fee, and net
+ *      ATA rent (opened minus reclaimed), which is too noisy for a tight
+ *      bound. It is still bounded, not skipped — the cap is relaxed by a
+ *      fee/rent slack (the priority-fee ceiling assertSolanaInstructionsSafe
+ *      enforces, plus one transient ATA's rent) so a real outflow beyond any
+ *      realistic transaction cost is still caught. Without this, a
+ *      transaction with an extra unaccounted native-SOL outflow (e.g. a plain
+ *      System-Program transfer, which assertSolanaInstructionsSafe does not
+ *      classify) would sail through as long as the declared output arrived —
+ *      neither assertQuoteMatchesRequest (checks the quote's declared
+ *      metadata, not the transaction's real effects) nor assertion 3 (which
+ *      exempts the input asset, assuming assertion 1 already bounded it)
+ *      would catch it.
  *   2. the output token arrives by at least the minimum acceptable amount.
- *      Native-SOL output relaxes this floor by NATIVE_SIBLING_DUST_LAMPORTS
- *      because its lamport delta also nets out the base/priority fee and ATA
- *      rent (same noise as native input); SPL output keeps the exact floor.
+ *      Native-SOL output relaxes this floor by NATIVE_FEE_RENT_SLACK_LAMPORTS
+ *      because its lamport delta also nets out the base fee, priority fee, and
+ *      ATA rent (same noise as native input); SPL output keeps the exact floor.
  *   3. no OTHER tracked asset leaves the wallet. SPL-token siblings get zero
  *      tolerance; native SOL, when it's a sibling (not the input), tolerates
- *      NATIVE_SIBLING_DUST_LAMPORTS of fee/rent dust.
+ *      NATIVE_FEE_RENT_SLACK_LAMPORTS of fee/rent dust. All three assertions
+ *      share this one slack value — splitting it (e.g. a smaller tolerance for
+ *      assertion 2/3 than assertion 1) would false-block a legitimate trade
+ *      paying close to the priority-fee ceiling on whichever assertion has the
+ *      smaller number, since the same fee leaves the wallet as native SOL
+ *      regardless of SOL's role in that particular swap.
  *
  * @param {object} request - persisted intent (quoteData.request); required
  * @param {object} quote - the quote being executed
@@ -1158,10 +1185,11 @@ const NATIVE_SIBLING_DUST_LAMPORTS = 3_000_000n; // ~0.003 SOL
  *   result from simulateSolanaAssetChanges()
  * @param {object} [ctx]
  * @param {number} [ctx.slippage] - slippage fraction in effect; defaults to 3%
- * @param {bigint} [ctx.siblingDustThreshold] - overrides NATIVE_SIBLING_DUST_LAMPORTS
+ * @param {bigint} [ctx.siblingDustThreshold] - overrides NATIVE_FEE_RENT_SLACK_LAMPORTS
  * @returns {{verified: true, inputAssertionSkipped: boolean}} inputAssertionSkipped
- *   is true when the input was native SOL, meaning assertion 1 did not run
- *   (see assertion 1's rationale above) — the caller should surface this.
+ *   is true when the input was native SOL, meaning assertion 1 ran with the
+ *   fee/rent slack applied instead of an exact bound (see assertion 1's
+ *   rationale above) — the caller should surface this.
  * @throws {Error} with `code = 'SWAP_OUTCOME_MISMATCH'` on any failed assertion.
  */
 export function assertSolanaSwapOutcome(request, quote, sim, { slippage, siblingDustThreshold } = {}) {
@@ -1199,22 +1227,30 @@ export function assertSolanaSwapOutcome(request, quote, sim, { slippage, sibling
 
   const inputIsNative = inputAsset === SOL_SENTINEL;
 
-  // --- Assertion 1: input outflow within the spend ceiling (SPL input only) ---
-  if (!inputIsNative) {
-    if (request.maxInputAmount == null) {
-      throw fail('request has no maximum input to bound the outflow against.');
-    }
-    let cap;
-    try {
-      cap = BigInt(request.maxInputAmount);
-    } catch {
-      throw fail(`maximum input (${request.maxInputAmount}) is not an integer.`);
-    }
-    const inputDelta = deltas[inputAsset] || 0n;
-    const outflow = inputDelta < 0n ? -inputDelta : 0n;
-    if (outflow > cap) {
-      throw fail(`the input token (${inputAsset}) left the wallet by ${outflow}, exceeding your maximum input (${cap}).`);
-    }
+  // --- Assertion 1: input outflow within the spend ceiling ---
+  if (request.maxInputAmount == null) {
+    throw fail('request has no maximum input to bound the outflow against.');
+  }
+  let cap;
+  try {
+    cap = BigInt(request.maxInputAmount);
+  } catch {
+    throw fail(`maximum input (${request.maxInputAmount}) is not an integer.`);
+  }
+  // Native-SOL input's lamport delta also carries the base fee, priority fee,
+  // and net ATA rent (opened minus reclaimed), so it can't be bound at the
+  // exact cap the way an SPL input can — but it must still be BOUNDED, not
+  // skipped: without this, a transaction with an extra unaccounted native-SOL
+  // outflow (e.g. a plain System-Program transfer, which assertSolanaInstructionsSafe
+  // does not classify) sails through as long as the declared output still
+  // arrives. The slack allows the worst realistic fee/rent noise — the same
+  // priority-fee ceiling assertSolanaInstructionsSafe enforces, plus one
+  // transient ATA's rent — without opening the cap back up to an unbounded drain.
+  const effectiveCap = inputIsNative ? cap + NATIVE_FEE_RENT_SLACK_LAMPORTS : cap;
+  const inputDelta = deltas[inputAsset] || 0n;
+  const outflow = inputDelta < 0n ? -inputDelta : 0n;
+  if (outflow > effectiveCap) {
+    throw fail(`the input token (${inputAsset}) left the wallet by ${outflow}, exceeding your maximum input (${cap}${inputIsNative ? ` plus fee/rent slack` : ''}).`);
   }
 
   // --- Assertion 2: output arrives at or above the minimum acceptable ---
@@ -1258,11 +1294,12 @@ export function assertSolanaSwapOutcome(request, quote, sim, { slippage, sibling
   // lamport delta is (SOL received − base/priority fee − net ATA rent), so a
   // legitimate trade can land a few million lamports under the quoted amount at
   // tight slippage or on a congested-network priority fee. Relax the floor by
-  // the same dust tolerance used for native siblings (assertion 3) so fee noise
-  // never false-blocks; the slippage floor still bounds any real shortfall. SPL
-  // output has no such noise and keeps the exact floor.
+  // the same combined fee/rent slack used for native siblings (assertion 3) and
+  // native input (assertion 1) so fee noise never false-blocks; the slippage
+  // floor still bounds any real shortfall. SPL output has no such noise and
+  // keeps the exact floor.
   const outputFloorSlack = outputIsNative
-    ? (siblingDustThreshold != null ? siblingDustThreshold : NATIVE_SIBLING_DUST_LAMPORTS)
+    ? (siblingDustThreshold != null ? siblingDustThreshold : NATIVE_FEE_RENT_SLACK_LAMPORTS)
     : 0n;
   // minOut can be smaller than the dust tolerance for a dust-quoted swap; clamp
   // the floor at 0 so the subtraction never goes negative and silently admits
@@ -1276,9 +1313,9 @@ export function assertSolanaSwapOutcome(request, quote, sim, { slippage, sibling
   }
 
   // --- Assertion 3: no other tracked asset leaves the wallet ---
-  const nativeDust = siblingDustThreshold != null ? siblingDustThreshold : NATIVE_SIBLING_DUST_LAMPORTS;
+  const nativeDust = siblingDustThreshold != null ? siblingDustThreshold : NATIVE_FEE_RENT_SLACK_LAMPORTS;
   for (const [token, delta] of Object.entries(deltas)) {
-    if (token === inputAsset) continue; // bounded by assertion 1 (or metadata-bound, for native input)
+    if (token === inputAsset) continue; // bounded by assertion 1 (with fee/rent slack, for native input)
     if (delta >= 0n) continue;
     const dust = token === SOL_SENTINEL ? nativeDust : 0n;
     if (-delta > dust) {
@@ -1286,9 +1323,9 @@ export function assertSolanaSwapOutcome(request, quote, sim, { slippage, sibling
     }
   }
 
-  // inputAssertionSkipped tells the caller assertion 1 didn't run (native-SOL
-  // input, per the JSDoc above), so it can surface that instead of implying
-  // the input spend was delta-verified.
+  // inputAssertionSkipped tells the caller assertion 1 ran with the fee/rent
+  // slack applied (native-SOL input, per the JSDoc above), so it can surface
+  // that instead of implying the input spend was tightly delta-verified.
   return { verified: true, inputAssertionSkipped: inputIsNative };
 }
 

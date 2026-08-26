@@ -1708,27 +1708,56 @@ describe('assertSolanaSwapOutcome', () => {
     expect(() => assertSolanaSwapOutcome(splInRequest, splInQuote, sim, {})).not.toThrow();
   });
 
-  it('rejects a native-SOL sibling drain beyond the dust tolerance', () => {
+  it('tolerates a legitimate near-cap priority fee as a native-SOL sibling on an SPL-in swap', () => {
+    // Regression: assertion 3's tolerance used to be NATIVE_SIBLING_DUST_LAMPORTS
+    // (3M) alone, with no priority-fee term — but assertSolanaInstructionsSafe
+    // legitimately allows a priority fee up to MAX_PRIORITY_FEE_LAMPORTS (10M),
+    // which also leaves the wallet as native SOL. A real swap paying close to
+    // that cap would false-block without the combined NATIVE_FEE_RENT_SLACK_LAMPORTS.
     const sim = { deltas: { [SOL_USDC]: -1000000n, [SOL_USDT]: 1000000n, [SOL_SENTINEL]: -10_000_000n } };
+    expect(() => assertSolanaSwapOutcome(splInRequest, splInQuote, sim, {})).not.toThrow();
+  });
+
+  it('rejects a native-SOL sibling drain beyond maxInputAmount + fee/rent slack', () => {
+    const sim = { deltas: { [SOL_USDC]: -1000000n, [SOL_USDT]: 1000000n, [SOL_SENTINEL]: -14_000_000n } };
     expect(() => assertSolanaSwapOutcome(splInRequest, splInQuote, sim, {}))
       .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*other than the one you are selling/i);
   });
 
   it('allows a custom siblingDustThreshold to override the native default', () => {
-    const sim = { deltas: { [SOL_USDC]: -1000000n, [SOL_USDT]: 1000000n, [SOL_SENTINEL]: -10_000_000n } };
+    const sim = { deltas: { [SOL_USDC]: -1000000n, [SOL_USDT]: 1000000n, [SOL_SENTINEL]: -14_000_000n } };
     expect(() => assertSolanaSwapOutcome(splInRequest, splInQuote, sim, { siblingDustThreshold: 20_000_000n })).not.toThrow();
   });
 
-  it('is metadata-bound (not tightly bounded) on native-SOL input, tolerating fee/rent noise', () => {
+  it('is slack-bounded (not tightly bounded) on native-SOL input, tolerating fee/rent noise', () => {
     const nativeInRequest = {
       chain: 'solana', walletAddress: 'Wallet1111111111111111111111111111111111',
       fromToken: SOL_SENTINEL, toToken: SOL_USDC, swapMode: 'exactIn', amount: '1000000000', maxInputAmount: '1000000000',
     };
     const nativeInQuote = { inputMint: SOL_SENTINEL, outputMint: SOL_USDC, inAmount: '1000000000', outAmount: '50000000' };
-    // Native delta is the input PLUS fee/rent noise — no tight ceiling applies.
+    // Native delta is the input plus ~5.1M lamports of fee/rent noise — within
+    // the fee/rent slack (MAX_PRIORITY_FEE_LAMPORTS + NATIVE_SIBLING_DUST_LAMPORTS),
+    // so the loosened bound still passes it.
     const sim = { deltas: { [SOL_SENTINEL]: -1_005_123n * 1000n, [SOL_USDC]: 50_000_000n } };
     expect(assertSolanaSwapOutcome(nativeInRequest, nativeInQuote, sim, { slippage: 0.03 }))
       .toEqual({ verified: true, inputAssertionSkipped: true });
+  });
+
+  it('rejects a native-SOL input drain beyond maxInputAmount + fee/rent slack (assertion 1, native input)', () => {
+    // Regression: assertion 1 used to be fully skipped for native-SOL input,
+    // and assertion 3 unconditionally exempts the input asset — so an extra,
+    // unaccounted native-SOL outflow (e.g. a plain System-Program transfer
+    // assertSolanaInstructionsSafe doesn't classify) could drain far beyond
+    // maxInputAmount as long as the declared output still arrived.
+    const nativeInRequest = {
+      chain: 'solana', walletAddress: 'Wallet1111111111111111111111111111111111',
+      fromToken: SOL_SENTINEL, toToken: SOL_USDC, swapMode: 'exactIn', amount: '1000000000', maxInputAmount: '1000000000',
+    };
+    const nativeInQuote = { inputMint: SOL_SENTINEL, outputMint: SOL_USDC, inAmount: '1000000000', outAmount: '50000000' };
+    // 1000 SOL drained instead of the declared 1 SOL — the output still lands.
+    const sim = { deltas: { [SOL_SENTINEL]: -1_000_000_000_000n, [SOL_USDC]: 50_000_000n } };
+    expect(() => assertSolanaSwapOutcome(nativeInRequest, nativeInQuote, sim, { slippage: 0.03 }))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*maximum input/i);
   });
 
   it('reports inputAssertionSkipped: false on an SPL-in swap, where assertion 1 does run', () => {
@@ -1766,16 +1795,30 @@ describe('assertSolanaSwapOutcome', () => {
   });
 
   it('still blocks native-SOL output that falls short beyond the fee/rent tolerance', () => {
-    // Same trade, but the delta is 990_000_000 — 9M under the floor, far past
-    // the ~3M dust tolerance, so a genuine shortfall is still caught.
+    // Same trade, but the delta is 980_000_000 — 19M under the floor, far past
+    // the ~13M combined fee/rent tolerance, so a genuine shortfall is still caught.
     const req = {
       chain: 'solana', walletAddress: 'Wallet1111111111111111111111111111111111',
       fromToken: SOL_USDC, toToken: SOL_SENTINEL, swapMode: 'exactIn', amount: '50000000', maxInputAmount: '50000000',
     };
     const quote = { inputMint: SOL_USDC, outputMint: SOL_SENTINEL, inAmount: '50000000', outAmount: '1000000000' };
-    const sim = { deltas: { [SOL_USDC]: -50_000_000n, [SOL_SENTINEL]: 990_000_000n } };
+    const sim = { deltas: { [SOL_USDC]: -50_000_000n, [SOL_SENTINEL]: 980_000_000n } };
     expect(() => assertSolanaSwapOutcome(req, quote, sim, { slippage: 0.001 }))
       .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*minimum acceptable output/i);
+  });
+
+  it('tolerates a legitimate near-cap priority fee reducing native-SOL output (SPL→SOL)', () => {
+    // Regression: assertion 2's floor slack used to be NATIVE_SIBLING_DUST_LAMPORTS
+    // (3M) alone, with no priority-fee term. A real swap paying close to the
+    // MAX_PRIORITY_FEE_LAMPORTS cap (10M) can land ~12M lamports under the raw
+    // floor and must still pass — the same combined slack assertions 1/3 use.
+    const req = {
+      chain: 'solana', walletAddress: 'Wallet1111111111111111111111111111111111',
+      fromToken: SOL_USDC, toToken: SOL_SENTINEL, swapMode: 'exactIn', amount: '50000000', maxInputAmount: '50000000',
+    };
+    const quote = { inputMint: SOL_USDC, outputMint: SOL_SENTINEL, inAmount: '50000000', outAmount: '1000000000' };
+    const sim = { deltas: { [SOL_USDC]: -50_000_000n, [SOL_SENTINEL]: 987_000_000n } };
+    expect(() => assertSolanaSwapOutcome(req, quote, sim, { slippage: 0.001 })).not.toThrow();
   });
 
   it('blocks a negative output delta even when the dust-quoted floor collapses below zero (regression: floor underflow admitted any non-negative delta)', () => {

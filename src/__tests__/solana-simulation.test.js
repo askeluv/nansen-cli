@@ -404,6 +404,28 @@ describe('solana-simulation', () => {
       .rejects.toMatchObject({ code: 'SIM_RPC_ERROR' });
   });
 
+  it('degrades as SIM_RPC_ERROR when getMultipleAccounts returns fewer accounts than requested (misaligned response)', async () => {
+    // regression: a conforming RPC always returns value.length === the
+    // requested key count (null entries for missing accounts). A short array
+    // would silently shift every later account's pre-state by one slot against
+    // writableKeys, corrupting delta classification, rather than failing loudly.
+    const wallet = generateSolanaWallet().address;
+    const txBase64 = buildLegacyTx({ wallet, extraWritableKeys: [generateSolanaWallet().address] });
+
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url, opts) => {
+      const body = JSON.parse(opts.body);
+      if (body.method === 'getMultipleAccounts') {
+        const [pubkeys] = body.params;
+        // Return one fewer entry than requested.
+        return jsonRpcResponse({ value: pubkeys.slice(1).map(() => null) });
+      }
+      throw new Error(`solana-simulation.test.js: unexpected RPC method ${body.method}`);
+    }));
+
+    await expect(simulateSolanaAssetChanges('solana', txBase64, { walletAddress: wallet }))
+      .rejects.toMatchObject({ code: 'SIM_RPC_ERROR' });
+  });
+
   it('always sends replaceRecentBlockhash:true (the quote blockhash is stale by execute)', async () => {
     const wallet = generateSolanaWallet().address;
     const txBase64 = buildLegacyTx({ wallet });

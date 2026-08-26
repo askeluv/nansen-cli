@@ -116,6 +116,17 @@ async function getMultipleAccountsChunked(rpcUrl, pubkeys, encoding, timeoutMs) 
         `getMultipleAccounts returned no account array (value: ${JSON.stringify(result?.value)}); RPC may be rate-limiting or malfunctioning.`,
       );
     }
+    // The RPC spec guarantees value.length === chunk.length (null entries for
+    // missing accounts), and every downstream read indexes into this array
+    // positionally against writableKeys. A short array would silently shift
+    // every later account's pre-state by one slot rather than fail loudly —
+    // treat a non-conforming length the same as a malformed response.
+    if (result.value.length !== chunk.length) {
+      throw new SolanaSimulationError(
+        'SIM_RPC_ERROR',
+        `getMultipleAccounts returned ${result.value.length} accounts for a ${chunk.length}-key request; RPC may be rate-limiting or malfunctioning.`,
+      );
+    }
     out.push(...result.value);
   }
   return out;

@@ -815,7 +815,7 @@ export async function verifySolanaSwapOutcome({ chain, walletAddress, txBase64, 
     const sim = await simulateSolanaAssetChanges(chain, txBase64, { walletAddress });
     const outcome = assertSolanaSwapOutcome(quoteData.request, quote, sim, { slippage: quoteData.slippage });
     if (outcome.inputAssertionSkipped) {
-      log('  ℹ Native-SOL input spend is metadata-bound, not delta-verified (fee/rent noise); output and sibling checks still ran.');
+      log('  ℹ Native-SOL input spend is bounded with fee/rent slack, not exactly delta-verified; output and sibling checks still ran.');
     }
     log(`  ✓ Swap outcome verified (via ${sim.method}).`);
     return { proceed: true };
