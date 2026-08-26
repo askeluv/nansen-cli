@@ -386,6 +386,24 @@ describe('solana-simulation', () => {
       .rejects.toMatchObject({ code: 'SIM_RPC_ERROR' });
   });
 
+  it('degrades as SIM_RPC_ERROR when getMultipleAccounts returns a null value array (RPC capability gap)', async () => {
+    // regression: a spec-violating 200 OK with `value: null` (a rate-limited
+    // or malfunctioning node) must degrade like any other transport failure,
+    // not silently become an empty array that starves preAccountInfos and
+    // fails closed as SIM_RESULT_UNPARSEABLE (blocking a legitimate trade).
+    const wallet = generateSolanaWallet().address;
+    const txBase64 = buildLegacyTx({ wallet });
+
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url, opts) => {
+      const body = JSON.parse(opts.body);
+      if (body.method === 'getMultipleAccounts') return jsonRpcResponse({ value: null });
+      throw new Error(`solana-simulation.test.js: unexpected RPC method ${body.method}`);
+    }));
+
+    await expect(simulateSolanaAssetChanges('solana', txBase64, { walletAddress: wallet }))
+      .rejects.toMatchObject({ code: 'SIM_RPC_ERROR' });
+  });
+
   it('always sends replaceRecentBlockhash:true (the quote blockhash is stale by execute)', async () => {
     const wallet = generateSolanaWallet().address;
     const txBase64 = buildLegacyTx({ wallet });

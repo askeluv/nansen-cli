@@ -1336,7 +1336,10 @@ export function assertSolanaSwapOutcome(request, quote, sim, { slippage, sibling
  * Address-lookup-table-resolved accounts can never be signers, so those
  * positions are always statically resolvable; only CloseAccount's destination
  * can legitimately be ALT-resolved, and an unresolvable destination is treated
- * the same as a stranger (fail closed).
+ * the same as a stranger (fail closed). The instruction's own program ID must
+ * also be statically resolvable — an ALT-resolved program ID can't be checked
+ * against SPL_TOKEN_PROGRAMS/COMPUTE_BUDGET_PROGRAM, so it's rejected outright
+ * rather than silently skipped.
  *
  * Throws on any of those patterns. Returns the parsed transaction otherwise.
  */
@@ -1373,7 +1376,18 @@ export function assertSolanaInstructionsSafe(txBase64, { walletAddress } = {}) {
 
   for (const ix of parsed.instructions) {
     const programId = resolveStaticAccount(parsed, ix.programIdIndex);
-    if (!programId) continue; // program invoked via an ALT entry — not a pattern we classify
+    // A program ID that's only ALT-resolvable can't be checked against
+    // SPL_TOKEN_PROGRAMS/COMPUTE_BUDGET_PROGRAM without an RPC call this
+    // static check intentionally doesn't make — and skipping it here would
+    // let an Approve/SetAuthority/CloseAccount instruction bypass the drain
+    // protection above just by routing the program ID through an ALT entry.
+    // Real swap/vault transactions reference these well-known programs as
+    // static keys, so fail closed rather than silently skip classification.
+    if (!programId) {
+      throw new Error(
+        'Solana transaction invokes a program only resolvable via an address-lookup-table entry, which cannot be safety-classified. Refusing to sign.',
+      );
+    }
 
     if (SPL_TOKEN_PROGRAMS.has(programId)) {
       // No discriminator byte — not a valid SPL Token instruction (the runtime

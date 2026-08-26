@@ -2144,4 +2144,42 @@ describe('assertSolanaInstructionsSafe', () => {
     });
     expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: wallet })).not.toThrow();
   });
+
+  // Same layout as buildTransaction but as a v0 message (version-prefixed
+  // header, zero address-lookup-table entries) so a test can point an
+  // instruction's programIdIndex past the static account keys — simulating a
+  // program invoked only through an ALT entry.
+  function buildVersionedTransaction({ accountKeys, instructions }) {
+    const parts = [Buffer.from([0x80, 1, 0, accountKeys.length - 1])]; // v0, 1 signer, that signer is writable
+    parts.push(encodeCompactU16(accountKeys.length));
+    for (const k of accountKeys) parts.push(base58Decode(k));
+    parts.push(base58Decode(accountKeys[0])); // recentBlockhash placeholder — any 32 bytes
+    parts.push(encodeCompactU16(instructions.length));
+    for (const ix of instructions) {
+      parts.push(Buffer.from([ix.programIdIndex]));
+      parts.push(encodeCompactU16(ix.accountIndexes.length));
+      for (const idx of ix.accountIndexes) parts.push(Buffer.from([idx]));
+      parts.push(encodeCompactU16(ix.data.length));
+      parts.push(ix.data);
+    }
+    parts.push(encodeCompactU16(0)); // no address-lookup-table entries
+    const messageBytes = Buffer.concat(parts);
+    return Buffer.concat([Buffer.from([1]), Buffer.alloc(64), messageBytes]).toString('base64');
+  }
+
+  it('fails closed on an instruction whose program ID is only ALT-resolvable', () => {
+    // programIdIndex 3 is past accountKeys.length (3 static keys, indexes
+    // 0-2), so it can only resolve via an address-lookup-table entry — the
+    // same gap an Approve/SetAuthority/CloseAccount instruction could hide
+    // behind if the SPL Token program itself were routed through an ALT.
+    const wallet = generateSolanaWallet().address;
+    const sourceAccount = generateSolanaWallet().address;
+    const delegate = generateSolanaWallet().address;
+    const tx = buildVersionedTransaction({
+      accountKeys: [wallet, sourceAccount, delegate],
+      instructions: [{ programIdIndex: 3, accountIndexes: [1, 2, 0], data: Buffer.from([4]) }],
+    });
+    expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: wallet }))
+      .toThrow(/only resolvable via an address-lookup-table entry/);
+  });
 });
