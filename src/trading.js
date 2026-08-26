@@ -985,6 +985,28 @@ export function assertCompleteEvmRequestIntent(request) {
 }
 
 /**
+ * The Solana sibling of assertCompleteEvmRequestIntent. Solana signs the
+ * aggregator's serialized VersionedTransaction verbatim — there is no
+ * approval/calldata split to independently validate — so assertQuoteMatchesRequest
+ * is the only guard between a compromised quote and a signed drain. That check's
+ * per-field `if (request.x)` comparisons silently skip a missing field, so this
+ * closes the gap by failing closed on any incomplete request intent up front.
+ */
+export function assertCompleteSolanaRequestIntent(request) {
+  if (!request) {
+    throw new Error('Quote is missing request intent. Re-quote with this CLI version before executing a Solana swap. Refusing to sign.');
+  }
+
+  const missing = [];
+  for (const field of ['chain', 'walletAddress', 'fromToken', 'toToken', 'swapMode', 'amount', 'maxInputAmount']) {
+    if (request[field] == null || request[field] === '') missing.push(field);
+  }
+  if (missing.length) {
+    throw new Error(`Quote request intent is incomplete (${missing.join(', ')} missing). Re-quote before executing a Solana swap. Refusing to sign.`);
+  }
+}
+
+/**
  * Sanity-check the target of a swap transaction before signing it.
  *
  * This is a defensive gate, not a router allowlist. It rejects the crude cases
@@ -1593,9 +1615,9 @@ OPTIONS:
   --swap-mode <mode>        exactIn (default) or exactOut
   --max-input <baseUnits>   exactOut only: hard ceiling on the sell-token spend
                             (base units), measured against the slippage-buffered
-                            approval (input + slippage), not the bare quote input.
-                            Required for EVM (Base) exactOut and enforced before
-                            signing; optional on Solana (no ERC-20 approval to scope).
+                            spend (input + slippage), not the bare quote input.
+                            Required for exactOut on every chain and enforced
+                            before signing.
   --aggregator <name>       Force a specific aggregator (lifi, relay, jupiter, okx).
                             Filters the quote list client-side; errors if none match.
 
@@ -1630,12 +1652,9 @@ CROSS-CHAIN NOTES (when using --to-chain):
         throw new CommandError('Error: --amount-unit percent is not supported with --swap-mode exactOut. Percentage is relative to your sell-token balance.', 'INVALID_INPUT');
       }
 
-      // The exactOut spend-ceiling requirements below only guard the EVM signing
-      // path: the ERC-20 approval scoping, request-intent binding, and
-      // assertInputWithinMax checks are wired into the EVM execute paths only.
-      // Solana signs the API transaction verbatim (no approval to scope), so
-      // requiring --max-input there would break existing Solana exactOut users
-      // without buying any of that path a security guarantee. Gate on EVM source.
+      // isEvmSource gates the ERC-20-approval-specific check just below (auto-slippage
+      // sizing an approval has no Solana equivalent). The --max-input requirement
+      // itself is NOT gated on it — see the check after maxInputOverride is parsed.
       const isEvmSource = CHAIN_MAP[chain?.toLowerCase()]?.type === 'evm';
 
       // exactOut scopes the ERC-20 approval to a slippage-buffered max input. With
@@ -1669,7 +1688,10 @@ CROSS-CHAIN NOTES (when using --to-chain):
           throw new CommandError(`Error: invalid --max-input "${maxInputRaw}": must be an integer in base units of the sell token.`, 'INVALID_INPUT');
         }
       }
-      if (isEvmSource && swapMode === 'exactOut' && maxInputOverride == null) {
+      // Required on every chain: an exactOut cap derived from the API's own quote
+      // response would just check that quote against itself and could never reject
+      // anything (there is no independent signal to catch an inflated input).
+      if (swapMode === 'exactOut' && maxInputOverride == null) {
         throw new CommandError('Error: --swap-mode exactOut requires --max-input (base units of the sell token) so the input is independently capped before signing.', 'INVALID_INPUT');
       }
 
@@ -1922,6 +1944,9 @@ CROSS-CHAIN NOTES (when using --to-chain):
         }
 
         const signerType = isWalletConnect ? 'walletconnect' : walletProvider;
+        // exactOut has no request.amount input bound (amount is the OUTPUT), so
+        // maxInputAmount is the only spend ceiling assertInputWithinMax can enforce.
+        // Required explicitly via --max-input on every chain (checked above).
         const maxInputAmount = swapMode === 'exactOut' ? maxInputOverride : String(resolvedAmount);
         const quoteId = saveQuote(response, chain, signerType, privyWalletIds, isCrossChain ? toChainRaw : null, {
           swapMode,
@@ -2141,9 +2166,27 @@ EXAMPLES:
               if (typeof txBase64 === 'object' && txBase64.data) {
                 txBase64 = base58Decode(txBase64.data).toString('base64');
               }
-              log('  Signing Solana transaction via Privy...');
+
               const solWalletId = quoteData.privyWalletIds?.solana;
               if (!solWalletId) throw new Error('No Solana Privy wallet ID in quote');
+              const walletResult = await privyClient.getWallet(solWalletId);
+              const walletAddress = walletResult.address;
+              // Fail closed if the signer address doesn't resolve: without it the
+              // wallet-binding comparison below would silently skip, leaving the
+              // quote unbound to the wallet that will sign it.
+              if (!walletAddress) {
+                throw new Error('Could not resolve the Solana Privy wallet address; cannot confirm the quote was built for this wallet. Refusing to sign.');
+              }
+
+              // Validate the persisted request/quote metadata (token pair, amounts,
+              // signer) before signing the aggregator's serialized transaction as
+              // returned. This does not inspect the serialized transaction's own
+              // instructions — Solana quotes have no `to`/`data`/approval split to
+              // check independently, unlike EVM's validateSwapTarget.
+              assertCompleteSolanaRequestIntent(quoteData.request);
+              assertQuoteMatchesRequest(quoteData.request, currentQuote, { chain, walletAddress, slippage: quoteData.slippage });
+
+              log('  Signing Solana transaction via Privy...');
               const signResult = await privyClient.signSolanaTransaction(solWalletId, txBase64);
               signedTransaction = signResult.data?.signed_transaction || signResult.signed_transaction;
               requestId = currentQuote.metadata?.requestId;
@@ -2408,18 +2451,43 @@ EXAMPLES:
               signedTransaction = signResult.data?.signed_transaction || signResult.signed_transaction;
 
             } else if (chainType === 'solana') {
-              // NB: validateSwapTarget (the EVM `to`/`data` guard) intentionally does
-              // not apply here — Solana quotes are a pre-built serialized
-              // VersionedTransaction with no `to`/`data`/approval split to validate,
-              // and this path (including the WalletConnect sub-branch below) signs it
-              // as supplied. Deeper Solana inspection (e.g. checking instruction
-              // program IDs) is tracked as a follow-up, not an oversight.
+              // NB: validateSwapTarget (the EVM `to`/`data` guard) does not apply
+              // here — Solana quotes are a pre-built serialized VersionedTransaction
+              // with no `to`/`data`/approval split to validate. assertQuoteMatchesRequest
+              // below binds the metadata (token pair, amounts, signer) instead.
+              // Deeper static inspection of the tx's own instructions is tracked
+              // as a follow-up, not an oversight.
               // Solana: transaction is either a base64 string (Jupiter) or an object
               // with a base58-encoded `data` field (OKX). Normalize to base64.
               let txBase64 = currentQuote.transaction;
               if (typeof txBase64 === 'object' && txBase64.data) {
                 txBase64 = base58Decode(txBase64.data).toString('base64');
               }
+
+              // Resolve the signer for this sub-path so the intent-binding check
+              // below can confirm the quote was built for this exact wallet.
+              let solanaWalletAddress;
+              if (isWalletConnect) {
+                solanaWalletAddress = await getWalletConnectAddress(chainType);
+                if (!solanaWalletAddress) {
+                  throw new CommandError('WalletConnect session lost during execute. Reconnect with `walletconnect connect` and retry.', 'NO_WALLET');
+                }
+              } else {
+                solanaWalletAddress = exported.solana.address;
+                // Fail closed if the signer address doesn't resolve: without it the
+                // wallet-binding comparison below would silently skip, leaving the
+                // quote unbound to the wallet that will sign it.
+                if (!solanaWalletAddress) {
+                  throw new Error("Could not resolve the local wallet's Solana address; cannot confirm the quote was built for this wallet. Refusing to sign.");
+                }
+              }
+
+              // Validate the persisted request/quote metadata (token pair, amounts,
+              // signer) before signing the opaque Solana transaction. This does not
+              // inspect the serialized transaction's own instructions — see the note
+              // above where the Solana branch starts.
+              assertCompleteSolanaRequestIntent(quoteData.request);
+              assertQuoteMatchesRequest(quoteData.request, currentQuote, { chain, walletAddress: solanaWalletAddress, slippage: quoteData.slippage });
 
               if (isWalletConnect) {
                 // Solana via WalletConnect: convert base64 → base58 for WC protocol

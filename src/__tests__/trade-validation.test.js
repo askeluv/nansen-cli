@@ -1219,6 +1219,26 @@ describe('assertQuoteMatchesRequest', () => {
     expect(() => assertQuoteMatchesRequest(request, mixed, { chain: 'base' })).not.toThrow();
   });
 
+  it('treats both Solana native-SOL sentinels as the same asset (Jupiter wrapped mint vs. Relay/OKX system-program ID)', () => {
+    // resolveTokenAddress persists the wrapped-SOL mint into the request, but
+    // some aggregators (Relay, OKX) report the System Program ID as inputMint/
+    // outputMint for native SOL. Both denote native SOL, so neither direction
+    // of this pairing may false-reject a benign quote.
+    const SOL_WRAPPED = 'So11111111111111111111111111111111111111112';
+    const SOL_SYSTEM = '11111111111111111111111111111111';
+    const solRequest = {
+      chain: 'solana', walletAddress: 'Wallet1111111111111111111111111111111111',
+      fromToken: SOL_WRAPPED, toToken: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+      swapMode: 'exactIn', amount: '1000000000', maxInputAmount: '1000000000',
+    };
+    const okxQuote = { inputMint: SOL_SYSTEM, outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', inputAmount: '1000000000', inAmount: '1000000000', outAmount: '50000000' };
+    expect(() => assertQuoteMatchesRequest(solRequest, okxQuote, { chain: 'solana' })).not.toThrow();
+
+    // A genuinely different sell token must still be rejected.
+    const poisoned = { ...okxQuote, inputMint: 'DifferentMint11111111111111111111111111111' };
+    expect(() => assertQuoteMatchesRequest(solRequest, poisoned, { chain: 'solana' })).toThrow(/sell token .* does not match/i);
+  });
+
   it('rejects a swapped-in sell token', () => {
     const poisoned = { ...okQuote, inputMint: USDT };
     expect(() => assertQuoteMatchesRequest(request, poisoned, { chain: 'base' })).toThrow(/sell token .* does not match/i);
@@ -1382,6 +1402,34 @@ describe('assertInputWithinMax', () => {
   it('fails closed on a missing or non-integer quote input when a cap is set', () => {
     expect(() => assertInputWithinMax({ maxInputAmount: '1000000' }, {})).toThrow(/missing the input amount/i);
     expect(() => assertInputWithinMax({ maxInputAmount: '1000000' }, { inAmount: '1.5' })).toThrow(/not an integer/i);
+  });
+
+  it('uses Solana-specific wording (no EVM approval/native-value language) for a Solana over-cap', () => {
+    // Solana has no ERC-20 approval step, so the over-cap message must not
+    // mention "approval" or "native value" — those are EVM-only concepts.
+    const err = (() => {
+      try { assertInputWithinMax({ chain: 'solana', swapMode: 'exactOut', maxInputAmount: '999999' }, base, 0); }
+      catch (e) { return e.message; }
+    })();
+    expect(err).toMatch(/exceeds your maximum input/i);
+    expect(err).not.toMatch(/approval/i);
+    // exactIn variant likewise omits the EVM approval/native-value clause.
+    const errIn = (() => {
+      try { assertInputWithinMax({ chain: 'solana', swapMode: 'exactIn', maxInputAmount: '999999' }, base, 0); }
+      catch (e) { return e.message; }
+    })();
+    expect(errIn).not.toMatch(/approval|native value/i);
+  });
+
+  it('picks the Solana wording case-insensitively (chain persisted as "Solana")', () => {
+    // request.chain is stored verbatim from --chain, so a mixed-case value must
+    // still route to the Solana-worded message, not the EVM one.
+    const err = (() => {
+      try { assertInputWithinMax({ chain: 'Solana', swapMode: 'exactIn', maxInputAmount: '999999' }, base, 0); }
+      catch (e) { return e.message; }
+    })();
+    expect(err).toMatch(/exceeds your maximum input/i);
+    expect(err).not.toMatch(/approval|native value/i);
   });
 });
 
