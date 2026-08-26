@@ -1126,29 +1126,55 @@ export function assertSwapOutcome(request, quote, sim, { slippage, expectedSpend
  * excessive compute-budget priority fee. Runs before signing, on the raw
  * instructions rather than trusting the aggregator's intent.
  *
- * The SPL Token program requires the *authority* account of Approve/
- * ApproveChecked/SetAuthority/CloseAccount to be a signer of the transaction,
- * so checking "is the authority our own wallet" is both necessary (no other
- * authority could actually get this instruction to execute with our
- * signature) and sufficient — no RPC-based account-ownership lookup needed.
- * Address-lookup-table-resolved accounts can never be signers, so the
- * authority position is always statically resolvable; only CloseAccount's
- * destination can legitimately be ALT-resolved, and an unresolvable
- * destination is treated the same as a stranger (fail closed).
+ * Scope: this inspects only the recognized top-level instructions of the
+ * message — the SPL Token and ComputeBudget programs. It does not, and by
+ * design cannot, see instructions a program issues via CPI at runtime, nor
+ * does it classify calls to programs it doesn't recognize. It is one layer
+ * (paired with the intent-binding metadata check and a balance-delta
+ * simulation), not a complete authorization audit of the transaction.
+ *
+ * Within that scope, the SPL Token program requires the *authority* of
+ * Approve/ApproveChecked/SetAuthority/CloseAccount to sign the transaction,
+ * so checking "does our wallet authorize this instruction" catches the drain
+ * without an RPC-based account-ownership lookup. For a single-owner authority
+ * the wallet sits in the authority position itself; for a multisig authority
+ * the authority account is the multisig and our wallet appears among the
+ * signer accounts that follow it — so we treat the wallet signing *anywhere
+ * from the authority position onward* as authorizing the instruction.
+ * Address-lookup-table-resolved accounts can never be signers, so those
+ * positions are always statically resolvable; only CloseAccount's destination
+ * can legitimately be ALT-resolved, and an unresolvable destination is treated
+ * the same as a stranger (fail closed).
  *
  * Throws on any of those patterns. Returns the parsed transaction otherwise.
  */
 export function assertSolanaInstructionsSafe(txBase64, { walletAddress } = {}) {
-  // Fail closed on a missing wallet address: every authority check below is
-  // `authority === walletAddress`, so a null/undefined address would make each
-  // comparison silently false and disable the drain protection rather than
-  // over-reject. Refuse to run the check without knowing whose signature we're
-  // guarding.
+  // Fail closed on a missing wallet address: every authority check below
+  // compares resolved accounts against `walletAddress`, so a null/undefined
+  // address would make each comparison silently false and disable the drain
+  // protection rather than over-reject. Refuse to run the check without knowing
+  // whose signature we're guarding.
   if (!walletAddress) {
     throw new Error('Cannot verify Solana instruction safety without the signing wallet address. Refusing to sign.');
   }
   const parsed = parseTransactionMessage(txBase64);
   const accountAt = (ix, position) => resolveStaticAccount(parsed, ix.accountIndexes[position]);
+
+  // Does our wallet authorize this SPL instruction? For a single-owner
+  // authority the wallet is at `authorityPos`; for a multisig authority the
+  // authority account is the multisig and our wallet is one of the signer
+  // accounts that follow it. Scanning from `authorityPos` to the end covers
+  // both. Returns true on an unresolvable authority (null): the authority must
+  // be a signer, so it can never legitimately be ALT-resolved — a null means an
+  // out-of-bounds or ALT index there, i.e. a crafted/malformed transaction, and
+  // we fail closed rather than let a silent misparse pass.
+  const walletAuthorizes = (ix, authorityPos) => {
+    if (accountAt(ix, authorityPos) === null) return true;
+    for (let i = authorityPos; i < ix.accountIndexes.length; i++) {
+      if (accountAt(ix, i) === walletAddress) return true;
+    }
+    return false;
+  };
 
   let computeUnitLimit = null;
   let computeUnitPriceMicroLamports = null;
@@ -1158,22 +1184,19 @@ export function assertSolanaInstructionsSafe(txBase64, { walletAddress } = {}) {
     if (!programId) continue; // program invoked via an ALT entry — not a pattern we classify
 
     if (SPL_TOKEN_PROGRAMS.has(programId)) {
+      // No discriminator byte — not a valid SPL Token instruction (the runtime
+      // would reject it too). Skip explicitly so the fail-closed intent doesn't
+      // rest on `undefined` never equalling a discriminant constant.
+      if (ix.data.length === 0) continue;
       const discriminator = ix.data[0];
-      // The authority of these SPL instructions must be a signer, so it can
-      // never legitimately be ALT-resolved — a null here means an out-of-bounds
-      // or ALT index in the authority position, i.e. a crafted/malformed
-      // transaction. Treat null the same as "our wallet" and fail closed rather
-      // than let the `=== walletAddress` comparison silently pass on a misparse.
       if (discriminator === SPL_APPROVE || discriminator === SPL_APPROVE_CHECKED) {
-        const authority = accountAt(ix, discriminator === SPL_APPROVE_CHECKED ? 3 : 2);
-        if (authority === null || authority === walletAddress) {
+        if (walletAuthorizes(ix, discriminator === SPL_APPROVE_CHECKED ? 3 : 2)) {
           throw new Error(
             'Solana transaction grants a token delegate (Approve) authorized by your wallet. Refusing to sign.',
           );
         }
       } else if (discriminator === SPL_SET_AUTHORITY) {
-        const authority = accountAt(ix, 1);
-        if (authority === null || authority === walletAddress) {
+        if (walletAuthorizes(ix, 1)) {
           throw new Error(
             "Solana transaction changes a token account's authority (SetAuthority) using your wallet's signature. Refusing to sign.",
           );
@@ -1181,7 +1204,10 @@ export function assertSolanaInstructionsSafe(txBase64, { walletAddress } = {}) {
       } else if (discriminator === SPL_CLOSE_ACCOUNT) {
         const authority = accountAt(ix, 2);
         const destination = accountAt(ix, 1);
-        if (authority === null || (authority === walletAddress && destination !== walletAddress)) {
+        // Fail closed on an unresolvable authority regardless of destination;
+        // otherwise reject only when our wallet authorizes the close and the
+        // rent goes anywhere but back to us.
+        if (authority === null || (walletAuthorizes(ix, 2) && destination !== walletAddress)) {
           throw new Error(
             `Solana transaction closes a token account and sends the reclaimed rent to ` +
             `${destination || 'an address only resolvable via an address lookup table'} instead of your wallet. Refusing to sign.`,
@@ -1189,6 +1215,7 @@ export function assertSolanaInstructionsSafe(txBase64, { walletAddress } = {}) {
         }
       }
     } else if (programId === COMPUTE_BUDGET_PROGRAM) {
+      if (ix.data.length === 0) continue; // no discriminator — not a valid ComputeBudget instruction
       const discriminator = ix.data[0];
       if (discriminator === COMPUTE_BUDGET_SET_UNIT_LIMIT && ix.data.length >= 5) {
         computeUnitLimit = ix.data.readUInt32LE(1);

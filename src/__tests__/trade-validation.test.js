@@ -1844,6 +1844,65 @@ describe('assertSolanaInstructionsSafe', () => {
       .toThrow(/closes a token account and sends the reclaimed rent/);
   });
 
+  it('rejects a multisig Approve where the wallet signs after the multisig authority account', () => {
+    // Multisig layout: the authority position holds the multisig account, and
+    // the m-of-n signer accounts (one of them our wallet) follow it. The wallet
+    // still authorizes the delegate grant even though it isn't in the authority
+    // slot itself.
+    const wallet = generateSolanaWallet().address;
+    const sourceAccount = generateSolanaWallet().address;
+    const delegate = generateSolanaWallet().address;
+    const multisigOwner = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, sourceAccount, delegate, multisigOwner, TOKEN_PROGRAM],
+      // Approve: [source, delegate, multisig_owner, signer(=wallet)]
+      instructions: [{ programIdIndex: 4, accountIndexes: [1, 2, 3, 0], data: Buffer.from([4]) }],
+    });
+    expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: wallet }))
+      .toThrow(/grants a token delegate/);
+  });
+
+  it('rejects a multisig CloseAccount to a stranger where the wallet signs after the multisig authority', () => {
+    const wallet = generateSolanaWallet().address;
+    const account = generateSolanaWallet().address;
+    const stranger = generateSolanaWallet().address;
+    const multisigOwner = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, account, stranger, multisigOwner, TOKEN_PROGRAM],
+      // CloseAccount: [account, destination(=stranger), multisig_owner, signer(=wallet)]
+      instructions: [{ programIdIndex: 4, accountIndexes: [1, 2, 3, 0], data: Buffer.from([9]) }],
+    });
+    expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: wallet }))
+      .toThrow(/closes a token account and sends the reclaimed rent/);
+  });
+
+  it('allows a multisig CloseAccount that returns rent to the wallet even though the wallet signs', () => {
+    // The wallet authorizes the close (as a multisig signer), but the rent comes
+    // back to it — that's the legitimate WSOL-unwrap shape, not a drain.
+    const wallet = generateSolanaWallet().address;
+    const account = generateSolanaWallet().address;
+    const multisigOwner = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, account, multisigOwner, TOKEN_PROGRAM],
+      // CloseAccount: [account, destination(=wallet, index 0), multisig_owner, signer(=wallet)]
+      instructions: [{ programIdIndex: 3, accountIndexes: [1, 0, 2, 0], data: Buffer.from([9]) }],
+    });
+    expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: wallet })).not.toThrow();
+  });
+
+  it('skips an SPL Token instruction with empty data rather than misreading a missing discriminator', () => {
+    // No discriminator byte — `ix.data[0]` would be undefined. The runtime would
+    // reject this too; the check must skip it explicitly, not fall through the
+    // discriminant comparisons on an `undefined`.
+    const wallet = generateSolanaWallet().address;
+    const account = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, account, TOKEN_PROGRAM],
+      instructions: [{ programIdIndex: 2, accountIndexes: [1, 0], data: Buffer.alloc(0) }],
+    });
+    expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: wallet })).not.toThrow();
+  });
+
   it('rejects an excessive compute-budget priority fee', () => {
     const wallet = generateSolanaWallet().address;
     const tx = buildTransaction({
