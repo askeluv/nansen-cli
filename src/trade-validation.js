@@ -1147,16 +1147,21 @@ export function assertSolanaInstructionsSafe(txBase64, { walletAddress } = {}) {
 
     if (SPL_TOKEN_PROGRAMS.has(programId)) {
       const discriminator = ix.data[0];
+      // The authority of these SPL instructions must be a signer, so it can
+      // never legitimately be ALT-resolved — a null here means an out-of-bounds
+      // or ALT index in the authority position, i.e. a crafted/malformed
+      // transaction. Treat null the same as "our wallet" and fail closed rather
+      // than let the `=== walletAddress` comparison silently pass on a misparse.
       if (discriminator === SPL_APPROVE || discriminator === SPL_APPROVE_CHECKED) {
         const authority = accountAt(ix, discriminator === SPL_APPROVE_CHECKED ? 3 : 2);
-        if (authority === walletAddress) {
+        if (authority === null || authority === walletAddress) {
           throw new Error(
             'Solana transaction grants a token delegate (Approve) authorized by your wallet. Refusing to sign.',
           );
         }
       } else if (discriminator === SPL_SET_AUTHORITY) {
         const authority = accountAt(ix, 1);
-        if (authority === walletAddress) {
+        if (authority === null || authority === walletAddress) {
           throw new Error(
             "Solana transaction changes a token account's authority (SetAuthority) using your wallet's signature. Refusing to sign.",
           );
@@ -1164,7 +1169,7 @@ export function assertSolanaInstructionsSafe(txBase64, { walletAddress } = {}) {
       } else if (discriminator === SPL_CLOSE_ACCOUNT) {
         const authority = accountAt(ix, 2);
         const destination = accountAt(ix, 1);
-        if (authority === walletAddress && destination !== walletAddress) {
+        if (authority === null || (authority === walletAddress && destination !== walletAddress)) {
           throw new Error(
             `Solana transaction closes a token account and sends the reclaimed rent to ` +
             `${destination || 'an address only resolvable via an address lookup table'} instead of your wallet. Refusing to sign.`,

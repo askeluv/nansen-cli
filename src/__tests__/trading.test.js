@@ -324,6 +324,12 @@ describe('readCompactU16', () => {
   it('should read with offset', () => {
     expect(readCompactU16(Buffer.from([0xff, 0x05]), 1)).toEqual({ value: 5, size: 1 });
   });
+
+  it('fails closed on a length byte that runs past the end of the buffer', () => {
+    // Continuation bit set with no following byte — must throw, not silently
+    // read past the buffer and return a wrong length.
+    expect(() => readCompactU16(Buffer.from([0x80]), 0)).toThrow(/past end of buffer/);
+  });
 });
 
 // ============= RLP Encoding =============
@@ -3934,6 +3940,35 @@ describe('Solana execute: static instruction safety check', () => {
 
     delete process.env.NANSEN_WALLET_PASSWORD;
     vi.unstubAllGlobals();
+  });
+
+  it('gives an actionable local-wallet error (not a WalletConnect message) when the wallet file has no Solana key', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    // Simulate a hand-edited/legacy wallet file missing the `solana` key.
+    const walletFile = path.join(tempDir, '.nansen', 'wallets', 'default.json');
+    const data = JSON.parse(fs.readFileSync(walletFile, 'utf8'));
+    delete data.solana;
+    fs.writeFileSync(walletFile, JSON.stringify(data, null, 2));
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'jupiter',
+        inputMint: '11111111111111111111111111111111',
+        outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+        inAmount: '1000000000',
+        outAmount: '100000000',
+        transaction: 'irrelevant-not-reached',
+      }],
+    }, 'solana', 'local');
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    await expect(cmds.execute([], null, {}, { quote: quoteId }))
+      .rejects.toThrow(/No Solana address on this wallet/);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
   });
 });
 

@@ -14,6 +14,8 @@ import { keccak256, signSecp256k1, rlpEncode } from './crypto.js';
 import { getWalletConnectAddress, sendTransactionViaWalletConnect, sendSolanaTransactionViaWalletConnect, sendApprovalViaWalletConnect } from './walletconnect-trading.js';
 import { retrievePassword } from './keychain.js';
 import { validateQuoteInput, validateBalance, resolvePercentAmount, validateGasBalance, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertSwapCalldataNotBareTransfer, assertSwapOutcome, assertSolanaInstructionsSafe, approvalAmountForSwap, needsAllowanceRevoke, OVERSIZED_ALLOWANCE_MULTIPLIER } from './trade-validation.js';
+import { readCompactU16 } from './solana-tx.js';
+export { readCompactU16 };
 import { CHAIN_RPCS } from './rpc-urls.js';
 import { simulateAssetChanges, SwapSimulationError, hasSimulationRpc } from './swap-simulation.js';
 import { packageVersion, CommandError, telemetryHeaders, loadConfig } from './api.js';
@@ -1257,23 +1259,6 @@ function rlpNormalize(val) {
   return toBuffer(val);
 }
 
-// ============= Compact-u16 (Solana) =============
-
-/**
- * Read a compact-u16 from a buffer (Solana transaction format).
- */
-export function readCompactU16(buf, offset) {
-  let value = 0;
-  let size = 0;
-  for (let i = 0; i < 3; i++) {
-    const byte = buf[offset + i];
-    value |= (byte & 0x7f) << (7 * i);
-    size++;
-    if ((byte & 0x80) === 0) break;
-  }
-  return { value, size };
-}
-
 // ============= Chain Utilities =============
 
 /**
@@ -2143,12 +2128,18 @@ EXAMPLES:
               }
               const solWalletId = quoteData.privyWalletIds?.solana;
               if (!solWalletId) throw new Error('No Solana Privy wallet ID in quote');
-              const privySolWallet = await privyClient.getWallet(solWalletId);
+
+              // The signing wallet address was already resolved and persisted at
+              // quote time; prefer it over a fresh getWallet round-trip on the hot
+              // path. Fall back to getWallet only for older quote files that
+              // predate the persisted request.walletAddress field.
+              const solSignerAddress = quoteData.request?.walletAddress
+                ?? (await privyClient.getWallet(solWalletId)).address;
 
               // Static instruction check ahead of signing — catches a delegate
               // grant, authority change, close-to-stranger, or excessive fee that
               // a balance-delta simulation alone wouldn't see.
-              assertSolanaInstructionsSafe(txBase64, { walletAddress: privySolWallet.address });
+              assertSolanaInstructionsSafe(txBase64, { walletAddress: solSignerAddress });
 
               log('  Signing Solana transaction via Privy...');
               const signResult = await privyClient.signSolanaTransaction(solWalletId, txBase64);
@@ -2427,7 +2418,12 @@ EXAMPLES:
 
               const solanaWalletAddress = isWalletConnect ? await getWalletConnectAddress(chainType) : exported.solana.address;
               if (!solanaWalletAddress) {
-                throw new CommandError('WalletConnect session lost during execute. Reconnect with `walletconnect connect` and retry.', 'NO_WALLET');
+                throw new CommandError(
+                  isWalletConnect
+                    ? 'WalletConnect session lost during execute. Reconnect with `walletconnect connect` and retry.'
+                    : 'No Solana address on this wallet. Run: nansen wallet show',
+                  'NO_WALLET',
+                );
               }
               // Static instruction check ahead of signing — catches a delegate
               // grant, authority change, close-to-stranger, or excessive fee that

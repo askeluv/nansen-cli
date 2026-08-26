@@ -6,7 +6,7 @@
 
 import { base58Encode } from './wallet.js';
 
-function readCompactU16(buf, offset) {
+export function readCompactU16(buf, offset) {
   let value = 0;
   let shift = 0;
   let size = 0;
@@ -138,8 +138,4 @@ export function parseTransactionMessage(base64) {
 export function resolveStaticAccount(parsed, index) {
   if (index < parsed.staticAccountKeys.length) return parsed.staticAccountKeys[index];
   return null;
-}
-
-export function isSignerIndex(parsed, index) {
-  return index < parsed.header.numRequiredSignatures;
 }

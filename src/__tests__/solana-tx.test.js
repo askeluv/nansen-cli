@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseTransactionMessage, resolveStaticAccount, isSignerIndex } from '../solana-tx.js';
+import { parseTransactionMessage, resolveStaticAccount } from '../solana-tx.js';
 import { base58Decode, base58Encode, generateSolanaWallet } from '../wallet.js';
 
 function encodeCompactU16(value) {
@@ -88,13 +88,6 @@ describe('parseTransactionMessage', () => {
     // Account index 2 is beyond the 2 static keys — only resolvable via the ALT above.
     expect(resolveStaticAccount(parsed, 0)).toBe(signer);
     expect(resolveStaticAccount(parsed, 2)).toBe(null);
-  });
-
-  it('reports signer indexes from the header, independent of static-key count', () => {
-    const parsed = { header: { numRequiredSignatures: 2, numReadonlySignedAccounts: 1, numReadonlyUnsignedAccounts: 0 } };
-    expect(isSignerIndex(parsed, 0)).toBe(true);
-    expect(isSignerIndex(parsed, 1)).toBe(true);
-    expect(isSignerIndex(parsed, 2)).toBe(false);
   });
 
   it('throws on a truncated transaction rather than silently misparsing', () => {

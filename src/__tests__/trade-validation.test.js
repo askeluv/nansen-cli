@@ -1756,6 +1756,46 @@ describe('assertSolanaInstructionsSafe', () => {
       .toThrow(/closes a token account and sends the reclaimed rent/);
   });
 
+  it('fails closed on an Approve whose authority index is out of bounds (unresolvable)', () => {
+    // A crafted authority index past the static keys resolves to null. The
+    // authority of an SPL Approve must be a signer, so it can never legitimately
+    // be null — refuse rather than let `null === walletAddress` pass silently.
+    const wallet = generateSolanaWallet().address;
+    const sourceAccount = generateSolanaWallet().address;
+    const delegate = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, sourceAccount, delegate, TOKEN_PROGRAM],
+      // authority position (index 2) points at 9 — well past the 4 static keys
+      instructions: [{ programIdIndex: 3, accountIndexes: [1, 2, 9], data: Buffer.from([4]) }],
+    });
+    expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: wallet }))
+      .toThrow(/grants a token delegate/);
+  });
+
+  it('fails closed on a SetAuthority whose authority index is out of bounds (unresolvable)', () => {
+    const wallet = generateSolanaWallet().address;
+    const account = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, account, TOKEN_PROGRAM],
+      // authority position (index 1) points at 9 — past the 3 static keys
+      instructions: [{ programIdIndex: 2, accountIndexes: [1, 9], data: Buffer.from([6, 2]) }],
+    });
+    expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: wallet }))
+      .toThrow(/changes a token account's authority/);
+  });
+
+  it('fails closed on a CloseAccount whose authority index is out of bounds (unresolvable)', () => {
+    const wallet = generateSolanaWallet().address;
+    const account = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, account, TOKEN_PROGRAM],
+      // authority position (index 2) points at 9 — past the 3 static keys
+      instructions: [{ programIdIndex: 2, accountIndexes: [1, 0, 9], data: Buffer.from([9]) }],
+    });
+    expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: wallet }))
+      .toThrow(/closes a token account and sends the reclaimed rent/);
+  });
+
   it('rejects an excessive compute-budget priority fee', () => {
     const wallet = generateSolanaWallet().address;
     const tx = buildTransaction({
