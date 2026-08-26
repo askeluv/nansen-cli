@@ -45,7 +45,19 @@ export function parseTransactionMessage(base64) {
   requireBytes(offset, 1);
   const first = bytes[offset];
   const isVersioned = (first & 0x80) !== 0;
-  if (isVersioned) offset += 1; // skip the version-prefix byte; header follows
+  if (isVersioned) {
+    // The low 7 bits are the version number. Only v0 exists today, and the rest
+    // of this parser assumes the v0 message layout (static keys, instructions,
+    // then address-table lookups). A future/unknown version could lay out its
+    // bytes differently, so as a pre-signing safety gate we fail closed rather
+    // than skip the prefix and misparse an unsupported format into a
+    // wrong-and-possibly-drain-hiding instruction list.
+    const version = first & 0x7f;
+    if (version !== 0) {
+      throw new Error(`Unsupported Solana transaction version ${version}. Refusing to sign.`);
+    }
+    offset += 1; // skip the version-prefix byte; header follows
+  }
 
   requireBytes(offset, 3);
   const numRequiredSignatures = bytes[offset];

@@ -11,9 +11,9 @@ function encodeCompactU16(value) {
 // Minimal, hand-rolled builder for test fixtures — deliberately independent
 // of solana-tx.js so the parser is verified against an independent encoding,
 // not against itself.
-function buildMessageBytes({ versioned, accountKeys, header, recentBlockhash, instructions, addressTableLookups = [] }) {
+function buildMessageBytes({ versioned, versionByte = 0x80, accountKeys, header, recentBlockhash, instructions, addressTableLookups = [] }) {
   const parts = [];
-  if (versioned) parts.push(Buffer.from([0x80]));
+  if (versioned) parts.push(Buffer.from([versionByte]));
   parts.push(Buffer.from([header.numRequiredSignatures, header.numReadonlySignedAccounts, header.numReadonlyUnsignedAccounts]));
   parts.push(encodeCompactU16(accountKeys.length));
   for (const k of accountKeys) parts.push(base58Decode(k));
@@ -106,6 +106,25 @@ describe('parseTransactionMessage', () => {
     // would read `undefined` bytes and drift its offset; this one must fail closed.
     const truncated = full.subarray(0, full.length - 40).toString('base64');
     expect(() => parseTransactionMessage(truncated)).toThrow(/past end of buffer/);
+  });
+
+  it('fails closed on an unsupported transaction version rather than parsing it as v0', () => {
+    // A versioned prefix whose low 7 bits are non-zero (here version 1, 0x81).
+    // Only legacy and v0 exist today; the rest of the parser assumes the v0
+    // layout, so an unknown version must be rejected, not skipped and misparsed.
+    const signer = generateSolanaWallet().address;
+    const programId = generateSolanaWallet().address;
+    const recentBlockhash = generateSolanaWallet().address;
+    const messageBytes = buildMessageBytes({
+      versioned: true,
+      versionByte: 0x81,
+      accountKeys: [signer, programId],
+      header: { numRequiredSignatures: 1, numReadonlySignedAccounts: 0, numReadonlyUnsignedAccounts: 1 },
+      recentBlockhash,
+      instructions: [{ programIdIndex: 1, accountIndexes: [0], data: Buffer.from([0x01]) }],
+    });
+    expect(() => parseTransactionMessage(wrapTransaction(messageBytes)))
+      .toThrow(/Unsupported Solana transaction version 1/);
   });
 
   it('decodes a real base58 pubkey identically to the existing wallet helper', () => {
