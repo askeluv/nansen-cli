@@ -44,7 +44,6 @@ import {
   loadTxRecord,
   __setAllowanceTimingForTests,
   safeQuotesPath,
-  getQuotesDir,
 } from '../trading.js';
 import { SIMULATION_RPCS } from '../rpc-urls.js';
 import { keccak256, rlpEncode } from '../crypto.js';
