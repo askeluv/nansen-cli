@@ -109,7 +109,7 @@ async function getMultipleAccountsChunked(rpcUrl, pubkeys, encoding, timeoutMs) 
   const out = [];
   for (let i = 0; i < pubkeys.length; i += MAX_ACCOUNTS_PER_CALL) {
     const chunk = pubkeys.slice(i, i + MAX_ACCOUNTS_PER_CALL);
-    const result = await rpcCall(rpcUrl, 'getMultipleAccounts', [chunk, { encoding }], timeoutMs);
+    const result = await rpcCall(rpcUrl, 'getMultipleAccounts', [chunk, { encoding, commitment: 'confirmed' }], timeoutMs);
     if (!Array.isArray(result?.value)) {
       throw new SolanaSimulationError(
         'SIM_RPC_ERROR',
