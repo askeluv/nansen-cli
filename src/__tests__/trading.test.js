@@ -396,6 +396,12 @@ describe('readCompactU16', () => {
   it('should read with offset', () => {
     expect(readCompactU16(Buffer.from([0xff, 0x05]), 1)).toEqual({ value: 5, size: 1 });
   });
+
+  it('fails closed on a length byte that runs past the end of the buffer', () => {
+    // Continuation bit set with no following byte — must throw, not silently
+    // read past the buffer and return a wrong length.
+    expect(() => readCompactU16(Buffer.from([0x80]), 0)).toThrow(/past end of buffer/);
+  });
 });
 
 // ============= RLP Encoding =============
@@ -1503,7 +1509,9 @@ describe('Privy execute support', () => {
         outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
         inAmount: '1000000000',
         outAmount: '50000000',
-        transaction: 'AQAAAA==',
+        // A valid, parseable benign transaction (one non-SPL instruction) — the
+        // pre-signing safety check now parses this before Privy signs it.
+        transaction: 'AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAECAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAQEBAAEA',
         metadata: { requestId: 'req-123' },
       }],
     }, 'solana', 'privy', { evm: 'wl_evm_1', solana: 'wl_sol_1' }, null, {
@@ -1513,14 +1521,15 @@ describe('Privy execute support', () => {
 
     vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
       const urlStr = typeof url === 'string' ? url : url.toString();
-      // Privy getWallet (to resolve address)
+      // Privy getWallet (GET) — resolves the signing wallet's address,
+      // independently of the persisted request, for the intent-binding check
       if (urlStr.includes('privy.io') && opts?.method === 'GET') {
         return Promise.resolve({
           ok: true,
           json: () => Promise.resolve({ id: 'wl_sol_1', address: 'SolPrivyAddr1111111111111111111111111111', chain_type: 'solana' }),
         });
       }
-      // Privy signSolanaTransaction
+      // Privy signSolanaTransaction (POST)
       if (urlStr.includes('privy.io')) {
         return Promise.resolve({
           ok: true,
@@ -3965,6 +3974,103 @@ describe('ERC-20 excessive allowance handling', () => {
     expect(logs.some(l => l.includes('Approval failed for #1 after revoking the prior allowance (now 0): returned no transaction hash and no signed transaction; cannot confirm approval landed'))).toBe(true);
   });
 });
+
+describe('Solana execute: static instruction safety check', () => {
+  function encodeCompactU16(value) {
+    if (value < 0x80) return Buffer.from([value]);
+    if (value < 0x4000) return Buffer.from([(value & 0x7f) | 0x80, (value >> 7) & 0x7f]);
+    return Buffer.from([(value & 0x7f) | 0x80, ((value >> 7) & 0x7f) | 0x80, (value >> 14) & 0x03]);
+  }
+
+  // A Jupiter-shaped (plain base64) transaction whose sole instruction is an
+  // SPL Token CloseAccount authorized by `walletAddress` that sends the
+  // reclaimed rent to a stranger instead of back to the wallet.
+  function buildCloseToStrangerTransaction(walletAddress, strangerAddress) {
+    const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+    const tokenAccount = generateSolanaWallet().address;
+    const accountKeys = [walletAddress, tokenAccount, strangerAddress, TOKEN_PROGRAM];
+    const parts = [Buffer.from([1, 0, 3])];
+    parts.push(encodeCompactU16(accountKeys.length));
+    for (const k of accountKeys) parts.push(base58Decode(k));
+    parts.push(base58Decode(walletAddress)); // recentBlockhash placeholder
+    parts.push(encodeCompactU16(1));
+    // CloseAccount: [account, destination(=stranger), authority(=wallet, signer)]
+    parts.push(Buffer.from([3])); // programIdIndex → TOKEN_PROGRAM
+    parts.push(encodeCompactU16(3));
+    parts.push(Buffer.from([1, 2, 0]));
+    parts.push(encodeCompactU16(1));
+    parts.push(Buffer.from([9])); // CloseAccount discriminator
+    const messageBytes = Buffer.concat(parts);
+    return Buffer.concat([Buffer.from([1]), Buffer.alloc(64), messageBytes]).toString('base64');
+  }
+
+  it('blocks execute before signing when the compiled instructions close an account to a stranger', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    const wallet = showWallet('default');
+    const stranger = generateSolanaWallet().address;
+
+    const fetchCalls = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url) => {
+      fetchCalls.push(typeof url === 'string' ? url : url.toString());
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ status: 'Success' })) });
+    }));
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'jupiter',
+        inputMint: '11111111111111111111111111111111',
+        outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+        inAmount: '1000000000',
+        outAmount: '100000000',
+        transaction: buildCloseToStrangerTransaction(wallet.solana, stranger),
+      }],
+      // A matching request intent so the metadata check passes and execution
+      // reaches the static instruction inspection that this test exercises.
+    }, 'solana', 'local', null, null, { request: solanaIntent({ walletAddress: wallet.solana }) });
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow();
+
+    expect(fetchCalls.some(u => u.includes('trading-api') && u.endsWith('/execute'))).toBe(false);
+    expect(logs.some(l => l.includes('reclaimed rent'))).toBe(true);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+    vi.unstubAllGlobals();
+  });
+
+  it('gives an actionable local-wallet error (not a WalletConnect message) when the wallet file has no Solana key', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    // Simulate a hand-edited/legacy wallet file missing the `solana` key.
+    const walletFile = path.join(tempDir, '.nansen', 'wallets', 'default.json');
+    const data = JSON.parse(fs.readFileSync(walletFile, 'utf8'));
+    delete data.solana;
+    fs.writeFileSync(walletFile, JSON.stringify(data, null, 2));
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'jupiter',
+        inputMint: '11111111111111111111111111111111',
+        outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+        inAmount: '1000000000',
+        outAmount: '100000000',
+        transaction: 'irrelevant-not-reached',
+      }],
+    }, 'solana', 'local');
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    await expect(cmds.execute([], null, {}, { quote: quoteId }))
+      .rejects.toThrow(/Could not resolve the local wallet's Solana address/);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+  });
+});
+
 
 describe('Relay aggregator: --gasless flag dispatch', () => {
   it('forwards aggregator/gasless/steps/requestId to /execute when gasless flag is set', async () => {

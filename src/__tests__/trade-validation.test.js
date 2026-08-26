@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { validateQuoteInput, fetchNativeBalance, fetchTokenBalance, validateBalance, resolvePercentAmount, validateGasBalance, GASLESS_MIN_TRADE_USD, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertInputWithinMax, assertSwapCalldataNotBareTransfer, assertSwapOutcome, MAX_UINT256, needsAllowanceRevoke } from '../trade-validation.js';
+import { validateQuoteInput, fetchNativeBalance, fetchTokenBalance, validateBalance, resolvePercentAmount, validateGasBalance, GASLESS_MIN_TRADE_USD, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertInputWithinMax, assertSwapCalldataNotBareTransfer, assertSwapOutcome, assertSolanaInstructionsSafe, MAX_UINT256, needsAllowanceRevoke } from '../trade-validation.js';
+import { base58Decode, generateSolanaWallet } from '../wallet.js';
 
 describe('validateQuoteInput', () => {
   const validSolana = {
@@ -1656,5 +1657,321 @@ describe('assertSwapOutcome', () => {
   it('fails closed on a corrupt (non-integer) simulated delta', () => {
     const sim = { deltas: { [USDC]: 'not-a-number' }, approvals: [] };
     expect(() => assertSwapOutcome(exactInRequest, exactInQuote, sim, {})).toThrow(/SWAP_OUTCOME_MISMATCH/i);
+  });
+});
+
+describe('assertSolanaInstructionsSafe', () => {
+  const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+  const COMPUTE_BUDGET_PROGRAM = 'ComputeBudget111111111111111111111111111111';
+
+  function encodeCompactU16(value) {
+    if (value < 0x80) return Buffer.from([value]);
+    if (value < 0x4000) return Buffer.from([(value & 0x7f) | 0x80, (value >> 7) & 0x7f]);
+    return Buffer.from([(value & 0x7f) | 0x80, ((value >> 7) & 0x7f) | 0x80, (value >> 14) & 0x03]);
+  }
+
+  // Minimal legacy-message builder — accountKeys[0] is always the wallet
+  // (fee payer / sole signer) unless a test overrides the ordering directly.
+  function buildTransaction({ accountKeys, instructions }) {
+    const parts = [Buffer.from([1, 0, accountKeys.length - 1])]; // 1 signer, that signer is writable
+    parts.push(encodeCompactU16(accountKeys.length));
+    for (const k of accountKeys) parts.push(base58Decode(k));
+    parts.push(base58Decode(accountKeys[0])); // recentBlockhash placeholder — any 32 bytes
+    parts.push(encodeCompactU16(instructions.length));
+    for (const ix of instructions) {
+      parts.push(Buffer.from([ix.programIdIndex]));
+      parts.push(encodeCompactU16(ix.accountIndexes.length));
+      for (const idx of ix.accountIndexes) parts.push(Buffer.from([idx]));
+      parts.push(encodeCompactU16(ix.data.length));
+      parts.push(ix.data);
+    }
+    const messageBytes = Buffer.concat(parts);
+    return Buffer.concat([Buffer.from([1]), Buffer.alloc(64), messageBytes]).toString('base64');
+  }
+
+  function computeBudgetSetLimit(units) {
+    const data = Buffer.alloc(5);
+    data[0] = 2;
+    data.writeUInt32LE(units, 1);
+    return data;
+  }
+  function computeBudgetSetPrice(microLamports) {
+    const data = Buffer.alloc(9);
+    data[0] = 3;
+    data.writeBigUInt64LE(BigInt(microLamports), 1);
+    return data;
+  }
+
+  it('passes a benign transaction with no SPL Token or ComputeBudget instructions', () => {
+    const wallet = generateSolanaWallet().address;
+    const programId = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, programId],
+      instructions: [{ programIdIndex: 1, accountIndexes: [0], data: Buffer.from([0x01]) }],
+    });
+    expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: wallet })).not.toThrow();
+  });
+
+  it('fails closed when no wallet address is provided rather than silently passing', () => {
+    // An Approve authorized by the (unknown) signer must not slip through just
+    // because walletAddress is missing — the check would otherwise compare
+    // against undefined and never fire.
+    const wallet = generateSolanaWallet().address;
+    const sourceAccount = generateSolanaWallet().address;
+    const delegate = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, sourceAccount, delegate, TOKEN_PROGRAM],
+      instructions: [{ programIdIndex: 3, accountIndexes: [1, 2, 0], data: Buffer.from([4]) }],
+    });
+    expect(() => assertSolanaInstructionsSafe(tx, {})).toThrow(/without the signing wallet address/);
+    expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: null })).toThrow(/without the signing wallet address/);
+    expect(() => assertSolanaInstructionsSafe(tx)).toThrow(/without the signing wallet address/);
+  });
+
+  it('rejects an Approve instruction authorized by the wallet', () => {
+    const wallet = generateSolanaWallet().address;
+    const sourceAccount = generateSolanaWallet().address;
+    const delegate = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, sourceAccount, delegate, TOKEN_PROGRAM],
+      // Approve: [source, delegate, owner(authority, signer)]
+      instructions: [{ programIdIndex: 3, accountIndexes: [1, 2, 0], data: Buffer.from([4]) }],
+    });
+    expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: wallet }))
+      .toThrow(/grants a token delegate/);
+  });
+
+  it('rejects an ApproveChecked instruction authorized by the wallet', () => {
+    const wallet = generateSolanaWallet().address;
+    const sourceAccount = generateSolanaWallet().address;
+    const mint = generateSolanaWallet().address;
+    const delegate = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, sourceAccount, mint, delegate, TOKEN_PROGRAM],
+      // ApproveChecked: [source, mint, delegate, owner(authority, signer)]
+      instructions: [{ programIdIndex: 4, accountIndexes: [1, 2, 3, 0], data: Buffer.from([13]) }],
+    });
+    expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: wallet }))
+      .toThrow(/grants a token delegate/);
+  });
+
+  it('does not reject an Approve instruction whose authority is not the wallet', () => {
+    // Can't actually execute with our signature anyway — SPL Token requires
+    // the authority to sign, and we're not providing that account's signature.
+    const wallet = generateSolanaWallet().address;
+    const sourceAccount = generateSolanaWallet().address;
+    const delegate = generateSolanaWallet().address;
+    const someoneElse = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, sourceAccount, delegate, someoneElse, TOKEN_PROGRAM],
+      instructions: [{ programIdIndex: 4, accountIndexes: [1, 2, 3], data: Buffer.from([4]) }],
+    });
+    expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: wallet })).not.toThrow();
+  });
+
+  it('rejects a SetAuthority instruction authorized by the wallet', () => {
+    const wallet = generateSolanaWallet().address;
+    const account = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, account, TOKEN_PROGRAM],
+      // SetAuthority: [account, current authority(signer)]
+      instructions: [{ programIdIndex: 2, accountIndexes: [1, 0], data: Buffer.from([6, 2]) }],
+    });
+    expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: wallet }))
+      .toThrow(/changes a token account's authority/);
+  });
+
+  it('allows a CloseAccount instruction that returns rent to the wallet itself', () => {
+    const wallet = generateSolanaWallet().address;
+    const account = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, account, TOKEN_PROGRAM],
+      // CloseAccount: [account, destination, authority(signer)] — destination == wallet (index 0)
+      instructions: [{ programIdIndex: 2, accountIndexes: [1, 0, 0], data: Buffer.from([9]) }],
+    });
+    expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: wallet })).not.toThrow();
+  });
+
+  it('rejects a CloseAccount instruction that sends rent to a stranger', () => {
+    const wallet = generateSolanaWallet().address;
+    const account = generateSolanaWallet().address;
+    const stranger = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, account, stranger, TOKEN_PROGRAM],
+      instructions: [{ programIdIndex: 3, accountIndexes: [1, 2, 0], data: Buffer.from([9]) }],
+    });
+    expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: wallet }))
+      .toThrow(/closes a token account and sends the reclaimed rent/);
+  });
+
+  it('fails closed on an Approve whose authority index is out of bounds (unresolvable)', () => {
+    // A crafted authority index past the static keys resolves to null. The
+    // authority of an SPL Approve must be a signer, so it can never legitimately
+    // be null — refuse rather than let `null === walletAddress` pass silently.
+    const wallet = generateSolanaWallet().address;
+    const sourceAccount = generateSolanaWallet().address;
+    const delegate = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, sourceAccount, delegate, TOKEN_PROGRAM],
+      // authority position (index 2) points at 9 — well past the 4 static keys
+      instructions: [{ programIdIndex: 3, accountIndexes: [1, 2, 9], data: Buffer.from([4]) }],
+    });
+    expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: wallet }))
+      .toThrow(/grants a token delegate/);
+  });
+
+  it('fails closed on a SetAuthority whose authority index is out of bounds (unresolvable)', () => {
+    const wallet = generateSolanaWallet().address;
+    const account = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, account, TOKEN_PROGRAM],
+      // authority position (index 1) points at 9 — past the 3 static keys
+      instructions: [{ programIdIndex: 2, accountIndexes: [1, 9], data: Buffer.from([6, 2]) }],
+    });
+    expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: wallet }))
+      .toThrow(/changes a token account's authority/);
+  });
+
+  it('fails closed on a CloseAccount whose authority index is out of bounds (unresolvable)', () => {
+    const wallet = generateSolanaWallet().address;
+    const account = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, account, TOKEN_PROGRAM],
+      // authority position (index 2) points at 9 — past the 3 static keys
+      instructions: [{ programIdIndex: 2, accountIndexes: [1, 0, 9], data: Buffer.from([9]) }],
+    });
+    expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: wallet }))
+      .toThrow(/closes a token account and sends the reclaimed rent/);
+  });
+
+  it('rejects a multisig Approve where the wallet signs after the multisig authority account', () => {
+    // Multisig layout: the authority position holds the multisig account, and
+    // the m-of-n signer accounts (one of them our wallet) follow it. The wallet
+    // still authorizes the delegate grant even though it isn't in the authority
+    // slot itself.
+    const wallet = generateSolanaWallet().address;
+    const sourceAccount = generateSolanaWallet().address;
+    const delegate = generateSolanaWallet().address;
+    const multisigOwner = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, sourceAccount, delegate, multisigOwner, TOKEN_PROGRAM],
+      // Approve: [source, delegate, multisig_owner, signer(=wallet)]
+      instructions: [{ programIdIndex: 4, accountIndexes: [1, 2, 3, 0], data: Buffer.from([4]) }],
+    });
+    expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: wallet }))
+      .toThrow(/grants a token delegate/);
+  });
+
+  it('rejects a multisig CloseAccount to a stranger where the wallet signs after the multisig authority', () => {
+    const wallet = generateSolanaWallet().address;
+    const account = generateSolanaWallet().address;
+    const stranger = generateSolanaWallet().address;
+    const multisigOwner = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, account, stranger, multisigOwner, TOKEN_PROGRAM],
+      // CloseAccount: [account, destination(=stranger), multisig_owner, signer(=wallet)]
+      instructions: [{ programIdIndex: 4, accountIndexes: [1, 2, 3, 0], data: Buffer.from([9]) }],
+    });
+    expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: wallet }))
+      .toThrow(/closes a token account and sends the reclaimed rent/);
+  });
+
+  it('allows a multisig CloseAccount that returns rent to the wallet even though the wallet signs', () => {
+    // The wallet authorizes the close (as a multisig signer), but the rent comes
+    // back to it — that's the legitimate WSOL-unwrap shape, not a drain.
+    const wallet = generateSolanaWallet().address;
+    const account = generateSolanaWallet().address;
+    const multisigOwner = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, account, multisigOwner, TOKEN_PROGRAM],
+      // CloseAccount: [account, destination(=wallet, index 0), multisig_owner, signer(=wallet)]
+      instructions: [{ programIdIndex: 3, accountIndexes: [1, 0, 2, 0], data: Buffer.from([9]) }],
+    });
+    expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: wallet })).not.toThrow();
+  });
+
+  it('skips an SPL Token instruction with empty data rather than misreading a missing discriminator', () => {
+    // No discriminator byte — `ix.data[0]` would be undefined. The runtime would
+    // reject this too; the check must skip it explicitly, not fall through the
+    // discriminant comparisons on an `undefined`.
+    const wallet = generateSolanaWallet().address;
+    const account = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, account, TOKEN_PROGRAM],
+      instructions: [{ programIdIndex: 2, accountIndexes: [1, 0], data: Buffer.alloc(0) }],
+    });
+    expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: wallet })).not.toThrow();
+  });
+
+  it('rejects an excessive compute-budget priority fee', () => {
+    const wallet = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, COMPUTE_BUDGET_PROGRAM],
+      instructions: [
+        { programIdIndex: 1, accountIndexes: [], data: computeBudgetSetLimit(1_400_000) },
+        { programIdIndex: 1, accountIndexes: [], data: computeBudgetSetPrice(10_000_000) }, // 0.014 SOL priority fee, over the 0.01 SOL cap
+      ],
+    });
+    expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: wallet }))
+      .toThrow(/excessive priority fee/);
+  });
+
+  it('assumes the max compute-unit ceiling when a price is set with no explicit limit', () => {
+    const wallet = generateSolanaWallet().address;
+    // A price that's fine at a small limit but excessive at Solana's 1.4M-unit ceiling.
+    const tx = buildTransaction({
+      accountKeys: [wallet, COMPUTE_BUDGET_PROGRAM],
+      instructions: [{ programIdIndex: 1, accountIndexes: [], data: computeBudgetSetPrice(10_000_000) }],
+    });
+    expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: wallet }))
+      .toThrow(/excessive priority fee/);
+  });
+
+  it('allows a modest, explicitly-bounded compute-budget priority fee', () => {
+    const wallet = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, COMPUTE_BUDGET_PROGRAM],
+      instructions: [
+        { programIdIndex: 1, accountIndexes: [], data: computeBudgetSetLimit(200_000) },
+        { programIdIndex: 1, accountIndexes: [], data: computeBudgetSetPrice(1000) },
+      ],
+    });
+    expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: wallet })).not.toThrow();
+  });
+
+  // The limit-order deposit/withdrawal paths run this same gate (see
+  // limit-order.js). Their legitimate transactions move the input token with an
+  // SPL Transfer/TransferChecked — which the gate intentionally does NOT classify
+  // (a swap or vault deposit can't function without one) — so they must pass. If
+  // a future change made the gate reject bare transfers it would brick both the
+  // swap and limit-order flows; these lock in that they don't.
+  it('allows a plain SPL Transfer of the sell token authorized by the wallet (the input leg)', () => {
+    const wallet = generateSolanaWallet().address;
+    const sourceAta = generateSolanaWallet().address;
+    const destAta = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, sourceAta, destAta, TOKEN_PROGRAM],
+      // Transfer (disc 3): [source, destination, authority(=wallet)]
+      instructions: [{ programIdIndex: 3, accountIndexes: [1, 2, 0], data: Buffer.from([3, 0, 0, 0, 0, 0, 0, 0, 0]) }],
+    });
+    expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: wallet })).not.toThrow();
+  });
+
+  it('allows a limit-order-style vault deposit (input TransferChecked into the vault + WSOL close-to-self)', () => {
+    const wallet = generateSolanaWallet().address;
+    const sourceAta = generateSolanaWallet().address;
+    const mint = generateSolanaWallet().address;
+    const vaultAta = generateSolanaWallet().address;
+    const tempWsol = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, sourceAta, mint, vaultAta, tempWsol, TOKEN_PROGRAM],
+      instructions: [
+        // TransferChecked (disc 12): [source, mint, destination(=vault), authority(=wallet)]
+        { programIdIndex: 5, accountIndexes: [1, 2, 3, 0], data: Buffer.from([12, 0, 0, 0, 0, 0, 0, 0, 0, 9]) },
+        // CloseAccount (disc 9) of the temp WSOL account, rent back to the wallet (index 0)
+        { programIdIndex: 5, accountIndexes: [4, 0, 0], data: Buffer.from([9]) },
+      ],
+    });
+    expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: wallet })).not.toThrow();
   });
 });

@@ -6,8 +6,31 @@
 
 import { validateAddress } from './api.js';
 import { CHAIN_RPCS } from './rpc-urls.js';
+import { parseTransactionMessage, resolveStaticAccount } from './solana-tx.js';
 
 const SUPPORTED_CHAINS = ['solana', 'base'];
+
+// SPL Token / Token-2022 instruction discriminators (first data byte) that can
+// move control of a user's token account without moving its balance — the
+// class of drain vector a balance-delta simulation can't see (see
+// assertSolanaInstructionsSafe).
+const SPL_TOKEN_PROGRAMS = new Set([
+  'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+  'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb',
+]);
+const SPL_APPROVE = 4;
+const SPL_SET_AUTHORITY = 6;
+const SPL_CLOSE_ACCOUNT = 9;
+const SPL_APPROVE_CHECKED = 13;
+
+const COMPUTE_BUDGET_PROGRAM = 'ComputeBudget111111111111111111111111111111';
+const COMPUTE_BUDGET_SET_UNIT_LIMIT = 2;
+const COMPUTE_BUDGET_SET_UNIT_PRICE = 3;
+const SOLANA_MAX_COMPUTE_UNITS = 1_400_000; // Solana's per-transaction compute-unit ceiling — the
+                                             // worst-case bound used when a price is set with no
+                                             // explicit limit instruction.
+const MAX_PRIORITY_FEE_LAMPORTS = 10_000_000n; // 0.01 SOL sanity ceiling on the priority fee a
+                                                // single trade can be made to pay.
 
 /**
  * Validate quote inputs before any network call.
@@ -1094,4 +1117,142 @@ export function assertSwapOutcome(request, quote, sim, { slippage, expectedSpend
   }
 
   return { verified: true };
+}
+
+/**
+ * Statically inspect a Solana transaction's instructions for drain vectors a
+ * balance-delta simulation can't see — granting a token delegate, changing a
+ * token account's authority, or closing an account to a stranger — and for an
+ * excessive compute-budget priority fee. Runs before signing, on the raw
+ * instructions rather than trusting the aggregator's intent.
+ *
+ * Scope: this inspects only the recognized top-level instructions of the
+ * message — the SPL Token and ComputeBudget programs. It does not, and by
+ * design cannot, see instructions a program issues via CPI at runtime, nor
+ * does it classify calls to programs it doesn't recognize. It is one layer
+ * (paired with the intent-binding metadata check), not a complete
+ * authorization audit of the transaction.
+ *
+ * IMPORTANT — no outcome simulation backs this on Solana. Unlike the EVM path,
+ * which pairs its static calldata checks with a balance-delta simulation
+ * (verifySwapOutcome), there is no Solana simulation RPC (SIMULATION_RPCS is
+ * Base-only), so this static check plus the metadata binding are the ONLY
+ * transaction-level guards on the Solana signing path. In particular this
+ * check does NOT classify SPL Transfer/TransferChecked: a legitimate swap or
+ * vault deposit moves the input token (and WSOL) with exactly those
+ * instructions, so they can't be blanket-rejected, and without a balance-delta
+ * simulation there's nothing here to bound their destination or amount. The
+ * consequence is a residual gap: a transaction that also transfers an
+ * unrelated ("sibling") token the wallet holds, authorized by the wallet,
+ * would pass. Closing it needs either a Solana outcome simulation or a positive
+ * check that every wallet-authorized transfer moves only the declared input
+ * mint (TransferChecked carries the mint; plain Transfer does not, so this
+ * needs an RPC account lookup) — tracked as a follow-up, not covered here.
+ *
+ * Within that scope, the SPL Token program requires the *authority* of
+ * Approve/ApproveChecked/SetAuthority/CloseAccount to sign the transaction,
+ * so checking "does our wallet authorize this instruction" catches the drain
+ * without an RPC-based account-ownership lookup. For a single-owner authority
+ * the wallet sits in the authority position itself; for a multisig authority
+ * the authority account is the multisig and our wallet appears among the
+ * signer accounts that follow it — so we treat the wallet signing *anywhere
+ * from the authority position onward* as authorizing the instruction.
+ * Address-lookup-table-resolved accounts can never be signers, so those
+ * positions are always statically resolvable; only CloseAccount's destination
+ * can legitimately be ALT-resolved, and an unresolvable destination is treated
+ * the same as a stranger (fail closed).
+ *
+ * Throws on any of those patterns. Returns the parsed transaction otherwise.
+ */
+export function assertSolanaInstructionsSafe(txBase64, { walletAddress } = {}) {
+  // Fail closed on a missing wallet address: every authority check below
+  // compares resolved accounts against `walletAddress`, so a null/undefined
+  // address would make each comparison silently false and disable the drain
+  // protection rather than over-reject. Refuse to run the check without knowing
+  // whose signature we're guarding.
+  if (!walletAddress) {
+    throw new Error('Cannot verify Solana instruction safety without the signing wallet address. Refusing to sign.');
+  }
+  const parsed = parseTransactionMessage(txBase64);
+  const accountAt = (ix, position) => resolveStaticAccount(parsed, ix.accountIndexes[position]);
+
+  // Does our wallet authorize this SPL instruction? For a single-owner
+  // authority the wallet is at `authorityPos`; for a multisig authority the
+  // authority account is the multisig and our wallet is one of the signer
+  // accounts that follow it. Scanning from `authorityPos` to the end covers
+  // both. Returns true on an unresolvable authority (null): the authority must
+  // be a signer, so it can never legitimately be ALT-resolved — a null means an
+  // out-of-bounds or ALT index there, i.e. a crafted/malformed transaction, and
+  // we fail closed rather than let a silent misparse pass.
+  const walletAuthorizes = (ix, authorityPos) => {
+    if (accountAt(ix, authorityPos) === null) return true;
+    for (let i = authorityPos; i < ix.accountIndexes.length; i++) {
+      if (accountAt(ix, i) === walletAddress) return true;
+    }
+    return false;
+  };
+
+  let computeUnitLimit = null;
+  let computeUnitPriceMicroLamports = null;
+
+  for (const ix of parsed.instructions) {
+    const programId = resolveStaticAccount(parsed, ix.programIdIndex);
+    if (!programId) continue; // program invoked via an ALT entry — not a pattern we classify
+
+    if (SPL_TOKEN_PROGRAMS.has(programId)) {
+      // No discriminator byte — not a valid SPL Token instruction (the runtime
+      // would reject it too). Skip explicitly so the fail-closed intent doesn't
+      // rest on `undefined` never equalling a discriminant constant.
+      if (ix.data.length === 0) continue;
+      const discriminator = ix.data[0];
+      if (discriminator === SPL_APPROVE || discriminator === SPL_APPROVE_CHECKED) {
+        if (walletAuthorizes(ix, discriminator === SPL_APPROVE_CHECKED ? 3 : 2)) {
+          throw new Error(
+            'Solana transaction grants a token delegate (Approve) authorized by your wallet. Refusing to sign.',
+          );
+        }
+      } else if (discriminator === SPL_SET_AUTHORITY) {
+        if (walletAuthorizes(ix, 1)) {
+          throw new Error(
+            "Solana transaction changes a token account's authority (SetAuthority) using your wallet's signature. Refusing to sign.",
+          );
+        }
+      } else if (discriminator === SPL_CLOSE_ACCOUNT) {
+        const authority = accountAt(ix, 2);
+        const destination = accountAt(ix, 1);
+        // Fail closed on an unresolvable authority regardless of destination;
+        // otherwise reject only when our wallet authorizes the close and the
+        // rent goes anywhere but back to us.
+        if (authority === null || (walletAuthorizes(ix, 2) && destination !== walletAddress)) {
+          throw new Error(
+            `Solana transaction closes a token account and sends the reclaimed rent to ` +
+            `${destination || 'an address only resolvable via an address lookup table'} instead of your wallet. Refusing to sign.`,
+          );
+        }
+      }
+    } else if (programId === COMPUTE_BUDGET_PROGRAM) {
+      if (ix.data.length === 0) continue; // no discriminator — not a valid ComputeBudget instruction
+      const discriminator = ix.data[0];
+      if (discriminator === COMPUTE_BUDGET_SET_UNIT_LIMIT && ix.data.length >= 5) {
+        computeUnitLimit = ix.data.readUInt32LE(1);
+      } else if (discriminator === COMPUTE_BUDGET_SET_UNIT_PRICE) {
+        if (ix.data.length < 9) {
+          throw new Error('Solana transaction has a malformed compute-budget price instruction. Refusing to sign.');
+        }
+        computeUnitPriceMicroLamports = ix.data.readBigUInt64LE(1);
+      }
+    }
+  }
+
+  if (computeUnitPriceMicroLamports != null) {
+    const units = BigInt(computeUnitLimit ?? SOLANA_MAX_COMPUTE_UNITS);
+    const feeLamports = (computeUnitPriceMicroLamports * units) / 1_000_000n;
+    if (feeLamports > MAX_PRIORITY_FEE_LAMPORTS) {
+      throw new Error(
+        `Solana transaction sets an excessive priority fee (~${feeLamports} lamports, cap ${MAX_PRIORITY_FEE_LAMPORTS}). Refusing to sign.`,
+      );
+    }
+  }
+
+  return parsed;
 }

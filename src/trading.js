@@ -13,7 +13,9 @@ import { base58Decode } from './transfer.js';
 import { keccak256, signSecp256k1, rlpEncode } from './crypto.js';
 import { getWalletConnectAddress, sendTransactionViaWalletConnect, sendSolanaTransactionViaWalletConnect, sendApprovalViaWalletConnect } from './walletconnect-trading.js';
 import { retrievePassword } from './keychain.js';
-import { validateQuoteInput, validateBalance, resolvePercentAmount, validateGasBalance, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertSwapCalldataNotBareTransfer, assertSwapOutcome, approvalAmountForSwap, needsAllowanceRevoke, OVERSIZED_ALLOWANCE_MULTIPLIER } from './trade-validation.js';
+import { validateQuoteInput, validateBalance, resolvePercentAmount, validateGasBalance, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertSwapCalldataNotBareTransfer, assertSwapOutcome, assertSolanaInstructionsSafe, approvalAmountForSwap, needsAllowanceRevoke, OVERSIZED_ALLOWANCE_MULTIPLIER } from './trade-validation.js';
+import { readCompactU16 } from './solana-tx.js';
+export { readCompactU16 };
 import { CHAIN_RPCS } from './rpc-urls.js';
 import { simulateAssetChanges, SwapSimulationError, hasSimulationRpc } from './swap-simulation.js';
 import { packageVersion, CommandError, telemetryHeaders, loadConfig } from './api.js';
@@ -1280,23 +1282,6 @@ function rlpNormalize(val) {
   return toBuffer(val);
 }
 
-// ============= Compact-u16 (Solana) =============
-
-/**
- * Read a compact-u16 from a buffer (Solana transaction format).
- */
-export function readCompactU16(buf, offset) {
-  let value = 0;
-  let size = 0;
-  for (let i = 0; i < 3; i++) {
-    const byte = buf[offset + i];
-    value |= (byte & 0x7f) << (7 * i);
-    size++;
-    if ((byte & 0x80) === 0) break;
-  }
-  return { value, size };
-}
-
 // ============= Chain Utilities =============
 
 /**
@@ -2167,25 +2152,32 @@ EXAMPLES:
               if (typeof txBase64 === 'object' && txBase64.data) {
                 txBase64 = base58Decode(txBase64.data).toString('base64');
               }
-
               const solWalletId = quoteData.privyWalletIds?.solana;
               if (!solWalletId) throw new Error('No Solana Privy wallet ID in quote');
               const walletResult = await privyClient.getWallet(solWalletId);
               const walletAddress = walletResult.address;
               // Fail closed if the signer address doesn't resolve: without it the
               // wallet-binding comparison below would silently skip, leaving the
-              // quote unbound to the wallet that will sign it.
+              // quote unbound to the wallet that will sign it. This is resolved
+              // independently of the persisted request so assertQuoteMatchesRequest
+              // is a real check, not a comparison of the request against itself.
               if (!walletAddress) {
                 throw new Error('Could not resolve the Solana Privy wallet address; cannot confirm the quote was built for this wallet. Refusing to sign.');
               }
 
               // Validate the persisted request/quote metadata (token pair, amounts,
-              // signer) before signing the aggregator's serialized transaction as
-              // returned. This does not inspect the serialized transaction's own
-              // instructions — Solana quotes have no `to`/`data`/approval split to
-              // check independently, unlike EVM's validateSwapTarget.
+              // signer) before signing the aggregator's serialized transaction.
               assertCompleteSolanaRequestIntent(quoteData.request);
               assertQuoteMatchesRequest(quoteData.request, currentQuote, { chain, walletAddress, slippage: quoteData.slippage });
+
+              // Then statically inspect the serialized transaction's own
+              // instructions ahead of signing — catches a delegate grant, authority
+              // change, close-to-stranger, or excessive fee that the metadata check
+              // alone wouldn't see. Solana has no balance-delta simulation (that
+              // layer is Base-only), so this static check plus the metadata binding
+              // are the only transaction-level guards here — see
+              // assertSolanaInstructionsSafe for the residual sibling-transfer gap.
+              assertSolanaInstructionsSafe(txBase64, { walletAddress });
 
               log('  Signing Solana transaction via Privy...');
               const signResult = await privyClient.signSolanaTransaction(solWalletId, txBase64);
@@ -2455,9 +2447,9 @@ EXAMPLES:
               // NB: validateSwapTarget (the EVM `to`/`data` guard) does not apply
               // here — Solana quotes are a pre-built serialized VersionedTransaction
               // with no `to`/`data`/approval split to validate. assertQuoteMatchesRequest
-              // below binds the metadata (token pair, amounts, signer) instead.
-              // Deeper static inspection of the tx's own instructions is tracked
-              // as a follow-up, not an oversight.
+              // below binds the metadata (token pair, amounts, signer), and
+              // assertSolanaInstructionsSafe statically inspects the tx's own
+              // instructions before signing.
               // Solana: transaction is either a base64 string (Jupiter) or an object
               // with a base58-encoded `data` field (OKX). Normalize to base64.
               let txBase64 = currentQuote.transaction;
@@ -2484,11 +2476,18 @@ EXAMPLES:
               }
 
               // Validate the persisted request/quote metadata (token pair, amounts,
-              // signer) before signing the opaque Solana transaction. This does not
-              // inspect the serialized transaction's own instructions — see the note
-              // above where the Solana branch starts.
+              // signer) before signing the opaque Solana transaction.
               assertCompleteSolanaRequestIntent(quoteData.request);
               assertQuoteMatchesRequest(quoteData.request, currentQuote, { chain, walletAddress: solanaWalletAddress, slippage: quoteData.slippage });
+
+              // Then statically inspect the serialized transaction's own
+              // instructions ahead of signing — catches a delegate grant, authority
+              // change, close-to-stranger, or excessive fee that the metadata check
+              // alone wouldn't see. Solana has no balance-delta simulation (that
+              // layer is Base-only), so this static check plus the metadata binding
+              // are the only transaction-level guards here — see
+              // assertSolanaInstructionsSafe for the residual sibling-transfer gap.
+              assertSolanaInstructionsSafe(txBase64, { walletAddress: solanaWalletAddress });
 
               if (isWalletConnect) {
                 // Solana via WalletConnect: convert base64 → base58 for WC protocol

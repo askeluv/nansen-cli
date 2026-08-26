@@ -1047,10 +1047,21 @@ describe('buildLimitOrderCommands', () => {
  * by signSolanaTransaction (compact-u16 sig count + 64-byte sig slot + message).
  */
 function buildFakeBase64Tx() {
-  // 1 signature slot (compact-u16 = 0x01), 64 zero bytes for sig, then some message bytes
+  // A valid, parseable legacy transaction with a single benign instruction:
+  // 1 signature slot, then a legacy message [header][2 account keys][blockhash]
+  // [1 instruction referencing a non-SPL program]. It must actually parse —
+  // assertSolanaInstructionsSafe (run before signing on this path) now rejects
+  // unparseable transactions rather than silently ignoring them.
   const sigCount = Buffer.from([0x01]);
   const emptySig = Buffer.alloc(64, 0);
-  const fakeMessage = Buffer.alloc(32, 0xAB); // Minimal "message"
-  const tx = Buffer.concat([sigCount, emptySig, fakeMessage]);
-  return tx.toString('base64');
+  const header = Buffer.from([1, 0, 1]); // 1 signer (writable), 1 readonly unsigned (the program)
+  const numKeys = Buffer.from([0x02]);
+  const signerKey = Buffer.alloc(32, 0x01); // account index 0 = signer / fee payer
+  const programKey = Buffer.alloc(32, 0x02); // account index 1 = an arbitrary (non-SPL) program
+  const blockhash = Buffer.alloc(32, 0x03);
+  const numInstructions = Buffer.from([0x01]);
+  // instruction: programIdIndex=1, 1 account (index 0), 1 data byte
+  const instruction = Buffer.from([0x01, 0x01, 0x00, 0x01, 0x00]);
+  const message = Buffer.concat([header, numKeys, signerKey, programKey, blockhash, numInstructions, instruction]);
+  return Buffer.concat([sigCount, emptySig, message]).toString('base64');
 }
