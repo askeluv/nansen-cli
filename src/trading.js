@@ -2172,7 +2172,10 @@ EXAMPLES:
               // Then statically inspect the serialized transaction's own
               // instructions ahead of signing — catches a delegate grant, authority
               // change, close-to-stranger, or excessive fee that the metadata check
-              // and a balance-delta simulation alone wouldn't see.
+              // alone wouldn't see. Solana has no balance-delta simulation (that
+              // layer is Base-only), so this static check plus the metadata binding
+              // are the only transaction-level guards here — see
+              // assertSolanaInstructionsSafe for the residual sibling-transfer gap.
               assertSolanaInstructionsSafe(txBase64, { walletAddress });
 
               log('  Signing Solana transaction via Privy...');
@@ -2479,7 +2482,10 @@ EXAMPLES:
               // Then statically inspect the serialized transaction's own
               // instructions ahead of signing — catches a delegate grant, authority
               // change, close-to-stranger, or excessive fee that the metadata check
-              // and a balance-delta simulation alone wouldn't see.
+              // alone wouldn't see. Solana has no balance-delta simulation (that
+              // layer is Base-only), so this static check plus the metadata binding
+              // are the only transaction-level guards here — see
+              // assertSolanaInstructionsSafe for the residual sibling-transfer gap.
               assertSolanaInstructionsSafe(txBase64, { walletAddress: solanaWalletAddress });
 
               if (isWalletConnect) {

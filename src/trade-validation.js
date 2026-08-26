@@ -1130,8 +1130,24 @@ export function assertSwapOutcome(request, quote, sim, { slippage, expectedSpend
  * message — the SPL Token and ComputeBudget programs. It does not, and by
  * design cannot, see instructions a program issues via CPI at runtime, nor
  * does it classify calls to programs it doesn't recognize. It is one layer
- * (paired with the intent-binding metadata check and a balance-delta
- * simulation), not a complete authorization audit of the transaction.
+ * (paired with the intent-binding metadata check), not a complete
+ * authorization audit of the transaction.
+ *
+ * IMPORTANT — no outcome simulation backs this on Solana. Unlike the EVM path,
+ * which pairs its static calldata checks with a balance-delta simulation
+ * (verifySwapOutcome), there is no Solana simulation RPC (SIMULATION_RPCS is
+ * Base-only), so this static check plus the metadata binding are the ONLY
+ * transaction-level guards on the Solana signing path. In particular this
+ * check does NOT classify SPL Transfer/TransferChecked: a legitimate swap or
+ * vault deposit moves the input token (and WSOL) with exactly those
+ * instructions, so they can't be blanket-rejected, and without a balance-delta
+ * simulation there's nothing here to bound their destination or amount. The
+ * consequence is a residual gap: a transaction that also transfers an
+ * unrelated ("sibling") token the wallet holds, authorized by the wallet,
+ * would pass. Closing it needs either a Solana outcome simulation or a positive
+ * check that every wallet-authorized transfer moves only the declared input
+ * mint (TransferChecked carries the mint; plain Transfer does not, so this
+ * needs an RPC account lookup) — tracked as a follow-up, not covered here.
  *
  * Within that scope, the SPL Token program requires the *authority* of
  * Approve/ApproveChecked/SetAuthority/CloseAccount to sign the transaction,

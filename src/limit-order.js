@@ -674,6 +674,16 @@ EXAMPLES:
         });
 
         // 5. Sign deposit transaction
+        // Same pre-signing drain gate the swap path uses. The legitimate deposit
+        // moves the input token into the already-registered vault (step 3) with an
+        // SPL Transfer/TransferChecked — which this gate does not classify — plus,
+        // when selling native SOL, a temp-WSOL CloseAccount whose rent returns to
+        // the wallet (permitted). Neither trips the delegate/authority/
+        // close-to-stranger checks, so this does not reject a well-formed deposit;
+        // it only fires if the crafted tx additionally grants a delegate, reassigns
+        // authority, or closes to a stranger. Verified live: a real SOL→USDC create
+        // round-trip clears this gate (the API-crafted deposit is a SOL-wrap
+        // transfer into the vault plus a temp-WSOL close-to-self).
         assertSolanaInstructionsSafe(deposit.transaction, { walletAddress: pubkey });
         log('  Signing deposit transaction...');
         const signedDepositTx = await signTransaction(deposit.transaction, walletType, walletInfo);
@@ -809,6 +819,13 @@ EXAMPLES:
         const cancelResult = await cancelOrderRequest(token, orderId);
 
         // 3. Sign the withdrawal transaction
+        // Withdrawal moves the deposited token back out of the vault; that transfer
+        // is authorized by the vault program's PDA, not our wallet, so it isn't a
+        // wallet-authorized drain even if it were classified. Any temp-WSOL close
+        // returns rent to the wallet. This gate is defense-in-depth against a
+        // crafted withdrawal that instead grants a delegate, reassigns authority, or
+        // closes to a stranger. Verified live alongside the deposit path via a real
+        // cancel round-trip.
         assertSolanaInstructionsSafe(cancelResult.transaction, { walletAddress: pubkey });
         log('  Signing withdrawal transaction...');
         const signedTx = await signTransaction(cancelResult.transaction, walletType, walletInfo);

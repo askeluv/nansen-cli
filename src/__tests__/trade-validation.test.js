@@ -1938,4 +1938,40 @@ describe('assertSolanaInstructionsSafe', () => {
     });
     expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: wallet })).not.toThrow();
   });
+
+  // The limit-order deposit/withdrawal paths run this same gate (see
+  // limit-order.js). Their legitimate transactions move the input token with an
+  // SPL Transfer/TransferChecked — which the gate intentionally does NOT classify
+  // (a swap or vault deposit can't function without one) — so they must pass. If
+  // a future change made the gate reject bare transfers it would brick both the
+  // swap and limit-order flows; these lock in that they don't.
+  it('allows a plain SPL Transfer of the sell token authorized by the wallet (the input leg)', () => {
+    const wallet = generateSolanaWallet().address;
+    const sourceAta = generateSolanaWallet().address;
+    const destAta = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, sourceAta, destAta, TOKEN_PROGRAM],
+      // Transfer (disc 3): [source, destination, authority(=wallet)]
+      instructions: [{ programIdIndex: 3, accountIndexes: [1, 2, 0], data: Buffer.from([3, 0, 0, 0, 0, 0, 0, 0, 0]) }],
+    });
+    expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: wallet })).not.toThrow();
+  });
+
+  it('allows a limit-order-style vault deposit (input TransferChecked into the vault + WSOL close-to-self)', () => {
+    const wallet = generateSolanaWallet().address;
+    const sourceAta = generateSolanaWallet().address;
+    const mint = generateSolanaWallet().address;
+    const vaultAta = generateSolanaWallet().address;
+    const tempWsol = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, sourceAta, mint, vaultAta, tempWsol, TOKEN_PROGRAM],
+      instructions: [
+        // TransferChecked (disc 12): [source, mint, destination(=vault), authority(=wallet)]
+        { programIdIndex: 5, accountIndexes: [1, 2, 3, 0], data: Buffer.from([12, 0, 0, 0, 0, 0, 0, 0, 0, 9]) },
+        // CloseAccount (disc 9) of the temp WSOL account, rent back to the wallet (index 0)
+        { programIdIndex: 5, accountIndexes: [4, 0, 0], data: Buffer.from([9]) },
+      ],
+    });
+    expect(() => assertSolanaInstructionsSafe(tx, { walletAddress: wallet })).not.toThrow();
+  });
 });
