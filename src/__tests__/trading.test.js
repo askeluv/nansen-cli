@@ -24,6 +24,7 @@ import {
   signEvmTransaction,
   evmTxHash,
   confirmEvmBroadcast,
+  waitForReceipt,
   buildApprovalTransaction,
   approvalAmountForSwap,
   approvalCapForQuote,
@@ -1450,6 +1451,72 @@ describe('Privy execute support', () => {
     expect(logs.some(l => l.includes('Signing EVM transaction via Privy'))).toBe(true);
     expect(logs.some(l => l.includes('Transaction successful'))).toBe(true);
     expect(logs.every(l => !l.includes('Enter wallet password'))).toBe(true);
+  });
+
+  it('aborts (does not try the next quote) when the signed tx cannot be hashed after a successful broadcast', async () => {
+    // The wallet (here Privy) hands back malformed signed bytes; /execute reports
+    // Success, but we then cannot derive a local hash for what we just broadcast.
+    // That is INVALID_SIGNED_TX, and post-broadcast it must be fatal — trying the
+    // next quote would broadcast a SECOND swap while the first's fate is unknown.
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [
+        {
+          aggregator: 'lifi', inputMint: BASE_ETH, outputMint: BASE_USDC,
+          inAmount: '1000000000000000000', outAmount: '3000000000',
+          transaction: { to: LIFI_ROUTER, data: '0x12345678', value: '1000000000000000000', gas: '210000' },
+        },
+        {
+          aggregator: 'lifi', inputMint: BASE_ETH, outputMint: BASE_USDC,
+          inAmount: '1000000000000000000', outAmount: '3000000000',
+          transaction: { to: LIFI_ROUTER, data: '0x87654321', value: '1000000000000000000', gas: '210000' },
+        },
+      ],
+    }, 'base', 'privy', { evm: 'wl_evm_1', solana: 'wl_sol_1' }, null, {
+      swapMode: 'exactIn',
+      request: evmIntent({
+        walletAddress: '0xPrivyAddr', fromToken: BASE_ETH, toToken: BASE_USDC,
+        amount: '1000000000000000000', maxInputAmount: '1000000000000000000',
+      }),
+    });
+
+    const executeBodies = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      if (urlStr.includes('privy.io') && opts?.method === 'GET') {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ id: 'wl_evm_1', address: '0xPrivyAddr', chain_type: 'ethereum' }) });
+      }
+      // Privy returns bytes that are NOT valid hex.
+      if (urlStr.includes('privy.io') && opts?.method === 'POST') {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: { signed_transaction: '0xnothexZZ' } }) });
+      }
+      if (urlStr.includes('base') || urlStr.includes('mainnet')) {
+        const body = opts?.body ? JSON.parse(opts.body) : {};
+        if (body.method === 'eth_getTransactionCount') return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+        if (body.method === 'eth_getCode') return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+        if (body.method === 'eth_call') return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' })) });
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: null })) });
+      }
+      if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
+        executeBodies.push(JSON.parse(opts.body));
+        // A broadcaster that accepted the bytes and reports success with its own hash.
+        return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: '0x' + '11'.repeat(32), chainType: 'evm', broadcaster: 'test' })) });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    }));
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    delete process.env.NANSEN_WALLET_PASSWORD;
+
+    await expect(cmds.execute([], null, {}, { quote: quoteId }))
+      .rejects.toMatchObject({ code: 'INVALID_SIGNED_TX' });
+
+    // Exactly one broadcast, and the derivation failure reached the user rather
+    // than being swallowed into ALL_QUOTES_FAILED after a second broadcast.
+    expect(executeBodies).toHaveLength(1);
+    expect(logs.some(l => l.includes('Trying next quote'))).toBe(false);
+    expect(logs.some(l => l.includes('Transaction successful'))).toBe(false);
   });
 
   it('should sign Solana transaction via Privy and broadcast via Trading API', async () => {
@@ -3330,6 +3397,124 @@ describe('confirmEvmBroadcast: binds receipt confirmation to the locally-derived
 
     vi.unstubAllGlobals();
   });
+
+  it('does not raise a false TXHASH_MISMATCH when the broadcaster reports a bare (0x-less) hash', async () => {
+    // evmTxHash always emits a 0x-prefixed hash, but a broadcaster may legitimately
+    // report the same hash without the prefix. A prefix-sensitive comparison would
+    // hard-abort (TXHASH_MISMATCH is fatal) on a transaction we did in fact sign.
+    const signedTx = '0x02' + 'ab'.repeat(96);
+    const localHash = evmTxHash(signedTx);
+    const bareHash = localHash.replace(/^0x/, ''); // same hash, no prefix
+
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const body = opts?.body ? (() => { try { return JSON.parse(opts.body); } catch { return {}; } })() : {};
+      if (body.method === 'eth_getTransactionReceipt') {
+        const asked = body.params[0];
+        const known = asked.toLowerCase() === localHash.toLowerCase();
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({
+          jsonrpc: '2.0', id: body.id, result: known ? { status: '0x1', blockNumber: '0x100' } : null,
+        })) });
+      }
+      return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    // The bare-hex hash matches once prefixes are normalized — no throw, and the
+    // confirmed-against hash returned to callers is still OUR 0x-prefixed hash.
+    const { hash } = await confirmEvmBroadcast('base', signedTx, bareHash);
+    expect(hash).toBe(localHash);
+
+    vi.unstubAllGlobals();
+  });
+
+  it('tags a receipt-not-found timeout with code RECEIPT_TIMEOUT (distinct from a confirmed revert)', async () => {
+    // Small timeout so the poll loop exhausts quickly. A never-found receipt must
+    // surface as RECEIPT_TIMEOUT, NOT the "Transaction reverted" error — the two
+    // are treated differently by the swap path (timeout = pending, do not retry).
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const body = opts?.body ? (() => { try { return JSON.parse(opts.body); } catch { return {}; } })() : {};
+      // Receipt is never available.
+      return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    await expect(waitForReceipt('base', '0x' + '11'.repeat(32), 20, 5))
+      .rejects.toMatchObject({ code: 'RECEIPT_TIMEOUT' });
+
+    vi.unstubAllGlobals();
+  });
+
+  it('aborts the whole swap on a receipt timeout — never retries the next quote (no duplicate broadcast)', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    const executeBodies = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const body = opts?.body ? (() => { try { return JSON.parse(opts.body); } catch { return {}; } })() : {};
+      if (body.method === 'eth_getTransactionCount') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+      }
+      if (body.method === 'eth_getCode') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      }
+      if (body.method === 'eth_call') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x' })) });
+      }
+      if (body.method === 'eth_getTransactionReceipt') {
+        // Broadcast succeeded but the receipt never lands — a pending tx, NOT a
+        // confirmed revert. Retrying would broadcast a second swap on the same nonce.
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: null })) });
+      }
+      if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
+        executeBodies.push(body);
+        return Promise.resolve({
+          ok: true,
+          text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: evmTxHash(body.signedTransaction), chainType: 'evm', broadcaster: 'test' })),
+        });
+      }
+      return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    // Two quotes: a swallowed timeout would visibly fall through and broadcast the second.
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [
+        {
+          aggregator: 'lifi', inputMint: BASE_USDC, outputMint: OUT_TOKEN,
+          inAmount: '10000000', outAmount: '50000000', approvalAddress: '',
+          transaction: { to: LIFI_ROUTER, data: '0x12345678', value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
+        },
+        {
+          aggregator: 'lifi', inputMint: BASE_USDC, outputMint: OUT_TOKEN,
+          inAmount: '10000000', outAmount: '50000000', approvalAddress: '',
+          transaction: { to: LIFI_ROUTER, data: '0x87654321', value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
+        },
+      ],
+    }, 'base', 'local', null, null, {
+      swapMode: 'exactIn',
+      request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: BASE_USDC, toToken: OUT_TOKEN, amount: '10000000', maxInputAmount: '10000000' }),
+    });
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+
+    // Shrink the receipt-poll window so the timeout fires fast instead of at 180s.
+    vi.useFakeTimers();
+    const p = cmds.execute([], null, {}, { quote: quoteId });
+    const settle = expect(p).rejects.toMatchObject({ code: 'RECEIPT_TIMEOUT' });
+    await vi.advanceTimersByTimeAsync(200000); // past the 180s waitForReceipt window
+    await settle;
+    vi.useRealTimers();
+
+    // Exactly one broadcast — the timeout aborted rather than trying the next quote.
+    expect(executeBodies).toHaveLength(1);
+    expect(logs.some(l => l.includes('Trying next quote'))).toBe(false);
+    // A timeout is not a revert: the misleading "REVERTED on-chain" banner must not appear.
+    expect(logs.some(l => l.includes('REVERTED on-chain'))).toBe(false);
+    expect(logs.some(l => l.includes('Transaction successful'))).toBe(false);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+    vi.unstubAllGlobals();
+  });
 });
 
 describe('Swap target validation blocks a poisoned quote (security hardening)', () => {
@@ -3885,6 +4070,54 @@ describe('ERC-20 excessive allowance handling', () => {
     ]);
     expect(logs.some(l => l.includes('Existing allowance (2000000)'))).toBe(true);
     expect(logs.some(l => l.includes('Allowance revoked in block'))).toBe(true);
+  });
+
+  it('aborts (does not reapprove, swap, or try the next quote) when the revoke receipt times out', async () => {
+    // A revoke broadcast whose receipt never lands is uncertain post-broadcast
+    // state, NOT a confirmed failure. Retrying (reapprove/swap/next quote) risks a
+    // duplicate broadcast, so a RECEIPT_TIMEOUT on the revoke must fail closed.
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    const walletAddress = showWallet('default').evm;
+    const quoteId = saveLocalErc20Quote(walletAddress);
+
+    const executeBodies = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const body = opts?.body ? JSON.parse(opts.body) : {};
+      if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
+        executeBodies.push(body);
+        // Correct broadcaster: echo the real hash of the signed bytes.
+        return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ status: 'Success', txHash: evmTxHash(body.signedTransaction), chainType: 'evm', broadcaster: 'test' })) });
+      }
+      if (body.method === 'eth_getCode') return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      if (body.method === 'eth_getTransactionCount') return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+      // Oversized existing allowance (2 USDC) → triggers revoke-then-reapprove.
+      if (body.method === 'eth_call') {
+        const data = body.params?.[0]?.data || '';
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: data.startsWith('0xdd62ed3e') ? hexResult(2000000n) : '0x' })) });
+      }
+      // The revoke's receipt NEVER lands → waitForReceipt times out.
+      if (body.method === 'eth_getTransactionReceipt') return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: null })) });
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+
+    vi.useFakeTimers();
+    const p = cmds.execute([], null, { 'no-simulate': true }, { quote: quoteId });
+    const settle = expect(p).rejects.toMatchObject({ code: 'RECEIPT_TIMEOUT' });
+    await vi.advanceTimersByTimeAsync(200000); // past the 180s waitForReceipt window
+    await settle;
+    vi.useRealTimers();
+
+    // Only the revoke was broadcast — no reapproval, no swap, no next quote.
+    expect(executeBodies).toHaveLength(1);
+    expect(executeBodies[0].signedTransaction).toContain(approveSelector);
+    expect(executeBodies[0].signedTransaction).toContain(amountWord(0n)); // the revoke (approve to 0)
+    expect(logs.some(l => l.includes('Trying next quote'))).toBe(false);
+    expect(logs.some(l => l.includes('Transaction successful'))).toBe(false);
   });
 
   it('fails closed when reapproval fails after a successful revoke', async () => {

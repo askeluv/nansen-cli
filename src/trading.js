@@ -682,7 +682,35 @@ export async function waitForReceipt(chain, txHash, timeoutMs = 180000, pollMs =
     // Receipt not yet available — wait and retry
     await new Promise(r => setTimeout(r, pollMs));
   }
-  throw new Error(`Transaction receipt not found after ${timeoutMs}ms. Tx: ${txHash}`);
+  // A timeout is NOT a confirmed revert: the tx may still be pending under our
+  // nonce. Tag it so callers can distinguish "reverted" (safe to try the next
+  // quote) from "unconfirmed" (retrying may broadcast a second tx that races
+  // the first for the same nonce). See the swap-path receipt catch.
+  const timeoutErr = new Error(`Transaction receipt not found after ${timeoutMs}ms. Tx: ${txHash}`);
+  timeoutErr.code = 'RECEIPT_TIMEOUT';
+  throw timeoutErr;
+}
+
+/**
+ * Post-broadcast failures that must abort the whole `execute` rather than fall
+ * through to the next quote. Once a transaction is broadcast we hold no evidence
+ * about what landed on-chain, so "try the next quote" would sign and broadcast a
+ * second transaction — the one thing we must not do. Covers every path (swap,
+ * approval, revoke; Privy/WalletConnect/local-key). Each code is thrown with a
+ * rationale at its throw site:
+ *   - TXHASH_MISMATCH  — broadcaster reported a tx we did not sign
+ *   - INVALID_SIGNED_TX — we cannot even derive a hash for what we broadcast
+ *   - RECEIPT_TIMEOUT  — receipt never landed; the tx may still be pending, so
+ *                        retrying would race a second tx against the same nonce
+ *                        (a confirmed on-chain revert is NOT this — it may retry)
+ *
+ * @param {Error} err
+ * @returns {boolean}
+ */
+function isFatalBroadcastError(err) {
+  return err?.code === 'TXHASH_MISMATCH'
+    || err?.code === 'INVALID_SIGNED_TX'
+    || err?.code === 'RECEIPT_TIMEOUT';
 }
 
 /**
@@ -702,16 +730,36 @@ export async function waitForReceipt(chain, txHash, timeoutMs = 180000, pollMs =
  * @returns {string} our locally-derived transaction hash
  */
 function assertTxHashMatch(signedTxHex, broadcasterTxHash, label = '') {
-  const localHash = evmTxHash(signedTxHex);
-  if (broadcasterTxHash && localHash.toLowerCase() !== broadcasterTxHash.toLowerCase()) {
-    const what = label ? `the ${label} transaction this CLI signed` : 'the transaction this CLI signed';
+  const what = label ? `the ${label} transaction this CLI signed` : 'the transaction this CLI signed';
+  // A derivation failure here happens AFTER the tx was broadcast, so it must be
+  // fatal (INVALID_SIGNED_TX), never swallowed into "try the next quote": we
+  // hold no hash for the transaction we just sent.
+  let localHash;
+  try {
+    localHash = evmTxHash(signedTxHex);
+  } catch (hashErr) {
     throw new CommandError(
-      `Aborting: the broadcaster reported transaction ${broadcasterTxHash}, but ${what} `
-      + `hashes to ${localHash}. These must match — a mismatch means the receipt would confirm `
-      + `a transaction you did not sign, so nothing has been verified and no further steps will `
-      + `run. Check both hashes on a block explorer to see what was actually broadcast before retrying.`,
-      'TXHASH_MISMATCH',
+      `Aborting: cannot derive a local hash for ${what}: ${hashErr.message}. `
+      + `The transaction may already have been broadcast, so nothing further will run — `
+      + `check your wallet before retrying.`,
+      'INVALID_SIGNED_TX',
     );
+  }
+  // Normalize both sides through the same bare-hex form before comparing.
+  // evmTxHash always emits 0x-prefixed, but a broadcaster may report bare hex;
+  // comparing 0x-prefixed against bare would be a false mismatch on the prefix
+  // alone — and TXHASH_MISMATCH is fatal, so that would wrongly abort.
+  if (broadcasterTxHash) {
+    const norm = h => h.toLowerCase().replace(/^0x/, '');
+    if (norm(localHash) !== norm(broadcasterTxHash)) {
+      throw new CommandError(
+        `Aborting: the broadcaster reported transaction ${broadcasterTxHash}, but ${what} `
+        + `hashes to ${localHash}. These must match — a mismatch means the receipt would confirm `
+        + `a transaction you did not sign, so nothing has been verified and no further steps will `
+        + `run. Check both hashes on a block explorer to see what was actually broadcast before retrying.`,
+        'TXHASH_MISMATCH',
+      );
+    }
   }
   return localHash;
 }
@@ -725,12 +773,15 @@ function assertTxHashMatch(signedTxHex, broadcasterTxHash, label = '') {
  * @param {string} chain
  * @param {string} signedTxHex - the raw signed tx we sent to /execute
  * @param {string} broadcasterTxHash - the txHash /execute returned
+ * @param {string} [label] - describes the tx for a mismatch error, e.g.
+ *   "allowance-revoke" — the least useful moment to lose context is a revoke
+ *   mismatch with the allowance sitting at 0, so callers should pass it
  * @returns {Promise<{receipt: object, hash: string}>} the receipt and the
  *   locally-derived hash it was confirmed against (log THIS, not the
  *   broadcaster's hash — it is the transaction we actually verified landed)
  */
-export async function confirmEvmBroadcast(chain, signedTxHex, broadcasterTxHash) {
-  const hash = assertTxHashMatch(signedTxHex, broadcasterTxHash);
+export async function confirmEvmBroadcast(chain, signedTxHex, broadcasterTxHash, label = '') {
+  const hash = assertTxHashMatch(signedTxHex, broadcasterTxHash, label);
   const receipt = await waitForReceipt(chain, hash);
   return { receipt, hash };
 }
@@ -2328,10 +2379,10 @@ EXAMPLES:
                     }
                     log(`  Waiting for allowance revoke confirmation...`);
                     try {
-                      const { receipt, hash: revokeHash } = await confirmEvmBroadcast(chain, signedRevoke, revokeResult.txHash);
+                      const { receipt, hash: revokeHash } = await confirmEvmBroadcast(chain, signedRevoke, revokeResult.txHash, 'allowance-revoke');
                       log(`  ✓ Allowance revoked in block ${parseInt(receipt.blockNumber, 16)}: ${revokeHash}`);
                     } catch (receiptErr) {
-                      if (receiptErr.code === 'TXHASH_MISMATCH') throw receiptErr;
+                      if (isFatalBroadcastError(receiptErr)) throw receiptErr;
                       log(`  ❌ Allowance revoke may not have confirmed for ${quoteName}: ${receiptErr.message}.${allowanceRevokeRecoveryHint(revokeResult.txHash)}`);
                       if (qi + 1 < endIndex) log(`  Trying next quote...`);
                       lastQuoteError = `${quoteName} allowance revoke unconfirmed`;
@@ -2387,10 +2438,10 @@ EXAMPLES:
                   }
                   log(`  Waiting for approval confirmation...`);
                   try {
-                    const { receipt, hash: approvalHash } = await confirmEvmBroadcast(chain, signedApproval, approvalResult.txHash);
+                    const { receipt, hash: approvalHash } = await confirmEvmBroadcast(chain, signedApproval, approvalResult.txHash, 'allowance-approval');
                     log(`  ✓ Approval confirmed in block ${parseInt(receipt.blockNumber, 16)}: ${approvalHash}`);
                   } catch (receiptErr) {
-                    if (receiptErr.code === 'TXHASH_MISMATCH') throw receiptErr;
+                    if (isFatalBroadcastError(receiptErr)) throw receiptErr;
                     log(`  ❌ Approval may not have confirmed${shouldRevoke ? ' after revoking the prior allowance (now 0)' : ''}: ${receiptErr.message}`);
                     if (qi + 1 < endIndex) log(`  Trying next quote...`);
                     lastQuoteError = `${quoteName} approval unconfirmed`;
@@ -2649,7 +2700,7 @@ EXAMPLES:
                         throw new Error('Allowance revoke returned no transaction hash and no signed transaction; cannot confirm allowance was cleared');
                       }
                     } catch (revokeErr) {
-                      if (revokeErr.code === 'TXHASH_MISMATCH') throw revokeErr;
+                      if (isFatalBroadcastError(revokeErr)) throw revokeErr;
                       log(`  ❌ Allowance revoke failed for ${quoteName}: ${revokeErr.message}.${allowanceRevokeRecoveryHint(revokeTxHash)}`);
                       if (qi + 1 < endIndex) log(`  Trying next quote...`);
                       lastQuoteError = `${quoteName} allowance revoke failed`;
@@ -2660,6 +2711,7 @@ EXAMPLES:
                       const receipt = await waitForReceipt(chain, revokeTxHash);
                       log(`  ✓ Allowance revoked in block ${parseInt(receipt.blockNumber, 16)}: ${revokeTxHash}`);
                     } catch (receiptErr) {
+                      if (isFatalBroadcastError(receiptErr)) throw receiptErr;
                       log(`  ❌ Allowance revoke may not have confirmed for ${quoteName}: ${receiptErr.message}.${allowanceRevokeRecoveryHint(revokeTxHash)}`);
                       if (qi + 1 < endIndex) log(`  Trying next quote...`);
                       lastQuoteError = `${quoteName} allowance revoke unconfirmed`;
@@ -2709,7 +2761,7 @@ EXAMPLES:
                       throw new Error('returned no transaction hash and no signed transaction; cannot confirm approval landed');
                     }
                   } catch (approvalErr) {
-                    if (approvalErr.code === 'TXHASH_MISMATCH') throw approvalErr;
+                    if (isFatalBroadcastError(approvalErr)) throw approvalErr;
                     const revokedMsg = shouldRevoke
                       ? ' after revoking the prior allowance (now 0)'
                       : '';
@@ -2723,6 +2775,7 @@ EXAMPLES:
                     const receipt = await waitForReceipt(chain, approvalTxHash);
                     log(`  ✓ Approval confirmed in block ${parseInt(receipt.blockNumber, 16)}: ${approvalTxHash}`);
                   } catch (receiptErr) {
+                    if (isFatalBroadcastError(receiptErr)) throw receiptErr;
                     const revokedMsg = shouldRevoke
                       ? ' after revoking the prior allowance (now 0)'
                       : '';
@@ -2808,6 +2861,14 @@ EXAMPLES:
                 try {
                   await waitForReceipt(chain, wcResult.txHash);
                 } catch (receiptErr) {
+                  // A timeout here is uncertain post-broadcast state, not a
+                  // confirmed revert — fail closed rather than retry (which would
+                  // broadcast a second swap). Applies even though this path has no
+                  // locally-derived hash to bind to.
+                  if (receiptErr.code === 'RECEIPT_TIMEOUT') {
+                    throw new CommandError(`\n  ⚠ Transaction was broadcast but NOT confirmed within the wait window.\n    Tx Hash:   ${wcResult.txHash}\n    Explorer:  ${chainConfig.explorer}${wcResult.txHash}\n    ${receiptErr.message}\n\n  The transaction may still be pending — do NOT assume it failed. Check the\n  explorer before retrying; retrying may broadcast a second swap.`, 'RECEIPT_TIMEOUT');
+                  }
+                  if (isFatalBroadcastError(receiptErr)) throw receiptErr;
                   log(`\n  ⚠ Transaction was broadcast but REVERTED on-chain!`);
                   log(`    Tx Hash:   ${wcResult.txHash}`);
                   log(`    Explorer:  ${chainConfig.explorer}${wcResult.txHash}`);
@@ -2970,10 +3031,10 @@ EXAMPLES:
 
                     log(`  Waiting for allowance revoke confirmation...`);
                     try {
-                      const { receipt, hash: revokeHash } = await confirmEvmBroadcast(chain, revokeTxHex, revokeResult.txHash);
+                      const { receipt, hash: revokeHash } = await confirmEvmBroadcast(chain, revokeTxHex, revokeResult.txHash, 'allowance-revoke');
                       log(`  ✓ Allowance revoked in block ${parseInt(receipt.blockNumber, 16)}: ${revokeHash}`);
                     } catch (receiptErr) {
-                      if (receiptErr.code === 'TXHASH_MISMATCH') throw receiptErr;
+                      if (isFatalBroadcastError(receiptErr)) throw receiptErr;
                       log(`  ❌ Allowance revoke may not have confirmed for ${quoteName}: ${receiptErr.message}.${allowanceRevokeRecoveryHint(revokeResult.txHash)}`);
                       if (qi + 1 < endIndex) log(`  Trying next quote...`);
                       lastQuoteError = `${quoteName} allowance revoke unconfirmed`;
@@ -3022,10 +3083,10 @@ EXAMPLES:
 
                   log(`  Waiting for approval confirmation...`);
                   try {
-                    const { receipt, hash: approvalHash } = await confirmEvmBroadcast(chain, approvalTxHex, approvalResult.txHash);
+                    const { receipt, hash: approvalHash } = await confirmEvmBroadcast(chain, approvalTxHex, approvalResult.txHash, 'allowance-approval');
                     log(`  ✓ Approval confirmed in block ${parseInt(receipt.blockNumber, 16)}: ${approvalHash}`);
                   } catch (receiptErr) {
-                    if (receiptErr.code === 'TXHASH_MISMATCH') throw receiptErr;
+                    if (isFatalBroadcastError(receiptErr)) throw receiptErr;
                     log(`  ❌ Approval may not have confirmed${shouldRevoke ? ' after revoking the prior allowance (now 0)' : ''}: ${receiptErr.message}`);
                     if (qi + 1 < endIndex) log(`  Trying next quote...`);
                     lastQuoteError = `${quoteName} approval unconfirmed`;
@@ -3176,7 +3237,18 @@ EXAMPLES:
                     explorerUrl = chainConfig.explorer + txId;
                   }
                 } catch (receiptErr) {
-                  if (receiptErr.code === 'TXHASH_MISMATCH') throw receiptErr;
+                  // A receipt TIMEOUT is not a confirmed revert: the tx was
+                  // broadcast and may still be pending under our nonce. Retrying
+                  // the next quote would sign and broadcast a SECOND swap racing
+                  // the first for that nonce — the duplicate-broadcast this PR
+                  // exists to prevent. (It's also exactly how guarantee #2's
+                  // silent-substitution case surfaces: a 180s timeout polling our
+                  // own hash.) Fail closed with a clearer banner than the generic
+                  // rethrow, then let isFatalBroadcastError handle the rest.
+                  if (receiptErr.code === 'RECEIPT_TIMEOUT') {
+                    throw new CommandError(`\n  ⚠ Transaction was broadcast but NOT confirmed within the wait window.\n    Tx Hash:   ${txId || result.txHash}\n    Explorer:  ${explorerUrl}\n    ${receiptErr.message}\n\n  The transaction may still be pending — do NOT assume it failed. Check the\n  explorer before retrying; retrying may broadcast a second swap against the\n  same nonce.`, 'RECEIPT_TIMEOUT');
+                  }
+                  if (isFatalBroadcastError(receiptErr)) throw receiptErr;
                   log(`\n  ⚠ Transaction was broadcast but REVERTED on-chain!`);
                   log(`    Tx Hash:   ${txId || result.txHash}`);
                   log(`    Explorer:  ${explorerUrl}`);
@@ -3244,7 +3316,11 @@ EXAMPLES:
             }
 
           } catch (quoteErr) {
-            if (quoteErr.code === 'TXHASH_MISMATCH') throw quoteErr;
+            // Post-broadcast failures abort the whole execute — never retry the
+            // next quote once a transaction is already out and its outcome is
+            // unknown (mismatch, underivable local hash, or an unconfirmed
+            // receipt timeout). See isFatalBroadcastError.
+            if (isFatalBroadcastError(quoteErr)) throw quoteErr;
             const msg = quoteErr.message || '';
             log(`  ❌ Quote ${quoteName} failed: ${msg}`);
             if (msg.includes('AccountNotFound') && chainType === 'solana') {
