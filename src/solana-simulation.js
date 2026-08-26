@@ -208,23 +208,39 @@ export async function simulateSolanaAssetChanges(chain, txBase64, { walletAddres
 
   const preAccountInfos = await getMultipleAccountsChunked(rpcUrl, writableKeys, 'jsonParsed', timeoutMs);
 
-  // Track only the wallet's own accounts among the writable set — that's the
+  // Track the wallet's own accounts among the writable set — that's the
   // complete drain surface assertSolanaSwapOutcome needs (input/output/sibling).
-  const tracked = []; // { kind: 'native'|'token', pubkey, mint?, preInfo }
+  // Accounts that don't exist pre-swap are tracked as *candidates*: a first-ever
+  // purchase of the output token has the tx create its ATA, so it has no
+  // pre-state to read ownership from. We snapshot it post-simulation anyway and
+  // classify it from the created account's owner (below); a zero pre-balance
+  // makes its whole post-balance the delta. Skipping these would report a 0n
+  // output delta and false-block every first-time buy.
+  const tracked = []; // { pubkey, preInfo, classified, kind?, mint? }
+  let sawWalletAccount = false;
   writableKeys.forEach((pubkey, i) => {
     const info = preAccountInfos[i];
-    if (!info) return; // doesn't exist yet (e.g. an ATA the tx itself creates)
+    if (!info) {
+      tracked.push({ pubkey, preInfo: null, classified: false });
+      return;
+    }
     if (pubkey === walletAddress) {
-      tracked.push({ kind: 'native', pubkey, preInfo: info });
+      tracked.push({ pubkey, preInfo: info, classified: true, kind: 'native' });
+      sawWalletAccount = true;
       return;
     }
     const parsedInfo = info.data?.parsed;
     if (parsedInfo?.type === 'account' && parsedInfo.info?.owner === walletAddress) {
-      tracked.push({ kind: 'token', pubkey, mint: parsedInfo.info.mint, preInfo: info });
+      tracked.push({ pubkey, preInfo: info, classified: true, kind: 'token', mint: parsedInfo.info.mint });
+      sawWalletAccount = true;
     }
   });
 
-  if (!tracked.length) {
+  // The wallet's native account is the fee payer, so it always pre-exists and is
+  // writable; not seeing it means we couldn't locate the signer's own accounts
+  // and can't meaningfully verify the outcome. (Unclassified candidates alone
+  // don't count — they may all belong to other parties.)
+  if (!sawWalletAccount) {
     throw new SolanaSimulationError(
       'SIM_RESULT_UNPARSEABLE',
       'Could not resolve the signer wallet as a writable account in this transaction; cannot verify the outcome.',
@@ -257,11 +273,26 @@ export async function simulateSolanaAssetChanges(chain, txBase64, { walletAddres
 
   const deltas = {};
   tracked.forEach((t, i) => {
-    const pre = extractBalance(t.kind, t.preInfo);
-    const post = extractBalance(t.kind, postAccountInfos[i]);
+    const postInfo = postAccountInfos[i];
+    let { kind, mint } = t;
+    if (!t.classified) {
+      // Newly-created account: classify from its post-simulation state and
+      // count it only if the tx created it as one of the wallet's own accounts
+      // (e.g. the output-token ATA). Anything else is another party's account.
+      if (!postInfo) return;
+      const parsedInfo = postInfo.data?.parsed;
+      if (parsedInfo?.type === 'account' && parsedInfo.info?.owner === walletAddress) {
+        kind = 'token';
+        mint = parsedInfo.info.mint;
+      } else {
+        return;
+      }
+    }
+    const pre = extractBalance(kind, t.preInfo); // null preInfo (new account) → 0n
+    const post = extractBalance(kind, postInfo);
     const delta = post - pre;
     if (delta === 0n) return;
-    const key = t.kind === 'native' ? SOL_SENTINEL : (isSolanaNativeMint(t.mint) ? SOL_SENTINEL : t.mint);
+    const key = kind === 'native' ? SOL_SENTINEL : (isSolanaNativeMint(mint) ? SOL_SENTINEL : mint);
     deltas[key] = (deltas[key] || 0n) + delta;
   });
   for (const k of Object.keys(deltas)) {

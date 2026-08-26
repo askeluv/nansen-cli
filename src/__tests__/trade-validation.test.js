@@ -1745,6 +1745,32 @@ describe('assertSolanaSwapOutcome', () => {
     expect(() => assertSolanaSwapOutcome(wsolInRequest, wsolInQuote, sim, { slippage: 0.03 })).not.toThrow();
   });
 
+  it('tolerates fee/rent noise on native-SOL output (SPL→SOL) at tight slippage', () => {
+    // USDC → 1 SOL, 0.1% slippage → minOut = 999_000_000. The native delta nets
+    // out a priority fee + base fee (~2M lamports), landing at 998_000_000 —
+    // below the raw floor but within the fee/rent tolerance, so it must pass.
+    const req = {
+      chain: 'solana', walletAddress: 'Wallet1111111111111111111111111111111111',
+      fromToken: SOL_USDC, toToken: SOL_SENTINEL, swapMode: 'exactIn', amount: '50000000', maxInputAmount: '50000000',
+    };
+    const quote = { inputMint: SOL_USDC, outputMint: SOL_SENTINEL, inAmount: '50000000', outAmount: '1000000000' };
+    const sim = { deltas: { [SOL_USDC]: -50_000_000n, [SOL_SENTINEL]: 998_000_000n } };
+    expect(() => assertSolanaSwapOutcome(req, quote, sim, { slippage: 0.001 })).not.toThrow();
+  });
+
+  it('still blocks native-SOL output that falls short beyond the fee/rent tolerance', () => {
+    // Same trade, but the delta is 990_000_000 — 9M under the floor, far past
+    // the ~3M dust tolerance, so a genuine shortfall is still caught.
+    const req = {
+      chain: 'solana', walletAddress: 'Wallet1111111111111111111111111111111111',
+      fromToken: SOL_USDC, toToken: SOL_SENTINEL, swapMode: 'exactIn', amount: '50000000', maxInputAmount: '50000000',
+    };
+    const quote = { inputMint: SOL_USDC, outputMint: SOL_SENTINEL, inAmount: '50000000', outAmount: '1000000000' };
+    const sim = { deltas: { [SOL_USDC]: -50_000_000n, [SOL_SENTINEL]: 990_000_000n } };
+    expect(() => assertSolanaSwapOutcome(req, quote, sim, { slippage: 0.001 }))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*minimum acceptable output/i);
+  });
+
   it('fails closed when input and output tokens are the same', () => {
     const req = { ...splInRequest, toToken: SOL_USDC };
     const quote = { inputMint: SOL_USDC, outputMint: SOL_USDC, inAmount: '1000000', outAmount: '1000000' };

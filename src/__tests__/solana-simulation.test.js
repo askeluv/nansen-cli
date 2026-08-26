@@ -244,6 +244,63 @@ describe('solana-simulation', () => {
     expect(result.deltas[mint]).toBe(200n);
   });
 
+  it('first-time buy: tracks the output ATA the tx creates (no pre-state) and reports its delta', async () => {
+    // The output token account does not exist pre-swap (getMultipleAccounts
+    // returns null for it), so it has no ownership to read up front. It must
+    // still be snapshotted post-simulation and its whole post-balance counted
+    // as the delta — otherwise the output delta is 0 and every first buy blocks.
+    const wallet = generateSolanaWallet().address;
+    const newOutputAta = generateSolanaWallet().address;
+    const outputMint = generateSolanaWallet().address;
+    const txBase64 = buildLegacyTx({ wallet, extraWritableKeys: [newOutputAta] });
+
+    vi.stubGlobal('fetch', mockSolanaRpc({
+      trackedAccounts: {
+        [wallet]: nativeAccountInfo(10_000_000_000),
+        // newOutputAta intentionally absent → getMultipleAccounts returns null.
+      },
+      simValue: (params) => {
+        const addrs = params[1].accounts.addresses;
+        // The candidate ATA must be included in the snapshot request.
+        expect(addrs).toContain(newOutputAta);
+        const post = {
+          [wallet]: nativeAccountInfo(8_997_960_720), // paid 1 SOL + fee + ATA rent
+          [newOutputAta]: tokenAccountInfo({ mint: outputMint, owner: wallet, amount: 250_000_000 }),
+        };
+        return { value: { err: null, accounts: addrs.map((a) => post[a] ?? null) } };
+      },
+    }));
+
+    const result = await simulateSolanaAssetChanges('solana', txBase64, { walletAddress: wallet });
+    expect(result.deltas[outputMint]).toBe(250_000_000n); // full post-balance, pre = 0
+  });
+
+  it('ignores a newly-created account the tx does not assign to the wallet', async () => {
+    // A null pre-state account created for another party (e.g. a routing PDA)
+    // must not be counted toward the wallet's deltas.
+    const wallet = generateSolanaWallet().address;
+    const someoneElsesNewAta = generateSolanaWallet().address;
+    const otherOwner = generateSolanaWallet().address;
+    const otherMint = generateSolanaWallet().address;
+    const txBase64 = buildLegacyTx({ wallet, extraWritableKeys: [someoneElsesNewAta] });
+
+    vi.stubGlobal('fetch', mockSolanaRpc({
+      trackedAccounts: { [wallet]: nativeAccountInfo(1_000_000_000) },
+      simValue: (params) => {
+        const addrs = params[1].accounts.addresses;
+        const post = {
+          [wallet]: nativeAccountInfo(999_995_000),
+          [someoneElsesNewAta]: tokenAccountInfo({ mint: otherMint, owner: otherOwner, amount: 5_000_000 }),
+        };
+        return { value: { err: null, accounts: addrs.map((a) => post[a] ?? null) } };
+      },
+    }));
+
+    const result = await simulateSolanaAssetChanges('solana', txBase64, { walletAddress: wallet });
+    expect(result.deltas[otherMint]).toBeUndefined();
+    expect(result.deltas[SOL_SENTINEL]).toBe(-5_000n); // only the wallet's own fee delta
+  });
+
   it('throws SIM_REVERTED when the simulated transaction errors', async () => {
     const wallet = generateSolanaWallet().address;
     const txBase64 = buildLegacyTx({ wallet });

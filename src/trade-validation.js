@@ -1145,6 +1145,9 @@ const NATIVE_SIBLING_DUST_LAMPORTS = 3_000_000n; // ~0.003 SOL
  *      fee-payer/fee-cap checks and assertions 2/3 below. A precise fee/rent
  *      model is explicitly deferred.
  *   2. the output token arrives by at least the minimum acceptable amount.
+ *      Native-SOL output relaxes this floor by NATIVE_SIBLING_DUST_LAMPORTS
+ *      because its lamport delta also nets out the base/priority fee and ATA
+ *      rent (same noise as native input); SPL output keeps the exact floor.
  *   3. no OTHER tracked asset leaves the wallet. SPL-token siblings get zero
  *      tolerance; native SOL, when it's a sibling (not the input), tolerates
  *      NATIVE_SIBLING_DUST_LAMPORTS of fee/rent dust.
@@ -1213,6 +1216,7 @@ export function assertSolanaSwapOutcome(request, quote, sim, { slippage, sibling
 
   // --- Assertion 2: output arrives at or above the minimum acceptable ---
   const swapMode = request.swapMode ?? 'exactIn';
+  const outputIsNative = outputAsset === SOL_SENTINEL;
   const outputDelta = deltas[outputAsset] || 0n;
   let minOut;
   if (swapMode === 'exactOut') {
@@ -1247,7 +1251,17 @@ export function assertSolanaSwapOutcome(request, quote, sim, { slippage, sibling
     const bps = BigInt(Math.min(10000, Math.round(slip * 10000)));
     minOut = (quoted * (10000n - bps)) / 10000n;
   }
-  if (outputDelta < minOut) {
+  // Native-SOL output carries the same fee/rent noise as native input: the
+  // lamport delta is (SOL received − base/priority fee − net ATA rent), so a
+  // legitimate trade can land a few million lamports under the quoted amount at
+  // tight slippage or on a congested-network priority fee. Relax the floor by
+  // the same dust tolerance used for native siblings (assertion 3) so fee noise
+  // never false-blocks; the slippage floor still bounds any real shortfall. SPL
+  // output has no such noise and keeps the exact floor.
+  const outputFloorSlack = outputIsNative
+    ? (siblingDustThreshold != null ? siblingDustThreshold : NATIVE_SIBLING_DUST_LAMPORTS)
+    : 0n;
+  if (outputDelta < minOut - outputFloorSlack) {
     throw fail(`the output token (${outputAsset}) increased by only ${outputDelta}, below the minimum acceptable output (${minOut}).`);
   }
 
