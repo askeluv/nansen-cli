@@ -3236,6 +3236,7 @@ EXAMPLES:
             }
 
           } catch (quoteErr) {
+            if (quoteErr.code === 'TXHASH_MISMATCH') throw quoteErr;
             const msg = quoteErr.message || '';
             log(`  ❌ Quote ${quoteName} failed: ${msg}`);
             if (msg.includes('AccountNotFound') && chainType === 'solana') {

@@ -3118,15 +3118,26 @@ describe('confirmEvmBroadcast: binds receipt confirmation to the locally-derived
 
     const quoteId = saveQuote({
       success: true,
-      quotes: [{
-        aggregator: 'lifi',
-        inputMint: BASE_USDC,
-        outputMint: OUT_TOKEN,
-        inAmount: '10000000',
-        outAmount: '50000000',
-        approvalAddress: '', // no approval needed — go straight to the swap broadcast
-        transaction: { to: LIFI_ROUTER, data: '0x12345678', value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
-      }],
+      quotes: [
+        {
+          aggregator: 'lifi',
+          inputMint: BASE_USDC,
+          outputMint: OUT_TOKEN,
+          inAmount: '10000000',
+          outAmount: '50000000',
+          approvalAddress: '', // no approval needed — go straight to the swap broadcast
+          transaction: { to: LIFI_ROUTER, data: '0x12345678', value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
+        },
+        {
+          aggregator: 'lifi',
+          inputMint: BASE_USDC,
+          outputMint: OUT_TOKEN,
+          inAmount: '10000000',
+          outAmount: '50000000',
+          approvalAddress: '',
+          transaction: { to: LIFI_ROUTER, data: '0x87654321', value: '0', gas: '300000', maxFeePerGas: '5000000', maxPriorityFeePerGas: '1000000' },
+        },
+      ],
     }, 'base', 'local', null, null, {
       swapMode: 'exactIn',
       request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: BASE_USDC, toToken: OUT_TOKEN, amount: '10000000', maxInputAmount: '10000000' }),
@@ -3135,9 +3146,12 @@ describe('confirmEvmBroadcast: binds receipt confirmation to the locally-derived
     const logs = [];
     const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
     await expect(cmds.execute([], null, {}, { quote: quoteId }))
-      .rejects.toThrow(/did not sign|TXHASH_MISMATCH/);
+      .rejects.toMatchObject({ code: 'TXHASH_MISMATCH' });
 
+    // TXHASH_MISMATCH is a broadcaster-integrity failure, not a bad quote:
+    // fail closed immediately instead of trying the next quote.
     expect(executeBodies).toHaveLength(1);
+    expect(logs.some(l => l.includes('Trying next quote'))).toBe(false);
     expect(logs.some(l => l.includes('Transaction successful'))).toBe(false);
 
     delete process.env.NANSEN_WALLET_PASSWORD;
