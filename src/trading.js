@@ -109,7 +109,8 @@ export function getQuotesDir() {
 export function safeQuotesPath(filename) {
   const base = path.resolve(getQuotesDir());
   const target = path.resolve(base, filename);
-  if (path.relative(base, target).startsWith('..')) return null;
+  const relative = path.relative(base, target);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
   return target;
 }
 

@@ -44,6 +44,7 @@ import {
   saveTxRecord,
   loadTxRecord,
   __setAllowanceTimingForTests,
+  safeQuotesPath,
 } from '../trading.js';
 import { SIMULATION_RPCS } from '../rpc-urls.js';
 import { keccak256, rlpEncode } from '../crypto.js';
@@ -323,6 +324,59 @@ describe('quote storage', () => {
       JSON.stringify({ quoteId, chain: 'base', timestamp: Date.now(), response: {} }),
     );
     expect(() => loadQuote(quoteId)).not.toThrow();
+  });
+});
+
+// ============= Path Traversal Security =============
+
+describe('safeQuotesPath', () => {
+  it('should allow valid filenames within quotes directory', () => {
+    const result = safeQuotesPath('valid-quote-123.json');
+    expect(result).not.toBeNull();
+    expect(result).toContain('quotes');
+    expect(result).toContain('valid-quote-123.json');
+  });
+
+  it('should reject parent directory traversal with ../', () => {
+    expect(safeQuotesPath('../etc/passwd')).toBeNull();
+    expect(safeQuotesPath('../../etc/passwd')).toBeNull();
+    expect(safeQuotesPath('../../../etc/passwd')).toBeNull();
+  });
+
+  it('should reject path traversal with subdirectory escape', () => {
+    expect(safeQuotesPath('subdir/../../etc/passwd')).toBeNull();
+    expect(safeQuotesPath('a/../../../etc/passwd')).toBeNull();
+  });
+
+  it('should reject absolute paths on Unix', () => {
+    expect(safeQuotesPath('/etc/passwd')).toBeNull();
+    expect(safeQuotesPath('/tmp/malicious.json')).toBeNull();
+  });
+
+  it('should reject absolute paths on Windows (when running on Windows)', () => {
+    // On Unix, Windows paths are treated as relative, so we only test when on Windows
+    if (process.platform === 'win32') {
+      expect(safeQuotesPath('C:\\Windows\\System32\\config\\sam')).toBeNull();
+      expect(safeQuotesPath('C:/Windows/System32/config/sam')).toBeNull();
+    } else {
+      // On Unix, verify that Windows-style paths don't escape the directory
+      const result = safeQuotesPath('C:\\Windows\\System32\\config\\sam');
+      if (result !== null) {
+        expect(result).toContain('quotes');
+      }
+    }
+  });
+
+  it('should reject mixed traversal patterns', () => {
+    // Mix of valid and traversal components
+    expect(safeQuotesPath('valid/../../../etc/passwd')).toBeNull();
+    expect(safeQuotesPath('./../../etc/passwd')).toBeNull();
+  });
+
+  it('should handle edge cases safely', () => {
+    expect(safeQuotesPath('')).not.toBeNull(); // empty string resolves to base dir
+    expect(safeQuotesPath('.')).not.toBeNull(); // current dir is safe
+    expect(safeQuotesPath('..')).toBeNull(); // parent dir is rejected
   });
 });
 
