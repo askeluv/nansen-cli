@@ -1159,6 +1159,9 @@ const NATIVE_SIBLING_DUST_LAMPORTS = 3_000_000n; // ~0.003 SOL
  * @param {object} [ctx]
  * @param {number} [ctx.slippage] - slippage fraction in effect; defaults to 3%
  * @param {bigint} [ctx.siblingDustThreshold] - overrides NATIVE_SIBLING_DUST_LAMPORTS
+ * @returns {{verified: true, inputAssertionSkipped: boolean}} inputAssertionSkipped
+ *   is true when the input was native SOL, meaning assertion 1 did not run
+ *   (see assertion 1's rationale above) — the caller should surface this.
  * @throws {Error} with `code = 'SWAP_OUTCOME_MISMATCH'` on any failed assertion.
  */
 export function assertSolanaSwapOutcome(request, quote, sim, { slippage, siblingDustThreshold } = {}) {
@@ -1280,7 +1283,10 @@ export function assertSolanaSwapOutcome(request, quote, sim, { slippage, sibling
     }
   }
 
-  return { verified: true };
+  // inputAssertionSkipped tells the caller assertion 1 didn't run (native-SOL
+  // input, per the JSDoc above), so it can surface that instead of implying
+  // the input spend was delta-verified.
+  return { verified: true, inputAssertionSkipped: inputIsNative };
 }
 
 /**

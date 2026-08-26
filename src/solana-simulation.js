@@ -39,10 +39,14 @@ const MAX_ACCOUNTS_PER_CALL = 100;
  * A simulation error the caller can distinguish from a genuine outcome mismatch.
  * `code` is one of:
  *   NO_SIM_RPC             - no simulation endpoint configured for the chain
- *   SIM_RPC_ERROR           - transport/parse failure talking to the endpoint
+ *   SIM_RPC_ERROR           - transport/parse failure talking to the endpoint,
+ *                             OR a 200 OK sim that omitted the `accounts`
+ *                             result we asked for (an RPC capability gap, not
+ *                             a corrupt result — see the throw site below)
  *   SIM_REVERTED            - the transaction itself reverted in simulation
- *   SIM_RESULT_UNPARSEABLE  - the sim ran, but a tracked balance or lookup
- *                             table couldn't be resolved/parsed
+ *   SIM_RESULT_UNPARSEABLE  - the sim ran AND returned the accounts we asked
+ *                             for, but a tracked balance or lookup table
+ *                             couldn't be resolved/parsed
  * NO_SIM_RPC and SIM_RPC_ERROR are degrade conditions (warn, proceed per
  * policy); the caller decides. SIM_REVERTED and SIM_RESULT_UNPARSEABLE are
  * outcome/parse problems and must not be silently ignored — fail closed.
@@ -268,7 +272,14 @@ export async function simulateSolanaAssetChanges(chain, txBase64, { walletAddres
   }
   const postAccountInfos = simResult?.value?.accounts;
   if (!Array.isArray(postAccountInfos) || postAccountInfos.length !== tracked.length) {
-    throw new SolanaSimulationError('SIM_RESULT_UNPARSEABLE', 'Simulation did not return balance data for the tracked accounts.');
+    // A 200 OK with `err: null` but no (or short) `accounts` array means the
+    // node accepted the request without honoring the `accounts` param — the
+    // same "public node doesn't fully support this" gap rpc-urls.js documents
+    // as a degrade condition, not a corrupt result. SIM_RPC_ERROR here (rather
+    // than SIM_RESULT_UNPARSEABLE) keeps this in verifySolanaSwapOutcome's
+    // degrade allow-list so a capability gap on the default public RPC warns
+    // and proceeds instead of blocking every trade.
+    throw new SolanaSimulationError('SIM_RPC_ERROR', 'Simulation did not return balance data for the tracked accounts (RPC may not support the `accounts` parameter).');
   }
 
   const deltas = {};

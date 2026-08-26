@@ -1727,7 +1727,14 @@ describe('assertSolanaSwapOutcome', () => {
     const nativeInQuote = { inputMint: SOL_SENTINEL, outputMint: SOL_USDC, inAmount: '1000000000', outAmount: '50000000' };
     // Native delta is the input PLUS fee/rent noise — no tight ceiling applies.
     const sim = { deltas: { [SOL_SENTINEL]: -1_005_123n * 1000n, [SOL_USDC]: 50_000_000n } };
-    expect(() => assertSolanaSwapOutcome(nativeInRequest, nativeInQuote, sim, { slippage: 0.03 })).not.toThrow();
+    expect(assertSolanaSwapOutcome(nativeInRequest, nativeInQuote, sim, { slippage: 0.03 }))
+      .toEqual({ verified: true, inputAssertionSkipped: true });
+  });
+
+  it('reports inputAssertionSkipped: false on an SPL-in swap, where assertion 1 does run', () => {
+    const sim = { deltas: { [SOL_USDC]: -1000000n, [SOL_USDT]: 1000000n } };
+    expect(assertSolanaSwapOutcome(splInRequest, splInQuote, sim, { slippage: 0.03 }))
+      .toEqual({ verified: true, inputAssertionSkipped: false });
   });
 
   it('folds a WSOL-mint quote input to the native sentinel so the delta matches (regression: SOLANA_NATIVE_MINTS ReferenceError)', () => {

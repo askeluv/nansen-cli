@@ -324,6 +324,23 @@ describe('solana-simulation', () => {
       .rejects.toMatchObject({ code: 'SIM_RPC_ERROR' });
   });
 
+  it('degrades as SIM_RPC_ERROR when a 200 OK sim omits the accounts array (RPC capability gap, not a corrupt result)', async () => {
+    // regression: a node that accepts `accounts` but doesn't honor it returns
+    // err: null with no accounts data — this must degrade (warn + proceed),
+    // not fail closed as SIM_RESULT_UNPARSEABLE, since SIMULATION_RPCS.solana
+    // defaults to a public endpoint that can behave this way under load.
+    const wallet = generateSolanaWallet().address;
+    const txBase64 = buildLegacyTx({ wallet });
+
+    vi.stubGlobal('fetch', mockSolanaRpc({
+      trackedAccounts: { [wallet]: nativeAccountInfo(1_000_000_000) },
+      simValue: () => ({ value: { err: null, accounts: null } }),
+    }));
+
+    await expect(simulateSolanaAssetChanges('solana', txBase64, { walletAddress: wallet }))
+      .rejects.toMatchObject({ code: 'SIM_RPC_ERROR' });
+  });
+
   it('always sends replaceRecentBlockhash:true (the quote blockhash is stale by execute)', async () => {
     const wallet = generateSolanaWallet().address;
     const txBase64 = buildLegacyTx({ wallet });
