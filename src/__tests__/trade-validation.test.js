@@ -1794,6 +1794,22 @@ describe('assertSolanaSwapOutcome', () => {
       .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*minimum acceptable output/i);
   });
 
+  it('blocks a zero output delta even when the dust-quoted floor collapses to zero (regression: a dust-adjusted floor of 0 admitted a fully-failed trade)', () => {
+    // Same dust-quoted setup as above (adjustedFloor clamps to 0n), but this
+    // time the swap delivers exactly nothing rather than a net loss. The EVM
+    // sibling (assertSwapOutcome) never has this gap because its minOut can
+    // never collapse to <= 0; the explicit outputDelta <= 0n check restores
+    // that same invariant here.
+    const req = {
+      chain: 'solana', walletAddress: 'Wallet1111111111111111111111111111111111',
+      fromToken: SOL_USDC, toToken: SOL_SENTINEL, swapMode: 'exactIn', amount: '1000', maxInputAmount: '1000',
+    };
+    const quote = { inputMint: SOL_USDC, outputMint: SOL_SENTINEL, inAmount: '1000', outAmount: '1000000' };
+    const sim = { deltas: { [SOL_USDC]: -1000n, [SOL_SENTINEL]: 0n } };
+    expect(() => assertSolanaSwapOutcome(req, quote, sim, { slippage: 0.03 }))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*minimum acceptable output/i);
+  });
+
   it('fails closed when input and output tokens are the same', () => {
     const req = { ...splInRequest, toToken: SOL_USDC };
     const quote = { inputMint: SOL_USDC, outputMint: SOL_USDC, inAmount: '1000000', outAmount: '1000000' };

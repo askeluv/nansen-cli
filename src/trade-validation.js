@@ -1266,9 +1266,12 @@ export function assertSolanaSwapOutcome(request, quote, sim, { slippage, sibling
     : 0n;
   // minOut can be smaller than the dust tolerance for a dust-quoted swap; clamp
   // the floor at 0 so the subtraction never goes negative and silently admits
-  // any non-negative outputDelta (including zero).
+  // any non-negative outputDelta (including zero). The explicit outputDelta <= 0n
+  // check below then restores the invariant assertSwapOutcome (the EVM sibling)
+  // gets for free because its minOut can never collapse to <= 0: a swap must
+  // deliver SOME positive output, even when the dust-adjusted floor is 0.
   const adjustedFloor = minOut > outputFloorSlack ? minOut - outputFloorSlack : 0n;
-  if (outputDelta < adjustedFloor) {
+  if (outputDelta <= 0n || outputDelta < adjustedFloor) {
     throw fail(`the output token (${outputAsset}) increased by only ${outputDelta}, below the minimum acceptable output (${minOut}).`);
   }
 
@@ -1309,13 +1312,18 @@ export function assertSolanaSwapOutcome(request, quote, sim, { slippage, sibling
  * nothing here to bound their destination or amount. On its own this leaves a
  * residual gap: a transaction that also transfers an unrelated ("sibling")
  * token the wallet holds, authorized by the wallet, would pass this check.
- * That gap is now closed by outcome simulation — assertSolanaSwapOutcome, run
- * via verifySolanaSwapOutcome immediately after this check on all Solana
- * signing paths, simulates the transaction and rejects any balance delta on a
- * token other than the declared input/output. That simulation degrades
- * gracefully (warns and proceeds) when no simulation RPC endpoint is
- * configured, so this static check plus the metadata binding remain the ONLY
- * transaction-level guards whenever a sim RPC is unavailable.
+ * That gap is now closed, for swap execution, by outcome simulation —
+ * assertSolanaSwapOutcome, run via verifySolanaSwapOutcome immediately after
+ * this check on all Solana swap-execute signing paths (trading.js), simulates
+ * the transaction and rejects any balance delta on a token other than the
+ * declared input/output. That simulation degrades gracefully (warns and
+ * proceeds) when no simulation RPC endpoint is configured, so this static
+ * check plus the metadata binding remain the ONLY transaction-level guards
+ * whenever a sim RPC is unavailable. Limit-order vault deposit/cancel
+ * (limit-order.js) call only this static check, not verifySolanaSwapOutcome —
+ * they have no swap quote (no declared input/output pair) to bind an outcome
+ * check against, so the sibling-transfer gap described above is still open
+ * there; tracked as a follow-up, not covered here.
  *
  * Within that scope, the SPL Token program requires the *authority* of
  * Approve/ApproveChecked/SetAuthority/CloseAccount to sign the transaction,

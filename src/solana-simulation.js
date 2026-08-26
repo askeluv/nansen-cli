@@ -204,11 +204,25 @@ export async function simulateSolanaAssetChanges(chain, txBase64, { walletAddres
 
   const parsed = parseTransactionMessage(txBase64);
 
+  // Deduplicated: the same pubkey could in principle appear more than once
+  // across the static keys and ALT-resolved writable indexes (or across two
+  // different lookup tables). Without dedup, tracking + summing its delta
+  // twice would double (or further inflate) a real balance change, letting
+  // assertSolanaSwapOutcome's minimum-output check pass on an inflated delta
+  // that doesn't reflect what the wallet actually received.
   const writableKeys = [];
+  const seenWritableKeys = new Set();
+  const pushWritable = (key) => {
+    if (seenWritableKeys.has(key)) return;
+    seenWritableKeys.add(key);
+    writableKeys.push(key);
+  };
   for (let i = 0; i < parsed.staticAccountKeys.length; i++) {
-    if (isStaticWritable(parsed, i)) writableKeys.push(parsed.staticAccountKeys[i]);
+    if (isStaticWritable(parsed, i)) pushWritable(parsed.staticAccountKeys[i]);
   }
-  writableKeys.push(...(await resolveAltWritableAccounts(rpcUrl, parsed, timeoutMs)));
+  for (const key of await resolveAltWritableAccounts(rpcUrl, parsed, timeoutMs)) {
+    pushWritable(key);
+  }
 
   const preAccountInfos = await getMultipleAccountsChunked(rpcUrl, writableKeys, 'jsonParsed', timeoutMs);
 

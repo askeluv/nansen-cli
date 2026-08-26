@@ -244,6 +244,51 @@ describe('solana-simulation', () => {
     expect(result.deltas[mint]).toBe(200n);
   });
 
+  it('does not double-count a writable account referenced both as a static key and via an ALT (regression: no dedup summed its delta twice)', async () => {
+    const wallet = generateSolanaWallet().address;
+    const programId = generateSolanaWallet().address;
+    const recentBlockhash = generateSolanaWallet().address;
+    const altAddress = generateSolanaWallet().address;
+    const tokenAccount = generateSolanaWallet().address; // referenced BOTH ways below
+    const mint = generateSolanaWallet().address;
+
+    // ALT resolves the SAME tokenAccount already present as a static key.
+    const altAddresses = [generateSolanaWallet().address, generateSolanaWallet().address, generateSolanaWallet().address, tokenAccount];
+    const altTableData = Buffer.concat([Buffer.alloc(56), ...altAddresses.map((a) => base58Decode(a))]).toString('base64');
+
+    const messageBytes = buildMessageBytes({
+      versioned: true,
+      accountKeys: [wallet, tokenAccount, programId],
+      header: { numRequiredSignatures: 1, numReadonlySignedAccounts: 0, numReadonlyUnsignedAccounts: 1 },
+      recentBlockhash,
+      instructions: [{ programIdIndex: 2, accountIndexes: [0, 1], data: Buffer.from([0x01]) }],
+      addressTableLookups: [{ lookupTableAddress: altAddress, writableIndexes: [3], readonlyIndexes: [] }],
+    });
+    const txBase64 = wrapTransaction(messageBytes);
+
+    vi.stubGlobal('fetch', mockSolanaRpc({
+      altAccounts: { [altAddress]: { data: [altTableData, 'base64'], owner: 'AddressLookupTab1e1111111111111111111111', lamports: 1 } },
+      trackedAccounts: {
+        [wallet]: nativeAccountInfo(1_000_000_000),
+        [tokenAccount]: tokenAccountInfo({ mint, owner: wallet, amount: 500 }),
+      },
+      simValue: (params) => {
+        const addrs = params[1].accounts.addresses;
+        // Deduplicated: tokenAccount must appear only once in the snapshot request.
+        expect(addrs.filter((a) => a === tokenAccount)).toHaveLength(1);
+        const post = {
+          [wallet]: nativeAccountInfo(999_995_000),
+          [tokenAccount]: tokenAccountInfo({ mint, owner: wallet, amount: 700 }),
+        };
+        return { value: { err: null, accounts: addrs.map((a) => post[a]) } };
+      },
+    }));
+
+    const result = await simulateSolanaAssetChanges('solana', txBase64, { walletAddress: wallet });
+    // The real delta is 200 (500 -> 700); without dedup this would double to 400.
+    expect(result.deltas[mint]).toBe(200n);
+  });
+
   it('first-time buy: tracks the output ATA the tx creates (no pre-state) and reports its delta', async () => {
     // The output token account does not exist pre-swap (getMultipleAccounts
     // returns null for it), so it has no ownership to read up front. It must
