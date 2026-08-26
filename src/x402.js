@@ -298,7 +298,10 @@ export async function checkX402Balance(network, asset = null) {
         }),
       });
       const data = await resp.json();
-      return { balance: parseInt(data.result, 16) / 10 ** decimals, symbol };
+      // Use BigInt to avoid precision loss on 18-decimal tokens (BSC stablecoins).
+      const raw = BigInt(data.result);
+      const divisor = 10n ** BigInt(decimals);
+      return { balance: Number(raw / divisor) + Number(raw %% divisor) / 10 ** decimals, symbol };
     }
 
     return null;
