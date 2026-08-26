@@ -1730,6 +1730,21 @@ describe('assertSolanaSwapOutcome', () => {
     expect(() => assertSolanaSwapOutcome(nativeInRequest, nativeInQuote, sim, { slippage: 0.03 })).not.toThrow();
   });
 
+  it('folds a WSOL-mint quote input to the native sentinel so the delta matches (regression: SOLANA_NATIVE_MINTS ReferenceError)', () => {
+    // A real Jupiter SOL→USDC quote carries the WSOL mint (So111…112) in
+    // inputMint, while the simulation reports the native delta under the
+    // system-program sentinel. foldNative must reconcile the two — the crash
+    // path when the alias set was undefined.
+    const WSOL = 'So11111111111111111111111111111111111111112';
+    const wsolInRequest = {
+      chain: 'solana', walletAddress: 'Wallet1111111111111111111111111111111111',
+      fromToken: WSOL, toToken: SOL_USDC, swapMode: 'exactIn', amount: '1000000000', maxInputAmount: '1000000000',
+    };
+    const wsolInQuote = { inputMint: WSOL, outputMint: SOL_USDC, inAmount: '1000000000', outAmount: '50000000' };
+    const sim = { deltas: { [SOL_SENTINEL]: -1_005_123n * 1000n, [SOL_USDC]: 50_000_000n } };
+    expect(() => assertSolanaSwapOutcome(wsolInRequest, wsolInQuote, sim, { slippage: 0.03 })).not.toThrow();
+  });
+
   it('fails closed when input and output tokens are the same', () => {
     const req = { ...splInRequest, toToken: SOL_USDC };
     const quote = { inputMint: SOL_USDC, outputMint: SOL_USDC, inAmount: '1000000', outAmount: '1000000' };

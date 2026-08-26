@@ -21,7 +21,7 @@ import { SIMULATION_RPCS } from './rpc-urls.js';
 import { parseTransactionMessage } from './solana-tx.js';
 import { base58Encode } from './wallet.js';
 
-// Mirrors NATIVE_SOL_SYSTEM_MINT in trading.js / SOLANA_NATIVE_MINTS in
+// Mirrors NATIVE_SOL_SYSTEM_MINT in trading.js / SOLANA_NATIVE_SOL_ALIASES in
 // trade-validation.js (duplicated, not imported, to avoid a circular import —
 // both of those modules will import from this one).
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';

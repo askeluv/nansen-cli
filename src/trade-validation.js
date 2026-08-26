@@ -1181,7 +1181,7 @@ export function assertSolanaSwapOutcome(request, quote, sim, { slippage, sibling
     deltas[k] = amt;
   }
 
-  const foldNative = (mint) => (mint && SOLANA_NATIVE_MINTS.has(mint) ? SOL_SENTINEL : mint);
+  const foldNative = (mint) => (mint && SOLANA_NATIVE_SOL_ALIASES.has(mint) ? SOL_SENTINEL : mint);
   const inputAsset = quote?.inputMint ? foldNative(quote.inputMint) : null;
   const outputAsset = quote?.outputMint ? foldNative(quote.outputMint) : null;
   if (!inputAsset || !outputAsset) {
@@ -1279,21 +1279,19 @@ export function assertSolanaSwapOutcome(request, quote, sim, { slippage, sibling
  * (paired with the intent-binding metadata check), not a complete
  * authorization audit of the transaction.
  *
- * IMPORTANT — no outcome simulation backs this on Solana. Unlike the EVM path,
- * which pairs its static calldata checks with a balance-delta simulation
- * (verifySwapOutcome), there is no Solana simulation RPC (SIMULATION_RPCS is
- * Base-only), so this static check plus the metadata binding are the ONLY
- * transaction-level guards on the Solana signing path. In particular this
- * check does NOT classify SPL Transfer/TransferChecked: a legitimate swap or
- * vault deposit moves the input token (and WSOL) with exactly those
- * instructions, so they can't be blanket-rejected, and without a balance-delta
- * simulation there's nothing here to bound their destination or amount. The
- * consequence is a residual gap: a transaction that also transfers an
- * unrelated ("sibling") token the wallet holds, authorized by the wallet,
- * would pass. Closing it needs either a Solana outcome simulation or a positive
- * check that every wallet-authorized transfer moves only the declared input
- * mint (TransferChecked carries the mint; plain Transfer does not, so this
- * needs an RPC account lookup) — tracked as a follow-up, not covered here.
+ * IMPORTANT — this static check does NOT classify SPL Transfer/TransferChecked:
+ * a legitimate swap or vault deposit moves the input token (and WSOL) with
+ * exactly those instructions, so they can't be blanket-rejected, and there is
+ * nothing here to bound their destination or amount. On its own this leaves a
+ * residual gap: a transaction that also transfers an unrelated ("sibling")
+ * token the wallet holds, authorized by the wallet, would pass this check.
+ * That gap is now closed by outcome simulation — assertSolanaSwapOutcome, run
+ * via verifySolanaSwapOutcome immediately after this check on all Solana
+ * signing paths, simulates the transaction and rejects any balance delta on a
+ * token other than the declared input/output. That simulation degrades
+ * gracefully (warns and proceeds) when no simulation RPC endpoint is
+ * configured, so this static check plus the metadata binding remain the ONLY
+ * transaction-level guards whenever a sim RPC is unavailable.
  *
  * Within that scope, the SPL Token program requires the *authority* of
  * Approve/ApproveChecked/SetAuthority/CloseAccount to sign the transaction,
