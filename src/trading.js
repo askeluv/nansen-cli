@@ -2208,10 +2208,9 @@ EXAMPLES:
               // Then statically inspect the serialized transaction's own
               // instructions ahead of signing — catches a delegate grant, authority
               // change, close-to-stranger, or excessive fee that the metadata check
-              // alone wouldn't see. Solana has no balance-delta simulation (that
-              // layer is Base-only), so this static check plus the metadata binding
-              // are the only transaction-level guards here — see
-              // assertSolanaInstructionsSafe for the residual sibling-transfer gap.
+              // alone wouldn't see. The residual sibling-transfer gap is closed by
+              // verifySolanaSwapOutcome below (degrades gracefully when no sim RPC
+              // is available, so this static check remains a guard when sim is off).
               assertSolanaInstructionsSafe(txBase64, { walletAddress });
 
               // Verify the swap's simulated on-chain outcome matches intent.
@@ -2530,10 +2529,9 @@ EXAMPLES:
               // Then statically inspect the serialized transaction's own
               // instructions ahead of signing — catches a delegate grant, authority
               // change, close-to-stranger, or excessive fee that the metadata check
-              // alone wouldn't see. Solana has no balance-delta simulation (that
-              // layer is Base-only), so this static check plus the metadata binding
-              // are the only transaction-level guards here — see
-              // assertSolanaInstructionsSafe for the residual sibling-transfer gap.
+              // alone wouldn't see. The residual sibling-transfer gap is closed by
+              // verifySolanaSwapOutcome below (degrades gracefully when no sim RPC
+              // is available, so this static check remains a guard when sim is off).
               assertSolanaInstructionsSafe(txBase64, { walletAddress: solanaWalletAddress });
 
               // Verify the swap's simulated on-chain outcome matches intent.

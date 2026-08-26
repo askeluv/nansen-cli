@@ -1771,6 +1771,22 @@ describe('assertSolanaSwapOutcome', () => {
       .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*minimum acceptable output/i);
   });
 
+  it('blocks a negative output delta even when the dust-quoted floor collapses below zero (regression: floor underflow admitted any non-negative delta)', () => {
+    // Quoted output (1,000,000 lamports) is below NATIVE_SIBLING_DUST_LAMPORTS
+    // (3,000,000n), so minOut - outputFloorSlack goes negative. The floor must
+    // clamp at 0 rather than admit any non-negative delta — otherwise a swap
+    // that actually lost SOL (fees exceeding the tiny quoted output) would
+    // wrongly pass.
+    const req = {
+      chain: 'solana', walletAddress: 'Wallet1111111111111111111111111111111111',
+      fromToken: SOL_USDC, toToken: SOL_SENTINEL, swapMode: 'exactIn', amount: '1000', maxInputAmount: '1000',
+    };
+    const quote = { inputMint: SOL_USDC, outputMint: SOL_SENTINEL, inAmount: '1000', outAmount: '1000000' };
+    const sim = { deltas: { [SOL_USDC]: -1000n, [SOL_SENTINEL]: -500000n } };
+    expect(() => assertSolanaSwapOutcome(req, quote, sim, { slippage: 0.03 }))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*minimum acceptable output/i);
+  });
+
   it('fails closed when input and output tokens are the same', () => {
     const req = { ...splInRequest, toToken: SOL_USDC };
     const quote = { inputMint: SOL_USDC, outputMint: SOL_USDC, inAmount: '1000000', outAmount: '1000000' };

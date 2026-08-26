@@ -1261,7 +1261,11 @@ export function assertSolanaSwapOutcome(request, quote, sim, { slippage, sibling
   const outputFloorSlack = outputIsNative
     ? (siblingDustThreshold != null ? siblingDustThreshold : NATIVE_SIBLING_DUST_LAMPORTS)
     : 0n;
-  if (outputDelta < minOut - outputFloorSlack) {
+  // minOut can be smaller than the dust tolerance for a dust-quoted swap; clamp
+  // the floor at 0 so the subtraction never goes negative and silently admits
+  // any non-negative outputDelta (including zero).
+  const adjustedFloor = minOut > outputFloorSlack ? minOut - outputFloorSlack : 0n;
+  if (outputDelta < adjustedFloor) {
     throw fail(`the output token (${outputAsset}) increased by only ${outputDelta}, below the minimum acceptable output (${minOut}).`);
   }
 
