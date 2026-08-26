@@ -3151,18 +3151,26 @@ EXAMPLES:
               // For EVM: verify the tx actually succeeded on-chain
               if (chainType === 'evm') {
                 log('  Verifying on-chain status...');
+                // Non-gasless: derive our local hash up front, OUTSIDE the receipt-poll
+                // try below. A hex-validation failure here means no poll ever ran, so it
+                // must surface as itself — not as the "REVERTED on-chain" diagnostic that
+                // catch is reserved for. (Gasless has no local hash to bind to: the Relay
+                // solver wraps and broadcasts its own tx, so result.txHash legitimately is
+                // not the hash of the bytes we signed.)
+                if (!gasless) {
+                  try {
+                    txId = evmTxHash(signedTransaction);
+                  } catch (hashErr) {
+                    throw new CommandError(`Cannot derive local tx hash for ${quoteName}: ${hashErr.message}`, 'INVALID_SIGNED_TX');
+                  }
+                  explorerUrl = chainConfig.explorer + txId;
+                }
                 try {
-                  // Gasless: the Relay solver wraps and broadcasts its OWN on-chain tx, so
-                  // result.txHash legitimately is not the hash of the bytes we signed — poll it
-                  // directly and skip the equality check. Otherwise bind to our local hash.
                   if (gasless) {
-                    // No local hash to bind to here (the Relay solver broadcasts its
-                    // own tx). If it reported no hash, there is nothing to poll — skip
+                    // If the solver reported no hash there is nothing to poll — skip
                     // rather than block on eth_getTransactionReceipt(undefined).
                     if (result.txHash) await waitForReceipt(chain, result.txHash);
                   } else {
-                    txId = evmTxHash(signedTransaction);
-                    explorerUrl = chainConfig.explorer + txId;
                     const { hash } = await confirmEvmBroadcast(chain, signedTransaction, result.txHash);
                     txId = hash;
                     explorerUrl = chainConfig.explorer + txId;
