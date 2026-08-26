@@ -231,7 +231,11 @@ export function formatValue(val) {
   if (val === null || val === undefined) return '';
   if (typeof val === 'number') {
     if (Math.abs(val) >= 1000000) return (val / 1000000).toFixed(2) + 'M';
-    if (Math.abs(val) >= 1000) return (val / 1000).toFixed(2) + 'K';
+    if (Math.abs(val) >= 1000) {
+      const formatted = (val / 1000).toFixed(2);
+      if (Math.abs(parseFloat(formatted)) >= 1000) return (val / 1000000).toFixed(2) + 'M';
+      return formatted + 'K';
+    }
     if (Number.isInteger(val)) return val.toString();
     return val.toFixed(2);
   }
