@@ -44,6 +44,7 @@ import {
   verifySwapOutcome,
   verifySolanaSwapOutcome,
   compileRawSolanaTransaction,
+  normalizeSolanaTransaction,
   getBridgeStatus,
   pollBridgeStatus,
   saveTxRecord,
@@ -6493,5 +6494,26 @@ describe('Relay Solana-source bridge: raw-instruction transaction shape', () => 
       .rejects.toThrow(/not valid hex/);
     await expect(compileRawSolanaTransaction(badQuote('deadXY'), 'http://unused', async () => signer))
       .rejects.toThrow(/not valid hex/);
+  });
+
+  it('normalize dispatches the raw-instructions shape even when a data field is also present', async () => {
+    const signer = generateSolanaWallet().address;
+    // A hypothetical future shape carrying BOTH instructions and data: the
+    // Relay compiler must win, not the OKX base58-decode branch. base58Decode
+    // would throw on this non-base58 data, so reaching it at all is the failure.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      json: () => Promise.resolve({ result: { value: { blockhash: generateSolanaWallet().address } } }),
+    }));
+    const mixed = {
+      data: 'not-base58-@@@',
+      instructions: [{
+        keys: [{ pubkey: signer, isSigner: true, isWritable: true }],
+        programId: generateSolanaWallet().address,
+        data: 'deadbeef',
+      }],
+    };
+    const b64 = await normalizeSolanaTransaction(mixed, 'http://unused', async () => signer);
+    expect(Buffer.from(b64, 'base64').length).toBeGreaterThan(0);
+    vi.unstubAllGlobals();
   });
 });

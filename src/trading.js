@@ -603,9 +603,13 @@ export async function compileRawSolanaTransaction(transaction, rpcUrl, getExpect
  * the signing wallet's address — see compileRawSolanaTransaction.
  */
 export async function normalizeSolanaTransaction(transaction, rpcUrl, getExpectedSigner) {
-  if (typeof transaction === 'string') return transaction;
-  if (transaction.data) return base58Decode(transaction.data).toString('base64');
+  if (typeof transaction === 'string') return transaction; // Jupiter: already base64
+  // Dispatch most-specific shape first. Only Relay carries `instructions` and
+  // only OKX carries `data`; checking `instructions` ahead of the bare
+  // `data` truthiness test keeps a future Relay shape that also had a `data`
+  // field from being mis-routed into the OKX base58 decode.
   if (Array.isArray(transaction.instructions)) return compileRawSolanaTransaction(transaction, rpcUrl, getExpectedSigner);
+  if (transaction.data) return base58Decode(transaction.data).toString('base64'); // OKX: base58 serialized tx
   throw new Error('Unrecognized Solana transaction format in quote');
 }
 
