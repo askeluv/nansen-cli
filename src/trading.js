@@ -9,7 +9,8 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { base58Encode, exportWallet, getWalletConfig, showWallet, listWallets } from './wallet.js';
-import { base58Decode } from './transfer.js';
+import { base58Decode, encodeCompactU16 } from './transfer.js';
+import { buildMessageV0, fetchRecentBlockhash } from './x402-svm.js';
 import { keccak256, signSecp256k1, rlpEncode } from './crypto.js';
 import { getWalletConnectAddress, sendTransactionViaWalletConnect, sendSolanaTransactionViaWalletConnect, sendApprovalViaWalletConnect } from './walletconnect-trading.js';
 import { retrievePassword } from './keychain.js';
@@ -25,6 +26,8 @@ import { packageVersion, CommandError, telemetryHeaders, loadConfig } from './ap
 
 const TRADING_API_URL = process.env.NANSEN_TRADING_API_URL || 'https://trading-api.nansen.ai';
 const CLIENT_USER_AGENT = `nansen-cli/${packageVersion}`;
+// Solana's max transaction wire size (IPv6 MTU minus headers).
+const SOLANA_MAX_TX_SIZE = 1232;
 
 const CHAIN_MAP = {
   solana:   { index: '501', type: 'solana', chainId: 501,  name: 'Solana',   explorer: 'https://solscan.io/tx/', lifiChainId: '1151111081099710' },
@@ -507,6 +510,107 @@ export function signSolanaTransaction(transactionBase64, privateKeyHex) {
   signature.copy(signedTx, sigCountSize);
 
   return signedTx.toString('base64');
+}
+
+// Any valid base58 32-byte value works here — recentBlockhash is fixed-size
+// regardless of its actual value, so this is exact for a size-only preflight
+// and lets the signer/signature-count checks below run before the real
+// blockhash fetch (no wasted RPC round trip on a request we're going to reject).
+const SIZE_CHECK_BLOCKHASH = '11111111111111111111111111111111';
+
+function decodeInstructionData(hex) {
+  if (hex == null || hex === '') return Buffer.alloc(0); // some instructions legitimately carry no data
+  const body = hex.startsWith('0x') ? hex.slice(2) : hex;
+  // Buffer.from(str, 'hex') silently drops a trailing odd nibble and stops at
+  // the first non-hex character, so it would decode malformed data into a
+  // plausible-but-wrong instruction that then gets signed. Reject instead.
+  if (body.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(body)) {
+    throw new Error(`Cannot compile Solana transaction: instruction data is not valid hex ("${hex}")`);
+  }
+  return Buffer.from(body, 'hex');
+}
+
+/**
+ * Compile a raw, uncompiled Solana transaction — {instructions, addressLookupTableAddresses}
+ * — into a signable base64 VersionedTransaction. Some aggregators (Relay's Solana-source
+ * bridge quotes) return this shape instead of a ready-to-sign serialized transaction.
+ *
+ * Every account is kept static; the address-lookup-table hint is a size optimization,
+ * not a correctness requirement, so skipping it is valid as long as the compiled
+ * transaction still fits Solana's packet limit. Full lookup-table compilation is
+ * unimplemented — throws instead of silently building an oversized/invalid transaction.
+ *
+ * getExpectedSigner is an async thunk resolving to the address of the wallet that is
+ * about to sign. The transaction only ever gets a single signature written into slot 0
+ * (see signSolanaTransaction / the WalletConnect injection path), so the instructions'
+ * own declared signer must both be unambiguous (exactly one signer) and match that
+ * wallet — otherwise the transaction would silently sign the wrong account or leave a
+ * required signature slot empty, failing on-chain with an opaque error.
+ */
+export async function compileRawSolanaTransaction(transaction, rpcUrl, getExpectedSigner) {
+  const instructions = transaction.instructions.map(ix => {
+    if (!Array.isArray(ix.keys)) {
+      throw new Error('Cannot compile Solana transaction: instruction is missing its "keys" accounts list');
+    }
+    return { programId: ix.programId, accounts: ix.keys, data: decodeInstructionData(ix.data) };
+  });
+
+  const feePayer = instructions.flatMap(ix => ix.accounts).find(a => a.isSigner)?.pubkey;
+  if (!feePayer) {
+    throw new Error('Cannot compile Solana transaction: no signer account found in instructions');
+  }
+
+  const expectedSigner = await getExpectedSigner();
+  if (!expectedSigner) {
+    throw new Error('Cannot compile Solana transaction: wallet address unavailable to verify the signer');
+  }
+  if (feePayer !== expectedSigner) {
+    throw new Error(
+      `Solana transaction signer (${feePayer}) doesn't match the wallet executing this trade ` +
+      `(${expectedSigner}). Refusing to sign — get a new quote.`
+    );
+  }
+
+  const preflight = buildMessageV0({ feePayer, instructions, recentBlockhash: SIZE_CHECK_BLOCKHASH });
+  if (preflight.numRequiredSignatures !== 1) {
+    throw new Error(
+      `Cannot compile Solana transaction: requires ${preflight.numRequiredSignatures} signatures, ` +
+      `but only the wallet's own signature can be provided.`
+    );
+  }
+  const unsignedSize = 1 + 64 + preflight.messageBytes.length; // compact-u16(1) + 1 signature slot
+  if (unsignedSize > SOLANA_MAX_TX_SIZE) {
+    throw new Error(
+      `Solana transaction too large to compile without address-lookup-table support ` +
+      `(${unsignedSize} bytes > ${SOLANA_MAX_TX_SIZE} limit). This route needs its ` +
+      `address lookup tables resolved, which isn't supported yet.`
+    );
+  }
+
+  const recentBlockhash = await fetchRecentBlockhash(rpcUrl);
+  const { messageBytes } = buildMessageV0({ feePayer, instructions, recentBlockhash });
+  const unsignedTx = Buffer.concat([encodeCompactU16(1), Buffer.alloc(64), messageBytes]);
+  return unsignedTx.toString('base64');
+}
+
+/**
+ * Normalize a Solana quote's `transaction` field to a base64-encoded, ready-to-sign
+ * VersionedTransaction. Three shapes seen across aggregators: Jupiter (already base64),
+ * OKX ({data: base58}), and Relay bridge quotes (raw uncompiled
+ * {instructions, addressLookupTableAddresses} — compiled client-side).
+ *
+ * getExpectedSigner (only consulted for the Relay shape) is an async thunk resolving to
+ * the signing wallet's address — see compileRawSolanaTransaction.
+ */
+export async function normalizeSolanaTransaction(transaction, rpcUrl, getExpectedSigner) {
+  if (typeof transaction === 'string') return transaction; // Jupiter: already base64
+  // Dispatch most-specific shape first. Only Relay carries `instructions` and
+  // only OKX carries `data`; checking `instructions` ahead of the bare
+  // `data` truthiness test keeps a future Relay shape that also had a `data`
+  // field from being mis-routed into the OKX base58 decode.
+  if (Array.isArray(transaction.instructions)) return compileRawSolanaTransaction(transaction, rpcUrl, getExpectedSigner);
+  if (transaction.data) return base58Decode(transaction.data).toString('base64'); // OKX: base58 serialized tx
+  throw new Error('Unrecognized Solana transaction format in quote');
 }
 
 /**
@@ -2311,10 +2415,6 @@ EXAMPLES:
 
             if (chainType === 'solana' && isPrivy) {
               // Solana via Privy: sign the serialized transaction
-              let txBase64 = currentQuote.transaction;
-              if (typeof txBase64 === 'object' && txBase64.data) {
-                txBase64 = base58Decode(txBase64.data).toString('base64');
-              }
               const solWalletId = quoteData.privyWalletIds?.solana;
               if (!solWalletId) throw new Error('No Solana Privy wallet ID in quote');
               const walletResult = await privyClient.getWallet(solWalletId);
@@ -2327,6 +2427,11 @@ EXAMPLES:
               if (!walletAddress) {
                 throw new Error('Could not resolve the Solana Privy wallet address; cannot confirm the quote was built for this wallet. Refusing to sign.');
               }
+
+              // Solana: transaction is a base64 string (Jupiter), an object with a
+              // base58-encoded `data` field (OKX), or raw uncompiled instructions
+              // (Relay bridge quotes). Normalize to base64.
+              const txBase64 = await normalizeSolanaTransaction(currentQuote.transaction, CHAIN_RPCS.solana, async () => walletAddress);
 
               // Validate the persisted request/quote metadata (token pair, amounts,
               // signer) before signing the aggregator's serialized transaction.
@@ -2626,15 +2731,13 @@ EXAMPLES:
               // below binds the metadata (token pair, amounts, signer), and
               // assertSolanaInstructionsSafe statically inspects the tx's own
               // instructions before signing.
-              // Solana: transaction is either a base64 string (Jupiter) or an object
-              // with a base58-encoded `data` field (OKX). Normalize to base64.
-              let txBase64 = currentQuote.transaction;
-              if (typeof txBase64 === 'object' && txBase64.data) {
-                txBase64 = base58Decode(txBase64.data).toString('base64');
-              }
+              // Solana: transaction is a base64 string (Jupiter), an object with a
+              // base58-encoded `data` field (OKX), or raw uncompiled instructions
+              // (Relay bridge quotes). Normalize to base64.
 
-              // Resolve the signer for this sub-path so the intent-binding check
-              // below can confirm the quote was built for this exact wallet.
+              // Resolve the signer first — both the Relay-shape compiler (which needs
+              // an expected signer for its fee-payer check) and the intent-binding
+              // check below use this exact same address.
               let solanaWalletAddress;
               if (isWalletConnect) {
                 solanaWalletAddress = await getWalletConnectAddress(chainType);
@@ -2650,6 +2753,8 @@ EXAMPLES:
                   throw new Error("Could not resolve the local wallet's Solana address; cannot confirm the quote was built for this wallet. Refusing to sign.");
                 }
               }
+
+              const txBase64 = await normalizeSolanaTransaction(currentQuote.transaction, CHAIN_RPCS.solana, async () => solanaWalletAddress);
 
               // Validate the persisted request/quote metadata (token pair, amounts,
               // signer) before signing the opaque Solana transaction.

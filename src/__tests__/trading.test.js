@@ -43,6 +43,8 @@ import {
   simulateEvmCall,
   verifySwapOutcome,
   verifySolanaSwapOutcome,
+  compileRawSolanaTransaction,
+  normalizeSolanaTransaction,
   getBridgeStatus,
   pollBridgeStatus,
   saveTxRecord,
@@ -6384,5 +6386,171 @@ describe('Solana exactOut ceiling — requires an explicit --max-input', () => {
     expect(loadQuote(quoteId).request.maxInputAmount).toBe('2000000000');
 
     global.fetch = origFetch;
+  });
+});
+
+describe('Relay Solana-source bridge: raw-instruction transaction shape', () => {
+  it('execute compiles and signs a Relay raw {instructions} quote instead of crashing', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    const wallet = showWallet('default');
+
+    const executeBodies = [];
+    const FAKE_BLOCKHASH = generateSolanaWallet().address;
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const body = opts?.body ? (() => { try { return JSON.parse(opts.body); } catch { return {}; } })() : {};
+      if (body.method === 'getLatestBlockhash') {
+        return Promise.resolve({ json: () => Promise.resolve({ result: { value: { blockhash: FAKE_BLOCKHASH } } }) });
+      }
+      if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
+        executeBodies.push(body);
+        return Promise.resolve({
+          ok: true,
+          text: () => Promise.resolve(JSON.stringify({ status: 'Success', signature: 'SolSig', chainType: 'solana', broadcaster: 'relay' })),
+        });
+      }
+      if (urlStr.includes('/bridge/status')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          text: () => Promise.resolve(JSON.stringify({ status: 'DONE', receiving: { status: 'DONE', txHash: 'destTx' } })),
+        });
+      }
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: 1, result: null })) });
+    }));
+
+    const otherAccount = generateSolanaWallet().address;
+    const programId = generateSolanaWallet().address;
+    const inputMint = '11111111111111111111111111111111';
+    const outputMint = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
+    const inAmount = '1000000000';
+    const quoteId = saveQuote({
+      success: true,
+      metadata: { quoteId: 'backend-relay-quote-id' },
+      quotes: [{
+        aggregator: 'relay',
+        inputMint,
+        outputMint,
+        inAmount,
+        outAmount: '180000000',
+        approvalAddress: '',
+        transaction: {
+          instructions: [{
+            keys: [
+              { pubkey: wallet.solana, isSigner: true, isWritable: true },
+              { pubkey: otherAccount, isSigner: false, isWritable: true },
+            ],
+            programId,
+            data: 'deadbeef',
+          }],
+          addressLookupTableAddresses: ['Hm9fUgcn7qwDaiNTFiGh6pNtVATgnaRcmK6Bbx6EMZfP'],
+        },
+        metadata: {
+          requestId: 'relay-req-raw-ix',
+          isCrossChain: true,
+          bridgeTool: 'relay',
+        },
+      }],
+    }, 'solana', 'local', null, 'base', {
+      swapMode: 'exactIn',
+      request: solanaIntent({
+        walletAddress: wallet.solana,
+        fromToken: inputMint,
+        toToken: outputMint,
+        amount: inAmount,
+        maxInputAmount: inAmount,
+        toChain: 'base',
+      }),
+    });
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (m) => logs.push(m), exit: () => {} });
+    try { await cmds.execute([], null, {}, { quote: quoteId }); } catch { /* bridge polling may fail in test, that's fine */ }
+
+    expect(executeBodies.length).toBeGreaterThanOrEqual(1);
+    // The signed transaction the API actually receives should decode to a
+    // non-empty (filled) signature — proof it was compiled AND signed, not
+    // just passed through opaquely.
+    const signedTx = Buffer.from(executeBodies[0].signedTransaction, 'base64');
+    expect(signedTx.subarray(1, 65).every(b => b === 0)).toBe(false);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+    vi.unstubAllGlobals();
+  });
+
+  it('rejects an instruction with malformed hex data instead of silently truncating it', async () => {
+    const signer = generateSolanaWallet().address;
+    const badQuote = (data) => ({
+      instructions: [{
+        keys: [{ pubkey: signer, isSigner: true, isWritable: true }],
+        programId: generateSolanaWallet().address,
+        data,
+      }],
+    });
+    // Odd-length and non-hex both drop/mangle bytes under Buffer.from(_, 'hex').
+    // Throws during instruction decode, before any RPC blockhash fetch.
+    await expect(compileRawSolanaTransaction(badQuote('abc'), 'http://unused', async () => signer))
+      .rejects.toThrow(/not valid hex/);
+    await expect(compileRawSolanaTransaction(badQuote('deadXY'), 'http://unused', async () => signer))
+      .rejects.toThrow(/not valid hex/);
+  });
+
+  it('normalize dispatches the raw-instructions shape even when a data field is also present', async () => {
+    const signer = generateSolanaWallet().address;
+    // A hypothetical future shape carrying BOTH instructions and data: the
+    // Relay compiler must win, not the OKX base58-decode branch. base58Decode
+    // would throw on this non-base58 data, so reaching it at all is the failure.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      json: () => Promise.resolve({ result: { value: { blockhash: generateSolanaWallet().address } } }),
+    }));
+    const mixed = {
+      data: 'not-base58-@@@',
+      instructions: [{
+        keys: [{ pubkey: signer, isSigner: true, isWritable: true }],
+        programId: generateSolanaWallet().address,
+        data: 'deadbeef',
+      }],
+    };
+    const b64 = await normalizeSolanaTransaction(mixed, 'http://unused', async () => signer);
+    expect(Buffer.from(b64, 'base64').length).toBeGreaterThan(0);
+    vi.unstubAllGlobals();
+  });
+
+  it('rejects an instruction set that requires more than one signature', async () => {
+    const signer = generateSolanaWallet().address;
+    const coSigner = generateSolanaWallet().address;
+    // Two distinct declared signers: only the wallet's own single signature can
+    // ever be provided (slot 0), so this must fail closed before any RPC call
+    // rather than leave the co-signer's slot empty and fail opaquely on-chain.
+    const twoSigner = {
+      instructions: [{
+        keys: [
+          { pubkey: signer, isSigner: true, isWritable: true },
+          { pubkey: coSigner, isSigner: true, isWritable: true },
+        ],
+        programId: generateSolanaWallet().address,
+        data: 'deadbeef',
+      }],
+    };
+    await expect(compileRawSolanaTransaction(twoSigner, 'http://unused', async () => signer))
+      .rejects.toThrow(/requires 2 signatures/);
+  });
+
+  it('rejects a transaction too large to compile without address lookup tables', async () => {
+    const signer = generateSolanaWallet().address;
+    // A single instruction whose data alone blows past Solana's 1232-byte packet
+    // limit: skipping ALTs is only valid while the static tx still fits, so an
+    // oversized route must throw, not silently build an unsignable transaction.
+    const bigData = 'ab'.repeat(1300); // 1300 bytes, valid hex
+    const oversized = {
+      instructions: [{
+        keys: [{ pubkey: signer, isSigner: true, isWritable: true }],
+        programId: generateSolanaWallet().address,
+        data: bigData,
+      }],
+    };
+    await expect(compileRawSolanaTransaction(oversized, 'http://unused', async () => signer))
+      .rejects.toThrow(/too large to compile without address-lookup-table support/);
   });
 });
