@@ -59,7 +59,7 @@ Connect any MCP client to Nansen's streamable HTTP server:
 - **Authentication:** `NANSEN-API-KEY` header
 - **API key:** [app.nansen.ai/auth/agent-setup](https://app.nansen.ai/auth/agent-setup)
 
-**Claude Desktop and Cursor:** setup instructions for both — the Claude Desktop `.dxt` bundle and the Cursor install deep link — are in the connection docs: [docs.nansen.ai/mcp/connecting](https://docs.nansen.ai/mcp/connecting).
+**Claude Desktop and Cursor:** setup instructions for both are in the connection docs: [docs.nansen.ai/mcp/connecting](https://docs.nansen.ai/mcp/connecting).
 
 **One-command (Claude Code):**
 
@@ -82,7 +82,7 @@ claude mcp add --transport http nansen https://mcp.nansen.ai/ra/mcp --header "NA
 }
 ```
 
-**Manual (stdio-only clients):** use `mcp-remote` as a bridge. Keep the header as one argument with no space after the colon:
+**Manual (stdio-only clients):** use `mcp-remote` as a bridge. Keep the header name and value in a single `args` entry, and keep the key in `env` rather than in the argument list — `mcp-remote` substitutes `${NANSEN_API_KEY}` from the environment:
 
 ```json
 {
@@ -91,7 +91,7 @@ claude mcp add --transport http nansen https://mcp.nansen.ai/ra/mcp --header "NA
       "command": "npx",
       "args": [
         "-y",
-        "mcp-remote@latest",
+        "mcp-remote@0.1.38",
         "https://mcp.nansen.ai/ra/mcp",
         "--header",
         "NANSEN-API-KEY:${NANSEN_API_KEY}"
