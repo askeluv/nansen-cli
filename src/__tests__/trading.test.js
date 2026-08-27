@@ -863,6 +863,12 @@ describe('assertCompleteEvmRequestIntent', () => {
 
   it('accepts complete EVM request intent', () => {
     expect(() => assertCompleteEvmRequestIntent(evmIntent({ walletAddress: '0xabc' }))).not.toThrow();
+    expect(() => assertCompleteEvmRequestIntent(evmIntent({ walletAddress: '0xabc', swapMode: 'exactOut' }))).not.toThrow();
+  });
+
+  it('rejects an unrecognized swap mode (fails closed before signing, independent of outcome verification)', () => {
+    expect(() => assertCompleteEvmRequestIntent(evmIntent({ walletAddress: '0xabc', swapMode: 'typo' })))
+      .toThrow(/unrecognized swap mode/i);
   });
 });
 
@@ -874,6 +880,12 @@ describe('assertCompleteSolanaRequestIntent', () => {
 
   it('accepts complete Solana request intent', () => {
     expect(() => assertCompleteSolanaRequestIntent(solanaIntent({ walletAddress: 'SolAddr1111111111111111111111111111111111' }))).not.toThrow();
+    expect(() => assertCompleteSolanaRequestIntent(solanaIntent({ walletAddress: 'SolAddr1111111111111111111111111111111111', swapMode: 'exactOut' }))).not.toThrow();
+  });
+
+  it('rejects an unrecognized swap mode (fails closed before signing, independent of outcome verification)', () => {
+    expect(() => assertCompleteSolanaRequestIntent(solanaIntent({ walletAddress: 'SolAddr1111111111111111111111111111111111', swapMode: 'typo' })))
+      .toThrow(/unrecognized swap mode/i);
   });
 });
 

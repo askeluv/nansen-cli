@@ -1266,6 +1266,14 @@ export function assertCompleteEvmRequestIntent(request) {
   if (missing.length) {
     throw new Error(`Quote request intent is incomplete (${missing.join(', ')} missing). Re-quote before executing an EVM swap. Refusing to sign.`);
   }
+  // swapMode must be a recognized mode, not merely present. This runs
+  // unconditionally before signing — unlike the swap-outcome verifier, which is
+  // skipped by --no-verify-outcome or when the sim RPC degrades — so a corrupted
+  // or edited quote record with a garbage swapMode fails closed regardless of
+  // the outcome-verification path.
+  if (request.swapMode !== 'exactIn' && request.swapMode !== 'exactOut') {
+    throw new Error(`Quote request intent has an unrecognized swap mode ("${request.swapMode}"); expected exactIn or exactOut. Re-quote before executing an EVM swap. Refusing to sign.`);
+  }
 }
 
 /**
@@ -1287,6 +1295,12 @@ export function assertCompleteSolanaRequestIntent(request) {
   }
   if (missing.length) {
     throw new Error(`Quote request intent is incomplete (${missing.join(', ')} missing). Re-quote before executing a Solana swap. Refusing to sign.`);
+  }
+  // swapMode must be a recognized mode, not merely present — see the EVM sibling.
+  // Runs unconditionally before signing, so a garbage swapMode fails closed even
+  // when the swap-outcome verifier is skipped or degraded.
+  if (request.swapMode !== 'exactIn' && request.swapMode !== 'exactOut') {
+    throw new Error(`Quote request intent has an unrecognized swap mode ("${request.swapMode}"); expected exactIn or exactOut. Re-quote before executing a Solana swap. Refusing to sign.`);
   }
 }
 
