@@ -520,7 +520,14 @@ const SIZE_CHECK_BLOCKHASH = '11111111111111111111111111111111';
 
 function decodeInstructionData(hex) {
   if (hex == null || hex === '') return Buffer.alloc(0); // some instructions legitimately carry no data
-  return Buffer.from(hex.startsWith('0x') ? hex.slice(2) : hex, 'hex');
+  const body = hex.startsWith('0x') ? hex.slice(2) : hex;
+  // Buffer.from(str, 'hex') silently drops a trailing odd nibble and stops at
+  // the first non-hex character, so it would decode malformed data into a
+  // plausible-but-wrong instruction that then gets signed. Reject instead.
+  if (body.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(body)) {
+    throw new Error(`Cannot compile Solana transaction: instruction data is not valid hex ("${hex}")`);
+  }
+  return Buffer.from(body, 'hex');
 }
 
 /**

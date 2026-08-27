@@ -43,6 +43,7 @@ import {
   simulateEvmCall,
   verifySwapOutcome,
   verifySolanaSwapOutcome,
+  compileRawSolanaTransaction,
   getBridgeStatus,
   pollBridgeStatus,
   saveTxRecord,
@@ -6475,5 +6476,22 @@ describe('Relay Solana-source bridge: raw-instruction transaction shape', () => 
 
     delete process.env.NANSEN_WALLET_PASSWORD;
     vi.unstubAllGlobals();
+  });
+
+  it('rejects an instruction with malformed hex data instead of silently truncating it', async () => {
+    const signer = generateSolanaWallet().address;
+    const badQuote = (data) => ({
+      instructions: [{
+        keys: [{ pubkey: signer, isSigner: true, isWritable: true }],
+        programId: generateSolanaWallet().address,
+        data,
+      }],
+    });
+    // Odd-length and non-hex both drop/mangle bytes under Buffer.from(_, 'hex').
+    // Throws during instruction decode, before any RPC blockhash fetch.
+    await expect(compileRawSolanaTransaction(badQuote('abc'), 'http://unused', async () => signer))
+      .rejects.toThrow(/not valid hex/);
+    await expect(compileRawSolanaTransaction(badQuote('deadXY'), 'http://unused', async () => signer))
+      .rejects.toThrow(/not valid hex/);
   });
 });
