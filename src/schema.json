@@ -1570,6 +1570,7 @@
             "swap-mode": {
               "type": "string",
               "default": "exactIn",
+              "enum": ["exactIn", "exactOut"],
               "description": "\"exactIn\" (default) to spend exactly --amount of the sell token, or \"exactOut\" to receive exactly --amount of the buy token. Not supported together with --amount-unit percent."
             },
             "slippage": {
