@@ -935,7 +935,7 @@ export function assertSwapCalldataNotBareTransfer(data) {
  * Derived from the immutable persisted request intent (not the loose
  * quote/quoteData) so it can't drift between calls or across chains.
  */
-function isBridgeRequest(request) {
+export function isBridgeRequest(request) {
   return request.toChain != null
     && String(request.toChain).toLowerCase() !== String(request.chain).toLowerCase();
 }

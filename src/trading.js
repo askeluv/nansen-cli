@@ -14,7 +14,7 @@ import { buildMessageV0, fetchRecentBlockhash } from './x402-svm.js';
 import { keccak256, signSecp256k1, rlpEncode } from './crypto.js';
 import { getWalletConnectAddress, sendTransactionViaWalletConnect, sendSolanaTransactionViaWalletConnect, sendApprovalViaWalletConnect } from './walletconnect-trading.js';
 import { retrievePassword } from './keychain.js';
-import { validateQuoteInput, validateBalance, resolvePercentAmount, validateGasBalance, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertSwapCalldataNotBareTransfer, assertSwapOutcome, assertSolanaInstructionsSafe, assertSolanaSwapOutcome, approvalAmountForSwap, needsAllowanceRevoke, OVERSIZED_ALLOWANCE_MULTIPLIER, EVM_BRIDGE_NATIVE_FEE_SLACK } from './trade-validation.js';
+import { validateQuoteInput, validateBalance, resolvePercentAmount, validateGasBalance, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertSwapCalldataNotBareTransfer, assertSwapOutcome, assertSolanaInstructionsSafe, assertSolanaSwapOutcome, approvalAmountForSwap, needsAllowanceRevoke, OVERSIZED_ALLOWANCE_MULTIPLIER, EVM_BRIDGE_NATIVE_FEE_SLACK, isBridgeRequest } from './trade-validation.js';
 import { readCompactU16 } from './solana-tx.js';
 export { readCompactU16 };
 import { CHAIN_RPCS } from './rpc-urls.js';
@@ -2548,7 +2548,16 @@ EXAMPLES:
                   continue;
                 }
               } else {
-                if (txValue > 0n) {
+                // A token-input swap sends no native value — except a cross-chain
+                // bridge may carry a bounded native fee via msg.value. Allow that up
+                // to the same ceiling assertSwapOutcome tolerates as a native sibling
+                // (verifySwapOutcome runs below and re-bounds the actual simulated
+                // outflow to min(tx.value, cap)); reject any other non-zero value, and
+                // any bridge fee above the ceiling.
+                const bridgeFeeAllowed = quoteData?.request
+                  && isBridgeRequest(quoteData.request)
+                  && txValue <= EVM_BRIDGE_NATIVE_FEE_SLACK;
+                if (txValue > 0n && !bridgeFeeAllowed) {
                   log(`  ❌ ERC-20 swap has non-zero tx.value (${txValue}) for ${quoteName} — aborting`);
                   if (qi + 1 < endIndex) log(`  Trying next quote...`);
                   lastQuoteError = `${quoteName} unexpected tx.value`;
@@ -2915,7 +2924,16 @@ EXAMPLES:
                   continue;
                 }
               } else {
-                if (txValue > 0n) {
+                // A token-input swap sends no native value — except a cross-chain
+                // bridge may carry a bounded native fee via msg.value. Allow that up
+                // to the same ceiling assertSwapOutcome tolerates as a native sibling
+                // (verifySwapOutcome runs below and re-bounds the actual simulated
+                // outflow to min(tx.value, cap)); reject any other non-zero value, and
+                // any bridge fee above the ceiling.
+                const bridgeFeeAllowed = quoteData?.request
+                  && isBridgeRequest(quoteData.request)
+                  && txValue <= EVM_BRIDGE_NATIVE_FEE_SLACK;
+                if (txValue > 0n && !bridgeFeeAllowed) {
                   log(`  ❌ ERC-20 swap has non-zero tx.value (${txValue}) for ${quoteName} — aborting`);
                   if (qi + 1 < endIndex) log(`  Trying next quote...`);
                   lastQuoteError = `${quoteName} unexpected tx.value`;
@@ -3243,7 +3261,16 @@ EXAMPLES:
                   continue;
                 }
               } else {
-                if (txValue > 0n) {
+                // A token-input swap sends no native value — except a cross-chain
+                // bridge may carry a bounded native fee via msg.value. Allow that up
+                // to the same ceiling assertSwapOutcome tolerates as a native sibling
+                // (verifySwapOutcome runs below and re-bounds the actual simulated
+                // outflow to min(tx.value, cap)); reject any other non-zero value, and
+                // any bridge fee above the ceiling.
+                const bridgeFeeAllowed = quoteData?.request
+                  && isBridgeRequest(quoteData.request)
+                  && txValue <= EVM_BRIDGE_NATIVE_FEE_SLACK;
+                if (txValue > 0n && !bridgeFeeAllowed) {
                   log(`  ❌ ERC-20 swap has non-zero tx.value (${txValue}) for ${quoteName} — aborting`);
                   if (qi + 1 < endIndex) log(`  Trying next quote...`);
                   lastQuoteError = `${quoteName} unexpected tx.value`;

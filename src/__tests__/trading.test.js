@@ -1142,6 +1142,77 @@ describe('buildTradingCommands', () => {
     delete process.env.NANSEN_WALLET_PASSWORD;
   });
 
+  it('bridge: passes the tx.value guard for a token-input bridge carrying a native fee within the cap', async () => {
+    // A token-input cross-chain bridge may carry a bounded native fee in
+    // tx.value. The guard must let it through (verifySwapOutcome downstream
+    // re-bounds the actual outflow to min(tx.value, cap)) rather than aborting
+    // it as an unexpected value — otherwise the native-fee tolerance is a no-op.
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const body = opts?.body ? JSON.parse(opts.body) : {};
+      if (body.method === 'eth_getCode') return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'lifi',
+        inputMint: BASE_USDC, // token input
+        outputMint: BASE_ETH,
+        inAmount: '1000000',
+        outAmount: '500000000000000',
+        transaction: { to: LIFI_ROUTER, data: '0x12345678', value: '1000000000000000', gas: '200000' }, // 0.001 ETH fee, under the 0.002 cap
+      }],
+    }, 'base', 'local', null, 'solana', { swapMode: 'exactIn', request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: BASE_USDC, toToken: BASE_ETH, toChain: 'solana' }) });
+
+    const logs = [];
+    const cmds = buildTradingCommands({
+      log: (msg) => logs.push(msg),
+      exit: () => {},
+    });
+
+    // Execution fails later (signing/broadcast), but must NOT abort at the value guard.
+    try { await cmds.execute([], null, {}, { quote: quoteId }); } catch { /* expected */ }
+    expect(logs.some(l => l.includes('non-zero tx.value'))).toBe(false);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+  });
+
+  it('bridge: still rejects a token-input bridge whose native tx.value exceeds the cap', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const body = opts?.body ? JSON.parse(opts.body) : {};
+      if (body.method === 'eth_getCode') return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'lifi',
+        inputMint: BASE_USDC,
+        outputMint: BASE_ETH,
+        inAmount: '1000000',
+        outAmount: '500000000000000',
+        transaction: { to: LIFI_ROUTER, data: '0x12345678', value: '5000000000000000000', gas: '200000' }, // 5 ETH, far above the cap
+      }],
+    }, 'base', 'local', null, 'solana', { swapMode: 'exactIn', request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: BASE_USDC, toToken: BASE_ETH, toChain: 'solana' }) });
+
+    const logs = [];
+    const cmds = buildTradingCommands({
+      log: (msg) => logs.push(msg),
+      exit: () => {},
+    });
+
+    await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/All quotes failed/);
+    expect(logs.some(l => l.includes('non-zero tx.value'))).toBe(true);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+  });
+
   it('should pass validation for native ETH swap with matching value', async () => {
     createWallet('default', 'testpass');
     process.env.NANSEN_WALLET_PASSWORD = 'testpass';
