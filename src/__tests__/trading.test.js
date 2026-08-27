@@ -6516,4 +6516,41 @@ describe('Relay Solana-source bridge: raw-instruction transaction shape', () => 
     expect(Buffer.from(b64, 'base64').length).toBeGreaterThan(0);
     vi.unstubAllGlobals();
   });
+
+  it('rejects an instruction set that requires more than one signature', async () => {
+    const signer = generateSolanaWallet().address;
+    const coSigner = generateSolanaWallet().address;
+    // Two distinct declared signers: only the wallet's own single signature can
+    // ever be provided (slot 0), so this must fail closed before any RPC call
+    // rather than leave the co-signer's slot empty and fail opaquely on-chain.
+    const twoSigner = {
+      instructions: [{
+        keys: [
+          { pubkey: signer, isSigner: true, isWritable: true },
+          { pubkey: coSigner, isSigner: true, isWritable: true },
+        ],
+        programId: generateSolanaWallet().address,
+        data: 'deadbeef',
+      }],
+    };
+    await expect(compileRawSolanaTransaction(twoSigner, 'http://unused', async () => signer))
+      .rejects.toThrow(/requires 2 signatures/);
+  });
+
+  it('rejects a transaction too large to compile without address lookup tables', async () => {
+    const signer = generateSolanaWallet().address;
+    // A single instruction whose data alone blows past Solana's 1232-byte packet
+    // limit: skipping ALTs is only valid while the static tx still fits, so an
+    // oversized route must throw, not silently build an unsignable transaction.
+    const bigData = 'ab'.repeat(1300); // 1300 bytes, valid hex
+    const oversized = {
+      instructions: [{
+        keys: [{ pubkey: signer, isSigner: true, isWritable: true }],
+        programId: generateSolanaWallet().address,
+        data: bigData,
+      }],
+    };
+    await expect(compileRawSolanaTransaction(oversized, 'http://unused', async () => signer))
+      .rejects.toThrow(/too large to compile without address-lookup-table support/);
+  });
 });
