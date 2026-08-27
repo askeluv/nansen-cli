@@ -913,6 +913,18 @@ export function assertSwapCalldataNotBareTransfer(data) {
 // ============= Swap-outcome verification (balance-delta simulation) =============
 
 /**
+ * A cross-chain bridge's output settles on the destination chain, invisible to
+ * a source-chain simulation, so the output-arrival assertion is meaningless
+ * for one and both assert...SwapOutcome functions skip it via this check.
+ * Derived from the immutable persisted request intent (not the loose
+ * quote/quoteData) so it can't drift between calls or across chains.
+ */
+function isBridgeRequest(request) {
+  return request.toChain != null
+    && String(request.toChain).toLowerCase() !== String(request.chain).toLowerCase();
+}
+
+/**
  * Assert that a SIMULATED swap's asset changes match the user's intent, failing
  * closed on any mismatch. This is a defence-in-depth outcome check that
  * complements the static calldata checks (validateSwapTarget /
@@ -988,12 +1000,8 @@ export function assertSwapOutcome(request, quote, sim, { slippage, expectedSpend
     throw fail(`quote input and output tokens are the same (${inputToken}); refusing to verify.`);
   }
 
-  // A cross-chain bridge's output settles on the destination chain, invisible
-  // to this source-chain simulation, so assertion 2 (output arrival) is
-  // meaningless here and is skipped below. Derived from the immutable request
-  // intent (not the loose quote/quoteData) so it can't drift between calls.
-  const isBridge = request.toChain != null
-    && String(request.toChain).toLowerCase() !== String(request.chain).toLowerCase();
+  // Bridges skip only assertion 2 (output arrival) below — see isBridgeRequest.
+  const isBridge = isBridgeRequest(request);
 
   // --- Assertion 1: input outflow within the spend ceiling ---
   // This bounds the outflow by maxInputAmount (the slippage-buffered ceiling),
@@ -1247,12 +1255,8 @@ export function assertSolanaSwapOutcome(request, quote, sim, { slippage, sibling
 
   const inputIsNative = inputAsset === SOL_SENTINEL;
 
-  // A cross-chain bridge's output settles on the destination chain, invisible
-  // to this source-chain simulation, so assertion 2 (output arrival) is
-  // meaningless here and is skipped below. Derived from the immutable request
-  // intent (not the loose quote/quoteData) so it can't drift between calls.
-  const isBridge = request.toChain != null
-    && String(request.toChain).toLowerCase() !== String(request.chain).toLowerCase();
+  // Bridges skip only assertion 2 (output arrival) below — see isBridgeRequest.
+  const isBridge = isBridgeRequest(request);
 
   // --- Assertion 1: input outflow within the spend ceiling ---
   if (request.maxInputAmount == null) {
