@@ -1024,63 +1024,77 @@ export function assertSwapOutcome(request, quote, sim, { slippage, expectedSpend
   if (outflow > cap) {
     throw fail(`the input token (${inputToken}) left the wallet by ${outflow}, exceeding your maximum input (${cap}).`);
   }
+  // A bridge drops assertion 2 (its output settles on the destination chain),
+  // and for a normal swap that positive-output check is what implicitly proves
+  // the input actually left the wallet. Without it a no-op transaction (empty
+  // deltas) would pass assertion 1 (outflow 0 <= cap) and verify as a
+  // successful bridge. Require a positive input outflow so a bridge that spends
+  // nothing on the source chain fails closed. (Native-SOL input always burns a
+  // fee, so this can never false-block a native leg on the Solana sibling.)
+  if (isBridge && outflow <= 0n) {
+    throw fail(`the bridge moved no input token (${inputToken}) out of the wallet; a bridge must spend its input on the source chain.`);
+  }
 
   // --- Assertion 2: output arrives at or above the minimum acceptable ---
-  // Skipped entirely for a bridge: the output settles on the destination
-  // chain, so it can never appear in this source-chain simulation.
-  if (!isBridge) {
-    const swapMode = request.swapMode ?? 'exactIn';
-    const outputDelta = deltas[outputToken] || 0n;
-    let minOut;
-    if (swapMode === 'exactOut') {
-      if (request.amount == null) throw fail('exactOut request is missing the requested output amount.');
-      try {
-        minOut = BigInt(request.amount);
-      } catch {
-        throw fail(`requested output amount (${request.amount}) is not an integer.`);
-      }
-      // Mirror the exactIn non-positive guard: a zero/negative requested output
-      // makes minOut <= 0 and turns assertion 2 into a no-op (outputDelta >= 0
-      // always holds), so a swap delivering nothing would pass. Upstream rejects
-      // zero amounts, but this helper is a self-contained fail-closed boundary.
-      if (minOut <= 0n) {
-        throw fail(`exactOut request has a non-positive output amount (${minOut}); cannot compute a minimum acceptable output.`);
-      }
-    } else {
-      const quotedRaw = quote.outAmount ?? quote.outputAmount;
-      if (quotedRaw == null) {
-        throw fail('quote is missing the quoted output amount; cannot compute the minimum acceptable output.');
-      }
-      let quoted;
-      try {
-        quoted = BigInt(quotedRaw);
-      } catch {
-        throw fail(`quoted output amount (${quotedRaw}) is not an integer.`);
-      }
-      // A non-positive quoted output makes minOut <= 0, so a sim receiving nothing
-      // (or losing the output token) would pass assertion 2 (outputDelta < minOut is
-      // false when minOut <= 0). exactIn has no upstream positive-output guard
-      // (unlike exactOut), so a rogue outAmount of "0" or a negative value would
-      // otherwise slip through.
-      if (quoted <= 0n) {
-        throw fail(`quote has a non-positive output amount (${quoted}); cannot compute a minimum acceptable output.`);
-      }
-      // Floor of quoted × (1 − slippage), in basis points to stay in BigInt. This
-      // mirrors the slippage the user actually set (quoteData.slippage), defaulting
-      // to 3% to match approvalAmountForSwap when it wasn't supplied.
-      //
-      // Cap the slippage used HERE at 50%, independent of what the user accepted:
-      // the upstream quote command allows --slippage up to 1.0 (100%), which would
-      // make minOut 0 and neuter this assertion — a route delivering nothing would
-      // pass (outputDelta >= 0). This is a defence-in-depth floor, not the user's
-      // execution tolerance; a real swap never loses more than half the quoted
-      // output, so requiring at least 50% keeps the guard meaningful while leaving
-      // enormous headroom over a normal few-percent deviation.
-      const rawSlip = Number.isFinite(slippage) && slippage >= 0 ? slippage : 0.03;
-      const slip = Math.min(rawSlip, 0.5);
-      const bps = BigInt(Math.min(10000, Math.round(slip * 10000)));
-      minOut = (quoted * (10000n - bps)) / 10000n;
+  // The minimum-output computation below — and its quote-integrity checks (the
+  // output amount must be present, an integer, and positive) — runs for EVERY
+  // swap, bridges included: a bridge quote with a missing or zero output is
+  // still malformed. Only the final delta comparison is bridge-skipped, because
+  // the output settles on the destination chain and can never appear in this
+  // source-chain simulation.
+  const swapMode = request.swapMode ?? 'exactIn';
+  let minOut;
+  if (swapMode === 'exactOut') {
+    if (request.amount == null) throw fail('exactOut request is missing the requested output amount.');
+    try {
+      minOut = BigInt(request.amount);
+    } catch {
+      throw fail(`requested output amount (${request.amount}) is not an integer.`);
     }
+    // Mirror the exactIn non-positive guard: a zero/negative requested output
+    // makes minOut <= 0 and turns assertion 2 into a no-op (outputDelta >= 0
+    // always holds), so a swap delivering nothing would pass. Upstream rejects
+    // zero amounts, but this helper is a self-contained fail-closed boundary.
+    if (minOut <= 0n) {
+      throw fail(`exactOut request has a non-positive output amount (${minOut}); cannot compute a minimum acceptable output.`);
+    }
+  } else {
+    const quotedRaw = quote.outAmount ?? quote.outputAmount;
+    if (quotedRaw == null) {
+      throw fail('quote is missing the quoted output amount; cannot compute the minimum acceptable output.');
+    }
+    let quoted;
+    try {
+      quoted = BigInt(quotedRaw);
+    } catch {
+      throw fail(`quoted output amount (${quotedRaw}) is not an integer.`);
+    }
+    // A non-positive quoted output makes minOut <= 0, so a sim receiving nothing
+    // (or losing the output token) would pass assertion 2 (outputDelta < minOut is
+    // false when minOut <= 0). exactIn has no upstream positive-output guard
+    // (unlike exactOut), so a rogue outAmount of "0" or a negative value would
+    // otherwise slip through.
+    if (quoted <= 0n) {
+      throw fail(`quote has a non-positive output amount (${quoted}); cannot compute a minimum acceptable output.`);
+    }
+    // Floor of quoted × (1 − slippage), in basis points to stay in BigInt. This
+    // mirrors the slippage the user actually set (quoteData.slippage), defaulting
+    // to 3% to match approvalAmountForSwap when it wasn't supplied.
+    //
+    // Cap the slippage used HERE at 50%, independent of what the user accepted:
+    // the upstream quote command allows --slippage up to 1.0 (100%), which would
+    // make minOut 0 and neuter this assertion — a route delivering nothing would
+    // pass (outputDelta >= 0). This is a defence-in-depth floor, not the user's
+    // execution tolerance; a real swap never loses more than half the quoted
+    // output, so requiring at least 50% keeps the guard meaningful while leaving
+    // enormous headroom over a normal few-percent deviation.
+    const rawSlip = Number.isFinite(slippage) && slippage >= 0 ? slippage : 0.03;
+    const slip = Math.min(rawSlip, 0.5);
+    const bps = BigInt(Math.min(10000, Math.round(slip * 10000)));
+    minOut = (quoted * (10000n - bps)) / 10000n;
+  }
+  if (!isBridge) {
+    const outputDelta = deltas[outputToken] || 0n;
     if (outputDelta < minOut) {
       throw fail(`the output token (${outputToken}) increased by only ${outputDelta}, below the minimum acceptable output (${minOut}).`);
     }
@@ -1283,47 +1297,62 @@ export function assertSolanaSwapOutcome(request, quote, sim, { slippage, sibling
   if (outflow > effectiveCap) {
     throw fail(`the input token (${inputAsset}) left the wallet by ${outflow}, exceeding your maximum input (${cap}${inputIsNative ? ` plus fee/rent slack` : ''}).`);
   }
+  // A bridge drops assertion 2 (its output settles on the destination chain),
+  // and for a normal swap that positive-output check is what implicitly proves
+  // the input actually left the wallet. Without it a no-op transaction (empty
+  // deltas) would pass assertion 1 (outflow 0 <= cap) and verify as a
+  // successful bridge. Require a positive input outflow so a bridge that spends
+  // nothing on the source chain fails closed. A native-SOL input always burns
+  // the base fee, so its outflow is inevitably positive — this can only fire on
+  // an SPL-input bridge that genuinely moved nothing, never as a false-block.
+  if (isBridge && outflow <= 0n) {
+    throw fail(`the bridge moved no input token (${inputAsset}) out of the wallet; a bridge must spend its input on the source chain.`);
+  }
 
   // --- Assertion 2: output arrives at or above the minimum acceptable ---
-  // Skipped entirely for a bridge: the output settles on the destination
-  // chain, so it can never appear in this source-chain simulation.
+  // The minimum-output computation below — and its quote-integrity checks (the
+  // output amount must be present, an integer, and positive) — runs for EVERY
+  // swap, bridges included: a bridge quote with a missing or zero output is
+  // still malformed. Only the final delta comparison is bridge-skipped, because
+  // the output settles on the destination chain and can never appear in this
+  // source-chain simulation.
+  const swapMode = request.swapMode ?? 'exactIn';
+  let minOut;
+  if (swapMode === 'exactOut') {
+    if (request.amount == null) throw fail('exactOut request is missing the requested output amount.');
+    try {
+      minOut = BigInt(request.amount);
+    } catch {
+      throw fail(`requested output amount (${request.amount}) is not an integer.`);
+    }
+    if (minOut <= 0n) {
+      throw fail(`exactOut request has a non-positive output amount (${minOut}); cannot compute a minimum acceptable output.`);
+    }
+  } else {
+    const quotedRaw = quote?.outAmount ?? quote?.outputAmount;
+    if (quotedRaw == null) {
+      throw fail('quote is missing the quoted output amount; cannot compute the minimum acceptable output.');
+    }
+    let quoted;
+    try {
+      quoted = BigInt(quotedRaw);
+    } catch {
+      throw fail(`quoted output amount (${quotedRaw}) is not an integer.`);
+    }
+    if (quoted <= 0n) {
+      throw fail(`quote has a non-positive output amount (${quoted}); cannot compute a minimum acceptable output.`);
+    }
+    // Floor of quoted × (1 − slippage), capped at 50% independent of what the
+    // user set (mirrors assertSwapOutcome's rationale: a defence-in-depth
+    // floor, not the user's execution tolerance).
+    const rawSlip = Number.isFinite(slippage) && slippage >= 0 ? slippage : 0.03;
+    const slip = Math.min(rawSlip, 0.5);
+    const bps = BigInt(Math.min(10000, Math.round(slip * 10000)));
+    minOut = (quoted * (10000n - bps)) / 10000n;
+  }
   if (!isBridge) {
-    const swapMode = request.swapMode ?? 'exactIn';
     const outputIsNative = outputAsset === SOL_SENTINEL;
     const outputDelta = deltas[outputAsset] || 0n;
-    let minOut;
-    if (swapMode === 'exactOut') {
-      if (request.amount == null) throw fail('exactOut request is missing the requested output amount.');
-      try {
-        minOut = BigInt(request.amount);
-      } catch {
-        throw fail(`requested output amount (${request.amount}) is not an integer.`);
-      }
-      if (minOut <= 0n) {
-        throw fail(`exactOut request has a non-positive output amount (${minOut}); cannot compute a minimum acceptable output.`);
-      }
-    } else {
-      const quotedRaw = quote?.outAmount ?? quote?.outputAmount;
-      if (quotedRaw == null) {
-        throw fail('quote is missing the quoted output amount; cannot compute the minimum acceptable output.');
-      }
-      let quoted;
-      try {
-        quoted = BigInt(quotedRaw);
-      } catch {
-        throw fail(`quoted output amount (${quotedRaw}) is not an integer.`);
-      }
-      if (quoted <= 0n) {
-        throw fail(`quote has a non-positive output amount (${quoted}); cannot compute a minimum acceptable output.`);
-      }
-      // Floor of quoted × (1 − slippage), capped at 50% independent of what the
-      // user set (mirrors assertSwapOutcome's rationale: a defence-in-depth
-      // floor, not the user's execution tolerance).
-      const rawSlip = Number.isFinite(slippage) && slippage >= 0 ? slippage : 0.03;
-      const slip = Math.min(rawSlip, 0.5);
-      const bps = BigInt(Math.min(10000, Math.round(slip * 10000)));
-      minOut = (quoted * (10000n - bps)) / 10000n;
-    }
     // Native-SOL output carries the same fee/rent noise as native input: the
     // lamport delta is (SOL received − base/priority fee − net ATA rent), so a
     // legitimate trade can land a few million lamports under the quoted amount at

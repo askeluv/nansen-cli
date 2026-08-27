@@ -1051,7 +1051,11 @@ export async function verifySolanaSwapOutcome({ chain, walletAddress, txBase64, 
     const sim = await simulateSolanaAssetChanges(chain, txBase64, { walletAddress });
     const outcome = assertSolanaSwapOutcome(quoteData.request, quote, sim, { slippage: quoteData.slippage });
     if (outcome.inputAssertionSkipped) {
-      log('  ℹ Native-SOL input spend is bounded with fee/rent slack, not exactly delta-verified; output and sibling checks still ran.');
+      // On a native-SOL bridge the output assertion did NOT run (it settles on
+      // the destination chain), so don't claim "output ... checks still ran" —
+      // that would contradict the bridge line logged just below.
+      const alsoRan = outcome.outputAssertionSkipped ? 'sibling checks still ran' : 'output and sibling checks still ran';
+      log(`  ℹ Native-SOL input spend is bounded with fee/rent slack, not exactly delta-verified; ${alsoRan}.`);
     }
     if (outcome.outputAssertionSkipped) {
       log('  ℹ Bridge: input-outflow and sibling checks ran; output arrives on the destination chain and is not simulated here.');

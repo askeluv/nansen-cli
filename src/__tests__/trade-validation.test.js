@@ -1687,6 +1687,34 @@ describe('assertSwapOutcome', () => {
       .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*other than the one you are selling/i);
   });
 
+  it('bridge: rejects a no-op transaction that spends no input (positive-outflow guard)', () => {
+    // A bridge skips assertion 2 (output arrival), which for a normal swap is
+    // what proves the input actually left. Empty deltas must not pass as a
+    // verified bridge — it moved nothing and settles nothing on the destination.
+    const bridgeRequest = { ...exactInRequest, toChain: 'solana' };
+    const sim = { deltas: {}, approvals: [] };
+    expect(() => assertSwapOutcome(bridgeRequest, exactInQuote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*moved no input token/i);
+  });
+
+  it('bridge: still validates quote output integrity (missing outAmount) even though the delta check is skipped', () => {
+    // The output-amount sanity checks run for bridges too; only the source-chain
+    // delta comparison is skipped. A malformed quote with no output still fails.
+    const bridgeRequest = { ...exactInRequest, toChain: 'solana' };
+    const noOutQuote = { inputMint: USDC, outputMint: DAI, inAmount: '1000000' }; // no outAmount
+    const sim = { deltas: { [USDC]: -1000000n }, approvals: [] };
+    expect(() => assertSwapOutcome(bridgeRequest, noOutQuote, sim, { slippage: 0.03 }))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*quoted output amount/i);
+  });
+
+  it('bridge: rejects a non-positive quote output even though the delta check is skipped', () => {
+    const bridgeRequest = { ...exactInRequest, toChain: 'solana' };
+    const zeroOutQuote = { inputMint: USDC, outputMint: DAI, inAmount: '1000000', outAmount: '0' };
+    const sim = { deltas: { [USDC]: -1000000n }, approvals: [] };
+    expect(() => assertSwapOutcome(bridgeRequest, zeroOutQuote, sim, { slippage: 0.03 }))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*non-positive output/i);
+  });
+
   it('same-chain requests are unaffected: assertion 2 still throws on a real output shortfall', () => {
     // Proves the bridge relaxation is gated on request.toChain, not a general
     // weakening of assertion 2 — request.toChain is unset here (same-chain).
@@ -1930,6 +1958,32 @@ describe('assertSolanaSwapOutcome', () => {
     const sim = { deltas: { [SOL_USDC]: -1000000n, [otherMint]: -1n } };
     expect(() => assertSolanaSwapOutcome(bridgeRequest, splInQuote, sim, {}))
       .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*other than the one you are selling/i);
+  });
+
+  it('bridge: rejects an SPL no-op transaction that spends no input (positive-outflow guard)', () => {
+    // A bridge skips assertion 2 (output arrival), which for a normal swap is
+    // what proves the input actually left. Empty deltas must not pass as a
+    // verified bridge for an SPL input, which (unlike native SOL) burns no fee.
+    const bridgeRequest = { ...splInRequest, toChain: 'base' };
+    const sim = { deltas: {} };
+    expect(() => assertSolanaSwapOutcome(bridgeRequest, splInQuote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*moved no input token/i);
+  });
+
+  it('bridge: still validates quote output integrity (missing outAmount) even though the delta check is skipped', () => {
+    const bridgeRequest = { ...splInRequest, toChain: 'base' };
+    const noOutQuote = { inputMint: SOL_USDC, outputMint: SOL_USDT, inAmount: '1000000' }; // no outAmount
+    const sim = { deltas: { [SOL_USDC]: -1000000n } };
+    expect(() => assertSolanaSwapOutcome(bridgeRequest, noOutQuote, sim, { slippage: 0.03 }))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*quoted output amount/i);
+  });
+
+  it('bridge: rejects a non-positive quote output even though the delta check is skipped', () => {
+    const bridgeRequest = { ...splInRequest, toChain: 'base' };
+    const zeroOutQuote = { inputMint: SOL_USDC, outputMint: SOL_USDT, inAmount: '1000000', outAmount: '0' };
+    const sim = { deltas: { [SOL_USDC]: -1000000n } };
+    expect(() => assertSolanaSwapOutcome(bridgeRequest, zeroOutQuote, sim, { slippage: 0.03 }))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*non-positive output/i);
   });
 
   it('bridge: still bounds a native-SOL input with the fee/rent slack', () => {

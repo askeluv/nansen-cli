@@ -6200,6 +6200,38 @@ describe('verifySolanaSwapOutcome (execute-path wiring)', () => {
     expect(r.reason).toMatch(/SWAP_OUTCOME_MISMATCH/i);
   });
 
+  it('native-SOL bridge: the input-skipped log does not claim the output check ran', async () => {
+    // Regression: on a native-SOL input over a bridge BOTH inputAssertionSkipped
+    // and outputAssertionSkipped are true. The input-skipped line must then say
+    // only "sibling checks still ran" — not "output and sibling checks still
+    // ran", which would contradict the bridge line stating the output was not
+    // simulated here.
+    const nativeQuote = { inputMint: SOL_MINT, outputMint: mintOut, inAmount: '1000000000', outAmount: '50000000' };
+    const nativeBridgeData = {
+      chain: 'solana', slippage: 0.03,
+      request: { chain: 'solana', walletAddress: wallet, fromToken: SOL_MINT, toToken: mintOut, swapMode: 'exactIn', amount: '1000000000', maxInputAmount: '1000000000', toChain: 'base' },
+    };
+    const nativePre = {
+      [wallet]: solanaNativeAccountInfo(2_000_000_000),
+      [tokenIn]: solanaTokenAccountInfo({ mint: mintIn, owner: wallet, amount: 1_000_000 }),
+      [tokenOut]: solanaTokenAccountInfo({ mint: mintOut, owner: wallet, amount: 0 }),
+    };
+    const nativePost = {
+      [wallet]: solanaNativeAccountInfo(1_000_000_000), // ~1 SOL bridged out on the source chain
+      [tokenIn]: solanaTokenAccountInfo({ mint: mintIn, owner: wallet, amount: 1_000_000 }),
+      [tokenOut]: solanaTokenAccountInfo({ mint: mintOut, owner: wallet, amount: 0 }), // no output — lands on the destination chain
+    };
+    vi.stubGlobal('fetch', mockSolanaSimRpc({ pre: nativePre, post: nativePost }));
+    const logs = [];
+    const r = await verifySolanaSwapOutcome({ chain: 'solana', walletAddress: wallet, txBase64, quote: nativeQuote, quoteData: nativeBridgeData, log: (m) => logs.push(m) });
+    expect(r.proceed).toBe(true);
+    const inputLine = logs.find((l) => /Native-SOL input spend/i.test(l));
+    expect(inputLine).toBeDefined();
+    expect(inputLine).toMatch(/sibling checks still ran/i);
+    expect(inputLine).not.toMatch(/output and sibling/i);
+    expect(logs.some((l) => /Bridge:/i.test(l))).toBe(true);
+  });
+
   it('degrades (proceed=true) for a pre-intent quote with no request recorded', async () => {
     vi.stubGlobal('fetch', vi.fn()); // must not be called
     const logs = [];
