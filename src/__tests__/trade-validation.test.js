@@ -1640,13 +1640,20 @@ describe('assertSwapOutcome', () => {
       .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*non-positive output amount/i);
   });
 
-  it('tolerates a sub-threshold non-input outflow when a dust threshold is set', () => {
-    const sim = {
+  it('same-chain: a non-input outflow is strict-zero even when a dust threshold is passed', () => {
+    // The dust threshold only relaxes assertion 3 for a native sibling on a
+    // bridge; a same-chain swap keeps strict-zero for every non-input token,
+    // regardless of what the caller passes.
+    const erc20Sibling = {
       deltas: { [USDC]: -1000000n, [DAI]: 1000000n, '0xaaaa000000000000000000000000000000000001': -3n },
       approvals: [],
     };
-    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, sim, { siblingDustThreshold: 5n })).not.toThrow();
-    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, sim, { siblingDustThreshold: 2n })).toThrow(/SWAP_OUTCOME_MISMATCH/i);
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, erc20Sibling, { siblingDustThreshold: 5n })).toThrow(/SWAP_OUTCOME_MISMATCH/i);
+    const nativeSibling = {
+      deltas: { [USDC]: -1000000n, [DAI]: 1000000n, [NATIVE]: -3n },
+      approvals: [],
+    };
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, nativeSibling, { siblingDustThreshold: 5n })).toThrow(/SWAP_OUTCOME_MISMATCH/i);
   });
 
   it('fails closed when the request has no maximum input', () => {
@@ -1684,6 +1691,38 @@ describe('assertSwapOutcome', () => {
       approvals: [],
     };
     expect(() => assertSwapOutcome(bridgeRequest, exactInQuote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*other than the one you are selling/i);
+  });
+
+  it('bridge: tolerates a native-ETH sibling fee up to the passed threshold (token input paying a native bridge fee)', () => {
+    // A token-input bridge that pays a network fee via msg.value shows
+    // native ETH leaving as a sibling. It is tolerated up to the bounded
+    // threshold the caller passes — only for a bridge, only for native.
+    const bridgeRequest = { ...exactInRequest, toChain: 'solana' };
+    const sim = {
+      deltas: { [USDC]: -1000000n, [NATIVE]: -1_000_000_000_000_000n }, // 0.001 ETH fee
+      approvals: [],
+    };
+    expect(() => assertSwapOutcome(bridgeRequest, exactInQuote, sim, { siblingDustThreshold: 2_000_000_000_000_000n })).not.toThrow();
+  });
+
+  it('bridge: rejects a native-ETH sibling above the threshold (drain vector stays closed)', () => {
+    const bridgeRequest = { ...exactInRequest, toChain: 'solana' };
+    const sim = {
+      deltas: { [USDC]: -1000000n, [NATIVE]: -5_000_000_000_000_000n }, // 0.005 ETH, above the 0.002 threshold
+      approvals: [],
+    };
+    expect(() => assertSwapOutcome(bridgeRequest, exactInQuote, sim, { siblingDustThreshold: 2_000_000_000_000_000n }))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*other than the one you are selling/i);
+  });
+
+  it('bridge: an ERC-20 sibling stays strict-zero even when a native threshold is passed', () => {
+    const bridgeRequest = { ...exactInRequest, toChain: 'solana' };
+    const sim = {
+      deltas: { [USDC]: -1000000n, '0xaaaa000000000000000000000000000000000001': -3n },
+      approvals: [],
+    };
+    expect(() => assertSwapOutcome(bridgeRequest, exactInQuote, sim, { siblingDustThreshold: 2_000_000_000_000_000n }))
       .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*other than the one you are selling/i);
   });
 

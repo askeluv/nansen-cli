@@ -14,7 +14,7 @@ import { buildMessageV0, fetchRecentBlockhash } from './x402-svm.js';
 import { keccak256, signSecp256k1, rlpEncode } from './crypto.js';
 import { getWalletConnectAddress, sendTransactionViaWalletConnect, sendSolanaTransactionViaWalletConnect, sendApprovalViaWalletConnect } from './walletconnect-trading.js';
 import { retrievePassword } from './keychain.js';
-import { validateQuoteInput, validateBalance, resolvePercentAmount, validateGasBalance, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertSwapCalldataNotBareTransfer, assertSwapOutcome, assertSolanaInstructionsSafe, assertSolanaSwapOutcome, approvalAmountForSwap, needsAllowanceRevoke, OVERSIZED_ALLOWANCE_MULTIPLIER } from './trade-validation.js';
+import { validateQuoteInput, validateBalance, resolvePercentAmount, validateGasBalance, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertSwapCalldataNotBareTransfer, assertSwapOutcome, assertSolanaInstructionsSafe, assertSolanaSwapOutcome, approvalAmountForSwap, needsAllowanceRevoke, OVERSIZED_ALLOWANCE_MULTIPLIER, EVM_BRIDGE_NATIVE_FEE_SLACK } from './trade-validation.js';
 import { readCompactU16 } from './solana-tx.js';
 export { readCompactU16 };
 import { CHAIN_RPCS } from './rpc-urls.js';
@@ -1008,7 +1008,18 @@ export async function verifySwapOutcome({ chain, from, quote, quoteData, apiKey 
       { to: tx.to, data: tx.data, value: toRpcHexValue(tx.value) },
       { from, apiKey },
     );
-    const outcome = assertSwapOutcome(quoteData.request, quote, sim, { slippage: quoteData.slippage, expectedSpenders });
+    // A cross-chain bridge may pay a fee in native ETH via msg.value on a
+    // token-input route; that surfaces as a native sibling outflow which the
+    // no-sibling-drain check (assertion 3) would otherwise reject. Tolerate it up
+    // to the smaller of the tx's declared native value and the fixed cap — never
+    // the full value, which a hostile quote could inflate to the whole balance.
+    // assertSwapOutcome applies this only for bridges and only to native.
+    let siblingDustThreshold = 0n;
+    try {
+      const declaredValue = BigInt(tx.value ?? 0);
+      siblingDustThreshold = declaredValue < EVM_BRIDGE_NATIVE_FEE_SLACK ? declaredValue : EVM_BRIDGE_NATIVE_FEE_SLACK;
+    } catch { /* non-integer value → leave 0n, assertion 3 stays strict */ }
+    const outcome = assertSwapOutcome(quoteData.request, quote, sim, { slippage: quoteData.slippage, expectedSpenders, siblingDustThreshold });
     if (outcome.outputAssertionSkipped) {
       log('  ℹ Bridge: input-outflow and sibling checks ran; output arrives on the destination chain and is not simulated here.');
     }

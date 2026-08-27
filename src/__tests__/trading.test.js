@@ -5748,6 +5748,38 @@ describe('verifySwapOutcome (execute-path wiring)', () => {
     expect(r.reason).toMatch(/SWAP_OUTCOME_MISMATCH/i);
   });
 
+  it('tolerates a native-ETH bridge fee up to the declared tx.value (token input paying a native fee)', async () => {
+    // A token-input bridge that pays a fee via msg.value sends native ETH out as
+    // a sibling (a zero-address transfer normalises to the native sentinel).
+    // verifySwapOutcome tolerates it up to min(tx.value, cap); the fee here equals
+    // the declared value, so the bridge verifies instead of false-blocking.
+    const ZERO = '0x0000000000000000000000000000000000000000';
+    const feeQuote = { ...quote, transaction: { ...quote.transaction, value: '1000000000000000' } }; // 0.001 ETH
+    const bridgeData = { ...quoteData, request: { ...quoteData.request, toChain: 'solana' } };
+    global.fetch = vi.fn().mockResolvedValue(simBody([
+      tlog(USDC, WALLET, ROUTER, 1000000n),
+      tlog(ZERO, WALLET, ROUTER, 1000000000000000n), // native fee leaving the wallet
+    ]));
+    const r = await verifySwapOutcome({ chain: 'base', from: WALLET, quote: feeQuote, quoteData: bridgeData });
+    expect(r.proceed).toBe(true);
+  });
+
+  it('blocks a bridge that drains native ETH beyond the cap even when tx.value is inflated', async () => {
+    // The drain vector: a hostile quote sets a huge tx.value so an unbounded
+    // tolerance would wave through a full-balance native transfer. Capping the
+    // tolerance at min(tx.value, cap) keeps it blocked.
+    const ZERO = '0x0000000000000000000000000000000000000000';
+    const drainQuote = { ...quote, transaction: { ...quote.transaction, value: '10000000000000000000' } }; // 10 ETH declared
+    const bridgeData = { ...quoteData, request: { ...quoteData.request, toChain: 'solana' } };
+    global.fetch = vi.fn().mockResolvedValue(simBody([
+      tlog(USDC, WALLET, ROUTER, 1000000n),
+      tlog(ZERO, WALLET, ROUTER, 10000000000000000000n), // 10 ETH leaving
+    ]));
+    const r = await verifySwapOutcome({ chain: 'base', from: WALLET, quote: drainQuote, quoteData: bridgeData });
+    expect(r.proceed).toBe(false);
+    expect(r.reason).toMatch(/SWAP_OUTCOME_MISMATCH/i);
+  });
+
   it('degrades (proceed=true) for a pre-intent quote with no request recorded', async () => {
     // Without request intent, assertSwapOutcome has nothing to compare against and
     // would raise a misleading SWAP_OUTCOME_MISMATCH. Skip cleanly instead — even

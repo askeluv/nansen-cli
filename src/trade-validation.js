@@ -8,6 +8,7 @@ import { validateAddress } from './api.js';
 import { CHAIN_RPCS } from './rpc-urls.js';
 import { parseTransactionMessage, resolveStaticAccount } from './solana-tx.js';
 import { SOL_SENTINEL } from './solana-simulation.js';
+import { EVM_NATIVE_SENTINEL } from './swap-simulation.js';
 
 const SUPPORTED_CHAINS = ['solana', 'base'];
 
@@ -145,6 +146,21 @@ const NATIVE_TOKEN_ADDRESSES = {
   solana: 'So11111111111111111111111111111111111111112',
   base: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
 };
+
+// Upper bound on native (ETH) that may leave the wallet as a *sibling* of a
+// cross-chain bridge — some bridges pay a network fee via msg.value on a
+// token-input route, which surfaces as a native outflow distinct from the input
+// token. assertSwapOutcome's no-sibling-drain check (assertion 3) is otherwise
+// strict-zero, so without a bound such a fee would false-block a legitimate
+// bridge. The tolerance is the smaller of the transaction's declared native
+// value and THIS cap (see verifySwapOutcome); capping it — rather than trusting
+// the quote's value outright — is what keeps the check from being turned into a
+// native-ETH drain (a hostile quote could otherwise set value to the whole
+// balance). Conservative and gas-independent (gas is already excluded from the
+// simulated native delta); a real bridge fee is far below it. This is a
+// defence-in-depth loss ceiling, not a fee estimate — revisit if a route ever
+// legitimately needs more.
+export const EVM_BRIDGE_NATIVE_FEE_SLACK = 2_000_000_000_000_000n; // 0.002 ETH
 
 // Native SOL has two on-chain spellings that denote the same asset: the
 // canonical wrapped-SOL mint (what the CLI resolves `SOL` to and persists as
@@ -956,8 +972,11 @@ function isBridgeRequest(request) {
  * @param {Set<string>|string[]} [ctx.expectedSpenders] - spenders the wallet may
  *   legitimately (re)approve during the swap (e.g. the approval target and the
  *   router); anything else fails assertion 4. Compared case-insensitively.
- * @param {bigint} [ctx.siblingDustThreshold=0n] - non-input outflow tolerated
- *   before assertion 3 fires (for fee-on-transfer / rounding). Strict 0 default.
+ * @param {bigint} [ctx.siblingDustThreshold=0n] - native-token (ETH) sibling
+ *   outflow tolerated before assertion 3 fires, and only for a cross-chain
+ *   bridge (some bridges pay a fee via msg.value on a token-input route). ERC-20
+ *   siblings and every same-chain swap stay strict 0. The caller must pass a
+ *   bounded value (see EVM_BRIDGE_NATIVE_FEE_SLACK). Strict 0 default.
  * @returns {{verified: true, outputAssertionSkipped: boolean}} outputAssertionSkipped
  *   is true for a cross-chain bridge, meaning assertion 2 did not run — the
  *   caller should surface this.
@@ -1127,10 +1146,18 @@ export function assertSwapOutcome(request, quote, sim, { slippage, expectedSpend
   }
 
   // --- Assertion 3: no token other than the input leaves the wallet ---
-  const dust = siblingDustThreshold > 0n ? siblingDustThreshold : 0n;
+  // A bridge may pay a network fee in native ETH via msg.value on a
+  // token-input route, which shows up here as a native sibling outflow. Tolerate
+  // that — but only native, only for a bridge, and only up to the bounded
+  // threshold the caller passes (gas is already excluded from the native delta).
+  // ERC-20 siblings and every same-chain swap keep strict-zero. This mirrors the
+  // native-only carve-out assertSolanaSwapOutcome already applies for SOL.
+  const nativeDust = isBridge && siblingDustThreshold > 0n ? siblingDustThreshold : 0n;
   for (const [token, delta] of Object.entries(deltas)) {
     if (token === inputToken) continue; // its outflow is bounded by assertion 1
-    if (delta < 0n && -delta > dust) {
+    if (delta >= 0n) continue;
+    const dust = token === EVM_NATIVE_SENTINEL ? nativeDust : 0n;
+    if (-delta > dust) {
       throw fail(`a token other than the one you are selling (${token}) left the wallet (delta ${delta}); a swap must not move any token except the input.`);
     }
   }
