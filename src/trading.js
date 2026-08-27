@@ -1836,6 +1836,12 @@ export function buildTradingCommands(deps = {}) {
       const autoSlippage = flags['auto-slippage'];
       const maxAutoSlippage = options['max-auto-slippage'];
       const swapMode = options['swap-mode'] || 'exactIn';
+      if (swapMode !== 'exactIn' && swapMode !== 'exactOut') {
+        throw new CommandError(
+          `Invalid --swap-mode: "${swapMode}". Use one of: exactIn, exactOut.`,
+          'INVALID_INPUT',
+        );
+      }
       const amountUnit = options['amount-unit'];
       const aggregatorFilter = options.aggregator;
       if (aggregatorFilter && !['lifi', 'relay', 'jupiter', 'okx'].includes(aggregatorFilter)) {

@@ -1025,7 +1025,15 @@ export function assertSwapOutcome(request, quote, sim, { slippage, expectedSpend
     throw fail(`the input token (${inputToken}) left the wallet by ${outflow}, exceeding your maximum input (${cap}).`);
   }
 
+  // Fail closed on an unrecognized swap mode. `?? 'exactIn'` only defaults a
+  // missing mode; a persisted request with a garbage value (an edited/older
+  // quote record) must not silently fall into the exactOut branch below, which
+  // would drop the intent-relative input floor. The CLI validates --swap-mode
+  // against this same enum, so a well-formed quote never reaches here invalid.
   const swapMode = request.swapMode ?? 'exactIn';
+  if (swapMode !== 'exactIn' && swapMode !== 'exactOut') {
+    throw fail(`unrecognized swap mode "${swapMode}"; expected exactIn or exactOut.`);
+  }
 
   // A bridge drops assertion 2 (its output settles on the destination chain),
   // and for a normal swap that positive-output check is what implicitly proves
@@ -1315,7 +1323,13 @@ export function assertSolanaSwapOutcome(request, quote, sim, { slippage, sibling
   if (outflow > effectiveCap) {
     throw fail(`the input token (${inputAsset}) left the wallet by ${outflow}, exceeding your maximum input (${cap}${inputIsNative ? ` plus fee/rent slack` : ''}).`);
   }
+  // Fail closed on an unrecognized swap mode (mirrors assertSwapOutcome). A
+  // persisted request with a garbage value must not fall into the exactOut
+  // branch below and drop the intent-relative input floor.
   const swapMode = request.swapMode ?? 'exactIn';
+  if (swapMode !== 'exactIn' && swapMode !== 'exactOut') {
+    throw fail(`unrecognized swap mode "${swapMode}"; expected exactIn or exactOut.`);
+  }
 
   // A bridge drops assertion 2 (its output settles on the destination chain),
   // and for a normal swap that positive-output check is what implicitly proves

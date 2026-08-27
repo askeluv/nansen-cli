@@ -1707,6 +1707,32 @@ describe('assertSwapOutcome', () => {
       .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*below the requested input/i);
   });
 
+  it('bridge: fails closed on an unrecognized swap mode (does not fall into the weaker exactOut floor)', () => {
+    // A garbage swapMode must not be treated as exactOut (which drops the exact
+    // input floor). Repro: swapMode "typo" with a 1-unit outflow against a
+    // 1,000,000 request previously verified; it must now throw.
+    const bridgeRequest = { ...exactInRequest, toChain: 'solana', swapMode: 'typo' };
+    const sim = { deltas: { [USDC]: -1n }, approvals: [] };
+    expect(() => assertSwapOutcome(bridgeRequest, exactInQuote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*unrecognized swap mode/i);
+  });
+
+  it('exactOut bridge: rejects a zero outflow (positive-outflow floor)', () => {
+    // exactOut input is variable up to the cap, so no exact floor exists — but a
+    // zero outflow still means the bridge was never funded.
+    const exactOutBridge = { ...exactInRequest, toChain: 'solana', swapMode: 'exactOut', amount: '1000000', maxInputAmount: '2000000' };
+    const sim = { deltas: {}, approvals: [] };
+    expect(() => assertSwapOutcome(exactOutBridge, exactInQuote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*moved no input token/i);
+  });
+
+  it('exactOut bridge: a positive outflow within the cap passes (no exact input floor)', () => {
+    const exactOutBridge = { ...exactInRequest, toChain: 'solana', swapMode: 'exactOut', amount: '1000000', maxInputAmount: '2000000' };
+    const sim = { deltas: { [USDC]: -1n }, approvals: [] }; // positive outflow is sufficient for exactOut
+    const result = assertSwapOutcome(exactOutBridge, exactInQuote, sim, {});
+    expect(result).toEqual({ verified: true, outputAssertionSkipped: true });
+  });
+
   it('bridge: still validates quote output integrity (missing outAmount) even though the delta check is skipped', () => {
     // The output-amount sanity checks run for bridges too; only the source-chain
     // delta comparison is skipped. A malformed quote with no output still fails.
@@ -1988,6 +2014,27 @@ describe('assertSolanaSwapOutcome', () => {
     const sim = { deltas: { [SOL_USDC]: -1n } };
     expect(() => assertSolanaSwapOutcome(bridgeRequest, splInQuote, sim, {}))
       .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*below the requested input/i);
+  });
+
+  it('bridge: fails closed on an unrecognized swap mode (does not fall into the weaker exactOut floor)', () => {
+    const bridgeRequest = { ...splInRequest, toChain: 'base', swapMode: 'typo' };
+    const sim = { deltas: { [SOL_USDC]: -1n } };
+    expect(() => assertSolanaSwapOutcome(bridgeRequest, splInQuote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*unrecognized swap mode/i);
+  });
+
+  it('exactOut bridge: rejects a zero outflow (positive-outflow floor)', () => {
+    const exactOutBridge = { ...splInRequest, toChain: 'base', swapMode: 'exactOut', amount: '1000000', maxInputAmount: '2000000' };
+    const sim = { deltas: {} };
+    expect(() => assertSolanaSwapOutcome(exactOutBridge, splInQuote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*moved no input token/i);
+  });
+
+  it('exactOut bridge: a positive outflow within the cap passes (no exact input floor)', () => {
+    const exactOutBridge = { ...splInRequest, toChain: 'base', swapMode: 'exactOut', amount: '1000000', maxInputAmount: '2000000' };
+    const sim = { deltas: { [SOL_USDC]: -1n } }; // positive outflow is sufficient for exactOut
+    const result = assertSolanaSwapOutcome(exactOutBridge, splInQuote, sim, {});
+    expect(result).toEqual({ verified: true, inputAssertionSkipped: false, outputAssertionSkipped: true });
   });
 
   it('bridge: rejects a fee-only native-SOL no-op (positive outflow is not enough)', () => {

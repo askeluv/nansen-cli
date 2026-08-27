@@ -991,6 +991,17 @@ describe('buildTradingCommands', () => {
     await expect(cmds.execute([], null, {}, {})).rejects.toThrow(/Usage: nansen trade execute/);
   });
 
+  it('rejects an invalid --swap-mode at the CLI boundary', async () => {
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    await expect(cmds.quote([], null, {}, {
+      chain: 'solana',
+      from: 'So11111111111111111111111111111111111111112',
+      to: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+      amount: '1000000000',
+      'swap-mode': 'typo',
+    })).rejects.toThrow(/Invalid --swap-mode/);
+  });
+
   it('should error when no wallet exists for quote', async () => {
     // Mock fetch for the API call
     const origFetch = global.fetch;
