@@ -104,6 +104,64 @@ describe('NansenAPI._x402Retry', () => {
     expect(mockFetch).toHaveBeenCalledOnce();
     const [, requestInit] = mockFetch.mock.calls[0];
     expect(requestInit.headers['Payment-Signature']).toBe('my-payment-sig');
+    expect(requestInit.method).toBe('POST');
+    expect(requestInit.body).toBeDefined();
+  });
+
+  it('defaults to POST with a JSON body when options.method is omitted', async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({ ok: true }) });
+
+    const api = makeApi();
+    await api._x402Retry(
+      'sig', null, null, 'https://api.nansen.ai/test', { hello: 'world' },
+    );
+
+    const [, requestInit] = mockFetch.mock.calls[0];
+    expect(requestInit.method).toBe('POST');
+    expect(requestInit.headers['Content-Type']).toBe('application/json');
+    expect(JSON.parse(requestInit.body)).toEqual({ hello: 'world' });
+  });
+
+  it('retries with GET and omits body when options.method is GET', async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({ account: true }) });
+
+    const api = makeApi();
+    await api._x402Retry(
+      'sig', null, null, 'https://api.nansen.ai/api/v1/account', {}, { method: 'GET' },
+    );
+
+    const [, requestInit] = mockFetch.mock.calls[0];
+    expect(requestInit.method).toBe('GET');
+    expect(requestInit.body).toBeUndefined();
+    expect(requestInit.headers['Content-Type']).toBeUndefined();
+    expect(requestInit.headers['Payment-Signature']).toBe('sig');
+  });
+
+  it('retries with DELETE and omits body when options.method is DELETE', async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({ deleted: true }) });
+
+    const api = makeApi();
+    await api._x402Retry(
+      'sig', null, null, 'https://api.nansen.ai/api/v1/smart-alert/1', { ignored: true }, { method: 'DELETE' },
+    );
+
+    const [, requestInit] = mockFetch.mock.calls[0];
+    expect(requestInit.method).toBe('DELETE');
+    expect(requestInit.body).toBeUndefined();
+  });
+
+  it('retries with PATCH and keeps a JSON body', async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({ patched: true }) });
+
+    const api = makeApi();
+    await api._x402Retry(
+      'sig', null, null, 'https://api.nansen.ai/api/v1/smart-alert', { id: '1' }, { method: 'PATCH' },
+    );
+
+    const [, requestInit] = mockFetch.mock.calls[0];
+    expect(requestInit.method).toBe('PATCH');
+    expect(JSON.parse(requestInit.body)).toEqual({ id: '1' });
+    expect(requestInit.headers['Content-Type']).toBe('application/json');
   });
 
   it('propagates json() rejection when the paid response body is not valid JSON', async () => {
