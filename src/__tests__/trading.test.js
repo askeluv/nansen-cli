@@ -863,6 +863,12 @@ describe('assertCompleteEvmRequestIntent', () => {
 
   it('accepts complete EVM request intent', () => {
     expect(() => assertCompleteEvmRequestIntent(evmIntent({ walletAddress: '0xabc' }))).not.toThrow();
+    expect(() => assertCompleteEvmRequestIntent(evmIntent({ walletAddress: '0xabc', swapMode: 'exactOut' }))).not.toThrow();
+  });
+
+  it('rejects an unrecognized swap mode (fails closed before signing, independent of outcome verification)', () => {
+    expect(() => assertCompleteEvmRequestIntent(evmIntent({ walletAddress: '0xabc', swapMode: 'typo' })))
+      .toThrow(/unrecognized swap mode/i);
   });
 });
 
@@ -874,6 +880,12 @@ describe('assertCompleteSolanaRequestIntent', () => {
 
   it('accepts complete Solana request intent', () => {
     expect(() => assertCompleteSolanaRequestIntent(solanaIntent({ walletAddress: 'SolAddr1111111111111111111111111111111111' }))).not.toThrow();
+    expect(() => assertCompleteSolanaRequestIntent(solanaIntent({ walletAddress: 'SolAddr1111111111111111111111111111111111', swapMode: 'exactOut' }))).not.toThrow();
+  });
+
+  it('rejects an unrecognized swap mode (fails closed before signing, independent of outcome verification)', () => {
+    expect(() => assertCompleteSolanaRequestIntent(solanaIntent({ walletAddress: 'SolAddr1111111111111111111111111111111111', swapMode: 'typo' })))
+      .toThrow(/unrecognized swap mode/i);
   });
 });
 
@@ -989,6 +1001,17 @@ describe('buildTradingCommands', () => {
     });
 
     await expect(cmds.execute([], null, {}, {})).rejects.toThrow(/Usage: nansen trade execute/);
+  });
+
+  it('rejects an invalid --swap-mode at the CLI boundary', async () => {
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    await expect(cmds.quote([], null, {}, {
+      chain: 'solana',
+      from: 'So11111111111111111111111111111111111111112',
+      to: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+      amount: '1000000000',
+      'swap-mode': 'typo',
+    })).rejects.toThrow(/Invalid --swap-mode/);
   });
 
   it('should error when no wallet exists for quote', async () => {
@@ -5704,15 +5727,25 @@ describe('verifySwapOutcome (execute-path wiring)', () => {
     expect(sentBody.params[0].blockStateCalls[0].calls[0].value).toBe('0x0');
   });
 
-  it('skips cross-chain bridge quotes', async () => {
+  it('runs the simulation for a cross-chain bridge quote, enforcing outflow but skipping output-arrival', async () => {
     // The bridge output settles on the destination chain, so it never appears in
-    // a source-chain simulation and the output-received assertion would always
-    // fail. The verifier must not run (and must not touch the sim endpoint).
-    global.fetch = vi.fn(); // must not be called
-    const crossChainData = { ...quoteData, chain: 'base', toChain: 'solana' };
-    const r = await verifySwapOutcome({ chain: 'base', from: WALLET, quote, quoteData: crossChainData });
+    // a source-chain simulation and assertSwapOutcome skips only that assertion
+    // internally — the sim still runs and still bounds the input outflow.
+    global.fetch = vi.fn().mockResolvedValue(simBody([tlog(USDC, WALLET, ROUTER, 1000000n)])); // no output leg
+    const bridgeData = { ...quoteData, request: { ...quoteData.request, toChain: 'solana' } };
+    const logs = [];
+    const r = await verifySwapOutcome({ chain: 'base', from: WALLET, quote, quoteData: bridgeData, log: (m) => logs.push(m) });
     expect(r.proceed).toBe(true);
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(global.fetch).toHaveBeenCalled();
+    expect(logs.some((l) => /Bridge:/i.test(l))).toBe(true);
+  });
+
+  it('still blocks a cross-chain bridge quote whose input outflow exceeds the cap', async () => {
+    global.fetch = vi.fn().mockResolvedValue(simBody([tlog(USDC, WALLET, ROUTER, 5000000n)])); // 5x the cap
+    const bridgeData = { ...quoteData, request: { ...quoteData.request, toChain: 'solana' } };
+    const r = await verifySwapOutcome({ chain: 'base', from: WALLET, quote, quoteData: bridgeData });
+    expect(r.proceed).toBe(false);
+    expect(r.reason).toMatch(/SWAP_OUTCOME_MISMATCH/i);
   });
 
   it('degrades (proceed=true) for a pre-intent quote with no request recorded', async () => {
@@ -6147,12 +6180,79 @@ describe('verifySolanaSwapOutcome (execute-path wiring)', () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
-  it('skips cross-chain bridge quotes', async () => {
-    vi.stubGlobal('fetch', vi.fn()); // must not be called
-    const crossChainData = { ...quoteData, chain: 'solana', toChain: 'base' };
-    const r = await verifySolanaSwapOutcome({ chain: 'solana', walletAddress: wallet, txBase64, quote, quoteData: crossChainData });
+  it('runs the simulation for a cross-chain bridge quote, enforcing outflow but skipping output-arrival', async () => {
+    const post = {
+      [wallet]: solanaNativeAccountInfo(999_995_000),
+      [tokenIn]: solanaTokenAccountInfo({ mint: mintIn, owner: wallet, amount: 0 }),
+      [tokenOut]: solanaTokenAccountInfo({ mint: mintOut, owner: wallet, amount: 0 }), // no output — it lands on the destination chain
+    };
+    const bridgeData = { ...quoteData, request: { ...quoteData.request, toChain: 'base' } };
+    vi.stubGlobal('fetch', mockSolanaSimRpc({ pre, post }));
+    const logs = [];
+    const r = await verifySolanaSwapOutcome({ chain: 'solana', walletAddress: wallet, txBase64, quote, quoteData: bridgeData, log: (m) => logs.push(m) });
     expect(r.proceed).toBe(true);
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(global.fetch).toHaveBeenCalled();
+    expect(logs.some((l) => /Bridge:/i.test(l))).toBe(true);
+  });
+
+  it('still blocks a cross-chain bridge quote whose input outflow exceeds the cap', async () => {
+    const bigPre = { ...pre, [tokenIn]: solanaTokenAccountInfo({ mint: mintIn, owner: wallet, amount: 5_000_000 }) };
+    const post = {
+      [wallet]: solanaNativeAccountInfo(999_995_000),
+      [tokenIn]: solanaTokenAccountInfo({ mint: mintIn, owner: wallet, amount: 0 }), // outflow 5,000,000 > 1,000,000 cap
+      [tokenOut]: solanaTokenAccountInfo({ mint: mintOut, owner: wallet, amount: 0 }),
+    };
+    const bridgeData = { ...quoteData, request: { ...quoteData.request, toChain: 'base' } };
+    vi.stubGlobal('fetch', mockSolanaSimRpc({ pre: bigPre, post }));
+    const r = await verifySolanaSwapOutcome({ chain: 'solana', walletAddress: wallet, txBase64, quote, quoteData: bridgeData });
+    expect(r.proceed).toBe(false);
+    expect(r.reason).toMatch(/SWAP_OUTCOME_MISMATCH/i);
+  });
+
+  it('still blocks a sibling-token drain on a cross-chain bridge quote', async () => {
+    const siblingPre = { ...pre, [tokenOut]: solanaTokenAccountInfo({ mint: 'SiblingMint111111111111111111111111111111', owner: wallet, amount: 500 }) };
+    const post = {
+      [wallet]: solanaNativeAccountInfo(999_995_000),
+      [tokenIn]: solanaTokenAccountInfo({ mint: mintIn, owner: wallet, amount: 0 }),
+      [tokenOut]: solanaTokenAccountInfo({ mint: 'SiblingMint111111111111111111111111111111', owner: wallet, amount: 0 }), // drained
+    };
+    const bridgeData = { ...quoteData, request: { ...quoteData.request, toChain: 'base' } };
+    vi.stubGlobal('fetch', mockSolanaSimRpc({ pre: siblingPre, post }));
+    const r = await verifySolanaSwapOutcome({ chain: 'solana', walletAddress: wallet, txBase64, quote, quoteData: bridgeData });
+    expect(r.proceed).toBe(false);
+    expect(r.reason).toMatch(/SWAP_OUTCOME_MISMATCH/i);
+  });
+
+  it('native-SOL bridge: the input-skipped log does not claim the output check ran', async () => {
+    // Regression: on a native-SOL input over a bridge BOTH inputAssertionSkipped
+    // and outputAssertionSkipped are true. The input-skipped line must then say
+    // only "sibling checks still ran" — not "output and sibling checks still
+    // ran", which would contradict the bridge line stating the output was not
+    // simulated here.
+    const nativeQuote = { inputMint: SOL_MINT, outputMint: mintOut, inAmount: '1000000000', outAmount: '50000000' };
+    const nativeBridgeData = {
+      chain: 'solana', slippage: 0.03,
+      request: { chain: 'solana', walletAddress: wallet, fromToken: SOL_MINT, toToken: mintOut, swapMode: 'exactIn', amount: '1000000000', maxInputAmount: '1000000000', toChain: 'base' },
+    };
+    const nativePre = {
+      [wallet]: solanaNativeAccountInfo(2_000_000_000),
+      [tokenIn]: solanaTokenAccountInfo({ mint: mintIn, owner: wallet, amount: 1_000_000 }),
+      [tokenOut]: solanaTokenAccountInfo({ mint: mintOut, owner: wallet, amount: 0 }),
+    };
+    const nativePost = {
+      [wallet]: solanaNativeAccountInfo(1_000_000_000), // ~1 SOL bridged out on the source chain
+      [tokenIn]: solanaTokenAccountInfo({ mint: mintIn, owner: wallet, amount: 1_000_000 }),
+      [tokenOut]: solanaTokenAccountInfo({ mint: mintOut, owner: wallet, amount: 0 }), // no output — lands on the destination chain
+    };
+    vi.stubGlobal('fetch', mockSolanaSimRpc({ pre: nativePre, post: nativePost }));
+    const logs = [];
+    const r = await verifySolanaSwapOutcome({ chain: 'solana', walletAddress: wallet, txBase64, quote: nativeQuote, quoteData: nativeBridgeData, log: (m) => logs.push(m) });
+    expect(r.proceed).toBe(true);
+    const inputLine = logs.find((l) => /Native-SOL input spend/i.test(l));
+    expect(inputLine).toBeDefined();
+    expect(inputLine).toMatch(/sibling checks still ran/i);
+    expect(inputLine).not.toMatch(/output and sibling/i);
+    expect(logs.some((l) => /Bridge:/i.test(l))).toBe(true);
   });
 
   it('degrades (proceed=true) for a pre-intent quote with no request recorded', async () => {

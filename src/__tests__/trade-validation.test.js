@@ -1659,6 +1659,105 @@ describe('assertSwapOutcome', () => {
     const sim = { deltas: { [USDC]: 'not-a-number' }, approvals: [] };
     expect(() => assertSwapOutcome(exactInRequest, exactInQuote, sim, {})).toThrow(/SWAP_OUTCOME_MISMATCH/i);
   });
+
+  it('bridge: skips assertion 2 (output arrival) but still enforces assertion 1 (outflow cap)', () => {
+    // request.toChain !== request.chain marks a cross-chain bridge — the output
+    // settles on the destination chain and never appears in this sim, so
+    // assertion 2 must not run; assertion 1 still runs and passes here.
+    const bridgeRequest = { ...exactInRequest, toChain: 'solana' };
+    const sim = { deltas: { [USDC]: -1000000n }, approvals: [] }; // no output delta — lands on the destination chain
+    const result = assertSwapOutcome(bridgeRequest, exactInQuote, sim, { slippage: 0.03 });
+    expect(result).toEqual({ verified: true, outputAssertionSkipped: true });
+  });
+
+  it('bridge: still enforces assertion 1 (outflow cap) despite skipping the output check', () => {
+    const bridgeRequest = { ...exactInRequest, toChain: 'solana' };
+    const sim = { deltas: { [USDC]: -1000001n }, approvals: [] }; // 1 over the cap
+    expect(() => assertSwapOutcome(bridgeRequest, exactInQuote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*maximum input/i);
+  });
+
+  it('bridge: still enforces assertion 3 (no sibling drain)', () => {
+    const bridgeRequest = { ...exactInRequest, toChain: 'solana' };
+    const sim = {
+      deltas: { [USDC]: -1000000n, '0xaaaa000000000000000000000000000000000001': -42n },
+      approvals: [],
+    };
+    expect(() => assertSwapOutcome(bridgeRequest, exactInQuote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*other than the one you are selling/i);
+  });
+
+  it('bridge: rejects a no-op transaction that spends no input (intent-relative floor)', () => {
+    // A bridge skips assertion 2 (output arrival), which for a normal swap is
+    // what proves the input actually left. Empty deltas must not pass as a
+    // verified bridge — it moved nothing and settles nothing on the destination.
+    const bridgeRequest = { ...exactInRequest, toChain: 'solana' };
+    const sim = { deltas: {}, approvals: [] };
+    expect(() => assertSwapOutcome(bridgeRequest, exactInQuote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*below the requested input/i);
+  });
+
+  it('bridge: rejects a partial outflow far below the requested input (intent-relative floor)', () => {
+    // outflow > 0 is not enough — a 1-unit spend against a 1,000,000 request
+    // means the bridge was not funded. EVM input outflow is exact (gas excluded),
+    // so the floor is the full requested input.
+    const bridgeRequest = { ...exactInRequest, toChain: 'solana' };
+    const sim = { deltas: { [USDC]: -1n }, approvals: [] };
+    expect(() => assertSwapOutcome(bridgeRequest, exactInQuote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*below the requested input/i);
+  });
+
+  it('bridge: fails closed on an unrecognized swap mode (does not fall into the weaker exactOut floor)', () => {
+    // A garbage swapMode must not be treated as exactOut (which drops the exact
+    // input floor). Repro: swapMode "typo" with a 1-unit outflow against a
+    // 1,000,000 request previously verified; it must now throw.
+    const bridgeRequest = { ...exactInRequest, toChain: 'solana', swapMode: 'typo' };
+    const sim = { deltas: { [USDC]: -1n }, approvals: [] };
+    expect(() => assertSwapOutcome(bridgeRequest, exactInQuote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*unrecognized swap mode/i);
+  });
+
+  it('exactOut bridge: rejects a zero outflow (positive-outflow floor)', () => {
+    // exactOut input is variable up to the cap, so no exact floor exists — but a
+    // zero outflow still means the bridge was never funded.
+    const exactOutBridge = { ...exactInRequest, toChain: 'solana', swapMode: 'exactOut', amount: '1000000', maxInputAmount: '2000000' };
+    const sim = { deltas: {}, approvals: [] };
+    expect(() => assertSwapOutcome(exactOutBridge, exactInQuote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*moved no input token/i);
+  });
+
+  it('exactOut bridge: a positive outflow within the cap passes (no exact input floor)', () => {
+    const exactOutBridge = { ...exactInRequest, toChain: 'solana', swapMode: 'exactOut', amount: '1000000', maxInputAmount: '2000000' };
+    const sim = { deltas: { [USDC]: -1n }, approvals: [] }; // positive outflow is sufficient for exactOut
+    const result = assertSwapOutcome(exactOutBridge, exactInQuote, sim, {});
+    expect(result).toEqual({ verified: true, outputAssertionSkipped: true });
+  });
+
+  it('bridge: still validates quote output integrity (missing outAmount) even though the delta check is skipped', () => {
+    // The output-amount sanity checks run for bridges too; only the source-chain
+    // delta comparison is skipped. A malformed quote with no output still fails.
+    const bridgeRequest = { ...exactInRequest, toChain: 'solana' };
+    const noOutQuote = { inputMint: USDC, outputMint: DAI, inAmount: '1000000' }; // no outAmount
+    const sim = { deltas: { [USDC]: -1000000n }, approvals: [] };
+    expect(() => assertSwapOutcome(bridgeRequest, noOutQuote, sim, { slippage: 0.03 }))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*quoted output amount/i);
+  });
+
+  it('bridge: rejects a non-positive quote output even though the delta check is skipped', () => {
+    const bridgeRequest = { ...exactInRequest, toChain: 'solana' };
+    const zeroOutQuote = { inputMint: USDC, outputMint: DAI, inAmount: '1000000', outAmount: '0' };
+    const sim = { deltas: { [USDC]: -1000000n }, approvals: [] };
+    expect(() => assertSwapOutcome(bridgeRequest, zeroOutQuote, sim, { slippage: 0.03 }))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*non-positive output/i);
+  });
+
+  it('same-chain requests are unaffected: assertion 2 still throws on a real output shortfall', () => {
+    // Proves the bridge relaxation is gated on request.toChain, not a general
+    // weakening of assertion 2 — request.toChain is unset here (same-chain).
+    const sim = { deltas: { [USDC]: -1000000n }, approvals: [] }; // no output at all
+    expect(() => assertSwapOutcome(exactInRequest, exactInQuote, sim, { slippage: 0.03 }))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*minimum acceptable output/i);
+  });
 });
 
 describe('assertSolanaSwapOutcome', () => {
@@ -1740,7 +1839,7 @@ describe('assertSolanaSwapOutcome', () => {
     // so the loosened bound still passes it.
     const sim = { deltas: { [SOL_SENTINEL]: -1_005_123n * 1000n, [SOL_USDC]: 50_000_000n } };
     expect(assertSolanaSwapOutcome(nativeInRequest, nativeInQuote, sim, { slippage: 0.03 }))
-      .toEqual({ verified: true, inputAssertionSkipped: true });
+      .toEqual({ verified: true, inputAssertionSkipped: true, outputAssertionSkipped: false });
   });
 
   it('rejects a native-SOL input drain beyond maxInputAmount + fee/rent slack (assertion 1, native input)', () => {
@@ -1763,7 +1862,7 @@ describe('assertSolanaSwapOutcome', () => {
   it('reports inputAssertionSkipped: false on an SPL-in swap, where assertion 1 does run', () => {
     const sim = { deltas: { [SOL_USDC]: -1000000n, [SOL_USDT]: 1000000n } };
     expect(assertSolanaSwapOutcome(splInRequest, splInQuote, sim, { slippage: 0.03 }))
-      .toEqual({ verified: true, inputAssertionSkipped: false });
+      .toEqual({ verified: true, inputAssertionSkipped: false, outputAssertionSkipped: false });
   });
 
   it('folds a WSOL-mint quote input to the native sentinel so the delta matches (regression: SOLANA_NATIVE_MINTS ReferenceError)', () => {
@@ -1870,6 +1969,138 @@ describe('assertSolanaSwapOutcome', () => {
   it('fails closed on a corrupt (non-integer) simulated delta', () => {
     const sim = { deltas: { [SOL_USDC]: 'not-a-number' } };
     expect(() => assertSolanaSwapOutcome(splInRequest, splInQuote, sim, {})).toThrow(/SWAP_OUTCOME_MISMATCH/i);
+  });
+
+  it('bridge: skips assertion 2 (output arrival) but still enforces assertion 1 (outflow cap)', () => {
+    // request.toChain !== request.chain marks a cross-chain bridge — the output
+    // settles on the destination chain and never appears in this sim, so
+    // assertion 2 must not run; assertion 1 still runs and passes here.
+    const bridgeRequest = { ...splInRequest, toChain: 'base' };
+    const sim = { deltas: { [SOL_USDC]: -1000000n } }; // no output delta — lands on the destination chain
+    const result = assertSolanaSwapOutcome(bridgeRequest, splInQuote, sim, { slippage: 0.03 });
+    expect(result).toEqual({ verified: true, inputAssertionSkipped: false, outputAssertionSkipped: true });
+  });
+
+  it('bridge: still enforces assertion 1 (outflow cap) despite skipping the output check', () => {
+    const bridgeRequest = { ...splInRequest, toChain: 'base' };
+    const sim = { deltas: { [SOL_USDC]: -1000001n } }; // 1 over the cap
+    expect(() => assertSolanaSwapOutcome(bridgeRequest, splInQuote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*maximum input/i);
+  });
+
+  it('bridge: still enforces assertion 3 (no sibling drain)', () => {
+    const bridgeRequest = { ...splInRequest, toChain: 'base' };
+    const otherMint = 'Other11111111111111111111111111111111111';
+    const sim = { deltas: { [SOL_USDC]: -1000000n, [otherMint]: -1n } };
+    expect(() => assertSolanaSwapOutcome(bridgeRequest, splInQuote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*other than the one you are selling/i);
+  });
+
+  it('bridge: rejects an SPL no-op transaction that spends no input (intent-relative floor)', () => {
+    // A bridge skips assertion 2 (output arrival), which for a normal swap is
+    // what proves the input actually left. Empty deltas must not pass as a
+    // verified bridge for an SPL input, which (unlike native SOL) burns no fee.
+    const bridgeRequest = { ...splInRequest, toChain: 'base' };
+    const sim = { deltas: {} };
+    expect(() => assertSolanaSwapOutcome(bridgeRequest, splInQuote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*below the requested input/i);
+  });
+
+  it('bridge: rejects a partial SPL outflow far below the requested input (intent-relative floor)', () => {
+    // outflow > 0 is not enough — 1 unit against a 1,000,000 request means the
+    // bridge was not funded. SPL input has no fee/rent noise, so the floor is the
+    // full requested input.
+    const bridgeRequest = { ...splInRequest, toChain: 'base' };
+    const sim = { deltas: { [SOL_USDC]: -1n } };
+    expect(() => assertSolanaSwapOutcome(bridgeRequest, splInQuote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*below the requested input/i);
+  });
+
+  it('bridge: fails closed on an unrecognized swap mode (does not fall into the weaker exactOut floor)', () => {
+    const bridgeRequest = { ...splInRequest, toChain: 'base', swapMode: 'typo' };
+    const sim = { deltas: { [SOL_USDC]: -1n } };
+    expect(() => assertSolanaSwapOutcome(bridgeRequest, splInQuote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*unrecognized swap mode/i);
+  });
+
+  it('exactOut bridge: rejects a zero outflow (positive-outflow floor)', () => {
+    const exactOutBridge = { ...splInRequest, toChain: 'base', swapMode: 'exactOut', amount: '1000000', maxInputAmount: '2000000' };
+    const sim = { deltas: {} };
+    expect(() => assertSolanaSwapOutcome(exactOutBridge, splInQuote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*moved no input token/i);
+  });
+
+  it('exactOut bridge: a positive outflow within the cap passes (no exact input floor)', () => {
+    const exactOutBridge = { ...splInRequest, toChain: 'base', swapMode: 'exactOut', amount: '1000000', maxInputAmount: '2000000' };
+    const sim = { deltas: { [SOL_USDC]: -1n } }; // positive outflow is sufficient for exactOut
+    const result = assertSolanaSwapOutcome(exactOutBridge, splInQuote, sim, {});
+    expect(result).toEqual({ verified: true, inputAssertionSkipped: false, outputAssertionSkipped: true });
+  });
+
+  it('bridge: rejects a fee-only native-SOL no-op (positive outflow is not enough)', () => {
+    // The exact gap the bare `outflow > 0` guard missed: a 1 SOL native bridge
+    // whose only lamport movement is the ~5000-lamport base fee. The intent-
+    // relative floor (requested − fee/rent slack) rejects it.
+    const nativeBridgeRequest = {
+      chain: 'solana', walletAddress: 'Wallet1111111111111111111111111111111111', toChain: 'base',
+      fromToken: SOL_SENTINEL, toToken: SOL_USDC, swapMode: 'exactIn', amount: '1000000000', maxInputAmount: '1000000000',
+    };
+    const nativeBridgeQuote = { inputMint: SOL_SENTINEL, outputMint: SOL_USDC, inAmount: '1000000000', outAmount: '50000000' };
+    const sim = { deltas: { [SOL_SENTINEL]: -5000n } }; // fee only — nothing bridged
+    expect(() => assertSolanaSwapOutcome(nativeBridgeRequest, nativeBridgeQuote, sim, { slippage: 0.03 }))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*below the requested input/i);
+  });
+
+  it('bridge: a native-SOL leg within the fee/rent slack of the requested input passes', () => {
+    // Guards against a false-block: a real native bridge can land a few million
+    // lamports off the requested amount (fee added, ATA rent reclaimed). As long
+    // as it is within the slack of the request it must NOT be rejected.
+    const nativeBridgeRequest = {
+      chain: 'solana', walletAddress: 'Wallet1111111111111111111111111111111111', toChain: 'base',
+      fromToken: SOL_SENTINEL, toToken: SOL_USDC, swapMode: 'exactIn', amount: '1000000000', maxInputAmount: '1000000000',
+    };
+    const nativeBridgeQuote = { inputMint: SOL_SENTINEL, outputMint: SOL_USDC, inAmount: '1000000000', outAmount: '50000000' };
+    // 1 SOL bridged minus ~2M lamports of reclaimed rent — within the 13M slack.
+    const sim = { deltas: { [SOL_SENTINEL]: -998_000_000n } };
+    const result = assertSolanaSwapOutcome(nativeBridgeRequest, nativeBridgeQuote, sim, { slippage: 0.03 });
+    expect(result).toEqual({ verified: true, inputAssertionSkipped: true, outputAssertionSkipped: true });
+  });
+
+  it('bridge: still validates quote output integrity (missing outAmount) even though the delta check is skipped', () => {
+    const bridgeRequest = { ...splInRequest, toChain: 'base' };
+    const noOutQuote = { inputMint: SOL_USDC, outputMint: SOL_USDT, inAmount: '1000000' }; // no outAmount
+    const sim = { deltas: { [SOL_USDC]: -1000000n } };
+    expect(() => assertSolanaSwapOutcome(bridgeRequest, noOutQuote, sim, { slippage: 0.03 }))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*quoted output amount/i);
+  });
+
+  it('bridge: rejects a non-positive quote output even though the delta check is skipped', () => {
+    const bridgeRequest = { ...splInRequest, toChain: 'base' };
+    const zeroOutQuote = { inputMint: SOL_USDC, outputMint: SOL_USDT, inAmount: '1000000', outAmount: '0' };
+    const sim = { deltas: { [SOL_USDC]: -1000000n } };
+    expect(() => assertSolanaSwapOutcome(bridgeRequest, zeroOutQuote, sim, { slippage: 0.03 }))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*non-positive output/i);
+  });
+
+  it('bridge: still bounds a native-SOL input with the fee/rent slack', () => {
+    const nativeBridgeRequest = {
+      chain: 'solana', walletAddress: 'Wallet1111111111111111111111111111111111', toChain: 'base',
+      fromToken: SOL_SENTINEL, toToken: SOL_USDC, swapMode: 'exactIn', amount: '1000000000', maxInputAmount: '1000000000',
+    };
+    const nativeBridgeQuote = { inputMint: SOL_SENTINEL, outputMint: SOL_USDC, inAmount: '1000000000', outAmount: '50000000' };
+    // 1000 SOL drained instead of the declared 1 SOL — still caught even though
+    // the (bridge) output assertion is skipped.
+    const sim = { deltas: { [SOL_SENTINEL]: -1_000_000_000_000n } };
+    expect(() => assertSolanaSwapOutcome(nativeBridgeRequest, nativeBridgeQuote, sim, { slippage: 0.03 }))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*maximum input/i);
+  });
+
+  it('same-chain requests are unaffected: assertion 2 still throws on a real output shortfall', () => {
+    // Proves the bridge relaxation is gated on request.toChain, not a general
+    // weakening of assertion 2 — request.toChain is unset here (same-chain).
+    const sim = { deltas: { [SOL_USDC]: -1000000n } }; // no output at all
+    expect(() => assertSolanaSwapOutcome(splInRequest, splInQuote, sim, { slippage: 0.03 }))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*minimum acceptable output/i);
   });
 });
 

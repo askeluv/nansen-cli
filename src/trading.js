@@ -957,10 +957,12 @@ function toRpcHexValue(value) {
  * guards: the cheap eth_call sim answers "will it revert", this answers "does the
  * outcome match intent" (see assertSwapOutcome in trade-validation.js).
  *
- * EVM-only, and on its own gate independent of --no-simulate/gasless. Skipped
- * for cross-chain bridges (the output lands on the destination chain, so a
- * source-chain simulation can't observe it). When no simulation-capable endpoint
- * is configured it DEGRADES — logs a warning, then proceeds — so a simulation
+ * EVM-only, and on its own gate independent of --no-simulate/gasless. Runs for
+ * cross-chain bridges too — assertSwapOutcome skips only the output-arrival
+ * assertion internally, since the output lands on the destination chain and a
+ * source-chain simulation can't observe it; the input-outflow and no-sibling-
+ * drain assertions still bound the source-chain leg. When no simulation-capable
+ * endpoint is configured it DEGRADES — logs a warning, then proceeds — so a simulation
  * outage never blocks trading. --no-verify-outcome skips it entirely.
  *
  * Returns { proceed, reason }. proceed=false means this quote failed
@@ -978,11 +980,12 @@ function toRpcHexValue(value) {
  */
 export async function verifySwapOutcome({ chain, from, quote, quoteData, apiKey = null, log = () => {} }) {
   if (CHAIN_MAP[chain?.toLowerCase()]?.type !== 'evm') return { proceed: true }; // EVM-only
-  // Cross-chain: the output token settles on the destination chain, so it can
-  // never appear in a source-chain simulation and the output-received assertion
-  // would always fail. The source-chain leg only spends/locks the input here;
-  // skip outcome verification for bridges (mirrors the bridge branch below).
-  if (quoteData?.toChain && quoteData.toChain !== quoteData.chain) return { proceed: true };
+  // Cross-chain (bridge): the output token settles on the destination chain,
+  // so the source-chain simulation still runs but assertSwapOutcome skips
+  // only the output-arrival assertion internally (isBridge, derived from
+  // quoteData.request). The input-outflow cap and no-sibling-drain checks
+  // still bound the source-chain leg.
+
   // No request intent recorded (a pre-intent quote): assertSwapOutcome has
   // nothing to compare the simulated deltas against and would raise a misleading
   // SWAP_OUTCOME_MISMATCH. Degrade cleanly — the static guards still ran, and a
@@ -1005,7 +1008,10 @@ export async function verifySwapOutcome({ chain, from, quote, quoteData, apiKey 
       { to: tx.to, data: tx.data, value: toRpcHexValue(tx.value) },
       { from, apiKey },
     );
-    assertSwapOutcome(quoteData.request, quote, sim, { slippage: quoteData.slippage, expectedSpenders });
+    const outcome = assertSwapOutcome(quoteData.request, quote, sim, { slippage: quoteData.slippage, expectedSpenders });
+    if (outcome.outputAssertionSkipped) {
+      log('  ℹ Bridge: input-outflow and sibling checks ran; output arrives on the destination chain and is not simulated here.');
+    }
     log(`  ✓ Swap outcome verified (via ${sim.method}).`);
     return { proceed: true };
   } catch (e) {
@@ -1029,9 +1035,10 @@ export async function verifySwapOutcome({ chain, from, quote, quoteData, apiKey 
  */
 export async function verifySolanaSwapOutcome({ chain, walletAddress, txBase64, quote, quoteData, log = () => {} }) {
   if (chain !== 'solana') return { proceed: true };
-  // Cross-chain: the output settles on the destination chain and can never
-  // appear in a source-chain simulation (mirrors the EVM bridge skip above).
-  if (quoteData?.toChain && quoteData.toChain !== quoteData.chain) return { proceed: true };
+  // Cross-chain (bridge): the output settles on the destination chain, so
+  // the source-chain simulation still runs but assertSolanaSwapOutcome skips
+  // only the output-arrival assertion internally (mirrors the EVM path above).
+
   if (!quoteData?.request) {
     log('  ⚠ Swap-outcome verification skipped (no request intent — re-quote to enable it).');
     return { proceed: true };
@@ -1044,7 +1051,14 @@ export async function verifySolanaSwapOutcome({ chain, walletAddress, txBase64, 
     const sim = await simulateSolanaAssetChanges(chain, txBase64, { walletAddress });
     const outcome = assertSolanaSwapOutcome(quoteData.request, quote, sim, { slippage: quoteData.slippage });
     if (outcome.inputAssertionSkipped) {
-      log('  ℹ Native-SOL input spend is bounded with fee/rent slack, not exactly delta-verified; output and sibling checks still ran.');
+      // On a native-SOL bridge the output assertion did NOT run (it settles on
+      // the destination chain), so don't claim "output ... checks still ran" —
+      // that would contradict the bridge line logged just below.
+      const alsoRan = outcome.outputAssertionSkipped ? 'sibling checks still ran' : 'output and sibling checks still ran';
+      log(`  ℹ Native-SOL input spend is bounded with fee/rent slack, not exactly delta-verified; ${alsoRan}.`);
+    }
+    if (outcome.outputAssertionSkipped) {
+      log('  ℹ Bridge: input-outflow and sibling checks ran; output arrives on the destination chain and is not simulated here.');
     }
     log(`  ✓ Swap outcome verified (via ${sim.method}).`);
     return { proceed: true };
@@ -1252,6 +1266,14 @@ export function assertCompleteEvmRequestIntent(request) {
   if (missing.length) {
     throw new Error(`Quote request intent is incomplete (${missing.join(', ')} missing). Re-quote before executing an EVM swap. Refusing to sign.`);
   }
+  // swapMode must be a recognized mode, not merely present. This runs
+  // unconditionally before signing — unlike the swap-outcome verifier, which is
+  // skipped by --no-verify-outcome or when the sim RPC degrades — so a corrupted
+  // or edited quote record with a garbage swapMode fails closed regardless of
+  // the outcome-verification path.
+  if (request.swapMode !== 'exactIn' && request.swapMode !== 'exactOut') {
+    throw new Error(`Quote request intent has an unrecognized swap mode ("${request.swapMode}"); expected exactIn or exactOut. Re-quote before executing an EVM swap. Refusing to sign.`);
+  }
 }
 
 /**
@@ -1273,6 +1295,12 @@ export function assertCompleteSolanaRequestIntent(request) {
   }
   if (missing.length) {
     throw new Error(`Quote request intent is incomplete (${missing.join(', ')} missing). Re-quote before executing a Solana swap. Refusing to sign.`);
+  }
+  // swapMode must be a recognized mode, not merely present — see the EVM sibling.
+  // Runs unconditionally before signing, so a garbage swapMode fails closed even
+  // when the swap-outcome verifier is skipped or degraded.
+  if (request.swapMode !== 'exactIn' && request.swapMode !== 'exactOut') {
+    throw new Error(`Quote request intent has an unrecognized swap mode ("${request.swapMode}"); expected exactIn or exactOut. Re-quote before executing a Solana swap. Refusing to sign.`);
   }
 }
 
@@ -1822,6 +1850,12 @@ export function buildTradingCommands(deps = {}) {
       const autoSlippage = flags['auto-slippage'];
       const maxAutoSlippage = options['max-auto-slippage'];
       const swapMode = options['swap-mode'] || 'exactIn';
+      if (swapMode !== 'exactIn' && swapMode !== 'exactOut') {
+        throw new CommandError(
+          `Invalid --swap-mode: "${swapMode}". Use one of: exactIn, exactOut.`,
+          'INVALID_INPUT',
+        );
+      }
       const amountUnit = options['amount-unit'];
       const aggregatorFilter = options.aggregator;
       if (aggregatorFilter && !['lifi', 'relay', 'jupiter', 'okx'].includes(aggregatorFilter)) {

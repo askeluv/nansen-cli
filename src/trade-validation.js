@@ -913,6 +913,18 @@ export function assertSwapCalldataNotBareTransfer(data) {
 // ============= Swap-outcome verification (balance-delta simulation) =============
 
 /**
+ * A cross-chain bridge's output settles on the destination chain, invisible to
+ * a source-chain simulation, so the output-arrival assertion is meaningless
+ * for one and both assert...SwapOutcome functions skip it via this check.
+ * Derived from the immutable persisted request intent (not the loose
+ * quote/quoteData) so it can't drift between calls or across chains.
+ */
+function isBridgeRequest(request) {
+  return request.toChain != null
+    && String(request.toChain).toLowerCase() !== String(request.chain).toLowerCase();
+}
+
+/**
  * Assert that a SIMULATED swap's asset changes match the user's intent, failing
  * closed on any mismatch. This is a defence-in-depth outcome check that
  * complements the static calldata checks (validateSwapTarget /
@@ -929,6 +941,8 @@ export function assertSwapCalldataNotBareTransfer(data) {
  *      log) is never counted.
  *   2. the output token arrives by AT LEAST minOut — exactOut: >= the requested
  *      output; exactIn: the quoted output reduced by the slippage in effect.
+ *      SKIPPED for a cross-chain bridge: the output settles on the destination
+ *      chain and can never appear in a source-chain simulation.
  *   3. NO token other than the input leaves the wallet.
  *   4. the wallet grants no Approval to a spender outside `expectedSpenders`.
  *
@@ -944,6 +958,9 @@ export function assertSwapCalldataNotBareTransfer(data) {
  *   router); anything else fails assertion 4. Compared case-insensitively.
  * @param {bigint} [ctx.siblingDustThreshold=0n] - non-input outflow tolerated
  *   before assertion 3 fires (for fee-on-transfer / rounding). Strict 0 default.
+ * @returns {{verified: true, outputAssertionSkipped: boolean}} outputAssertionSkipped
+ *   is true for a cross-chain bridge, meaning assertion 2 did not run — the
+ *   caller should surface this.
  * @throws {Error} with `code = 'SWAP_OUTCOME_MISMATCH'` on any failed assertion.
  */
 export function assertSwapOutcome(request, quote, sim, { slippage, expectedSpenders, siblingDustThreshold = 0n } = {}) {
@@ -983,6 +1000,9 @@ export function assertSwapOutcome(request, quote, sim, { slippage, expectedSpend
     throw fail(`quote input and output tokens are the same (${inputToken}); refusing to verify.`);
   }
 
+  // Bridges skip only assertion 2 (output arrival) below — see isBridgeRequest.
+  const isBridge = isBridgeRequest(request);
+
   // --- Assertion 1: input outflow within the spend ceiling ---
   // This bounds the outflow by maxInputAmount (the slippage-buffered ceiling),
   // NOT the exact expected input: for exactOut the aggregator may legitimately
@@ -1005,9 +1025,50 @@ export function assertSwapOutcome(request, quote, sim, { slippage, expectedSpend
     throw fail(`the input token (${inputToken}) left the wallet by ${outflow}, exceeding your maximum input (${cap}).`);
   }
 
-  // --- Assertion 2: output arrives at or above the minimum acceptable ---
+  // Fail closed on an unrecognized swap mode. `?? 'exactIn'` only defaults a
+  // missing mode; a persisted request with a garbage value (an edited/older
+  // quote record) must not silently fall into the exactOut branch below, which
+  // would drop the intent-relative input floor. The CLI validates --swap-mode
+  // against this same enum, so a well-formed quote never reaches here invalid.
   const swapMode = request.swapMode ?? 'exactIn';
-  const outputDelta = deltas[outputToken] || 0n;
+  if (swapMode !== 'exactIn' && swapMode !== 'exactOut') {
+    throw fail(`unrecognized swap mode "${swapMode}"; expected exactIn or exactOut.`);
+  }
+
+  // A bridge drops assertion 2 (its output settles on the destination chain),
+  // and for a normal swap that positive-output check is what implicitly proves
+  // the input was actually consumed. Restore that with an intent-relative LOWER
+  // bound on the source-chain outflow: a bare `outflow > 0` is too weak — a
+  // fee-only or 1-unit no-op would still verify a bridge that never funded its
+  // input. For exactIn the outflow must be ~the requested input (assertion 1
+  // already caps it above); for exactOut the input is variable up to the cap, so
+  // only a positive-outflow floor is meaningful. EVM native input delta is the
+  // transferred value with gas excluded, so the outflow is exact — no fee slack.
+  if (isBridge) {
+    if (swapMode === 'exactIn') {
+      if (request.amount == null) throw fail('bridge exactIn request is missing the requested input amount.');
+      let requested;
+      try {
+        requested = BigInt(request.amount);
+      } catch {
+        throw fail(`requested input amount (${request.amount}) is not an integer.`);
+      }
+      if (requested <= 0n) throw fail(`bridge exactIn request has a non-positive input amount (${requested}).`);
+      if (outflow < requested) {
+        throw fail(`the bridge moved only ${outflow} of the input token (${inputToken}) out of the wallet, below the requested input (${requested}); a bridge must spend its full input on the source chain.`);
+      }
+    } else if (outflow <= 0n) {
+      throw fail(`the bridge moved no input token (${inputToken}) out of the wallet; a bridge must spend its input on the source chain.`);
+    }
+  }
+
+  // --- Assertion 2: output arrives at or above the minimum acceptable ---
+  // The minimum-output computation below — and its quote-integrity checks (the
+  // output amount must be present, an integer, and positive) — runs for EVERY
+  // swap, bridges included: a bridge quote with a missing or zero output is
+  // still malformed. Only the final delta comparison is bridge-skipped, because
+  // the output settles on the destination chain and can never appear in this
+  // source-chain simulation.
   let minOut;
   if (swapMode === 'exactOut') {
     if (request.amount == null) throw fail('exactOut request is missing the requested output amount.');
@@ -1058,8 +1119,11 @@ export function assertSwapOutcome(request, quote, sim, { slippage, expectedSpend
     const bps = BigInt(Math.min(10000, Math.round(slip * 10000)));
     minOut = (quoted * (10000n - bps)) / 10000n;
   }
-  if (outputDelta < minOut) {
-    throw fail(`the output token (${outputToken}) increased by only ${outputDelta}, below the minimum acceptable output (${minOut}).`);
+  if (!isBridge) {
+    const outputDelta = deltas[outputToken] || 0n;
+    if (outputDelta < minOut) {
+      throw fail(`the output token (${outputToken}) increased by only ${outputDelta}, below the minimum acceptable output (${minOut}).`);
+    }
   }
 
   // --- Assertion 3: no token other than the input leaves the wallet ---
@@ -1117,7 +1181,7 @@ export function assertSwapOutcome(request, quote, sim, { slippage, expectedSpend
     }
   }
 
-  return { verified: true };
+  return { verified: true, outputAssertionSkipped: isBridge };
 }
 
 // Native-SOL dust tolerated on a non-input sibling in assertSolanaSwapOutcome —
@@ -1170,6 +1234,8 @@ const NATIVE_FEE_RENT_SLACK_LAMPORTS = MAX_PRIORITY_FEE_LAMPORTS + NATIVE_SIBLIN
  *      Native-SOL output relaxes this floor by NATIVE_FEE_RENT_SLACK_LAMPORTS
  *      because its lamport delta also nets out the base fee, priority fee, and
  *      ATA rent (same noise as native input); SPL output keeps the exact floor.
+ *      SKIPPED for a cross-chain bridge: the output settles on the destination
+ *      chain and can never appear in a source-chain simulation.
  *   3. no OTHER tracked asset leaves the wallet. SPL-token siblings get zero
  *      tolerance; native SOL, when it's a sibling (not the input), tolerates
  *      NATIVE_FEE_RENT_SLACK_LAMPORTS of fee/rent dust. All three assertions
@@ -1186,10 +1252,12 @@ const NATIVE_FEE_RENT_SLACK_LAMPORTS = MAX_PRIORITY_FEE_LAMPORTS + NATIVE_SIBLIN
  * @param {object} [ctx]
  * @param {number} [ctx.slippage] - slippage fraction in effect; defaults to 3%
  * @param {bigint} [ctx.siblingDustThreshold] - overrides NATIVE_FEE_RENT_SLACK_LAMPORTS
- * @returns {{verified: true, inputAssertionSkipped: boolean}} inputAssertionSkipped
- *   is true when the input was native SOL, meaning assertion 1 ran with the
- *   fee/rent slack applied instead of an exact bound (see assertion 1's
- *   rationale above) — the caller should surface this.
+ * @returns {{verified: true, inputAssertionSkipped: boolean, outputAssertionSkipped: boolean}}
+ *   inputAssertionSkipped is true when the input was native SOL, meaning
+ *   assertion 1 ran with the fee/rent slack applied instead of an exact bound
+ *   (see assertion 1's rationale above). outputAssertionSkipped is true for a
+ *   cross-chain bridge, meaning assertion 2 did not run. The caller should
+ *   surface both.
  * @throws {Error} with `code = 'SWAP_OUTCOME_MISMATCH'` on any failed assertion.
  */
 export function assertSolanaSwapOutcome(request, quote, sim, { slippage, siblingDustThreshold } = {}) {
@@ -1227,6 +1295,9 @@ export function assertSolanaSwapOutcome(request, quote, sim, { slippage, sibling
 
   const inputIsNative = inputAsset === SOL_SENTINEL;
 
+  // Bridges skip only assertion 2 (output arrival) below — see isBridgeRequest.
+  const isBridge = isBridgeRequest(request);
+
   // --- Assertion 1: input outflow within the spend ceiling ---
   if (request.maxInputAmount == null) {
     throw fail('request has no maximum input to bound the outflow against.');
@@ -1252,11 +1323,55 @@ export function assertSolanaSwapOutcome(request, quote, sim, { slippage, sibling
   if (outflow > effectiveCap) {
     throw fail(`the input token (${inputAsset}) left the wallet by ${outflow}, exceeding your maximum input (${cap}${inputIsNative ? ` plus fee/rent slack` : ''}).`);
   }
+  // Fail closed on an unrecognized swap mode (mirrors assertSwapOutcome). A
+  // persisted request with a garbage value must not fall into the exactOut
+  // branch below and drop the intent-relative input floor.
+  const swapMode = request.swapMode ?? 'exactIn';
+  if (swapMode !== 'exactIn' && swapMode !== 'exactOut') {
+    throw fail(`unrecognized swap mode "${swapMode}"; expected exactIn or exactOut.`);
+  }
+
+  // A bridge drops assertion 2 (its output settles on the destination chain),
+  // and for a normal swap that positive-output check is what implicitly proves
+  // the input was actually consumed. Restore that with an intent-relative LOWER
+  // bound on the source-chain outflow: a bare `outflow > 0` is too weak — a
+  // native-SOL leg always burns a fee, so a fee-only no-op (and any partial SPL
+  // outflow) would otherwise verify a bridge that never funded its input. For
+  // exactIn the outflow must be ~the requested input (assertion 1 caps it
+  // above); for exactOut the input is variable up to the cap, so only a
+  // positive-outflow floor is meaningful. Native-SOL input carries fee/rent
+  // noise (bridged amount + base/priority fee − reclaimed ATA rent), so relax
+  // the floor by the same slack assertion 1 adds to the ceiling; SPL is exact.
+  if (isBridge) {
+    if (swapMode === 'exactIn') {
+      if (request.amount == null) throw fail('bridge exactIn request is missing the requested input amount.');
+      let requested;
+      try {
+        requested = BigInt(request.amount);
+      } catch {
+        throw fail(`requested input amount (${request.amount}) is not an integer.`);
+      }
+      if (requested <= 0n) throw fail(`bridge exactIn request has a non-positive input amount (${requested}).`);
+      const floorSlack = inputIsNative ? NATIVE_FEE_RENT_SLACK_LAMPORTS : 0n;
+      // Clamp the floor to a positive minimum: for a native bridge smaller than
+      // the fee/rent slack a real leg is indistinguishable from a fee-only no-op,
+      // so the tightest we can still require is a non-zero outflow.
+      const minOutflow = requested > floorSlack ? requested - floorSlack : 1n;
+      if (outflow < minOutflow) {
+        throw fail(`the bridge moved only ${outflow} of the input token (${inputAsset}) out of the wallet, below the requested input (${requested}${inputIsNative ? ` minus fee/rent slack` : ''}); a bridge must spend its full input on the source chain.`);
+      }
+    } else if (outflow <= 0n) {
+      throw fail(`the bridge moved no input token (${inputAsset}) out of the wallet; a bridge must spend its input on the source chain.`);
+    }
+  }
 
   // --- Assertion 2: output arrives at or above the minimum acceptable ---
-  const swapMode = request.swapMode ?? 'exactIn';
-  const outputIsNative = outputAsset === SOL_SENTINEL;
-  const outputDelta = deltas[outputAsset] || 0n;
+  // The minimum-output computation below — and its quote-integrity checks (the
+  // output amount must be present, an integer, and positive) — runs for EVERY
+  // swap, bridges included: a bridge quote with a missing or zero output is
+  // still malformed. Only the final delta comparison is bridge-skipped, because
+  // the output settles on the destination chain and can never appear in this
+  // source-chain simulation.
   let minOut;
   if (swapMode === 'exactOut') {
     if (request.amount == null) throw fail('exactOut request is missing the requested output amount.');
@@ -1290,26 +1405,30 @@ export function assertSolanaSwapOutcome(request, quote, sim, { slippage, sibling
     const bps = BigInt(Math.min(10000, Math.round(slip * 10000)));
     minOut = (quoted * (10000n - bps)) / 10000n;
   }
-  // Native-SOL output carries the same fee/rent noise as native input: the
-  // lamport delta is (SOL received − base/priority fee − net ATA rent), so a
-  // legitimate trade can land a few million lamports under the quoted amount at
-  // tight slippage or on a congested-network priority fee. Relax the floor by
-  // the same combined fee/rent slack used for native siblings (assertion 3) and
-  // native input (assertion 1) so fee noise never false-blocks; the slippage
-  // floor still bounds any real shortfall. SPL output has no such noise and
-  // keeps the exact floor.
-  const outputFloorSlack = outputIsNative
-    ? (siblingDustThreshold != null ? siblingDustThreshold : NATIVE_FEE_RENT_SLACK_LAMPORTS)
-    : 0n;
-  // minOut can be smaller than the dust tolerance for a dust-quoted swap; clamp
-  // the floor at 0 so the subtraction never goes negative and silently admits
-  // any non-negative outputDelta (including zero). The explicit outputDelta <= 0n
-  // check below then restores the invariant assertSwapOutcome (the EVM sibling)
-  // gets for free because its minOut can never collapse to <= 0: a swap must
-  // deliver SOME positive output, even when the dust-adjusted floor is 0.
-  const adjustedFloor = minOut > outputFloorSlack ? minOut - outputFloorSlack : 0n;
-  if (outputDelta <= 0n || outputDelta < adjustedFloor) {
-    throw fail(`the output token (${outputAsset}) increased by only ${outputDelta}, below the minimum acceptable output (${minOut}).`);
+  if (!isBridge) {
+    const outputIsNative = outputAsset === SOL_SENTINEL;
+    const outputDelta = deltas[outputAsset] || 0n;
+    // Native-SOL output carries the same fee/rent noise as native input: the
+    // lamport delta is (SOL received − base/priority fee − net ATA rent), so a
+    // legitimate trade can land a few million lamports under the quoted amount at
+    // tight slippage or on a congested-network priority fee. Relax the floor by
+    // the same combined fee/rent slack used for native siblings (assertion 3) and
+    // native input (assertion 1) so fee noise never false-blocks; the slippage
+    // floor still bounds any real shortfall. SPL output has no such noise and
+    // keeps the exact floor.
+    const outputFloorSlack = outputIsNative
+      ? (siblingDustThreshold != null ? siblingDustThreshold : NATIVE_FEE_RENT_SLACK_LAMPORTS)
+      : 0n;
+    // minOut can be smaller than the dust tolerance for a dust-quoted swap; clamp
+    // the floor at 0 so the subtraction never goes negative and silently admits
+    // any non-negative outputDelta (including zero). The explicit outputDelta <= 0n
+    // check below then restores the invariant assertSwapOutcome (the EVM sibling)
+    // gets for free because its minOut can never collapse to <= 0: a swap must
+    // deliver SOME positive output, even when the dust-adjusted floor is 0.
+    const adjustedFloor = minOut > outputFloorSlack ? minOut - outputFloorSlack : 0n;
+    if (outputDelta <= 0n || outputDelta < adjustedFloor) {
+      throw fail(`the output token (${outputAsset}) increased by only ${outputDelta}, below the minimum acceptable output (${minOut}).`);
+    }
   }
 
   // --- Assertion 3: no other tracked asset leaves the wallet ---
@@ -1326,7 +1445,9 @@ export function assertSolanaSwapOutcome(request, quote, sim, { slippage, sibling
   // inputAssertionSkipped tells the caller assertion 1 ran with the fee/rent
   // slack applied (native-SOL input, per the JSDoc above), so it can surface
   // that instead of implying the input spend was tightly delta-verified.
-  return { verified: true, inputAssertionSkipped: inputIsNative };
+  // outputAssertionSkipped tells the caller assertion 2 did not run at all
+  // (cross-chain bridge, per the JSDoc above).
+  return { verified: true, inputAssertionSkipped: inputIsNative, outputAssertionSkipped: isBridge };
 }
 
 /**
