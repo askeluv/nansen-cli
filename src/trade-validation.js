@@ -1024,15 +1024,34 @@ export function assertSwapOutcome(request, quote, sim, { slippage, expectedSpend
   if (outflow > cap) {
     throw fail(`the input token (${inputToken}) left the wallet by ${outflow}, exceeding your maximum input (${cap}).`);
   }
+
+  const swapMode = request.swapMode ?? 'exactIn';
+
   // A bridge drops assertion 2 (its output settles on the destination chain),
   // and for a normal swap that positive-output check is what implicitly proves
-  // the input actually left the wallet. Without it a no-op transaction (empty
-  // deltas) would pass assertion 1 (outflow 0 <= cap) and verify as a
-  // successful bridge. Require a positive input outflow so a bridge that spends
-  // nothing on the source chain fails closed. (Native-SOL input always burns a
-  // fee, so this can never false-block a native leg on the Solana sibling.)
-  if (isBridge && outflow <= 0n) {
-    throw fail(`the bridge moved no input token (${inputToken}) out of the wallet; a bridge must spend its input on the source chain.`);
+  // the input was actually consumed. Restore that with an intent-relative LOWER
+  // bound on the source-chain outflow: a bare `outflow > 0` is too weak — a
+  // fee-only or 1-unit no-op would still verify a bridge that never funded its
+  // input. For exactIn the outflow must be ~the requested input (assertion 1
+  // already caps it above); for exactOut the input is variable up to the cap, so
+  // only a positive-outflow floor is meaningful. EVM native input delta is the
+  // transferred value with gas excluded, so the outflow is exact — no fee slack.
+  if (isBridge) {
+    if (swapMode === 'exactIn') {
+      if (request.amount == null) throw fail('bridge exactIn request is missing the requested input amount.');
+      let requested;
+      try {
+        requested = BigInt(request.amount);
+      } catch {
+        throw fail(`requested input amount (${request.amount}) is not an integer.`);
+      }
+      if (requested <= 0n) throw fail(`bridge exactIn request has a non-positive input amount (${requested}).`);
+      if (outflow < requested) {
+        throw fail(`the bridge moved only ${outflow} of the input token (${inputToken}) out of the wallet, below the requested input (${requested}); a bridge must spend its full input on the source chain.`);
+      }
+    } else if (outflow <= 0n) {
+      throw fail(`the bridge moved no input token (${inputToken}) out of the wallet; a bridge must spend its input on the source chain.`);
+    }
   }
 
   // --- Assertion 2: output arrives at or above the minimum acceptable ---
@@ -1042,7 +1061,6 @@ export function assertSwapOutcome(request, quote, sim, { slippage, expectedSpend
   // still malformed. Only the final delta comparison is bridge-skipped, because
   // the output settles on the destination chain and can never appear in this
   // source-chain simulation.
-  const swapMode = request.swapMode ?? 'exactIn';
   let minOut;
   if (swapMode === 'exactOut') {
     if (request.amount == null) throw fail('exactOut request is missing the requested output amount.');
@@ -1297,16 +1315,40 @@ export function assertSolanaSwapOutcome(request, quote, sim, { slippage, sibling
   if (outflow > effectiveCap) {
     throw fail(`the input token (${inputAsset}) left the wallet by ${outflow}, exceeding your maximum input (${cap}${inputIsNative ? ` plus fee/rent slack` : ''}).`);
   }
+  const swapMode = request.swapMode ?? 'exactIn';
+
   // A bridge drops assertion 2 (its output settles on the destination chain),
   // and for a normal swap that positive-output check is what implicitly proves
-  // the input actually left the wallet. Without it a no-op transaction (empty
-  // deltas) would pass assertion 1 (outflow 0 <= cap) and verify as a
-  // successful bridge. Require a positive input outflow so a bridge that spends
-  // nothing on the source chain fails closed. A native-SOL input always burns
-  // the base fee, so its outflow is inevitably positive — this can only fire on
-  // an SPL-input bridge that genuinely moved nothing, never as a false-block.
-  if (isBridge && outflow <= 0n) {
-    throw fail(`the bridge moved no input token (${inputAsset}) out of the wallet; a bridge must spend its input on the source chain.`);
+  // the input was actually consumed. Restore that with an intent-relative LOWER
+  // bound on the source-chain outflow: a bare `outflow > 0` is too weak — a
+  // native-SOL leg always burns a fee, so a fee-only no-op (and any partial SPL
+  // outflow) would otherwise verify a bridge that never funded its input. For
+  // exactIn the outflow must be ~the requested input (assertion 1 caps it
+  // above); for exactOut the input is variable up to the cap, so only a
+  // positive-outflow floor is meaningful. Native-SOL input carries fee/rent
+  // noise (bridged amount + base/priority fee − reclaimed ATA rent), so relax
+  // the floor by the same slack assertion 1 adds to the ceiling; SPL is exact.
+  if (isBridge) {
+    if (swapMode === 'exactIn') {
+      if (request.amount == null) throw fail('bridge exactIn request is missing the requested input amount.');
+      let requested;
+      try {
+        requested = BigInt(request.amount);
+      } catch {
+        throw fail(`requested input amount (${request.amount}) is not an integer.`);
+      }
+      if (requested <= 0n) throw fail(`bridge exactIn request has a non-positive input amount (${requested}).`);
+      const floorSlack = inputIsNative ? NATIVE_FEE_RENT_SLACK_LAMPORTS : 0n;
+      // Clamp the floor to a positive minimum: for a native bridge smaller than
+      // the fee/rent slack a real leg is indistinguishable from a fee-only no-op,
+      // so the tightest we can still require is a non-zero outflow.
+      const minOutflow = requested > floorSlack ? requested - floorSlack : 1n;
+      if (outflow < minOutflow) {
+        throw fail(`the bridge moved only ${outflow} of the input token (${inputAsset}) out of the wallet, below the requested input (${requested}${inputIsNative ? ` minus fee/rent slack` : ''}); a bridge must spend its full input on the source chain.`);
+      }
+    } else if (outflow <= 0n) {
+      throw fail(`the bridge moved no input token (${inputAsset}) out of the wallet; a bridge must spend its input on the source chain.`);
+    }
   }
 
   // --- Assertion 2: output arrives at or above the minimum acceptable ---
@@ -1316,7 +1358,6 @@ export function assertSolanaSwapOutcome(request, quote, sim, { slippage, sibling
   // still malformed. Only the final delta comparison is bridge-skipped, because
   // the output settles on the destination chain and can never appear in this
   // source-chain simulation.
-  const swapMode = request.swapMode ?? 'exactIn';
   let minOut;
   if (swapMode === 'exactOut') {
     if (request.amount == null) throw fail('exactOut request is missing the requested output amount.');

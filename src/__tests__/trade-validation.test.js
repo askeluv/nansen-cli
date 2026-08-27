@@ -1687,14 +1687,24 @@ describe('assertSwapOutcome', () => {
       .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*other than the one you are selling/i);
   });
 
-  it('bridge: rejects a no-op transaction that spends no input (positive-outflow guard)', () => {
+  it('bridge: rejects a no-op transaction that spends no input (intent-relative floor)', () => {
     // A bridge skips assertion 2 (output arrival), which for a normal swap is
     // what proves the input actually left. Empty deltas must not pass as a
     // verified bridge — it moved nothing and settles nothing on the destination.
     const bridgeRequest = { ...exactInRequest, toChain: 'solana' };
     const sim = { deltas: {}, approvals: [] };
     expect(() => assertSwapOutcome(bridgeRequest, exactInQuote, sim, {}))
-      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*moved no input token/i);
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*below the requested input/i);
+  });
+
+  it('bridge: rejects a partial outflow far below the requested input (intent-relative floor)', () => {
+    // outflow > 0 is not enough — a 1-unit spend against a 1,000,000 request
+    // means the bridge was not funded. EVM input outflow is exact (gas excluded),
+    // so the floor is the full requested input.
+    const bridgeRequest = { ...exactInRequest, toChain: 'solana' };
+    const sim = { deltas: { [USDC]: -1n }, approvals: [] };
+    expect(() => assertSwapOutcome(bridgeRequest, exactInQuote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*below the requested input/i);
   });
 
   it('bridge: still validates quote output integrity (missing outAmount) even though the delta check is skipped', () => {
@@ -1960,14 +1970,53 @@ describe('assertSolanaSwapOutcome', () => {
       .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*other than the one you are selling/i);
   });
 
-  it('bridge: rejects an SPL no-op transaction that spends no input (positive-outflow guard)', () => {
+  it('bridge: rejects an SPL no-op transaction that spends no input (intent-relative floor)', () => {
     // A bridge skips assertion 2 (output arrival), which for a normal swap is
     // what proves the input actually left. Empty deltas must not pass as a
     // verified bridge for an SPL input, which (unlike native SOL) burns no fee.
     const bridgeRequest = { ...splInRequest, toChain: 'base' };
     const sim = { deltas: {} };
     expect(() => assertSolanaSwapOutcome(bridgeRequest, splInQuote, sim, {}))
-      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*moved no input token/i);
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*below the requested input/i);
+  });
+
+  it('bridge: rejects a partial SPL outflow far below the requested input (intent-relative floor)', () => {
+    // outflow > 0 is not enough — 1 unit against a 1,000,000 request means the
+    // bridge was not funded. SPL input has no fee/rent noise, so the floor is the
+    // full requested input.
+    const bridgeRequest = { ...splInRequest, toChain: 'base' };
+    const sim = { deltas: { [SOL_USDC]: -1n } };
+    expect(() => assertSolanaSwapOutcome(bridgeRequest, splInQuote, sim, {}))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*below the requested input/i);
+  });
+
+  it('bridge: rejects a fee-only native-SOL no-op (positive outflow is not enough)', () => {
+    // The exact gap the bare `outflow > 0` guard missed: a 1 SOL native bridge
+    // whose only lamport movement is the ~5000-lamport base fee. The intent-
+    // relative floor (requested − fee/rent slack) rejects it.
+    const nativeBridgeRequest = {
+      chain: 'solana', walletAddress: 'Wallet1111111111111111111111111111111111', toChain: 'base',
+      fromToken: SOL_SENTINEL, toToken: SOL_USDC, swapMode: 'exactIn', amount: '1000000000', maxInputAmount: '1000000000',
+    };
+    const nativeBridgeQuote = { inputMint: SOL_SENTINEL, outputMint: SOL_USDC, inAmount: '1000000000', outAmount: '50000000' };
+    const sim = { deltas: { [SOL_SENTINEL]: -5000n } }; // fee only — nothing bridged
+    expect(() => assertSolanaSwapOutcome(nativeBridgeRequest, nativeBridgeQuote, sim, { slippage: 0.03 }))
+      .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*below the requested input/i);
+  });
+
+  it('bridge: a native-SOL leg within the fee/rent slack of the requested input passes', () => {
+    // Guards against a false-block: a real native bridge can land a few million
+    // lamports off the requested amount (fee added, ATA rent reclaimed). As long
+    // as it is within the slack of the request it must NOT be rejected.
+    const nativeBridgeRequest = {
+      chain: 'solana', walletAddress: 'Wallet1111111111111111111111111111111111', toChain: 'base',
+      fromToken: SOL_SENTINEL, toToken: SOL_USDC, swapMode: 'exactIn', amount: '1000000000', maxInputAmount: '1000000000',
+    };
+    const nativeBridgeQuote = { inputMint: SOL_SENTINEL, outputMint: SOL_USDC, inAmount: '1000000000', outAmount: '50000000' };
+    // 1 SOL bridged minus ~2M lamports of reclaimed rent — within the 13M slack.
+    const sim = { deltas: { [SOL_SENTINEL]: -998_000_000n } };
+    const result = assertSolanaSwapOutcome(nativeBridgeRequest, nativeBridgeQuote, sim, { slippage: 0.03 });
+    expect(result).toEqual({ verified: true, inputAssertionSkipped: true, outputAssertionSkipped: true });
   });
 
   it('bridge: still validates quote output integrity (missing outAmount) even though the delta check is skipped', () => {
