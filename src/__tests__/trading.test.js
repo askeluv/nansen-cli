@@ -701,6 +701,13 @@ describe('resolveEvmSwapGasLimit', () => {
     expect(await resolveEvmSwapGasLimit(quote, { chain: 'base', from: '0xabc' })).toBe(250000);
   });
 
+  it('parses hex gas without triggering estimation', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('should not estimate'))));
+    const quote = { transaction: { to: LIFI_ROUTER, data: '0x', gas: '0x88530' } };
+    expect(await resolveEvmSwapGasLimit(quote, { chain: 'base', from: '0xabc' })).toBe(558384);
+    vi.unstubAllGlobals();
+  });
+
   it('estimates with a 1.5x buffer when both are zero', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,

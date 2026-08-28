@@ -1098,13 +1098,23 @@ export async function estimateEvmGas(chain, { from, to, data, value }) {
 }
 
 /**
+ * Parse a gas field from quote/tx data (decimal or 0x-prefixed hex).
+ */
+function parseGasField(v) {
+  if (v === undefined || v === null || v === '') return 0;
+  if (typeof v === 'number') return v;
+  if (typeof v === 'string' && v.startsWith('0x')) return parseInt(v, 16);
+  return parseInt(v, 10);
+}
+
+/**
  * Resolve gas limit for an EVM swap from quote fields. When both quote.gas and
  * tx.gas/gasLimit are zero/missing, fall back to eth_estimateGas (×1.5) then 210000.
  */
 export async function resolveEvmSwapGasLimit(currentQuote, { chain, from }) {
   const txData = currentQuote.transaction;
-  const apiGas = parseInt(currentQuote.gas || '0', 10);
-  const txGas = parseInt(txData.gas || txData.gasLimit || '0', 10);
+  const apiGas = parseGasField(currentQuote.gas);
+  const txGas = parseGasField(txData.gas || txData.gasLimit);
   let finalGas = apiGas > 0 ? apiGas : txGas;
   if (finalGas === 0) {
     const estimated = await estimateEvmGas(chain, {
@@ -1121,8 +1131,8 @@ export async function resolveEvmSwapGasLimit(currentQuote, { chain, from }) {
 
 /** Log when gas was resolved from API vs estimate/fallback (all EVM signing paths). */
 function logEvmSwapGasResolution(log, currentQuote, txData, finalGas) {
-  const apiGas = parseInt(currentQuote.gas || '0', 10);
-  const txGas = parseInt(txData.gas || txData.gasLimit || '0', 10);
+  const apiGas = parseGasField(currentQuote.gas);
+  const txGas = parseGasField(txData.gas || txData.gasLimit);
   if (apiGas > 0 && finalGas !== txGas) {
     log(`  ℹ Using API gas ${finalGas} (tx.gas was ${txGas})`);
   } else if (finalGas > 0 && apiGas === 0 && txGas === 0) {
