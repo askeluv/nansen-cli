@@ -737,7 +737,10 @@ async function processSignatureStepLocal(step, { privateKeyHex, log, apiInstance
 
       const postBody = { ...signData.post.body };
 
-      if (targetUrl.includes('/authorize')) {
+      // Coupled to the same constant resolveRelayTargetUrl validates against
+      // (not a hardcoded substring), so the two can't silently drift apart if
+      // that constant ever changes.
+      if (targetUrl.endsWith(RELAY_AUTHORIZE_ENDPOINT_PATH)) {
         const sep = targetUrl.includes('?') ? '&' : '?';
         targetUrl = `${targetUrl}${sep}signature=${signature}`;
       } else {
@@ -847,7 +850,10 @@ async function processSignatureStepPrivy(step, { privyClient, walletId, log, api
 
     if (signData.sign) {
       const postBody = { ...signData.post.body };
-      if (targetUrl.includes('/authorize')) {
+      // Coupled to the same constant resolveRelayTargetUrl validates against
+      // (not a hardcoded substring), so the two can't silently drift apart if
+      // that constant ever changes.
+      if (targetUrl.endsWith(RELAY_AUTHORIZE_ENDPOINT_PATH)) {
         const sep = targetUrl.includes('?') ? '&' : '?';
         targetUrl = `${targetUrl}${sep}signature=${signature}`;
       } else {
