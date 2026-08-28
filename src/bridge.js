@@ -312,15 +312,22 @@ export function markBridgeQuoteExecuted(quoteId, progress = {}) {
 // contents, so we would hand back a well-formed signature that commits to
 // nothing about the action being authorised. Refuse instead — an omitted or
 // misspelled type list is a bug or a tampered response, never something to sign
-// through.
-function signEip712Local(typedData, privateKeyHex, context = 'EIP-712 payload') {
-  const { domain, types, primaryType, message } = typedData;
-  const fields = (types?.[primaryType] || []).map(f => ({ name: f.name, type: f.type }));
-  if (fields.length === 0) {
-    throw new Error(
+// through. Shared by signEip712Local (right before hashing), the Privy path
+// (right before delegating to ethSignTypedDataV4), and the preflight pass
+// (before any step signs at all).
+function assertEip712TypeListNonEmpty(types, primaryType, context) {
+  if ((types?.[primaryType] || []).length === 0) {
+    throw new CommandError(
       `${context} is missing its EIP-712 type definition for "${primaryType}", so the signature would not cover the action. Refusing to sign.`,
+      'UNEXPECTED_ACTION',
     );
   }
+}
+
+function signEip712Local(typedData, privateKeyHex, context = 'EIP-712 payload') {
+  const { domain, types, primaryType, message } = typedData;
+  assertEip712TypeListNonEmpty(types, primaryType, context);
+  const fields = (types?.[primaryType] || []).map(f => ({ name: f.name, type: f.type }));
   const msgHash = hashTypedData(domain, primaryType, fields, message);
   const { r, s, v } = signSecp256k1(msgHash, Buffer.from(privateKeyHex, 'hex'));
   return '0x' + r.toString('hex') + s.toString('hex') + (27 + v).toString(16).padStart(2, '0');
@@ -575,19 +582,26 @@ function buildHlBridgeAction(signData) {
 
 // Validate every signature step against user intent BEFORE any step is
 // signed or posted. Steps run in server-supplied order — the captured shape
-// is [authorize, sendAsset] — so without this preflight, the authorize leg
-// would already be signed and POSTed to Relay by the time a tampered
-// sendAsset step (later in the array) is reached and rejected. Static only:
-// same checks the per-step processors already run at their point of use,
-// just run up front across the whole plan first.
+// is [authorize, sendAsset] — so without this preflight, an earlier step
+// would already be signed and POSTed by the time a bad LATER step (either
+// leg — a mistargeted authorize endpoint or an under-specified action) is
+// reached and rejected. Covers every check that would otherwise gate signing
+// at that step's own point of use — the intent binding, the authorize
+// endpoint pin, and the EIP-712 type-list guard — so this is a strict
+// superset of the per-step processors' checks, run up front across the whole
+// plan first.
 function preflightHlBridgeSteps(steps, intent) {
   for (const step of steps) {
     for (const item of step.items || []) {
       const { data: signData } = item;
       if (signData.sign) {
         assertHlBridgeAuthorizeIntent(signData.sign, intent.signerAddress, `Bridge step "${step.id}"`);
+        resolveRelayTargetUrl(signData.post?.endpoint, `Bridge step "${step.id}"`);
+        assertEip712TypeListNonEmpty(signData.sign.types, signData.sign.primaryType, `Bridge step "${step.id}"`);
       } else if (signData.action) {
         assertHlBridgeActionIntent(buildHlBridgeAction(signData), intent, `Bridge step "${step.id}"`);
+        const primaryType = signData.eip712PrimaryType || 'HyperliquidTransaction';
+        assertEip712TypeListNonEmpty(signData.eip712Types || {}, primaryType, `Bridge step "${step.id}"`);
       }
     }
   }
@@ -858,14 +872,9 @@ async function processSignatureStepPrivy(step, { privyClient, walletId, log, api
       throw new Error(`Unexpected signature step format for ${step.id}`);
     }
 
-    // Same guard the local path gets in signEip712Local: an empty type list for
-    // the primary type produces a valid-looking signature that commits to none of
-    // the action's contents. Refuse rather than delegate the check to Privy.
-    if ((typedData.types?.[typedData.primaryType] || []).length === 0) {
-      throw new Error(
-        `Bridge step "${step.id}" is missing its EIP-712 type definition for "${typedData.primaryType}", so the signature would not cover the action. Refusing to sign.`,
-      );
-    }
+    // Same guard the local path gets in signEip712Local. Refuse rather than
+    // delegate the check to Privy.
+    assertEip712TypeListNonEmpty(typedData.types, typedData.primaryType, `Bridge step "${step.id}"`);
 
     log(`  Signing ${step.id} via Privy...`);
     const result = await privyClient.ethSignTypedDataV4(walletId, typedData);

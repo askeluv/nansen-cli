@@ -514,6 +514,50 @@ describe('bridge execute — Hyperliquid action intent binding', () => {
     expect(ethSignTypedDataV4).not.toHaveBeenCalled();
   });
 
+  // A good step FIRST, a bad step LATER: the preflight has to check every step's
+  // full pre-signing surface (not just intent binding) before any of them sign,
+  // or the good first step still gets signed/posted before the later one is
+  // even looked at.
+  it('rejects a bad authorize endpoint on a later step, before a clean earlier deposit step is signed', async () => {
+    const badAuthorize = authorizeStep();
+    badAuthorize.items[0].data.post.endpoint = 'https://attacker.example.com/authorize';
+    writeQuote('bridge-good-first-bad-authorize-endpoint', [depositStep(), badAuthorize]);
+    const calls = [];
+    await expect(execute('bridge-good-first-bad-authorize-endpoint', {}, calls)).rejects.toThrow(/unexpected authorize endpoint/);
+    expect(calls.filter(c => c.endpoint.includes('/bridge/execute'))).toEqual([]);
+    const onDisk = JSON.parse(fs.readFileSync(path.join(quotesDir, 'bridge-good-first-bad-authorize-endpoint.json'), 'utf8'));
+    expect(onDisk.executedAt).toBeUndefined();
+  });
+
+  it('Privy path: rejects a bad authorize endpoint on a later step, before a clean earlier deposit step is signed', async () => {
+    const badAuthorize = authorizeStep();
+    badAuthorize.items[0].data.post.endpoint = 'https://attacker.example.com/authorize';
+    writeQuote('bridge-good-first-bad-authorize-endpoint-privy', [depositStep(), badAuthorize], { walletProvider: 'privy' });
+    showWallet.mockReturnValue({ name: 'p', evm: WALLET, provider: 'privy', privyWalletIds: { evm: 'pw-1' } });
+    await expect(execute('bridge-good-first-bad-authorize-endpoint-privy')).rejects.toThrow(/unexpected authorize endpoint/);
+    expect(ethSignTypedDataV4).not.toHaveBeenCalled();
+  });
+
+  it('rejects a later deposit step missing its EIP-712 types, before a clean earlier authorize step is signed', async () => {
+    const noTypesDeposit = depositStep();
+    noTypesDeposit.items[0].data.eip712Types = {};
+    writeQuote('bridge-good-first-missing-types', [authorizeStep(), noTypesDeposit]);
+    const calls = [];
+    await expect(execute('bridge-good-first-missing-types', {}, calls)).rejects.toThrow(/missing its EIP-712 type definition/);
+    expect(calls.filter(c => c.endpoint.includes('/bridge/execute'))).toEqual([]);
+    const onDisk = JSON.parse(fs.readFileSync(path.join(quotesDir, 'bridge-good-first-missing-types.json'), 'utf8'));
+    expect(onDisk.executedAt).toBeUndefined();
+  });
+
+  it('Privy path: rejects a later deposit step missing its EIP-712 types, before a clean earlier authorize step is signed', async () => {
+    const noTypesDeposit = depositStep();
+    noTypesDeposit.items[0].data.eip712Types = {};
+    writeQuote('bridge-good-first-missing-types-privy', [authorizeStep(), noTypesDeposit], { walletProvider: 'privy' });
+    showWallet.mockReturnValue({ name: 'p', evm: WALLET, provider: 'privy', privyWalletIds: { evm: 'pw-1' } });
+    await expect(execute('bridge-good-first-missing-types-privy')).rejects.toThrow(/missing its EIP-712 type definition/);
+    expect(ethSignTypedDataV4).not.toHaveBeenCalled();
+  });
+
   it('Privy path: rejects an inflated amount before ethSignTypedDataV4 is called', async () => {
     writeQuote('bridge-privy-inflated', [depositStep(undefined, { amount: '2000.000000' })], {
       walletProvider: 'privy',
