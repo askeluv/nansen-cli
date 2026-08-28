@@ -466,6 +466,12 @@ function parsePositiveInt(raw, name) {
   if (!Number.isInteger(n) || n <= 0) {
     throw invalid(`Invalid --${name} "${raw}". Must be a positive integer.`);
   }
+  // Hyperliquid order IDs are uint64. JS Number loses precision above 2^53-1,
+  // so parseInt would silently round a large oid and cancel the wrong order.
+  // Refuse here for the same reason the response path withholds unsafe oids.
+  if (!Number.isSafeInteger(n)) {
+    throw invalid(`Invalid --${name} "${raw}". Value exceeds safe integer precision (2^53-1); copy the exact order ID from "nansen perp positions".`);
+  }
   return n;
 }
 

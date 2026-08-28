@@ -61,6 +61,61 @@ nansen schema [command] [--pretty]    # full command reference (no API key neede
 
 Run `nansen schema --pretty` for the full subcommand and field reference.
 
+## MCP
+
+Connect any MCP client to Nansen's streamable HTTP server:
+
+- **Endpoint:** `https://mcp.nansen.ai/ra/mcp`
+- **Authentication:** `NANSEN-API-KEY` header
+- **API key:** [app.nansen.ai/auth/agent-setup](https://app.nansen.ai/auth/agent-setup)
+
+**Claude Desktop and Cursor:** setup instructions for both — the Claude Desktop `.dxt` bundle and the Cursor install deep link — are in the connection docs: [docs.nansen.ai/mcp/connecting](https://docs.nansen.ai/mcp/connecting).
+
+**One-command (Claude Code):**
+
+```bash
+claude mcp add --transport http nansen https://mcp.nansen.ai/ra/mcp --header "NANSEN-API-KEY: <your-key>"
+```
+
+**Manual (any streamable-HTTP client):** for example, add this to Cursor's `~/.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "nansen": {
+      "url": "https://mcp.nansen.ai/ra/mcp",
+      "headers": {
+        "NANSEN-API-KEY": "<your-key>"
+      }
+    }
+  }
+}
+```
+
+**Manual (stdio-only clients):** use `mcp-remote` as a bridge. Keep the header as one argument with no space after the colon:
+
+```json
+{
+  "mcpServers": {
+    "nansen": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote@latest",
+        "https://mcp.nansen.ai/ra/mcp",
+        "--header",
+        "NANSEN-API-KEY:${NANSEN_API_KEY}"
+      ],
+      "env": {
+        "NANSEN_API_KEY": "<your-key>"
+      }
+    }
+  }
+}
+```
+
+**Claude Tag (Claude in Slack):** an admin must attach a plugin whose `.mcp.json` points at `https://mcp.nansen.ai/ra/mcp` and add a custom credential allowing the host `mcp.nansen.ai`. See the [Claude Tag custom-connections documentation](https://claude.com/docs/claude-tag/admins/connections/custom). Per-user fallback: use Claude Code or Claude Desktop.
+
 ## Trading
 
 DEX swaps on `solana` and `base`. Two-step: quote then execute.
@@ -226,7 +281,7 @@ nansen research smart-money netflow --chain solana --fields token_symbol,net_flo
 
 | Code | Action |
 |------|--------|
-| `CREDITS_EXHAUSTED` | Stop all API calls immediately. `details.credits.remaining` is your actual balance. Top up at [app.nansen.ai/api](https://app.nansen.ai/api). |
+| `CREDITS_EXHAUSTED` | Stop all API calls immediately. `details.credits.remaining` is your actual balance. Top up at [app.nansen.ai/api?tab=api](https://app.nansen.ai/api?tab=api). |
 | `UNAUTHORIZED` | Wrong or missing key. Re-auth. |
 | `RATE_LIMITED` | Auto-retried by CLI. `details.rateLimit.resetSeconds` is how long the window needs to drain. |
 | `UNSUPPORTED_FILTER` | Remove the filter and retry. |

@@ -114,13 +114,15 @@ export async function sendTransactionViaWalletConnect(txData, timeoutMs = 120000
  * @param {number} chainId - EIP-155 chain ID
  * @param {bigint|string|number} amount - Allowance to grant, in base units
  * @param {bigint|string|number} [maxAllowance] - Hard cap from persisted request intent
+ * @param {object} [opts]
+ * @param {boolean} [opts.allowZero=false] - Allow a zero-amount revoke approval
  * @returns {{ txHash?: string, signedTransaction?: string }}
  */
-export async function sendApprovalViaWalletConnect(tokenAddress, spenderAddress, chainId, amount, maxAllowance) {
+export async function sendApprovalViaWalletConnect(tokenAddress, spenderAddress, chainId, amount, maxAllowance, { allowZero = false } = {}) {
   // encodeApproveCalldata enforces a valid 20-byte spender, a bounded (< MAX)
   // amount within the request cap, and exactly-68-byte calldata — so a
   // malformed or tampered spender/amount can't reshape the ABI word layout.
-  const data = encodeApproveCalldata(spenderAddress, amount, { maxAllowance });
+  const data = encodeApproveCalldata(spenderAddress, amount, { maxAllowance, allowZero });
 
   return sendTransactionViaWalletConnect({
     to: tokenAddress,

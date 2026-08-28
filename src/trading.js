@@ -9,18 +9,25 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { base58Encode, exportWallet, getWalletConfig, showWallet, listWallets } from './wallet.js';
-import { base58Decode } from './transfer.js';
+import { base58Decode, encodeCompactU16 } from './transfer.js';
+import { buildMessageV0, fetchRecentBlockhash } from './x402-svm.js';
 import { keccak256, signSecp256k1, rlpEncode } from './crypto.js';
 import { getWalletConnectAddress, sendTransactionViaWalletConnect, sendSolanaTransactionViaWalletConnect, sendApprovalViaWalletConnect } from './walletconnect-trading.js';
 import { retrievePassword } from './keychain.js';
-import { validateQuoteInput, validateBalance, resolvePercentAmount, validateGasBalance, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertSwapCalldataNotBareTransfer, approvalAmountForSwap } from './trade-validation.js';
+import { validateQuoteInput, validateBalance, resolvePercentAmount, validateGasBalance, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertSwapCalldataNotBareTransfer, assertSwapOutcome, assertSolanaInstructionsSafe, assertSolanaSwapOutcome, approvalAmountForSwap, needsAllowanceRevoke, OVERSIZED_ALLOWANCE_MULTIPLIER, EVM_BRIDGE_NATIVE_FEE_SLACK, isBridgeRequest } from './trade-validation.js';
+import { readCompactU16 } from './solana-tx.js';
+export { readCompactU16 };
 import { CHAIN_RPCS } from './rpc-urls.js';
-import { packageVersion, CommandError, telemetryHeaders } from './api.js';
+import { simulateAssetChanges, SwapSimulationError, hasSimulationRpc } from './swap-simulation.js';
+import { simulateSolanaAssetChanges, SolanaSimulationError, hasSolanaSimulationRpc } from './solana-simulation.js';
+import { packageVersion, CommandError, telemetryHeaders, loadConfig } from './api.js';
 
 // ============= Constants =============
 
 const TRADING_API_URL = process.env.NANSEN_TRADING_API_URL || 'https://trading-api.nansen.ai';
 const CLIENT_USER_AGENT = `nansen-cli/${packageVersion}`;
+// Solana's max transaction wire size (IPv6 MTU minus headers).
+const SOLANA_MAX_TX_SIZE = 1232;
 
 const CHAIN_MAP = {
   solana:   { index: '501', type: 'solana', chainId: 501,  name: 'Solana',   explorer: 'https://solscan.io/tx/', lifiChainId: '1151111081099710' },
@@ -108,7 +115,8 @@ export function getQuotesDir() {
 export function safeQuotesPath(filename) {
   const base = path.resolve(getQuotesDir());
   const target = path.resolve(base, filename);
-  if (path.relative(base, target).startsWith('..')) return null;
+  const relative = path.relative(base, target);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
   return target;
 }
 
@@ -450,11 +458,10 @@ export function cleanupQuotes() {
 
 // ============= Transaction Signing =============
 
-// ----------------------------------------------------------------
-// TODO: SECURITY REVIEW REQUIRED
-// The signing functions below construct and sign raw transactions.
-// They MUST be audited before any production/mainnet use.
-// ----------------------------------------------------------------
+// The signing functions below construct and sign raw transactions from quote
+// data. The authorization checks that make them safe to call live upstream:
+// assertQuoteMatchesRequest, assertSwapCalldataNotBareTransfer, scoped ERC-20
+// approvals, and the approval target/amount validators in trade-validation.js.
 
 /**
  * Sign a Solana transaction from quote data.
@@ -505,6 +512,107 @@ export function signSolanaTransaction(transactionBase64, privateKeyHex) {
   return signedTx.toString('base64');
 }
 
+// Any valid base58 32-byte value works here — recentBlockhash is fixed-size
+// regardless of its actual value, so this is exact for a size-only preflight
+// and lets the signer/signature-count checks below run before the real
+// blockhash fetch (no wasted RPC round trip on a request we're going to reject).
+const SIZE_CHECK_BLOCKHASH = '11111111111111111111111111111111';
+
+function decodeInstructionData(hex) {
+  if (hex == null || hex === '') return Buffer.alloc(0); // some instructions legitimately carry no data
+  const body = hex.startsWith('0x') ? hex.slice(2) : hex;
+  // Buffer.from(str, 'hex') silently drops a trailing odd nibble and stops at
+  // the first non-hex character, so it would decode malformed data into a
+  // plausible-but-wrong instruction that then gets signed. Reject instead.
+  if (body.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(body)) {
+    throw new Error(`Cannot compile Solana transaction: instruction data is not valid hex ("${hex}")`);
+  }
+  return Buffer.from(body, 'hex');
+}
+
+/**
+ * Compile a raw, uncompiled Solana transaction — {instructions, addressLookupTableAddresses}
+ * — into a signable base64 VersionedTransaction. Some aggregators (Relay's Solana-source
+ * bridge quotes) return this shape instead of a ready-to-sign serialized transaction.
+ *
+ * Every account is kept static; the address-lookup-table hint is a size optimization,
+ * not a correctness requirement, so skipping it is valid as long as the compiled
+ * transaction still fits Solana's packet limit. Full lookup-table compilation is
+ * unimplemented — throws instead of silently building an oversized/invalid transaction.
+ *
+ * getExpectedSigner is an async thunk resolving to the address of the wallet that is
+ * about to sign. The transaction only ever gets a single signature written into slot 0
+ * (see signSolanaTransaction / the WalletConnect injection path), so the instructions'
+ * own declared signer must both be unambiguous (exactly one signer) and match that
+ * wallet — otherwise the transaction would silently sign the wrong account or leave a
+ * required signature slot empty, failing on-chain with an opaque error.
+ */
+export async function compileRawSolanaTransaction(transaction, rpcUrl, getExpectedSigner) {
+  const instructions = transaction.instructions.map(ix => {
+    if (!Array.isArray(ix.keys)) {
+      throw new Error('Cannot compile Solana transaction: instruction is missing its "keys" accounts list');
+    }
+    return { programId: ix.programId, accounts: ix.keys, data: decodeInstructionData(ix.data) };
+  });
+
+  const feePayer = instructions.flatMap(ix => ix.accounts).find(a => a.isSigner)?.pubkey;
+  if (!feePayer) {
+    throw new Error('Cannot compile Solana transaction: no signer account found in instructions');
+  }
+
+  const expectedSigner = await getExpectedSigner();
+  if (!expectedSigner) {
+    throw new Error('Cannot compile Solana transaction: wallet address unavailable to verify the signer');
+  }
+  if (feePayer !== expectedSigner) {
+    throw new Error(
+      `Solana transaction signer (${feePayer}) doesn't match the wallet executing this trade ` +
+      `(${expectedSigner}). Refusing to sign — get a new quote.`
+    );
+  }
+
+  const preflight = buildMessageV0({ feePayer, instructions, recentBlockhash: SIZE_CHECK_BLOCKHASH });
+  if (preflight.numRequiredSignatures !== 1) {
+    throw new Error(
+      `Cannot compile Solana transaction: requires ${preflight.numRequiredSignatures} signatures, ` +
+      `but only the wallet's own signature can be provided.`
+    );
+  }
+  const unsignedSize = 1 + 64 + preflight.messageBytes.length; // compact-u16(1) + 1 signature slot
+  if (unsignedSize > SOLANA_MAX_TX_SIZE) {
+    throw new Error(
+      `Solana transaction too large to compile without address-lookup-table support ` +
+      `(${unsignedSize} bytes > ${SOLANA_MAX_TX_SIZE} limit). This route needs its ` +
+      `address lookup tables resolved, which isn't supported yet.`
+    );
+  }
+
+  const recentBlockhash = await fetchRecentBlockhash(rpcUrl);
+  const { messageBytes } = buildMessageV0({ feePayer, instructions, recentBlockhash });
+  const unsignedTx = Buffer.concat([encodeCompactU16(1), Buffer.alloc(64), messageBytes]);
+  return unsignedTx.toString('base64');
+}
+
+/**
+ * Normalize a Solana quote's `transaction` field to a base64-encoded, ready-to-sign
+ * VersionedTransaction. Three shapes seen across aggregators: Jupiter (already base64),
+ * OKX ({data: base58}), and Relay bridge quotes (raw uncompiled
+ * {instructions, addressLookupTableAddresses} — compiled client-side).
+ *
+ * getExpectedSigner (only consulted for the Relay shape) is an async thunk resolving to
+ * the signing wallet's address — see compileRawSolanaTransaction.
+ */
+export async function normalizeSolanaTransaction(transaction, rpcUrl, getExpectedSigner) {
+  if (typeof transaction === 'string') return transaction; // Jupiter: already base64
+  // Dispatch most-specific shape first. Only Relay carries `instructions` and
+  // only OKX carries `data`; checking `instructions` ahead of the bare
+  // `data` truthiness test keeps a future Relay shape that also had a `data`
+  // field from being mis-routed into the OKX base58 decode.
+  if (Array.isArray(transaction.instructions)) return compileRawSolanaTransaction(transaction, rpcUrl, getExpectedSigner);
+  if (transaction.data) return base58Decode(transaction.data).toString('base64'); // OKX: base58 serialized tx
+  throw new Error('Unrecognized Solana transaction format in quote');
+}
+
 /**
  * Sign an EVM transaction from quote data.
  *
@@ -526,7 +634,8 @@ export function signSolanaTransaction(transactionBase64, privateKeyHex) {
  * @param {number} nonce - Account nonce
  * @returns {string} 0x-prefixed signed transaction hex
  */
-// ⚠️ SECURITY: EVM transaction signing - requires thorough review before production use
+// Pure EVM encode/sign primitive. Quote authorization and request-intent binding
+// happen upstream before this function receives transaction calldata.
 export function signEvmTransaction(txData, privateKeyHex, chain, nonce) {
   const chainConfig = CHAIN_MAP[chain];
   if (!chainConfig || chainConfig.type !== 'evm') {
@@ -562,6 +671,30 @@ export function signEvmTransaction(txData, privateKeyHex, chain, nonce) {
   }
 
   return signLegacyTransaction({ ...common, gasPrice: toHex(txData.gasPrice) }, privateKeyHex);
+}
+
+/**
+ * Canonical EVM transaction hash: keccak256 over the raw signed tx bytes.
+ *
+ * Works for legacy (RLP) and typed (0x02-prefixed EIP-1559) transactions alike,
+ * because the tx hash is defined over exactly the bytes that get broadcast.
+ *
+ * NB: this is NOT the signing hash. signEvmTransaction/signLegacyTransaction hash
+ * the *unsigned* payload to produce the message that gets signed; this hashes the
+ * fully *signed* transaction to produce its on-chain identifier.
+ *
+ * @param {string} signedTxHex - 0x-prefixed (or bare) hex of the signed transaction
+ * @returns {string} 0x-prefixed transaction hash
+ */
+export function evmTxHash(signedTxHex) {
+  if (typeof signedTxHex !== 'string') {
+    throw new Error('evmTxHash: signed transaction must be a hex string');
+  }
+  const hex = signedTxHex.startsWith('0x') ? signedTxHex.slice(2) : signedTxHex;
+  if (hex.length === 0 || hex.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(hex)) {
+    throw new Error('evmTxHash: signed transaction is not valid hex');
+  }
+  return '0x' + keccak256(Buffer.from(hex, 'hex')).toString('hex');
 }
 
 // How many queued-but-unmined transactions we are willing to sign past.
@@ -657,7 +790,108 @@ export async function waitForReceipt(chain, txHash, timeoutMs = 180000, pollMs =
     // Receipt not yet available — wait and retry
     await new Promise(r => setTimeout(r, pollMs));
   }
-  throw new Error(`Transaction receipt not found after ${timeoutMs}ms. Tx: ${txHash}`);
+  // A timeout is NOT a confirmed revert: the tx may still be pending under our
+  // nonce. Tag it so callers can distinguish "reverted" (safe to try the next
+  // quote) from "unconfirmed" (retrying may broadcast a second tx that races
+  // the first for the same nonce). See the swap-path receipt catch.
+  const timeoutErr = new Error(`Transaction receipt not found after ${timeoutMs}ms. Tx: ${txHash}`);
+  timeoutErr.code = 'RECEIPT_TIMEOUT';
+  throw timeoutErr;
+}
+
+/**
+ * Post-broadcast failures that must abort the whole `execute` rather than fall
+ * through to the next quote. Once a transaction is broadcast we hold no evidence
+ * about what landed on-chain, so "try the next quote" would sign and broadcast a
+ * second transaction — the one thing we must not do. Covers every path (swap,
+ * approval, revoke; Privy/WalletConnect/local-key). Each code is thrown with a
+ * rationale at its throw site:
+ *   - TXHASH_MISMATCH  — broadcaster reported a tx we did not sign
+ *   - INVALID_SIGNED_TX — we cannot even derive a hash for what we broadcast
+ *   - RECEIPT_TIMEOUT  — receipt never landed; the tx may still be pending, so
+ *                        retrying would race a second tx against the same nonce
+ *                        (a confirmed on-chain revert is NOT this — it may retry)
+ *
+ * @param {Error} err
+ * @returns {boolean}
+ */
+function isFatalBroadcastError(err) {
+  return err?.code === 'TXHASH_MISMATCH'
+    || err?.code === 'INVALID_SIGNED_TX'
+    || err?.code === 'RECEIPT_TIMEOUT';
+}
+
+/**
+ * Assert the broadcaster reported the transaction we actually signed, and return
+ * our locally-derived hash.
+ *
+ * Fails closed (TXHASH_MISMATCH) when the broadcaster's returned hash differs
+ * from keccak256 of our signed bytes: a mismatch means its receipt would confirm
+ * a transaction we never signed, so nothing has been verified. When the
+ * broadcaster returns no hash we cannot compare, so the returned local hash is
+ * what callers must poll for a receipt — a substituted transaction then times
+ * out rather than falsely confirming.
+ *
+ * @param {string} signedTxHex - the raw signed tx we sent to /execute
+ * @param {string} broadcasterTxHash - the txHash /execute returned (may be empty)
+ * @param {string} [label] - describes the tx for the error, e.g. "allowance-revoke"
+ * @returns {string} our locally-derived transaction hash
+ */
+function assertTxHashMatch(signedTxHex, broadcasterTxHash, label = '') {
+  const what = label ? `the ${label} transaction this CLI signed` : 'the transaction this CLI signed';
+  // A derivation failure here happens AFTER the tx was broadcast, so it must be
+  // fatal (INVALID_SIGNED_TX), never swallowed into "try the next quote": we
+  // hold no hash for the transaction we just sent.
+  let localHash;
+  try {
+    localHash = evmTxHash(signedTxHex);
+  } catch (hashErr) {
+    throw new CommandError(
+      `Aborting: cannot derive a local hash for ${what}: ${hashErr.message}. `
+      + `The transaction may already have been broadcast, so nothing further will run — `
+      + `check your wallet before retrying.`,
+      'INVALID_SIGNED_TX',
+    );
+  }
+  // Normalize both sides through the same bare-hex form before comparing.
+  // evmTxHash always emits 0x-prefixed, but a broadcaster may report bare hex;
+  // comparing 0x-prefixed against bare would be a false mismatch on the prefix
+  // alone — and TXHASH_MISMATCH is fatal, so that would wrongly abort.
+  if (broadcasterTxHash) {
+    const norm = h => h.toLowerCase().replace(/^0x/, '');
+    if (norm(localHash) !== norm(broadcasterTxHash)) {
+      throw new CommandError(
+        `Aborting: the broadcaster reported transaction ${broadcasterTxHash}, but ${what} `
+        + `hashes to ${localHash}. These must match — a mismatch means the receipt would confirm `
+        + `a transaction you did not sign, so nothing has been verified and no further steps will `
+        + `run. Check both hashes on a block explorer to see what was actually broadcast before retrying.`,
+        'TXHASH_MISMATCH',
+      );
+    }
+  }
+  return localHash;
+}
+
+/**
+ * Confirm a broadcast EVM transaction against the hash we derived locally from
+ * the signed bytes — not the hash the broadcaster reported. See
+ * {@link assertTxHashMatch} for the two guarantees (fail closed on mismatch;
+ * poll our own hash so a silent substitution times out rather than confirms).
+ *
+ * @param {string} chain
+ * @param {string} signedTxHex - the raw signed tx we sent to /execute
+ * @param {string} broadcasterTxHash - the txHash /execute returned
+ * @param {string} [label] - describes the tx for a mismatch error, e.g.
+ *   "allowance-revoke" — the least useful moment to lose context is a revoke
+ *   mismatch with the allowance sitting at 0, so callers should pass it
+ * @returns {Promise<{receipt: object, hash: string}>} the receipt and the
+ *   locally-derived hash it was confirmed against (log THIS, not the
+ *   broadcaster's hash — it is the transaction we actually verified landed)
+ */
+export async function confirmEvmBroadcast(chain, signedTxHex, broadcasterTxHash, label = '') {
+  const hash = assertTxHashMatch(signedTxHex, broadcasterTxHash, label);
+  const receipt = await waitForReceipt(chain, hash);
+  return { receipt, hash };
 }
 
 /**
@@ -701,6 +935,154 @@ export async function simulateEvmCall(chain, { from, to, data, value, gas }) {
 }
 
 /**
+ * Normalise an aggregator's transaction `value` to a 0x-hex string the RPC
+ * accepts. The field may be a decimal string ('1000000'), a 0x-hex string, a
+ * bare '0x' (no digits — `BigInt('0x')` throws), or absent. Anything unparseable
+ * becomes '0x0' rather than throwing, so a malformed value can't crash the
+ * degrade path or misfire as an outcome mismatch. Note: unlike swap-simulation's
+ * hexToBigInt, this keeps BigInt's decimal parsing (tx.value is often decimal).
+ */
+function toRpcHexValue(value) {
+  if (!value || value === '0x') return '0x0';
+  try {
+    return '0x' + BigInt(value).toString(16);
+  } catch {
+    return '0x0';
+  }
+}
+
+/**
+ * Verify — via balance-delta simulation — that a swap does to the wallet what
+ * the user asked and no more. Defence-in-depth on top of the static calldata
+ * guards: the cheap eth_call sim answers "will it revert", this answers "does the
+ * outcome match intent" (see assertSwapOutcome in trade-validation.js).
+ *
+ * EVM-only, and on its own gate independent of --no-simulate/gasless. Runs for
+ * cross-chain bridges too — assertSwapOutcome skips only the output-arrival
+ * assertion internally, since the output lands on the destination chain and a
+ * source-chain simulation can't observe it; the input-outflow and no-sibling-
+ * drain assertions still bound the source-chain leg. When no simulation-capable
+ * endpoint is configured it DEGRADES — logs a warning, then proceeds — so a simulation
+ * outage never blocks trading. --no-verify-outcome skips it entirely.
+ *
+ * Returns { proceed, reason }. proceed=false means this quote failed
+ * verification: the caller should fall through to the next candidate WITHOUT
+ * signing or broadcasting the swap. proceed=true covers a clean pass AND a
+ * degrade (the warning is logged here).
+ *
+ * @param {object} args
+ * @param {string} args.chain
+ * @param {string} args.from - the wallet that will sign (the sender simulated)
+ * @param {object} args.quote - the quote about to be executed (currentQuote)
+ * @param {object} args.quoteData - the loaded quote record (.request, .slippage)
+ * @param {string|null} [args.apiKey] - Nansen API key for the hosted endpoint
+ * @param {function} [args.log]
+ */
+export async function verifySwapOutcome({ chain, from, quote, quoteData, apiKey = null, log = () => {} }) {
+  if (CHAIN_MAP[chain?.toLowerCase()]?.type !== 'evm') return { proceed: true }; // EVM-only
+  // Cross-chain (bridge): the output token settles on the destination chain,
+  // so the source-chain simulation still runs but assertSwapOutcome skips
+  // only the output-arrival assertion internally (isBridge, derived from
+  // quoteData.request). The input-outflow cap and no-sibling-drain checks
+  // still bound the source-chain leg.
+
+  // No request intent recorded (a pre-intent quote): assertSwapOutcome has
+  // nothing to compare the simulated deltas against and would raise a misleading
+  // SWAP_OUTCOME_MISMATCH. Degrade cleanly — the static guards still ran, and a
+  // re-quote re-enables this check.
+  if (!quoteData?.request) {
+    log('  ⚠ Swap-outcome verification skipped (no request intent — re-quote to enable it).');
+    return { proceed: true };
+  }
+  if (!hasSimulationRpc(chain)) {
+    log(`  ⚠ Swap-outcome verification unavailable (no simulation endpoint for ${chain}); proceeding without it.`);
+    return { proceed: true };
+  }
+  const tx = quote?.transaction || {};
+  // Spenders the wallet may legitimately (re)approve mid-swap: the approval
+  // target and the router it routes through. Anything else fails assertion 4.
+  const expectedSpenders = [quote?.approvalAddress, tx.to].filter(Boolean);
+  try {
+    const sim = await simulateAssetChanges(
+      chain,
+      { to: tx.to, data: tx.data, value: toRpcHexValue(tx.value) },
+      { from, apiKey },
+    );
+    // A cross-chain bridge may pay a fee in native ETH via msg.value on a
+    // token-input route; that surfaces as a native sibling outflow which the
+    // no-sibling-drain check (assertion 3) would otherwise reject. Tolerate it up
+    // to the smaller of the tx's declared native value and the fixed cap — never
+    // the full value, which a hostile quote could inflate to the whole balance.
+    // assertSwapOutcome applies this only for bridges and only to native.
+    let siblingDustThreshold = 0n;
+    try {
+      const declaredValue = BigInt(tx.value ?? 0);
+      siblingDustThreshold = declaredValue < EVM_BRIDGE_NATIVE_FEE_SLACK ? declaredValue : EVM_BRIDGE_NATIVE_FEE_SLACK;
+    } catch { /* non-integer value → leave 0n, assertion 3 stays strict */ }
+    const outcome = assertSwapOutcome(quoteData.request, quote, sim, { slippage: quoteData.slippage, expectedSpenders, siblingDustThreshold });
+    if (outcome.outputAssertionSkipped) {
+      log('  ℹ Bridge: input-outflow and sibling checks ran; output arrives on the destination chain and is not simulated here.');
+    }
+    log(`  ✓ Swap outcome verified (via ${sim.method}).`);
+    return { proceed: true };
+  } catch (e) {
+    // Degrade (warn + proceed) when the simulation itself could not run; block
+    // (fall through to the next quote) when the outcome did not match or the
+    // swap reverts in simulation.
+    if (e instanceof SwapSimulationError && ['NO_SIM_RPC', 'NOT_SIM_CAPABLE', 'SIM_RPC_ERROR'].includes(e.code)) {
+      log(`  ⚠ Swap-outcome verification could not run (${e.message}); proceeding without it.`);
+      return { proceed: true };
+    }
+    return { proceed: false, reason: e.message };
+  }
+}
+
+/**
+ * The Solana sibling of verifySwapOutcome: simulates the swap transaction via
+ * simulateTransaction and checks the resulting balance deltas against the
+ * persisted request intent, degrading (warn + proceed) on any RPC/sim outage
+ * so an outage never blocks a trade — only a real outcome mismatch or an
+ * in-simulation revert blocks (falls through to the next quote).
+ */
+export async function verifySolanaSwapOutcome({ chain, walletAddress, txBase64, quote, quoteData, log = () => {} }) {
+  if (chain !== 'solana') return { proceed: true };
+  // Cross-chain (bridge): the output settles on the destination chain, so
+  // the source-chain simulation still runs but assertSolanaSwapOutcome skips
+  // only the output-arrival assertion internally (mirrors the EVM path above).
+
+  if (!quoteData?.request) {
+    log('  ⚠ Swap-outcome verification skipped (no request intent — re-quote to enable it).');
+    return { proceed: true };
+  }
+  if (!hasSolanaSimulationRpc(chain)) {
+    log(`  ⚠ Swap-outcome verification unavailable (no simulation endpoint for ${chain}); proceeding without it.`);
+    return { proceed: true };
+  }
+  try {
+    const sim = await simulateSolanaAssetChanges(chain, txBase64, { walletAddress });
+    const outcome = assertSolanaSwapOutcome(quoteData.request, quote, sim, { slippage: quoteData.slippage });
+    if (outcome.inputAssertionSkipped) {
+      // On a native-SOL bridge the output assertion did NOT run (it settles on
+      // the destination chain), so don't claim "output ... checks still ran" —
+      // that would contradict the bridge line logged just below.
+      const alsoRan = outcome.outputAssertionSkipped ? 'sibling checks still ran' : 'output and sibling checks still ran';
+      log(`  ℹ Native-SOL input spend is bounded with fee/rent slack, not exactly delta-verified; ${alsoRan}.`);
+    }
+    if (outcome.outputAssertionSkipped) {
+      log('  ℹ Bridge: input-outflow and sibling checks ran; output arrives on the destination chain and is not simulated here.');
+    }
+    log(`  ✓ Swap outcome verified (via ${sim.method}).`);
+    return { proceed: true };
+  } catch (e) {
+    if (e instanceof SolanaSimulationError && ['NO_SIM_RPC', 'SIM_RPC_ERROR'].includes(e.code)) {
+      log(`  ⚠ Swap-outcome verification could not run (${e.message}); proceeding without it.`);
+      return { proceed: true };
+    }
+    return { proceed: false, reason: e.message };
+  }
+}
+
+/**
  * Estimate gas for an EVM transaction. Returns the gas estimate or null on failure.
  * Used to fix under-gassed quotes from aggregators.
  */
@@ -716,22 +1098,126 @@ export async function estimateEvmGas(chain, { from, to, data, value }) {
 }
 
 /**
+ * Read the current on-chain ERC-20 allowance, throwing on any RPC failure
+ * instead of masking it. checkErc20Allowance below wraps this with a
+ * catch-to-0 fallback for the pre-trade check (safe there, since a follow-up
+ * approve() overwrites whatever the prior value was); post-action
+ * verification needs the raw, fail-closed read instead.
+ */
+async function readErc20AllowanceOrThrow(chain, tokenAddress, ownerAddress, spenderAddress) {
+  if (!CHAIN_RPCS[chain]) throw new Error(`no RPC configured for chain ${chain}`);
+  // allowance(address,address) selector = 0xdd62ed3e
+  const data = '0xdd62ed3e'
+    + ownerAddress.slice(2).toLowerCase().padStart(64, '0')
+    + spenderAddress.slice(2).toLowerCase().padStart(64, '0');
+  const result = await evmRpcCall(chain, 'eth_call', [{ to: tokenAddress, data }, 'latest']);
+  if (!/^0x[0-9a-fA-F]{64}$/.test(result || '')) {
+    throw new Error(`invalid allowance() return data: ${result || '<empty>'}`);
+  }
+  return BigInt(result);
+}
+
+/**
  * Check ERC-20 allowance for a given owner/spender pair.
  * Returns the allowance as a BigInt, or 0n on failure.
  */
 export async function checkErc20Allowance(chain, tokenAddress, ownerAddress, spenderAddress) {
-  if (!CHAIN_RPCS[chain]) return 0n;
-
   try {
-    // allowance(address,address) selector = 0xdd62ed3e
-    const data = '0xdd62ed3e'
-      + ownerAddress.slice(2).toLowerCase().padStart(64, '0')
-      + spenderAddress.slice(2).toLowerCase().padStart(64, '0');
-    const result = await evmRpcCall(chain, 'eth_call', [{ to: tokenAddress, data }, 'latest']);
-    if (!result) return 0n;
-    return BigInt(result);
-  } catch {
+    return await readErc20AllowanceOrThrow(chain, tokenAddress, ownerAddress, spenderAddress);
+  } catch (err) {
+    // Treat an unreadable allowance as 0 so the caller re-approves a fresh scoped
+    // amount (a normal approve() overwrites any real on-chain allowance) rather
+    // than trusting a value we couldn't verify. Surface it so a persistent RPC
+    // problem — which would otherwise silently skip the excessive-allowance
+    // revoke — isn't invisible.
+    process.stderr.write(`⚠️  Could not read ERC-20 allowance on ${chain} (${err.message}); treating as 0.\n`);
     return 0n;
+  }
+}
+
+/**
+ * A successful receipt only proves the revoke/approval call didn't revert —
+ * not that approve() actually produced the allowance we expect (a
+ * non-standard token or a race with another approval could still leave the
+ * wrong value on-chain). Poll the allowance a few times before failing
+ * closed: an `eth_call` at 'latest' immediately after a receipt can hit an
+ * RPC node that hasn't caught up with the just-mined block yet and read
+ * stale pre-transaction state — confirmed live (PR #509 review follow-up)
+ * against a real Base approval that read back as unset for several seconds
+ * after its receipt landed, then correctly as the approved amount once the
+ * node caught up.
+ */
+const ALLOWANCE_VERIFY_ATTEMPTS = 5;
+const DEFAULT_ALLOWANCE_VERIFY_DELAY_MS = 1500;
+const DEFAULT_POST_ALLOWANCE_TX_PROPAGATION_MS = 2000;
+let allowanceVerifyDelayMs = DEFAULT_ALLOWANCE_VERIFY_DELAY_MS;
+let postAllowanceTxPropagationMs = DEFAULT_POST_ALLOWANCE_TX_PROPAGATION_MS;
+
+export function __setAllowanceTimingForTests({
+  verifyDelayMs = DEFAULT_ALLOWANCE_VERIFY_DELAY_MS,
+  propagationDelayMs = DEFAULT_POST_ALLOWANCE_TX_PROPAGATION_MS,
+} = {}) {
+  if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
+    throw new Error('__setAllowanceTimingForTests is for tests only');
+  }
+  allowanceVerifyDelayMs = verifyDelayMs;
+  postAllowanceTxPropagationMs = propagationDelayMs;
+}
+
+async function waitForAllowanceTxPropagation() {
+  // The receipt + allowance poll verifies token state, but the following swap
+  // still goes through a broadcaster/load-balanced RPC path. Give that path a
+  // short propagation window before signing the next dependent transaction.
+  if (postAllowanceTxPropagationMs <= 0) return;
+  await new Promise(r => setTimeout(r, postAllowanceTxPropagationMs));
+}
+
+async function pollAllowanceUntil(chain, tokenAddress, ownerAddress, spenderAddress, isExpected) {
+  let allowance, lastErr;
+  for (let attempt = 0; attempt < ALLOWANCE_VERIFY_ATTEMPTS; attempt++) {
+    if (attempt > 0 && allowanceVerifyDelayMs > 0) {
+      await new Promise(r => setTimeout(r, allowanceVerifyDelayMs));
+    }
+    try {
+      allowance = await readErc20AllowanceOrThrow(chain, tokenAddress, ownerAddress, spenderAddress);
+      lastErr = undefined;
+      if (isExpected(allowance)) return allowance;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  if (lastErr) throw lastErr;
+  throw new Error(
+    `allowance did not reach expected state after ${ALLOWANCE_VERIFY_ATTEMPTS} attempts (last read: ${allowance})`,
+  );
+}
+
+function allowanceRevokeRecoveryHint(txHash) {
+  const txHint = txHash ? ` Tx: ${txHash}.` : '';
+  return `${txHint} Check the transaction on-chain, then retry this execute command or re-quote if needed.`;
+}
+
+async function assertAllowanceRevoked(chain, tokenAddress, ownerAddress, spenderAddress) {
+  let allowance;
+  try {
+    allowance = await pollAllowanceUntil(chain, tokenAddress, ownerAddress, spenderAddress, a => a === 0n);
+  } catch (err) {
+    throw new Error(`could not verify the allowance was cleared (${err.message})`, { cause: err });
+  }
+  if (allowance !== 0n) {
+    throw new Error(`allowance is still ${allowance}, not 0`);
+  }
+}
+
+async function assertAllowanceAtLeast(chain, tokenAddress, ownerAddress, spenderAddress, minAmount) {
+  let allowance;
+  try {
+    allowance = await pollAllowanceUntil(chain, tokenAddress, ownerAddress, spenderAddress, a => a >= minAmount);
+  } catch (err) {
+    throw new Error(`could not verify the approval took effect (${err.message})`, { cause: err });
+  }
+  if (allowance < minAmount) {
+    throw new Error(`allowance is ${allowance}, below the ${minAmount} this trade requires`);
   }
 }
 
@@ -764,6 +1250,21 @@ export function approvalCapForQuote(quoteData) {
   return quoteData?.swapMode === 'exactOut' ? undefined : quoteData?.request?.amount;
 }
 
+// Decide what to do with a pre-existing on-chain allowance before a swap.
+// `shouldRevoke` describes the allowance ("it's oversized"), NOT the action taken:
+// callers use it both to gate the actual revoke (in the !reuseAllowance branch)
+// and to warn when reuse is forced by --no-revoke-excessive-allowance (in the
+// reuseAllowance branch). Note shouldRevoke ⟹ existingAllowance > approveAmt*10 ⟹
+// existingAllowance >= approveAmt, so with the flag set reuseAllowance is always
+// true and the revoke/"after revoking (now 0)" paths (all in the else branch) are
+// never reached spuriously — keep that invariant if you add branches here.
+function resolveAllowanceAction(existingAllowance, approveAmt, noRevokeExcessiveAllowance) {
+  const shouldRevoke = existingAllowance > 0n && needsAllowanceRevoke(existingAllowance, approveAmt);
+  const reuseAllowance = existingAllowance >= approveAmt && existingAllowance > 0n
+    && (noRevokeExcessiveAllowance || !shouldRevoke);
+  return { shouldRevoke, reuseAllowance };
+}
+
 export function assertCompleteEvmRequestIntent(request) {
   if (!request) {
     throw new Error('Quote is missing request intent. Re-quote with this CLI version before executing an EVM swap. Refusing to sign.');
@@ -775,6 +1276,42 @@ export function assertCompleteEvmRequestIntent(request) {
   }
   if (missing.length) {
     throw new Error(`Quote request intent is incomplete (${missing.join(', ')} missing). Re-quote before executing an EVM swap. Refusing to sign.`);
+  }
+  // swapMode must be a recognized mode, not merely present. This runs
+  // unconditionally before signing — unlike the swap-outcome verifier, which is
+  // skipped by --no-verify-outcome or when the sim RPC degrades — so a corrupted
+  // or edited quote record with a garbage swapMode fails closed regardless of
+  // the outcome-verification path.
+  if (request.swapMode !== 'exactIn' && request.swapMode !== 'exactOut') {
+    throw new Error(`Quote request intent has an unrecognized swap mode ("${request.swapMode}"); expected exactIn or exactOut. Re-quote before executing an EVM swap. Refusing to sign.`);
+  }
+}
+
+/**
+ * The Solana sibling of assertCompleteEvmRequestIntent. Solana signs the
+ * aggregator's serialized VersionedTransaction verbatim — there is no
+ * approval/calldata split to independently validate — so assertQuoteMatchesRequest
+ * is the only guard between a compromised quote and a signed drain. That check's
+ * per-field `if (request.x)` comparisons silently skip a missing field, so this
+ * closes the gap by failing closed on any incomplete request intent up front.
+ */
+export function assertCompleteSolanaRequestIntent(request) {
+  if (!request) {
+    throw new Error('Quote is missing request intent. Re-quote with this CLI version before executing a Solana swap. Refusing to sign.');
+  }
+
+  const missing = [];
+  for (const field of ['chain', 'walletAddress', 'fromToken', 'toToken', 'swapMode', 'amount', 'maxInputAmount']) {
+    if (request[field] == null || request[field] === '') missing.push(field);
+  }
+  if (missing.length) {
+    throw new Error(`Quote request intent is incomplete (${missing.join(', ')} missing). Re-quote before executing a Solana swap. Refusing to sign.`);
+  }
+  // swapMode must be a recognized mode, not merely present — see the EVM sibling.
+  // Runs unconditionally before signing, so a garbage swapMode fails closed even
+  // when the swap-outcome verifier is skipped or degraded.
+  if (request.swapMode !== 'exactIn' && request.swapMode !== 'exactOut') {
+    throw new Error(`Quote request intent has an unrecognized swap mode ("${request.swapMode}"); expected exactIn or exactOut. Re-quote before executing a Solana swap. Refusing to sign.`);
   }
 }
 
@@ -882,10 +1419,15 @@ export function assertUsableSpender(spenderAddress) {
  * @param {string|number} gasPrice - Legacy gas price
  * @param {bigint|string|number} amount - Allowance to grant, in base units (see approvalAmountForSwap)
  * @param {bigint|string|number} [maxAllowance] - Hard cap from persisted request intent
+ * @param {object} [opts]
+ * @param {boolean} [opts.allowZero=false] - Allow a zero-amount revoke approval
  * @returns {string} 0x-prefixed signed approval tx hex
  */
-// ⚠️ SECURITY: ERC-20 approval signing - requires thorough review
-export function buildApprovalTransaction(tokenAddress, spenderAddress, privateKeyHex, chain, nonce, gasPrice, amount, maxAllowance) {
+// Approval signing is intentionally narrow: callers pass either the scoped swap
+// amount from approvalAmountForSwap or, for excessive-allowance cleanup, an
+// explicit allowZero revoke. encodeApproveCalldata validates the spender,
+// amount, optional request cap, and final ABI width before signing.
+export function buildApprovalTransaction(tokenAddress, spenderAddress, privateKeyHex, chain, nonce, gasPrice, amount, maxAllowance, { allowZero = false } = {}) {
   const chainConfig = CHAIN_MAP[chain];
   if (!chainConfig) throw new Error(`Unsupported chain: ${chain}`);
 
@@ -893,7 +1435,7 @@ export function buildApprovalTransaction(tokenAddress, spenderAddress, privateKe
   // can drain at most this one trade, never the wallet's full token balance.
   // encodeApproveCalldata enforces a valid 20-byte spender, a bounded (< MAX)
   // amount within the request cap, and exactly-68-byte calldata.
-  const data = encodeApproveCalldata(spenderAddress, amount, { maxAllowance });
+  const data = encodeApproveCalldata(spenderAddress, amount, { maxAllowance, allowZero });
 
   const tx = {
     nonce,
@@ -909,7 +1451,8 @@ export function buildApprovalTransaction(tokenAddress, spenderAddress, privateKe
 }
 
 // ============= Legacy (Type 0) EVM Transaction Signing =============
-// ⚠️ SECURITY: Legacy EVM transaction signing - requires thorough review before production use
+// Low-level RLP/secp256k1 signing primitive used after upstream quote and
+// allowance validation has already bounded what the transaction can authorize.
 
 /**
  * Strip all leading zero bytes from a buffer.
@@ -1043,23 +1586,6 @@ function rlpNormalize(val) {
     return Buffer.alloc(0);
   }
   return toBuffer(val);
-}
-
-// ============= Compact-u16 (Solana) =============
-
-/**
- * Read a compact-u16 from a buffer (Solana transaction format).
- */
-export function readCompactU16(buf, offset) {
-  let value = 0;
-  let size = 0;
-  for (let i = 0; i < 3; i++) {
-    const byte = buf[offset + i];
-    value |= (byte & 0x7f) << (7 * i);
-    size++;
-    if ((byte & 0x80) === 0) break;
-  }
-  return { value, size };
 }
 
 // ============= Chain Utilities =============
@@ -1335,6 +1861,12 @@ export function buildTradingCommands(deps = {}) {
       const autoSlippage = flags['auto-slippage'];
       const maxAutoSlippage = options['max-auto-slippage'];
       const swapMode = options['swap-mode'] || 'exactIn';
+      if (swapMode !== 'exactIn' && swapMode !== 'exactOut') {
+        throw new CommandError(
+          `Invalid --swap-mode: "${swapMode}". Use one of: exactIn, exactOut.`,
+          'INVALID_INPUT',
+        );
+      }
       const amountUnit = options['amount-unit'];
       const aggregatorFilter = options.aggregator;
       if (aggregatorFilter && !['lifi', 'relay', 'jupiter', 'okx'].includes(aggregatorFilter)) {
@@ -1381,9 +1913,9 @@ OPTIONS:
   --swap-mode <mode>        exactIn (default) or exactOut
   --max-input <baseUnits>   exactOut only: hard ceiling on the sell-token spend
                             (base units), measured against the slippage-buffered
-                            approval (input + slippage), not the bare quote input.
-                            Required for EVM (Base) exactOut and enforced before
-                            signing; optional on Solana (no ERC-20 approval to scope).
+                            spend (input + slippage), not the bare quote input.
+                            Required for exactOut on every chain and enforced
+                            before signing.
   --aggregator <name>       Force a specific aggregator (lifi, relay, jupiter, okx).
                             Filters the quote list client-side; errors if none match.
 
@@ -1418,12 +1950,9 @@ CROSS-CHAIN NOTES (when using --to-chain):
         throw new CommandError('Error: --amount-unit percent is not supported with --swap-mode exactOut. Percentage is relative to your sell-token balance.', 'INVALID_INPUT');
       }
 
-      // The exactOut spend-ceiling requirements below only guard the EVM signing
-      // path: the ERC-20 approval scoping, request-intent binding, and
-      // assertInputWithinMax checks are wired into the EVM execute paths only.
-      // Solana signs the API transaction verbatim (no approval to scope), so
-      // requiring --max-input there would break existing Solana exactOut users
-      // without buying any of that path a security guarantee. Gate on EVM source.
+      // isEvmSource gates the ERC-20-approval-specific check just below (auto-slippage
+      // sizing an approval has no Solana equivalent). The --max-input requirement
+      // itself is NOT gated on it — see the check after maxInputOverride is parsed.
       const isEvmSource = CHAIN_MAP[chain?.toLowerCase()]?.type === 'evm';
 
       // exactOut scopes the ERC-20 approval to a slippage-buffered max input. With
@@ -1457,7 +1986,10 @@ CROSS-CHAIN NOTES (when using --to-chain):
           throw new CommandError(`Error: invalid --max-input "${maxInputRaw}": must be an integer in base units of the sell token.`, 'INVALID_INPUT');
         }
       }
-      if (isEvmSource && swapMode === 'exactOut' && maxInputOverride == null) {
+      // Required on every chain: an exactOut cap derived from the API's own quote
+      // response would just check that quote against itself and could never reject
+      // anything (there is no independent signal to catch an inflated input).
+      if (swapMode === 'exactOut' && maxInputOverride == null) {
         throw new CommandError('Error: --swap-mode exactOut requires --max-input (base units of the sell token) so the input is independently capped before signing.', 'INVALID_INPUT');
       }
 
@@ -1710,6 +2242,9 @@ CROSS-CHAIN NOTES (when using --to-chain):
         }
 
         const signerType = isWalletConnect ? 'walletconnect' : walletProvider;
+        // exactOut has no request.amount input bound (amount is the OUTPUT), so
+        // maxInputAmount is the only spend ceiling assertInputWithinMax can enforce.
+        // Required explicitly via --max-input on every chain (checked above).
         const maxInputAmount = swapMode === 'exactOut' ? maxInputOverride : String(resolvedAmount);
         const quoteId = saveQuote(response, chain, signerType, privyWalletIds, isCrossChain ? toChainRaw : null, {
           swapMode,
@@ -1761,7 +2296,19 @@ CROSS-CHAIN NOTES (when using --to-chain):
       const quoteId = options.quote || options['quote-id'] || args[0];
       const walletName = options.wallet;
       const noSimulate = flags['no-simulate'];
+      const noRevokeExcessiveAllowance = flags['no-revoke-excessive-allowance'];
+      const noVerifyOutcome = flags['no-verify-outcome'];
       const gasless = Boolean(flags.gasless);
+      // Read the API key for the swap-outcome sim endpoint. It's optional (the
+      // check degrades to a warning if the endpoint can't authenticate), so a
+      // malformed config must not crash an in-progress trade — fall back to null.
+      const apiKey = (() => {
+        try {
+          return loadConfig().apiKey;
+        } catch {
+          return null;
+        }
+      })();
 
       if (!quoteId) {
         throw new CommandError(`Usage: nansen trade execute --quote <quoteId> [options]
@@ -1769,7 +2316,10 @@ CROSS-CHAIN NOTES (when using --to-chain):
 OPTIONS:
   --quote <id>              Quote ID from 'nansen quote'
   --wallet <name>           Wallet name (default: default wallet)
-  --no-simulate             Skip pre-broadcast simulation
+  --no-simulate             Skip pre-broadcast simulation (the eth_call revert check)
+  --no-verify-outcome       Skip swap-outcome verification (balance-delta check)
+  --no-revoke-excessive-allowance
+                            Skip auto-revoking an oversized/legacy allowance before re-approving
   --gasless                 Relay-only: have Relay's solver pay gas (no WalletConnect)
 
 EXAMPLES:
@@ -1910,13 +2460,50 @@ EXAMPLES:
 
             if (chainType === 'solana' && isPrivy) {
               // Solana via Privy: sign the serialized transaction
-              let txBase64 = currentQuote.transaction;
-              if (typeof txBase64 === 'object' && txBase64.data) {
-                txBase64 = base58Decode(txBase64.data).toString('base64');
-              }
-              log('  Signing Solana transaction via Privy...');
               const solWalletId = quoteData.privyWalletIds?.solana;
               if (!solWalletId) throw new Error('No Solana Privy wallet ID in quote');
+              const walletResult = await privyClient.getWallet(solWalletId);
+              const walletAddress = walletResult.address;
+              // Fail closed if the signer address doesn't resolve: without it the
+              // wallet-binding comparison below would silently skip, leaving the
+              // quote unbound to the wallet that will sign it. This is resolved
+              // independently of the persisted request so assertQuoteMatchesRequest
+              // is a real check, not a comparison of the request against itself.
+              if (!walletAddress) {
+                throw new Error('Could not resolve the Solana Privy wallet address; cannot confirm the quote was built for this wallet. Refusing to sign.');
+              }
+
+              // Solana: transaction is a base64 string (Jupiter), an object with a
+              // base58-encoded `data` field (OKX), or raw uncompiled instructions
+              // (Relay bridge quotes). Normalize to base64.
+              const txBase64 = await normalizeSolanaTransaction(currentQuote.transaction, CHAIN_RPCS.solana, async () => walletAddress);
+
+              // Validate the persisted request/quote metadata (token pair, amounts,
+              // signer) before signing the aggregator's serialized transaction.
+              assertCompleteSolanaRequestIntent(quoteData.request);
+              assertQuoteMatchesRequest(quoteData.request, currentQuote, { chain, walletAddress, slippage: quoteData.slippage });
+
+              // Then statically inspect the serialized transaction's own
+              // instructions ahead of signing — catches a delegate grant, authority
+              // change, close-to-stranger, or excessive fee that the metadata check
+              // alone wouldn't see. The residual sibling-transfer gap is closed by
+              // verifySolanaSwapOutcome below (degrades gracefully when no sim RPC
+              // is available, so this static check remains a guard when sim is off).
+              assertSolanaInstructionsSafe(txBase64, { walletAddress });
+
+              // Verify the swap's simulated on-chain outcome matches intent.
+              // Degrades with a warning if no simulation endpoint is available.
+              if (!noVerifyOutcome) {
+                const outcome = await verifySolanaSwapOutcome({ chain, walletAddress, txBase64, quote: currentQuote, quoteData, log });
+                if (!outcome.proceed) {
+                  log(`  ❌ ${quoteName} failed swap-outcome verification: ${outcome.reason}`);
+                  if (qi + 1 < endIndex) log('  Trying next quote...');
+                  lastQuoteError = `${quoteName} outcome verification failed: ${outcome.reason}`;
+                  continue;
+                }
+              }
+
+              log('  Signing Solana transaction via Privy...');
               const signResult = await privyClient.signSolanaTransaction(solWalletId, txBase64);
               signedTransaction = signResult.data?.signed_transaction || signResult.signed_transaction;
               requestId = currentQuote.metadata?.requestId;
@@ -1939,15 +2526,15 @@ EXAMPLES:
               assertCompleteEvmRequestIntent(quoteData.request);
               assertQuoteMatchesRequest(quoteData.request, currentQuote, { chain, walletAddress, slippage: quoteData.slippage });
 
-              // Same-chain only: a legit swap's outer call is a router method,
-              // never a bare ERC-20 transfer/approve. Reject that drain shape.
-              // Cross-chain routes skip THIS selector check, but a bare transfer
-              // still targets the token contract, so validateSwapTarget's
-              // `to === inputMint` gate above already refuses it on both paths —
-              // cross-chain bare transfers are not actually waved through here.
-              if (!quoteData.toChain) {
-                assertSwapCalldataNotBareTransfer(currentQuote.transaction.data);
-              }
+              // Reject a bare ERC-20 transfer/approve/transferFrom as the outer
+              // call: a real swap or bridge routes through an aggregator/router,
+              // never a direct token method. Runs on cross-chain too — the
+              // validateSwapTarget gate above only refuses `to === inputMint`, so
+              // a bare transfer to a SIBLING token the wallet holds would
+              // otherwise slip through the bridge path (which doesn't parse the
+              // calldata recipient) and drain it. Legitimate bridges route through
+              // a router selector, so this never fires on a real cross-chain quote.
+              assertSwapCalldataNotBareTransfer(currentQuote.transaction.data);
 
               // Validate transaction.value (same checks as local wallet)
               const isNative = isNativeToken(currentQuote.inputMint);
@@ -1961,7 +2548,16 @@ EXAMPLES:
                   continue;
                 }
               } else {
-                if (txValue > 0n) {
+                // A token-input swap sends no native value — except a cross-chain
+                // bridge may carry a bounded native fee via msg.value. Allow that up
+                // to the same ceiling assertSwapOutcome tolerates as a native sibling
+                // (verifySwapOutcome runs below and re-bounds the actual simulated
+                // outflow to min(tx.value, cap)); reject any other non-zero value, and
+                // any bridge fee above the ceiling.
+                const bridgeFeeAllowed = quoteData?.request
+                  && isBridgeRequest(quoteData.request)
+                  && txValue <= EVM_BRIDGE_NATIVE_FEE_SLACK;
+                if (txValue > 0n && !bridgeFeeAllowed) {
                   log(`  ❌ ERC-20 swap has non-zero tx.value (${txValue}) for ${quoteName} — aborting`);
                   if (qi + 1 < endIndex) log(`  Trying next quote...`);
                   lastQuoteError = `${quoteName} unexpected tx.value`;
@@ -1987,9 +2583,65 @@ EXAMPLES:
                   chain, currentQuote.inputMint, walletAddress, currentQuote.approvalAddress
                 );
 
-                if (existingAllowance >= approveAmt && existingAllowance > 0n) {
+                const { shouldRevoke, reuseAllowance } = resolveAllowanceAction(existingAllowance, approveAmt, noRevokeExcessiveAllowance);
+                if (reuseAllowance) {
+                  if (noRevokeExcessiveAllowance && shouldRevoke) {
+                    log(`  ⚠ Existing allowance (${existingAllowance}) for ${quoteName} is excessive (>${OVERSIZED_ALLOWANCE_MULTIPLIER}x this trade), but --no-revoke-excessive-allowance was set`);
+                  }
                   log(`  ✓ Sufficient allowance exists for ${quoteName}, skipping approval`);
                 } else {
+                  const approvalMaxFee = currentQuote.transaction?.maxFeePerGas || currentQuote.transaction?.gasPrice || '1000000';
+                  const approvalPriorityFee = currentQuote.transaction?.maxPriorityFeePerGas || '1000000';
+
+                  if (shouldRevoke) {
+                    log(`  ⚠ Existing allowance (${existingAllowance}) for ${quoteName} is excessive (>${OVERSIZED_ALLOWANCE_MULTIPLIER}x this trade) — revoking before re-approving`);
+                    const revokeNonce = await getEvmNonce(chain, walletAddress);
+                    const revokeData = encodeApproveCalldata(currentQuote.approvalAddress, 0n, { allowZero: true });
+                    const revokeSignResult = await privyClient.signEvmTransaction(evmWalletId, {
+                      to: currentQuote.inputMint,
+                      data: revokeData,
+                      value: '0x0',
+                      chain_id: chainConfig.chainId,
+                      nonce: toHex(revokeNonce),
+                      gas_limit: toHex(100000),
+                      max_fee_per_gas: toHex(approvalMaxFee),
+                      max_priority_fee_per_gas: toHex(approvalPriorityFee),
+                    });
+                    const signedRevoke = revokeSignResult.data?.signed_transaction || revokeSignResult.signed_transaction;
+                    if (!signedRevoke) {
+                      log(`  ❌ Allowance revoke failed for ${quoteName}: Privy returned no signed transaction`);
+                      if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                      lastQuoteError = `${quoteName} allowance revoke failed`;
+                      continue;
+                    }
+                    const revokeResult = await executeTransaction({ signedTransaction: signedRevoke, chain, simulate: !noSimulate });
+                    if (revokeResult.status !== 'Success') {
+                      log(`  ❌ Allowance revoke failed for ${quoteName}: ${revokeResult.error || 'unknown'}`);
+                      if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                      lastQuoteError = `${quoteName} allowance revoke failed`;
+                      continue;
+                    }
+                    log(`  Waiting for allowance revoke confirmation...`);
+                    try {
+                      const { receipt, hash: revokeHash } = await confirmEvmBroadcast(chain, signedRevoke, revokeResult.txHash, 'allowance-revoke');
+                      log(`  ✓ Allowance revoked in block ${parseInt(receipt.blockNumber, 16)}: ${revokeHash}`);
+                    } catch (receiptErr) {
+                      if (isFatalBroadcastError(receiptErr)) throw receiptErr;
+                      log(`  ❌ Allowance revoke may not have confirmed for ${quoteName}: ${receiptErr.message}.${allowanceRevokeRecoveryHint(revokeResult.txHash)}`);
+                      if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                      lastQuoteError = `${quoteName} allowance revoke unconfirmed`;
+                      continue;
+                    }
+                    try {
+                      await assertAllowanceRevoked(chain, currentQuote.inputMint, walletAddress, currentQuote.approvalAddress);
+                    } catch (pollErr) {
+                      log(`  ❌ Revoke tx confirmed but allowance was not cleared for ${quoteName}: ${pollErr.message}.${allowanceRevokeRecoveryHint(revokeResult.txHash)}`);
+                      if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                      lastQuoteError = `${quoteName} allowance revoke verification failed`;
+                      continue;
+                    }
+                    await waitForAllowanceTxPropagation();
+                  }
                   log(`  ⚠ Approval required → ${currentQuote.approvalAddress}`);
                   const approvalNonce = await getEvmNonce(chain, walletAddress);
                   // Scope the approval to this trade's input (see approvalAmountForSwap).
@@ -1998,8 +2650,6 @@ EXAMPLES:
                   const approvalData = encodeApproveCalldata(currentQuote.approvalAddress, approveAmt, {
                     maxAllowance: approvalCapForQuote(quoteData),
                   });
-                  const approvalMaxFee = currentQuote.transaction?.maxFeePerGas || currentQuote.transaction?.gasPrice || '1000000';
-                  const approvalPriorityFee = currentQuote.transaction?.maxPriorityFeePerGas || '1000000';
                   const approvalSignResult = await privyClient.signEvmTransaction(evmWalletId, {
                     to: currentQuote.inputMint,
                     data: approvalData,
@@ -2011,24 +2661,45 @@ EXAMPLES:
                     max_priority_fee_per_gas: toHex(approvalPriorityFee),
                   });
                   const signedApproval = approvalSignResult.data?.signed_transaction || approvalSignResult.signed_transaction;
+                  if (!signedApproval) {
+                    const revokedMsg = shouldRevoke
+                      ? ' after revoking the prior allowance (now 0)'
+                      : '';
+                    log(`  ❌ Approval failed for ${quoteName}${revokedMsg}: Privy returned no signed transaction`);
+                    if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                    lastQuoteError = `${quoteName} approval failed`;
+                    continue;
+                  }
                   const approvalResult = await executeTransaction({ signedTransaction: signedApproval, chain, simulate: !noSimulate });
                   if (approvalResult.status !== 'Success') {
-                    log(`  ❌ Approval failed for ${quoteName}: ${approvalResult.error || 'unknown'}`);
+                    const revokedMsg = shouldRevoke
+                      ? ' after revoking the prior allowance (now 0)'
+                      : '';
+                    log(`  ❌ Approval failed for ${quoteName}${revokedMsg}: ${approvalResult.error || 'unknown'}`);
                     if (qi + 1 < endIndex) log(`  Trying next quote...`);
                     lastQuoteError = `${quoteName} approval failed`;
                     continue;
                   }
                   log(`  Waiting for approval confirmation...`);
                   try {
-                    const receipt = await waitForReceipt(chain, approvalResult.txHash);
-                    log(`  ✓ Approval confirmed in block ${parseInt(receipt.blockNumber, 16)}: ${approvalResult.txHash}`);
+                    const { receipt, hash: approvalHash } = await confirmEvmBroadcast(chain, signedApproval, approvalResult.txHash, 'allowance-approval');
+                    log(`  ✓ Approval confirmed in block ${parseInt(receipt.blockNumber, 16)}: ${approvalHash}`);
                   } catch (receiptErr) {
-                    log(`  ❌ Approval may not have confirmed: ${receiptErr.message}`);
+                    if (isFatalBroadcastError(receiptErr)) throw receiptErr;
+                    log(`  ❌ Approval may not have confirmed${shouldRevoke ? ' after revoking the prior allowance (now 0)' : ''}: ${receiptErr.message}`);
                     if (qi + 1 < endIndex) log(`  Trying next quote...`);
                     lastQuoteError = `${quoteName} approval unconfirmed`;
                     continue;
                   }
-                  await new Promise(r => setTimeout(r, 2000));
+                  try {
+                    await assertAllowanceAtLeast(chain, currentQuote.inputMint, walletAddress, currentQuote.approvalAddress, approveAmt);
+                  } catch (pollErr) {
+                    log(`  ❌ Approval tx confirmed but allowance did not reach the required amount for ${quoteName}${shouldRevoke ? ' after revoking the prior allowance (now 0)' : ''}: ${pollErr.message}`);
+                    if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                    lastQuoteError = `${quoteName} approval verification failed`;
+                    continue;
+                  }
+                  await waitForAllowanceTxPropagation();
                 }
               }
 
@@ -2044,6 +2715,20 @@ EXAMPLES:
                   log(`  ⚠ Simulation failed for ${quoteName}: ${sim.reason}`);
                   if (qi + 1 < endIndex) log(`  Trying next quote...`);
                   lastQuoteError = `${quoteName} simulation failed: ${sim.reason}`;
+                  continue;
+                }
+              }
+
+              // Verify the swap's simulated on-chain outcome matches intent.
+              // Its own gate (runs even when --no-simulate/gasless skip the
+              // cheap revert check above); degrades with a warning if no
+              // simulation endpoint is available.
+              if (!noVerifyOutcome) {
+                const outcome = await verifySwapOutcome({ chain, from: walletAddress, quote: currentQuote, quoteData, apiKey, log });
+                if (!outcome.proceed) {
+                  log(`  ❌ ${quoteName} failed swap-outcome verification: ${outcome.reason}`);
+                  if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                  lastQuoteError = `${quoteName} outcome verification failed: ${outcome.reason}`;
                   continue;
                 }
               }
@@ -2094,17 +2779,60 @@ EXAMPLES:
               signedTransaction = signResult.data?.signed_transaction || signResult.signed_transaction;
 
             } else if (chainType === 'solana') {
-              // NB: validateSwapTarget (the EVM `to`/`data` guard) intentionally does
-              // not apply here — Solana quotes are a pre-built serialized
-              // VersionedTransaction with no `to`/`data`/approval split to validate,
-              // and this path (including the WalletConnect sub-branch below) signs it
-              // as supplied. Deeper Solana inspection (e.g. checking instruction
-              // program IDs) is tracked as a follow-up, not an oversight.
-              // Solana: transaction is either a base64 string (Jupiter) or an object
-              // with a base58-encoded `data` field (OKX). Normalize to base64.
-              let txBase64 = currentQuote.transaction;
-              if (typeof txBase64 === 'object' && txBase64.data) {
-                txBase64 = base58Decode(txBase64.data).toString('base64');
+              // NB: validateSwapTarget (the EVM `to`/`data` guard) does not apply
+              // here — Solana quotes are a pre-built serialized VersionedTransaction
+              // with no `to`/`data`/approval split to validate. assertQuoteMatchesRequest
+              // below binds the metadata (token pair, amounts, signer), and
+              // assertSolanaInstructionsSafe statically inspects the tx's own
+              // instructions before signing.
+              // Solana: transaction is a base64 string (Jupiter), an object with a
+              // base58-encoded `data` field (OKX), or raw uncompiled instructions
+              // (Relay bridge quotes). Normalize to base64.
+
+              // Resolve the signer first — both the Relay-shape compiler (which needs
+              // an expected signer for its fee-payer check) and the intent-binding
+              // check below use this exact same address.
+              let solanaWalletAddress;
+              if (isWalletConnect) {
+                solanaWalletAddress = await getWalletConnectAddress(chainType);
+                if (!solanaWalletAddress) {
+                  throw new CommandError('WalletConnect session lost during execute. Reconnect with `walletconnect connect` and retry.', 'NO_WALLET');
+                }
+              } else {
+                solanaWalletAddress = exported.solana.address;
+                // Fail closed if the signer address doesn't resolve: without it the
+                // wallet-binding comparison below would silently skip, leaving the
+                // quote unbound to the wallet that will sign it.
+                if (!solanaWalletAddress) {
+                  throw new Error("Could not resolve the local wallet's Solana address; cannot confirm the quote was built for this wallet. Refusing to sign.");
+                }
+              }
+
+              const txBase64 = await normalizeSolanaTransaction(currentQuote.transaction, CHAIN_RPCS.solana, async () => solanaWalletAddress);
+
+              // Validate the persisted request/quote metadata (token pair, amounts,
+              // signer) before signing the opaque Solana transaction.
+              assertCompleteSolanaRequestIntent(quoteData.request);
+              assertQuoteMatchesRequest(quoteData.request, currentQuote, { chain, walletAddress: solanaWalletAddress, slippage: quoteData.slippage });
+
+              // Then statically inspect the serialized transaction's own
+              // instructions ahead of signing — catches a delegate grant, authority
+              // change, close-to-stranger, or excessive fee that the metadata check
+              // alone wouldn't see. The residual sibling-transfer gap is closed by
+              // verifySolanaSwapOutcome below (degrades gracefully when no sim RPC
+              // is available, so this static check remains a guard when sim is off).
+              assertSolanaInstructionsSafe(txBase64, { walletAddress: solanaWalletAddress });
+
+              // Verify the swap's simulated on-chain outcome matches intent.
+              // Degrades with a warning if no simulation endpoint is available.
+              if (!noVerifyOutcome) {
+                const outcome = await verifySolanaSwapOutcome({ chain, walletAddress: solanaWalletAddress, txBase64, quote: currentQuote, quoteData, log });
+                if (!outcome.proceed) {
+                  log(`  ❌ ${quoteName} failed swap-outcome verification: ${outcome.reason}`);
+                  if (qi + 1 < endIndex) log('  Trying next quote...');
+                  lastQuoteError = `${quoteName} outcome verification failed: ${outcome.reason}`;
+                  continue;
+                }
               }
 
               if (isWalletConnect) {
@@ -2175,15 +2903,15 @@ EXAMPLES:
               assertCompleteEvmRequestIntent(quoteData.request);
               assertQuoteMatchesRequest(quoteData.request, currentQuote, { chain, walletAddress: wcAddress, slippage: quoteData.slippage });
 
-              // Same-chain only: a legit swap's outer call is a router method,
-              // never a bare ERC-20 transfer/approve. Reject that drain shape.
-              // Cross-chain routes skip THIS selector check, but a bare transfer
-              // still targets the token contract, so validateSwapTarget's
-              // `to === inputMint` gate above already refuses it on both paths —
-              // cross-chain bare transfers are not actually waved through here.
-              if (!quoteData.toChain) {
-                assertSwapCalldataNotBareTransfer(currentQuote.transaction.data);
-              }
+              // Reject a bare ERC-20 transfer/approve/transferFrom as the outer
+              // call: a real swap or bridge routes through an aggregator/router,
+              // never a direct token method. Runs on cross-chain too — the
+              // validateSwapTarget gate above only refuses `to === inputMint`, so
+              // a bare transfer to a SIBLING token the wallet holds would
+              // otherwise slip through the bridge path (which doesn't parse the
+              // calldata recipient) and drain it. Legitimate bridges route through
+              // a router selector, so this never fires on a real cross-chain quote.
+              assertSwapCalldataNotBareTransfer(currentQuote.transaction.data);
 
               // Validate transaction.value (same checks as local wallet)
               const txValue = BigInt(currentQuote.transaction.value || '0');
@@ -2196,7 +2924,16 @@ EXAMPLES:
                   continue;
                 }
               } else {
-                if (txValue > 0n) {
+                // A token-input swap sends no native value — except a cross-chain
+                // bridge may carry a bounded native fee via msg.value. Allow that up
+                // to the same ceiling assertSwapOutcome tolerates as a native sibling
+                // (verifySwapOutcome runs below and re-bounds the actual simulated
+                // outflow to min(tx.value, cap)); reject any other non-zero value, and
+                // any bridge fee above the ceiling.
+                const bridgeFeeAllowed = quoteData?.request
+                  && isBridgeRequest(quoteData.request)
+                  && txValue <= EVM_BRIDGE_NATIVE_FEE_SLACK;
+                if (txValue > 0n && !bridgeFeeAllowed) {
                   log(`  ❌ ERC-20 swap has non-zero tx.value (${txValue}) for ${quoteName} — aborting`);
                   if (qi + 1 < endIndex) log(`  Trying next quote...`);
                   lastQuoteError = `${quoteName} unexpected tx.value`;
@@ -2222,11 +2959,73 @@ EXAMPLES:
                   chain, currentQuote.inputMint, wcAddress, currentQuote.approvalAddress
                 );
 
-                if (existingAllowance >= approveAmt && existingAllowance > 0n) {
+                const { shouldRevoke, reuseAllowance } = resolveAllowanceAction(existingAllowance, approveAmt, noRevokeExcessiveAllowance);
+                if (reuseAllowance) {
+                  if (noRevokeExcessiveAllowance && shouldRevoke) {
+                    log(`  ⚠ Existing allowance (${existingAllowance}) for ${quoteName} is excessive (>${OVERSIZED_ALLOWANCE_MULTIPLIER}x this trade), but --no-revoke-excessive-allowance was set`);
+                  }
                   log(`  ✓ Sufficient allowance exists for ${quoteName}, skipping approval`);
                 } else {
+                  if (shouldRevoke) {
+                    log(`  ⚠ Existing allowance (${existingAllowance}) for ${quoteName} is excessive (>${OVERSIZED_ALLOWANCE_MULTIPLIER}x this trade) — revoking before re-approving`);
+                    log(`  Sending allowance revocation via WalletConnect (you'll be asked to approve this separately)...`);
+                    let revokeTxHash;
+                    try {
+                      const revokeResult = await sendApprovalViaWalletConnect(
+                        currentQuote.inputMint,
+                        currentQuote.approvalAddress,
+                        chainConfig.chainId,
+                        0n,
+                        undefined,
+                        { allowZero: true },
+                      );
+                      revokeTxHash = revokeResult.txHash;
+                      if (!revokeTxHash && revokeResult.signedTransaction) {
+                        log(`  Broadcasting allowance revocation via Trading API...`);
+                        const broadcastResult = await executeTransaction({
+                          signedTransaction: revokeResult.signedTransaction,
+                          chain,
+                          simulate: !noSimulate,
+                        });
+                        if (broadcastResult.status !== 'Success') {
+                          throw new Error(broadcastResult.error || 'broadcast failed');
+                        }
+                        revokeTxHash = assertTxHashMatch(revokeResult.signedTransaction, broadcastResult.txHash, 'allowance-revoke');
+                      }
+                      if (!revokeTxHash) {
+                        throw new Error('Allowance revoke returned no transaction hash and no signed transaction; cannot confirm allowance was cleared');
+                      }
+                    } catch (revokeErr) {
+                      if (isFatalBroadcastError(revokeErr)) throw revokeErr;
+                      log(`  ❌ Allowance revoke failed for ${quoteName}: ${revokeErr.message}.${allowanceRevokeRecoveryHint(revokeTxHash)}`);
+                      if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                      lastQuoteError = `${quoteName} allowance revoke failed`;
+                      continue;
+                    }
+                    log(`  Waiting for allowance revoke confirmation...`);
+                    try {
+                      const receipt = await waitForReceipt(chain, revokeTxHash);
+                      log(`  ✓ Allowance revoked in block ${parseInt(receipt.blockNumber, 16)}: ${revokeTxHash}`);
+                    } catch (receiptErr) {
+                      if (isFatalBroadcastError(receiptErr)) throw receiptErr;
+                      log(`  ❌ Allowance revoke may not have confirmed for ${quoteName}: ${receiptErr.message}.${allowanceRevokeRecoveryHint(revokeTxHash)}`);
+                      if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                      lastQuoteError = `${quoteName} allowance revoke unconfirmed`;
+                      continue;
+                    }
+                    try {
+                      await assertAllowanceRevoked(chain, currentQuote.inputMint, wcAddress, currentQuote.approvalAddress);
+                    } catch (pollErr) {
+                      log(`  ❌ Revoke tx confirmed but allowance was not cleared for ${quoteName}: ${pollErr.message}.${allowanceRevokeRecoveryHint(revokeTxHash)}`);
+                      if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                      lastQuoteError = `${quoteName} allowance revoke verification failed`;
+                      continue;
+                    }
+                    await waitForAllowanceTxPropagation();
+                  }
                   log(`  ⚠ Approval required → ${currentQuote.approvalAddress}`);
                   log(`  Sending approval via WalletConnect...`);
+                  let approvalTxHash;
                   try {
                     const approvalResult = await sendApprovalViaWalletConnect(
                       currentQuote.inputMint,
@@ -2235,7 +3034,7 @@ EXAMPLES:
                       approveAmt,
                       approvalCapForQuote(quoteData),
                     );
-                    let approvalTxHash = approvalResult.txHash;
+                    approvalTxHash = approvalResult.txHash;
                     if (!approvalTxHash && approvalResult.signedTransaction) {
                       // Wallet returned a signed tx instead of broadcasting — broadcast via Trading API
                       log(`  Broadcasting approval via Trading API...`);
@@ -2247,20 +3046,52 @@ EXAMPLES:
                       if (broadcastResult.status !== 'Success') {
                         throw new Error(broadcastResult.error || 'broadcast failed');
                       }
-                      approvalTxHash = broadcastResult.txHash;
+                      approvalTxHash = assertTxHashMatch(approvalResult.signedTransaction, broadcastResult.txHash, 'allowance-approval');
                     }
-                    if (approvalTxHash) {
-                      log(`  Waiting for approval confirmation...`);
-                      const receipt = await waitForReceipt(chain, approvalTxHash);
-                      log(`  ✓ Approval confirmed in block ${parseInt(receipt.blockNumber, 16)}: ${approvalTxHash}`);
+                    if (!approvalTxHash) {
+                      // Fail closed: the wallet returned neither a hash nor a
+                      // signed tx, so we can't confirm the approval landed —
+                      // never fall through to the swap (esp. after a revoke has
+                      // already zeroed the allowance). The catch adds the
+                      // "after revoking (now 0)" context.
+                      throw new Error('returned no transaction hash and no signed transaction; cannot confirm approval landed');
                     }
                   } catch (approvalErr) {
-                    log(`  ❌ Approval failed for ${quoteName}: ${approvalErr.message}`);
+                    if (isFatalBroadcastError(approvalErr)) throw approvalErr;
+                    const revokedMsg = shouldRevoke
+                      ? ' after revoking the prior allowance (now 0)'
+                      : '';
+                    log(`  ❌ Approval failed for ${quoteName}${revokedMsg}: ${approvalErr.message}`);
                     if (qi + 1 < endIndex) log(`  Trying next quote...`);
                     lastQuoteError = `${quoteName} approval failed`;
                     continue;
                   }
-                  await new Promise(r => setTimeout(r, 2000));
+                  log(`  Waiting for approval confirmation...`);
+                  try {
+                    const receipt = await waitForReceipt(chain, approvalTxHash);
+                    log(`  ✓ Approval confirmed in block ${parseInt(receipt.blockNumber, 16)}: ${approvalTxHash}`);
+                  } catch (receiptErr) {
+                    if (isFatalBroadcastError(receiptErr)) throw receiptErr;
+                    const revokedMsg = shouldRevoke
+                      ? ' after revoking the prior allowance (now 0)'
+                      : '';
+                    log(`  ❌ Approval may not have confirmed${revokedMsg}: ${receiptErr.message}`);
+                    if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                    lastQuoteError = `${quoteName} approval unconfirmed`;
+                    continue;
+                  }
+                  try {
+                    await assertAllowanceAtLeast(chain, currentQuote.inputMint, wcAddress, currentQuote.approvalAddress, approveAmt);
+                  } catch (pollErr) {
+                    const revokedMsg = shouldRevoke
+                      ? ' after revoking the prior allowance (now 0)'
+                      : '';
+                    log(`  ❌ Approval tx confirmed but allowance did not reach the required amount for ${quoteName}${revokedMsg}: ${pollErr.message}`);
+                    if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                    lastQuoteError = `${quoteName} approval verification failed`;
+                    continue;
+                  }
+                  await waitForAllowanceTxPropagation();
                   log('');
                 }
               }
@@ -2278,6 +3109,20 @@ EXAMPLES:
                   log(`  ⚠ Simulation failed for ${quoteName}: ${sim.reason}`);
                   if (qi + 1 < endIndex) log(`  Trying next quote...`);
                   lastQuoteError = `${quoteName} simulation failed: ${sim.reason}`;
+                  continue;
+                }
+              }
+
+              // Verify the swap's simulated on-chain outcome matches intent. Its
+              // own gate: runs even when --no-simulate/gasless skip the cheap
+              // eth_call revert check above; degrades with a warning when no
+              // simulation endpoint is set.
+              if (!noVerifyOutcome) {
+                const outcome = await verifySwapOutcome({ chain, from: wcAddress, quote: currentQuote, quoteData, apiKey, log });
+                if (!outcome.proceed) {
+                  log(`  ❌ ${quoteName} failed swap-outcome verification: ${outcome.reason}`);
+                  if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                  lastQuoteError = `${quoteName} outcome verification failed: ${outcome.reason}`;
                   continue;
                 }
               }
@@ -2312,6 +3157,14 @@ EXAMPLES:
                 try {
                   await waitForReceipt(chain, wcResult.txHash);
                 } catch (receiptErr) {
+                  // A timeout here is uncertain post-broadcast state, not a
+                  // confirmed revert — fail closed rather than retry (which would
+                  // broadcast a second swap). Applies even though this path has no
+                  // locally-derived hash to bind to.
+                  if (receiptErr.code === 'RECEIPT_TIMEOUT') {
+                    throw new CommandError(`\n  ⚠ Transaction was broadcast but NOT confirmed within the wait window.\n    Tx Hash:   ${wcResult.txHash}\n    Explorer:  ${chainConfig.explorer}${wcResult.txHash}\n    ${receiptErr.message}\n\n  The transaction may still be pending — do NOT assume it failed. Check the\n  explorer before retrying; retrying may broadcast a second swap.`, 'RECEIPT_TIMEOUT');
+                  }
+                  if (isFatalBroadcastError(receiptErr)) throw receiptErr;
                   log(`\n  ⚠ Transaction was broadcast but REVERTED on-chain!`);
                   log(`    Tx Hash:   ${wcResult.txHash}`);
                   log(`    Explorer:  ${chainConfig.explorer}${wcResult.txHash}`);
@@ -2379,15 +3232,15 @@ EXAMPLES:
               assertCompleteEvmRequestIntent(quoteData.request);
               assertQuoteMatchesRequest(quoteData.request, currentQuote, { chain, walletAddress, slippage: quoteData.slippage });
 
-              // Same-chain only: a legit swap's outer call is a router method,
-              // never a bare ERC-20 transfer/approve. Reject that drain shape.
-              // Cross-chain routes skip THIS selector check, but a bare transfer
-              // still targets the token contract, so validateSwapTarget's
-              // `to === inputMint` gate above already refuses it on both paths —
-              // cross-chain bare transfers are not actually waved through here.
-              if (!quoteData.toChain) {
-                assertSwapCalldataNotBareTransfer(currentQuote.transaction.data);
-              }
+              // Reject a bare ERC-20 transfer/approve/transferFrom as the outer
+              // call: a real swap or bridge routes through an aggregator/router,
+              // never a direct token method. Runs on cross-chain too — the
+              // validateSwapTarget gate above only refuses `to === inputMint`, so
+              // a bare transfer to a SIBLING token the wallet holds would
+              // otherwise slip through the bridge path (which doesn't parse the
+              // calldata recipient) and drain it. Legitimate bridges route through
+              // a router selector, so this never fires on a real cross-chain quote.
+              assertSwapCalldataNotBareTransfer(currentQuote.transaction.data);
 
               // Handle approval if needed — skip for native ETH
               // Check existing allowance first to avoid unnecessary approve txs
@@ -2408,7 +3261,16 @@ EXAMPLES:
                   continue;
                 }
               } else {
-                if (txValue > 0n) {
+                // A token-input swap sends no native value — except a cross-chain
+                // bridge may carry a bounded native fee via msg.value. Allow that up
+                // to the same ceiling assertSwapOutcome tolerates as a native sibling
+                // (verifySwapOutcome runs below and re-bounds the actual simulated
+                // outflow to min(tx.value, cap)); reject any other non-zero value, and
+                // any bridge fee above the ceiling.
+                const bridgeFeeAllowed = quoteData?.request
+                  && isBridgeRequest(quoteData.request)
+                  && txValue <= EVM_BRIDGE_NATIVE_FEE_SLACK;
+                if (txValue > 0n && !bridgeFeeAllowed) {
                   log(`  ❌ ERC-20 swap has non-zero tx.value (${txValue}) for ${quoteName} — aborting`);
                   if (qi + 1 < endIndex) log(`  Trying next quote...`);
                   lastQuoteError = `${quoteName} unexpected tx.value`;
@@ -2434,14 +3296,69 @@ EXAMPLES:
                   chain, currentQuote.inputMint, walletAddress, currentQuote.approvalAddress
                 );
 
-                if (existingAllowance >= approveAmt && existingAllowance > 0n) {
+                const { shouldRevoke, reuseAllowance } = resolveAllowanceAction(existingAllowance, approveAmt, noRevokeExcessiveAllowance);
+                if (reuseAllowance) {
+                  if (noRevokeExcessiveAllowance && shouldRevoke) {
+                    log(`  ⚠ Existing allowance (${existingAllowance}) for ${quoteName} is excessive (>${OVERSIZED_ALLOWANCE_MULTIPLIER}x this trade), but --no-revoke-excessive-allowance was set`);
+                  }
                   log(`  ✓ Sufficient allowance exists for ${quoteName}, skipping approval`);
                 } else {
+                  const approvalGasPrice = currentQuote.transaction?.gasPrice || currentQuote.transaction?.maxFeePerGas || '1000000';
+
+                  if (shouldRevoke) {
+                    log(`  ⚠ Existing allowance (${existingAllowance}) for ${quoteName} is excessive (>${OVERSIZED_ALLOWANCE_MULTIPLIER}x this trade) — revoking before re-approving`);
+                    log(`  Sending allowance revocation tx...`);
+                    const revokeNonce = await getEvmNonce(chain, walletAddress);
+                    const revokeTxHex = buildApprovalTransaction(
+                      currentQuote.inputMint,
+                      currentQuote.approvalAddress,
+                      exported.evm.privateKey,
+                      chain,
+                      revokeNonce,
+                      approvalGasPrice,
+                      0n,
+                      undefined,
+                      { allowZero: true },
+                    );
+
+                    const revokeResult = await executeTransaction({
+                      signedTransaction: revokeTxHex,
+                      chain,
+                      simulate: !noSimulate,
+                    });
+
+                    if (revokeResult.status !== 'Success') {
+                      log(`  ❌ Allowance revoke failed for ${quoteName}: ${revokeResult.error || 'unknown error'}`);
+                      if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                      lastQuoteError = `${quoteName} allowance revoke failed`;
+                      continue;
+                    }
+
+                    log(`  Waiting for allowance revoke confirmation...`);
+                    try {
+                      const { receipt, hash: revokeHash } = await confirmEvmBroadcast(chain, revokeTxHex, revokeResult.txHash, 'allowance-revoke');
+                      log(`  ✓ Allowance revoked in block ${parseInt(receipt.blockNumber, 16)}: ${revokeHash}`);
+                    } catch (receiptErr) {
+                      if (isFatalBroadcastError(receiptErr)) throw receiptErr;
+                      log(`  ❌ Allowance revoke may not have confirmed for ${quoteName}: ${receiptErr.message}.${allowanceRevokeRecoveryHint(revokeResult.txHash)}`);
+                      if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                      lastQuoteError = `${quoteName} allowance revoke unconfirmed`;
+                      continue;
+                    }
+                    try {
+                      await assertAllowanceRevoked(chain, currentQuote.inputMint, walletAddress, currentQuote.approvalAddress);
+                    } catch (pollErr) {
+                      log(`  ❌ Revoke tx confirmed but allowance was not cleared for ${quoteName}: ${pollErr.message}.${allowanceRevokeRecoveryHint(revokeResult.txHash)}`);
+                      if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                      lastQuoteError = `${quoteName} allowance revoke verification failed`;
+                      continue;
+                    }
+                    await waitForAllowanceTxPropagation();
+                  }
                   log(`  ⚠ Approval required → ${currentQuote.approvalAddress}`);
                   log(`  Sending approval tx...`);
                   const approvalNonce = await getEvmNonce(chain, walletAddress);
 
-                  const approvalGasPrice = currentQuote.transaction?.gasPrice || currentQuote.transaction?.maxFeePerGas || '1000000';
                   const approvalTxHex = buildApprovalTransaction(
                     currentQuote.inputMint,
                     currentQuote.approvalAddress,
@@ -2460,7 +3377,10 @@ EXAMPLES:
                   });
 
                   if (approvalResult.status !== 'Success') {
-                    log(`  ❌ Approval failed for ${quoteName}: ${approvalResult.error || 'unknown error'}`);
+                    const revokedMsg = shouldRevoke
+                      ? ' after revoking the prior allowance (now 0)'
+                      : '';
+                    log(`  ❌ Approval failed for ${quoteName}${revokedMsg}: ${approvalResult.error || 'unknown error'}`);
                     if (qi + 1 < endIndex) log(`  Trying next quote...`);
                     lastQuoteError = `${quoteName} approval failed`;
                     continue;
@@ -2468,16 +3388,24 @@ EXAMPLES:
 
                   log(`  Waiting for approval confirmation...`);
                   try {
-                    const receipt = await waitForReceipt(chain, approvalResult.txHash);
-                    log(`  ✓ Approval confirmed in block ${parseInt(receipt.blockNumber, 16)}: ${approvalResult.txHash}`);
+                    const { receipt, hash: approvalHash } = await confirmEvmBroadcast(chain, approvalTxHex, approvalResult.txHash, 'allowance-approval');
+                    log(`  ✓ Approval confirmed in block ${parseInt(receipt.blockNumber, 16)}: ${approvalHash}`);
                   } catch (receiptErr) {
-                    log(`  ❌ Approval may not have confirmed: ${receiptErr.message}`);
+                    if (isFatalBroadcastError(receiptErr)) throw receiptErr;
+                    log(`  ❌ Approval may not have confirmed${shouldRevoke ? ' after revoking the prior allowance (now 0)' : ''}: ${receiptErr.message}`);
                     if (qi + 1 < endIndex) log(`  Trying next quote...`);
                     lastQuoteError = `${quoteName} approval unconfirmed`;
                     continue;
                   }
-                  // Wait for RPC state propagation after approval
-                  await new Promise(r => setTimeout(r, 2000));
+                  try {
+                    await assertAllowanceAtLeast(chain, currentQuote.inputMint, walletAddress, currentQuote.approvalAddress, approveAmt);
+                  } catch (pollErr) {
+                    log(`  ❌ Approval tx confirmed but allowance did not reach the required amount for ${quoteName}${shouldRevoke ? ' after revoking the prior allowance (now 0)' : ''}: ${pollErr.message}`);
+                    if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                    lastQuoteError = `${quoteName} approval verification failed`;
+                    continue;
+                  }
+                  await waitForAllowanceTxPropagation();
                   log('');
                 }
               }
@@ -2497,6 +3425,20 @@ EXAMPLES:
                   log(`  ⚠ Simulation failed for ${quoteName}: ${sim.reason}`);
                   if (qi + 1 < endIndex) log(`  Trying next quote...`);
                   lastQuoteError = `${quoteName} simulation failed: ${sim.reason}`;
+                  continue;
+                }
+              }
+
+              // Verify the swap's simulated on-chain outcome matches intent. Its
+              // own gate: runs even when --no-simulate/gasless skip the cheap
+              // eth_call revert check above; degrades with a warning when no
+              // simulation endpoint is set.
+              if (!noVerifyOutcome) {
+                const outcome = await verifySwapOutcome({ chain, from: walletAddress, quote: currentQuote, quoteData, apiKey, log });
+                if (!outcome.proceed) {
+                  log(`  ❌ ${quoteName} failed swap-outcome verification: ${outcome.reason}`);
+                  if (qi + 1 < endIndex) log(`  Trying next quote...`);
+                  lastQuoteError = `${quoteName} outcome verification failed: ${outcome.reason}`;
                   continue;
                 }
               }
@@ -2569,17 +3511,51 @@ EXAMPLES:
             const result = await executeTransaction(execParams);
 
             if (result.status === 'Success') {
-              const txId = result.signature || result.txHash;
-              const explorerUrl = chainConfig.explorer + txId;
+              let txId = result.signature || result.txHash;
+              let explorerUrl = chainConfig.explorer + txId;
 
               // For EVM: verify the tx actually succeeded on-chain
-              if (chainType === 'evm' && result.txHash) {
+              if (chainType === 'evm') {
                 log('  Verifying on-chain status...');
+                // Non-gasless: derive our local hash up front, OUTSIDE the receipt-poll
+                // try below. A hex-validation failure here means no poll ever ran, so it
+                // must surface as itself — not as the "REVERTED on-chain" diagnostic that
+                // catch is reserved for. (Gasless has no local hash to bind to: the Relay
+                // solver wraps and broadcasts its own tx, so result.txHash legitimately is
+                // not the hash of the bytes we signed.)
+                if (!gasless) {
+                  try {
+                    txId = evmTxHash(signedTransaction);
+                  } catch (hashErr) {
+                    throw new CommandError(`Cannot derive local tx hash for ${quoteName}: ${hashErr.message}`, 'INVALID_SIGNED_TX');
+                  }
+                  explorerUrl = chainConfig.explorer + txId;
+                }
                 try {
-                  await waitForReceipt(chain, result.txHash);
+                  if (gasless) {
+                    // If the solver reported no hash there is nothing to poll — skip
+                    // rather than block on eth_getTransactionReceipt(undefined).
+                    if (result.txHash) await waitForReceipt(chain, result.txHash);
+                  } else {
+                    const { hash } = await confirmEvmBroadcast(chain, signedTransaction, result.txHash);
+                    txId = hash;
+                    explorerUrl = chainConfig.explorer + txId;
+                  }
                 } catch (receiptErr) {
+                  // A receipt TIMEOUT is not a confirmed revert: the tx was
+                  // broadcast and may still be pending under our nonce. Retrying
+                  // the next quote would sign and broadcast a SECOND swap racing
+                  // the first for that nonce — the duplicate-broadcast this PR
+                  // exists to prevent. (It's also exactly how guarantee #2's
+                  // silent-substitution case surfaces: a 180s timeout polling our
+                  // own hash.) Fail closed with a clearer banner than the generic
+                  // rethrow, then let isFatalBroadcastError handle the rest.
+                  if (receiptErr.code === 'RECEIPT_TIMEOUT') {
+                    throw new CommandError(`\n  ⚠ Transaction was broadcast but NOT confirmed within the wait window.\n    Tx Hash:   ${txId || result.txHash}\n    Explorer:  ${explorerUrl}\n    ${receiptErr.message}\n\n  The transaction may still be pending — do NOT assume it failed. Check the\n  explorer before retrying; retrying may broadcast a second swap against the\n  same nonce.`, 'RECEIPT_TIMEOUT');
+                  }
+                  if (isFatalBroadcastError(receiptErr)) throw receiptErr;
                   log(`\n  ⚠ Transaction was broadcast but REVERTED on-chain!`);
-                  log(`    Tx Hash:   ${result.txHash}`);
+                  log(`    Tx Hash:   ${txId || result.txHash}`);
                   log(`    Explorer:  ${explorerUrl}`);
                   log(`    Error:     ${receiptErr.message}`);
                   if (qi + 1 < endIndex) {
@@ -2587,7 +3563,7 @@ EXAMPLES:
                     lastQuoteError = `${quoteName} reverted on-chain`;
                     continue;
                   }
-                  throw new CommandError(`\n  ⚠ Transaction was broadcast but REVERTED on-chain!\n    Tx Hash:   ${result.txHash}\n    Explorer:  ${explorerUrl}\n    Error:     ${receiptErr.message}\n\n  The trading API reported success, but the contract execution failed.\n  This can happen due to: stale quotes, insufficient gas, or liquidity changes.`, 'TX_REVERTED');
+                  throw new CommandError(`\n  ⚠ Transaction was broadcast but REVERTED on-chain!\n    Tx Hash:   ${txId || result.txHash}\n    Explorer:  ${explorerUrl}\n    Error:     ${receiptErr.message}\n\n  The trading API reported success, but the contract execution failed.\n  This can happen due to: stale quotes, insufficient gas, or liquidity changes.`, 'TX_REVERTED');
                 }
               }
 
@@ -2645,6 +3621,11 @@ EXAMPLES:
             }
 
           } catch (quoteErr) {
+            // Post-broadcast failures abort the whole execute — never retry the
+            // next quote once a transaction is already out and its outcome is
+            // unknown (mismatch, underivable local hash, or an unconfirmed
+            // receipt timeout). See isFatalBroadcastError.
+            if (isFatalBroadcastError(quoteErr)) throw quoteErr;
             const msg = quoteErr.message || '';
             log(`  ❌ Quote ${quoteName} failed: ${msg}`);
             if (msg.includes('AccountNotFound') && chainType === 'solana') {

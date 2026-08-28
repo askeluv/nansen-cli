@@ -86,6 +86,15 @@ describe('parseArgs', () => {
     expect(result.flags.verbose).toBe(true);
     expect(result.flags.debug).toBe(true);
   });
+
+  it('should not swallow a following positional arg as the value of a trade execute boolean flag', () => {
+    for (const flag of ['no-simulate', 'no-verify-outcome', 'no-revoke-excessive-allowance']) {
+      const result = parseArgs(['trade', 'execute', `--${flag}`, '1708900000000-abc123']);
+      expect(result.flags[flag]).toBe(true);
+      expect(result.options[flag]).toBeUndefined();
+      expect(result._).toEqual(['trade', 'execute', '1708900000000-abc123']);
+    }
+  });
 });
 
 describe('formatValue', () => {

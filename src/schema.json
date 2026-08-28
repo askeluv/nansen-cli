@@ -1570,6 +1570,7 @@
             "swap-mode": {
               "type": "string",
               "default": "exactIn",
+              "enum": ["exactIn", "exactOut"],
               "description": "\"exactIn\" (default) to spend exactly --amount of the sell token, or \"exactOut\" to receive exactly --amount of the buy token. Not supported together with --amount-unit percent."
             },
             "slippage": {
@@ -1586,7 +1587,7 @@
             },
             "max-input": {
               "type": "string",
-              "description": "exactOut only: hard ceiling on the sell-token spend, in base units. Required for EVM (Base) exactOut and optional on Solana (which has no ERC-20 approval to scope). Measured against the slippage-buffered approval (input + slippage), not the bare quote input, so it matches the amount that can actually leave the wallet. Persisted with the quote and enforced before any approval or signing — a quote whose buffered approval exceeds it is refused."
+              "description": "exactOut only: hard ceiling on the sell-token spend, in base units. Required on every chain for --swap-mode exactOut. Measured against the slippage-buffered spend (input + slippage), not the bare quote input, so it matches the amount that can actually leave the wallet. Persisted with the quote and enforced before signing — a quote whose buffered spend exceeds it is refused."
             }
           },
           "prerequisites": [
@@ -1620,7 +1621,15 @@
             },
             "no-simulate": {
               "type": "boolean",
-              "description": "Skip the pre-broadcast simulation."
+              "description": "Skip the pre-broadcast simulation (the eth_call revert check)."
+            },
+            "no-verify-outcome": {
+              "type": "boolean",
+              "description": "Skip swap-outcome verification. That check simulates the swap and confirms the wallet's balance changes match the quote (input spent within your max, expected output received, no other asset moved) before broadcasting; it needs a simulation-capable endpoint (NANSEN_BASE_SIM_RPC on EVM, NANSEN_SOLANA_SIM_RPC on Solana) and degrades with a warning when none is available."
+            },
+            "no-revoke-excessive-allowance": {
+              "type": "boolean",
+              "description": "Skip revoking an existing on-chain ERC-20 allowance before re-approving when it exceeds 10x this trade's scoped amount. By default, an oversized or legacy allowance is revoked to zero and a fresh trade-scoped allowance is granted. WalletConnect users will see separate wallet prompts for the revoke and re-approval."
             }
           }
         },
@@ -1686,7 +1695,7 @@
                 },
                 "slippage-bps": {
                   "type": "number",
-                  "description": "Slippage tolerance in basis points (e.g. 50 = 0.5%)"
+                  "description": "Slippage as a whole integer in basis points, 0-10000 (50 = 0.5%), omit for auto"
                 },
                 "expires": {
                   "type": "string",
@@ -1775,7 +1784,7 @@
                 },
                 "slippage-bps": {
                   "type": "number",
-                  "description": "New slippage in basis points (0-10000)"
+                  "description": "New slippage as a whole integer in basis points (0-10000)"
                 },
                 "wallet": {
                   "type": "string",

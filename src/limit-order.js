@@ -11,6 +11,7 @@ import path from 'path';
 import { base58Encode, exportWallet, getWalletConfig, showWallet } from './wallet.js';
 import { signEd25519, base58Decode, parseAmount, getTokenInfo } from './transfer.js';
 import { signSolanaTransaction, resolveTokenAddress } from './trading.js';
+import { assertSolanaInstructionsSafe } from './trade-validation.js';
 import { validateTokenAddress, telemetryHeaders, packageVersion } from './api.js';
 import { getWalletConnectAddress, sendSolanaTransactionViaWalletConnect, signSolanaMessageViaWalletConnect } from './walletconnect-trading.js';
 import { retrievePassword } from './keychain.js';
@@ -401,6 +402,17 @@ export function parseExpiry(expiryStr) {
   throw new Error(`Invalid expiry format: "${expiryStr}". Use "24h", "7d", "30d", or epoch ms.`);
 }
 
+// Whole integer bps in [0, 10000], matching bridge parseSlippageBps.
+// Number() would accept "1.5", "1e2", "0x10", and boolean true.
+function parseSlippageBps(raw) {
+  const s = String(raw).trim();
+  const bad = 'Error: --slippage-bps must be a whole integer between 0 and 10000 basis points.';
+  if (!/^\d+$/.test(s)) throw new Error(bad);
+  const n = parseInt(s, 10);
+  if (!Number.isInteger(n) || n < 0 || n > 10000) throw new Error(bad);
+  return n;
+}
+
 // ============= Order Formatting =============
 
 function formatOrderStatus(status) {
@@ -501,7 +513,7 @@ export function buildLimitOrderCommands(deps = {}) {
       const triggerPrice = options['trigger-price'];
       const triggerCondition = options['trigger-condition'];
       const triggerMintRaw = options['trigger-mint'];
-      const slippageBps = options['slippage-bps'] != null ? Number(options['slippage-bps']) : undefined;
+      const slippageBpsRaw = options['slippage-bps'];
       const expiresStr = options.expires || '30d';
       const walletName = options.wallet;
 
@@ -516,7 +528,7 @@ OPTIONS:
   --trigger-mint <symbol|addr>   Token whose price triggers the order (e.g. SOL)
   --trigger-condition <cond>     "above" or "below"
   --trigger-price <usd>          Trigger price in USD (must be a positive number)
-  --slippage-bps <bps>               Slippage in basis points (100 = 1%), omit for auto
+  --slippage-bps <bps>           Whole integer bps, 0-10000 (100 = 1%), omit for auto
   --expires <duration>           Expiry duration: "24h", "7d", "30d" (default: 30d)
   --wallet <name>                Wallet name (or "walletconnect"/"wc")
 
@@ -579,6 +591,18 @@ EXAMPLES:
         log('Error: --trigger-condition must be "above" or "below".');
         exit(1);
         return;
+      }
+
+      // Same bounds as update / bridge: whole-integer bps in 0–10000.
+      let slippageBps;
+      if (slippageBpsRaw != null) {
+        try {
+          slippageBps = parseSlippageBps(slippageBpsRaw);
+        } catch (err) {
+          log(err.message);
+          exit(1);
+          return;
+        }
       }
 
       let expiresAt;
@@ -650,6 +674,17 @@ EXAMPLES:
         });
 
         // 5. Sign deposit transaction
+        // Same pre-signing drain gate the swap path uses. The legitimate deposit
+        // moves the input token into the already-registered vault (step 3) with an
+        // SPL Transfer/TransferChecked — which this gate does not classify — plus,
+        // when selling native SOL, a temp-WSOL CloseAccount whose rent returns to
+        // the wallet (permitted). Neither trips the delegate/authority/
+        // close-to-stranger checks, so this does not reject a well-formed deposit;
+        // it only fires if the crafted tx additionally grants a delegate, reassigns
+        // authority, or closes to a stranger. Verified live: a real SOL→USDC create
+        // round-trip clears this gate (the API-crafted deposit is a SOL-wrap
+        // transfer into the vault plus a temp-WSOL close-to-self).
+        assertSolanaInstructionsSafe(deposit.transaction, { walletAddress: pubkey });
         log('  Signing deposit transaction...');
         const signedDepositTx = await signTransaction(deposit.transaction, walletType, walletInfo);
 
@@ -784,6 +819,14 @@ EXAMPLES:
         const cancelResult = await cancelOrderRequest(token, orderId);
 
         // 3. Sign the withdrawal transaction
+        // Withdrawal moves the deposited token back out of the vault; that transfer
+        // is authorized by the vault program's PDA, not our wallet, so it isn't a
+        // wallet-authorized drain even if it were classified. Any temp-WSOL close
+        // returns rent to the wallet. This gate is defense-in-depth against a
+        // crafted withdrawal that instead grants a delegate, reassigns authority, or
+        // closes to a stranger. Verified live alongside the deposit path via a real
+        // cancel round-trip.
+        assertSolanaInstructionsSafe(cancelResult.transaction, { walletAddress: pubkey });
         log('  Signing withdrawal transaction...');
         const signedTx = await signTransaction(cancelResult.transaction, walletType, walletInfo);
 
@@ -820,7 +863,7 @@ Usage: nansen trade limit-order update --order <orderId> [--trigger-price <usd>]
 OPTIONS:
   --order <id>            Order ID to update
   --trigger-price <usd>   New trigger price in USD
-  --slippage-bps <bps>    Slippage in basis points (100 = 1%)
+  --slippage-bps <bps>    Whole integer bps, 0-10000 (100 = 1%)
   --wallet <name>         Wallet name (or "walletconnect"/"wc")
 
 NOTE: Only provided fields are updated. Auto slippage can only be set at creation time
@@ -850,13 +893,13 @@ EXAMPLES:
         updateBody.triggerPriceUsd = price;
       }
       if (slippageBps != null) {
-        const bps = Number(slippageBps);
-        if (isNaN(bps) || bps < 0 || bps > 10000) {
-          log('Error: --slippage-bps must be between 0 and 10000 basis points.');
+        try {
+          updateBody.slippageBps = parseSlippageBps(slippageBps);
+        } catch (err) {
+          log(err.message);
           exit(1);
           return;
         }
-        updateBody.slippageBps = bps;
       }
 
       try {

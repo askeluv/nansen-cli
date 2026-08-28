@@ -393,7 +393,7 @@ function requireValidToken(tokenAddress, chain) {
   if (!v.valid) throw new NansenError(v.error, v.code);
 }
 
-function loadConfig() {
+export function loadConfig() {
   // Base config from files, then env vars override individual fields
   let config = null;
 
@@ -538,7 +538,7 @@ export class NansenAPI {
    * @param {string|null} network - x402 network string for balance check, e.g. "eip155:8453"
    * @param {string} url - Request URL
    * @param {object} body - Request body (will be cleaned)
-   * @param {object} [options={}] - Request options (may include .headers)
+   * @param {object} [options={}] - Request options (may include .method, .headers)
    * @returns {Promise<object|null>} Parsed JSON on success, null if rejected
    *
    * TODO: full fix — extract the entire x402 provider dispatch from request() into
@@ -546,10 +546,14 @@ export class NansenAPI {
    * touching that one method, not hunting inside the retry loop.
    */
   async _x402Retry(signature, walletLabel, network, url, body, options = {}, asset = null) {
+    // Mirror request(): paid retries must use the original method. Hardcoding
+    // POST burned a payment signature then hit the wrong route for GET/DELETE/PATCH.
+    const method = options.method || 'POST';
+    const isGet = method === 'GET';
     const paidResponse = await fetch(url, {
-      method: 'POST',
+      method,
       headers: {
-        'Content-Type': 'application/json',
+        ...(!isGet && { 'Content-Type': 'application/json' }),
         'X-Client-Type': 'nansen-cli',
         'X-Client-Version': packageVersion,
         ...telemetryHeaders(),
@@ -557,7 +561,7 @@ export class NansenAPI {
         ...this.defaultHeaders,
         ...options.headers,
       },
-      body: JSON.stringify(NansenAPI.cleanBody(body)),
+      ...(!isGet && method !== 'DELETE' && { body: JSON.stringify(NansenAPI.cleanBody(body)) }),
     });
     if (!paidResponse.ok) return null;
     if (walletLabel) {

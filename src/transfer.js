@@ -120,9 +120,31 @@ async function buildEvmTransaction({ to, amount, token, privateKey, chain, max =
   const privBuf = Buffer.from(privateKey, 'hex');
   const from = deriveEvmAddress(privateKey);
 
-  // Nonce
-  const nonceHex = await rpcCall(rpcUrl, 'eth_getTransactionCount', [from, 'latest']);
-  const nonce = BigInt(nonceHex);
+  // Fetch both pending and latest nonce counts. 'pending' is used so mempool-
+  // queued transactions are counted — 'latest' alone would assign the same
+  // nonce to back-to-back sends, causing one to fail or silently replace the
+  // other. The gap check mirrors trading.js's getEvmNonce: if more than 2
+  // transactions are already queued, signing another would silently stack
+  // behind them and sit unexecutable until they clear or get replaced.
+  const MAX_PENDING_NONCE_GAP = 2;
+  const [pendingHex, latestHex] = await Promise.all([
+    rpcCall(rpcUrl, 'eth_getTransactionCount', [from, 'pending']),
+    rpcCall(rpcUrl, 'eth_getTransactionCount', [from, 'latest']),
+  ]);
+  const nonce = BigInt(pendingHex);
+  const latestNonce = BigInt(latestHex);
+  const gap = Number(nonce - latestNonce);
+  if (gap > MAX_PENDING_NONCE_GAP) {
+    // wallet send has no --nonce/--priority-fee, so don't tell the user to
+    // replace via this CLI. Also note the two-RPC race on load-balanced
+    // endpoints (same caveat as trading.js getEvmNonce).
+    throw new Error(
+      `${from} has ${gap} unmined transactions queued on ${chain} (next mined nonce ${latestNonce}, next pending ${nonce}). ` +
+      `Signing another would queue behind them and stay unexecutable until they clear. ` +
+      `Wait for them to clear (or replace them with a higher fee from where they were sent) before retrying. ` +
+      `Note that a load-balanced public RPC may report a transaction it isn't actually holding, so don't diagnose from a single endpoint.`,
+    );
+  }
 
   // Fees — dynamic priority fee
   const feeHistory = await rpcCall(rpcUrl, 'eth_feeHistory', [4, 'latest', [50]]);

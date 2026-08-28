@@ -499,6 +499,60 @@ describe('buildLimitOrderCommands', () => {
       expect(logs.some(l => l.includes('"above" or "below"'))).toBe(true);
     });
 
+    it('validates slippage-bps range', async () => {
+      const logs = [];
+      const exit = vi.fn();
+      const cmds = buildLimitOrderCommands({ log: (m) => logs.push(m), exit });
+
+      await cmds.create([], null, {}, {
+        from: 'SOL', to: 'USDC', amount: '1', 'trigger-mint': 'SOL',
+        'trigger-price': '80', 'trigger-condition': 'below', 'slippage-bps': '15000',
+      });
+      expect(exit).toHaveBeenCalledWith(1);
+      expect(logs.some(l => l.includes('0 and 10000'))).toBe(true);
+    });
+
+    it('rejects non-integer slippage-bps values (1.5, 1e2, 0x10, true)', async () => {
+      for (const bad of ['1.5', '1e2', '0x10', true]) {
+        const logs = [];
+        const exit = vi.fn();
+        const cmds = buildLimitOrderCommands({ log: (m) => logs.push(m), exit });
+
+        await cmds.create([], null, {}, {
+          from: 'SOL', to: 'USDC', amount: '1', 'trigger-mint': 'SOL',
+          'trigger-price': '80', 'trigger-condition': 'below', 'slippage-bps': bad,
+        });
+        expect(exit).toHaveBeenCalledWith(1);
+        expect(logs.some(l => l.includes('whole integer') && l.includes('0 and 10000'))).toBe(true);
+      }
+    });
+
+    it('accepts valid slippage-bps and forwards it to createOrder', async () => {
+      createTestWallet('lo-create-slip');
+      const logs = [];
+      const exit = vi.fn();
+      const cmds = buildLimitOrderCommands({ log: (m) => logs.push(m), exit });
+
+      mockFetchSequence([
+        { body: { challenge: 'sign this' } },
+        { body: { token: 'jwt-123' } },
+        { body: { vaultPubkey: 'vault123', userPubkey: 'pub1' } },
+        { body: { transaction: buildFakeBase64Tx(), requestId: 'dep-req-1' } },
+        { body: { id: 'order-slip', txSignature: 'sig-slip' }, status: 201 },
+      ]);
+
+      await cmds.create([], null, {}, {
+        from: 'SOL', to: 'USDC', amount: '1', 'trigger-mint': 'SOL',
+        'trigger-condition': 'below', 'trigger-price': '80',
+        'slippage-bps': '100', wallet: 'lo-create-slip',
+      });
+
+      expect(exit).not.toHaveBeenCalled();
+      expect(logs.some(l => l.includes('Limit order created'))).toBe(true);
+      const createBody = JSON.parse(global.fetch.mock.calls[4][1].body);
+      expect(createBody.slippageBps).toBe(100);
+    });
+
     it('rejects EVM token address for --from', async () => {
       const logs = [];
       const exit = vi.fn();
@@ -972,6 +1026,16 @@ describe('buildLimitOrderCommands', () => {
       expect(exit).toHaveBeenCalledWith(1);
       expect(logs.some(l => l.includes('0 and 10000'))).toBe(true);
     });
+
+    it('rejects non-integer slippage-bps on update', async () => {
+      const logs = [];
+      const exit = vi.fn();
+      const cmds = buildLimitOrderCommands({ log: (m) => logs.push(m), exit });
+
+      await cmds.update([], null, {}, { order: 'order-1', 'slippage-bps': '1.5' });
+      expect(exit).toHaveBeenCalledWith(1);
+      expect(logs.some(l => l.includes('whole integer') && l.includes('0 and 10000'))).toBe(true);
+    });
   });
 });
 
@@ -983,10 +1047,21 @@ describe('buildLimitOrderCommands', () => {
  * by signSolanaTransaction (compact-u16 sig count + 64-byte sig slot + message).
  */
 function buildFakeBase64Tx() {
-  // 1 signature slot (compact-u16 = 0x01), 64 zero bytes for sig, then some message bytes
+  // A valid, parseable legacy transaction with a single benign instruction:
+  // 1 signature slot, then a legacy message [header][2 account keys][blockhash]
+  // [1 instruction referencing a non-SPL program]. It must actually parse —
+  // assertSolanaInstructionsSafe (run before signing on this path) now rejects
+  // unparseable transactions rather than silently ignoring them.
   const sigCount = Buffer.from([0x01]);
   const emptySig = Buffer.alloc(64, 0);
-  const fakeMessage = Buffer.alloc(32, 0xAB); // Minimal "message"
-  const tx = Buffer.concat([sigCount, emptySig, fakeMessage]);
-  return tx.toString('base64');
+  const header = Buffer.from([1, 0, 1]); // 1 signer (writable), 1 readonly unsigned (the program)
+  const numKeys = Buffer.from([0x02]);
+  const signerKey = Buffer.alloc(32, 0x01); // account index 0 = signer / fee payer
+  const programKey = Buffer.alloc(32, 0x02); // account index 1 = an arbitrary (non-SPL) program
+  const blockhash = Buffer.alloc(32, 0x03);
+  const numInstructions = Buffer.from([0x01]);
+  // instruction: programIdIndex=1, 1 account (index 0), 1 data byte
+  const instruction = Buffer.from([0x01, 0x01, 0x00, 0x01, 0x00]);
+  const message = Buffer.concat([header, numKeys, signerKey, programKey, blockhash, numInstructions, instruction]);
+  return Buffer.concat([sigCount, emptySig, message]).toString('base64');
 }

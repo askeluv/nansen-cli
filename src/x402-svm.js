@@ -32,9 +32,13 @@ export function deriveATA(ownerBase58, mintBase58, tokenProgramBase58 = TOKEN_PR
 
 /**
  * Build a Solana MessageV0 from accounts and instructions.
- * Simplified builder for x402 payment transactions.
+ * feePayer is always placed at account index 0, forced signer+writable,
+ * regardless of whether an instruction references it directly.
+ * Returns numRequiredSignatures alongside the bytes since it's read back out
+ * of the header to size the signature-placeholder slots of the wrapping
+ * unsigned transaction (see callers).
  */
-function buildMessageV0({ feePayer, instructions, recentBlockhash, accounts: _accounts }) {
+export function buildMessageV0({ feePayer, instructions, recentBlockhash, accounts: _accounts }) {
   // All unique accounts in order: feePayer first, then signers, then rest
   const accountMap = new Map();
   const feePayerKey = feePayer;
@@ -129,10 +133,10 @@ function buildMessageV0({ feePayer, instructions, recentBlockhash, accounts: _ac
     parts.push(ix.data);
   }
 
-  // Address table lookups (empty for our use case)
+  // Address table lookups (empty — all accounts referenced statically above)
   parts.push(encodeCompactU16(0));
 
-  return Buffer.concat(parts);
+  return { messageBytes: Buffer.concat(parts), numRequiredSignatures };
 }
 
 // ============= Ed25519 Signing =============
@@ -231,7 +235,7 @@ export function buildUnsignedSvmTransaction(
     },
   ];
 
-  const messageBytes = buildMessageV0({
+  const { messageBytes } = buildMessageV0({
     feePayer: feePayerStr,
     instructions,
     recentBlockhash,
