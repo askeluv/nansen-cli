@@ -130,7 +130,9 @@ describe('mcp command handler', () => {
   const readCursor = () => JSON.parse(fs.readFileSync(cursorPath(), 'utf8'));
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nansen-mcp-test-'));
+    // realpath: on macOS os.tmpdir() is /var/... which is a symlink to
+    // /private/var/..., and the command logs the resolved path.
+    tempDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'nansen-mcp-test-')));
     logs = [];
     ({ mcp } = buildMcpCommands({
       log: (...a) => logs.push(a.join(' ')),
