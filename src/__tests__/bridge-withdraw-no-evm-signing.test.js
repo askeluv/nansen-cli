@@ -75,20 +75,20 @@ function writeWithdrawQuote(quoteId, destinationChain) {
               data: {
                 sign: {
                   domain: {
-                    name: 'Relay',
-                    version: '1',
+                    name: 'RelayNonceMapping',
+                    version: '2',
                     chainId: 1,
                     verifyingContract: '0x0000000000000000000000000000000000000000',
                   },
                   types: { NonceMapping: [
                     { name: 'chainId', type: 'string' },
-                    { name: 'wallet', type: 'string' },
-                    { name: 'nonce', type: 'uint64' },
-                    { name: 'id', type: 'string' },
-                    { name: 'depositor', type: 'string' },
+                    { name: 'wallet', type: 'address' },
+                    { name: 'depositor', type: 'address' },
+                    { name: 'id', type: 'bytes32' },
+                    { name: 'nonce', type: 'uint256' },
                   ] },
                   primaryType: 'NonceMapping',
-                  value: { chainId: 'hyperliquid', wallet: WALLET, nonce: 1, id: '0x1', depositor: WALLET },
+                  value: { chainId: 'hyperliquid', wallet: WALLET, depositor: WALLET, id: '0x1', nonce: 1 },
                 },
                 post: { endpoint: '/authorize', body: {} },
               },

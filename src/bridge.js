@@ -346,17 +346,35 @@ const HYPERLIQUID_BRIDGE_USDC_TOKEN_ID = 'USDC:0x6d1e7cde53ba9467b783cb7c530ce05
 // unchecked, a malicious response could ask the wallet to sign a COMPLETELY
 // different EIP-712 message — a different protocol's Permit or approval,
 // anything with a non-empty type list — and relay the resulting signature to
-// an endpoint of its choosing. Pin the exact shape so this can only ever
-// produce a signature over a genuine NonceMapping.
+// an endpoint of its choosing. Pin the exact shape (domain fields, and field
+// name+type+ORDER — order affects the EIP-712 struct hash) so this can only
+// ever produce a signature over a genuine NonceMapping. Captured from a real
+// read-only `bridge quote` response (2026-08-28) — the exact domain
+// (RelayNonceMapping, not the plainer "Relay" name used elsewhere in this
+// file's comments/URLs) and field types (wallet/depositor are `address`, not
+// `string`; id is `bytes32`; nonce is `uint256`) only became visible once
+// captured directly — treat this as the source of truth over guesses.
 const RELAY_AUTHORIZE_PRIMARY_TYPE = 'NonceMapping';
-const RELAY_AUTHORIZE_DOMAIN_NAME = 'Relay';
-const RELAY_AUTHORIZE_FIELDS = new Set(['chainId', 'wallet', 'nonce', 'id', 'depositor']);
+const RELAY_AUTHORIZE_DOMAIN = {
+  name: 'RelayNonceMapping',
+  version: '2',
+  chainId: 1,
+  verifyingContract: '0x0000000000000000000000000000000000000000',
+};
+const RELAY_AUTHORIZE_FIELDS = [
+  { name: 'chainId', type: 'string' },
+  { name: 'wallet', type: 'address' },
+  { name: 'depositor', type: 'address' },
+  { name: 'id', type: 'bytes32' },
+  { name: 'nonce', type: 'uint256' },
+];
 
-// Hosts this bridge path is allowed to POST a produced signature to. Guards
-// the same gap from the other direction: even with the shape above pinned, an
-// absolute `post.endpoint` was used verbatim, so a malicious response could
-// redirect the signature to a server outside Relay entirely.
-const RELAY_AUTHORIZE_HOSTS = new Set(['api.relay.link']);
+// The exact (relative) endpoint the authorize signature is POSTed to. Pinned
+// literally rather than merely host-allowlisted: the target URL is always
+// built from this constant, never from the server-supplied `post.endpoint`,
+// so there is nothing left for a malicious response to redirect.
+const RELAY_AUTHORIZE_ENDPOINT_PATH = '/authorize';
+const RELAY_AUTHORIZE_BASE_URL = 'https://api.relay.link';
 
 // Parse a non-negative decimal string ("2", "2.000000", "1.97859") to an integer
 // scaled by `decimals`, via digit slicing (never parseFloat) so it is exact.
@@ -478,16 +496,24 @@ export function assertHlBridgeAuthorizeIntent(sign, signerAddress, context = 'Br
       'UNEXPECTED_ACTION',
     );
   }
-  if (sign.domain?.name !== RELAY_AUTHORIZE_DOMAIN_NAME) {
+  const domain = sign.domain || {};
+  const domainMatches = domain.name === RELAY_AUTHORIZE_DOMAIN.name
+    && domain.version === RELAY_AUTHORIZE_DOMAIN.version
+    && domain.chainId === RELAY_AUTHORIZE_DOMAIN.chainId
+    && String(domain.verifyingContract ?? '').toLowerCase() === RELAY_AUTHORIZE_DOMAIN.verifyingContract.toLowerCase();
+  if (!domainMatches) {
     throw new CommandError(
-      `${context} has an unexpected signing domain "${sign.domain?.name}". Refusing to sign. Request a new quote.`,
+      `${context} has an unexpected signing domain ${JSON.stringify(domain)}. Refusing to sign. Request a new quote.`,
       'UNEXPECTED_ACTION',
     );
   }
-  const fields = (sign.types?.[sign.primaryType] || []).map(f => f.name);
-  const hasExpectedFields = fields.length === RELAY_AUTHORIZE_FIELDS.size
-    && fields.every(name => RELAY_AUTHORIZE_FIELDS.has(name));
-  if (!hasExpectedFields) {
+  // Exact, ORDERED name+type comparison — field order affects the EIP-712
+  // struct hash, so a reordering is a different (if superficially similar)
+  // message, not a cosmetic difference.
+  const fields = sign.types?.[sign.primaryType] || [];
+  const fieldsMatch = fields.length === RELAY_AUTHORIZE_FIELDS.length
+    && fields.every((f, i) => f?.name === RELAY_AUTHORIZE_FIELDS[i].name && f?.type === RELAY_AUTHORIZE_FIELDS[i].type);
+  if (!fieldsMatch) {
     throw new CommandError(
       `${context} has an unexpected field set for "${RELAY_AUTHORIZE_PRIMARY_TYPE}". Refusing to sign. Request a new quote.`,
       'UNEXPECTED_ACTION',
@@ -512,29 +538,19 @@ export function assertHlBridgeAuthorizeIntent(sign, signerAddress, context = 'Br
   }
 }
 
-// Resolve the relayer POST target the same way both sign paths did inline,
-// but refuse an endpoint outside Relay's own host. A relative endpoint always
-// resolved against api.relay.link; an absolute one was previously used
-// verbatim, so a malicious response could redirect a freshly-produced
-// signature to a server of its own choosing.
+// Resolve the relayer POST target. The target URL is always built from
+// RELAY_AUTHORIZE_BASE_URL + RELAY_AUTHORIZE_ENDPOINT_PATH — never from the
+// server-supplied `post.endpoint` — so a malicious response has nothing to
+// redirect: it can, at most, cause this to refuse by not matching the one
+// endpoint this bridge path is designed to POST to.
 function resolveRelayTargetUrl(endpoint, context = 'Bridge step') {
-  if (!endpoint || typeof endpoint !== 'string') {
-    throw new CommandError(`${context}: missing POST endpoint. Refusing to sign. Request a new quote.`, 'INVALID_INPUT');
-  }
-  const targetUrl = endpoint.startsWith('http') ? endpoint : `https://api.relay.link${endpoint}`;
-  let host;
-  try {
-    host = new URL(targetUrl).hostname;
-  } catch {
-    throw new CommandError(`${context} has a malformed POST endpoint "${endpoint}". Refusing to sign.`, 'INVALID_INPUT');
-  }
-  if (!RELAY_AUTHORIZE_HOSTS.has(host)) {
+  if (endpoint !== RELAY_AUTHORIZE_ENDPOINT_PATH) {
     throw new CommandError(
-      `${context} would POST the signature to "${host}", outside the allowed Relay host. Refusing to sign.`,
+      `${context} has an unexpected authorize endpoint "${endpoint}". Refusing to sign. Request a new quote.`,
       'UNEXPECTED_ACTION',
     );
   }
-  return targetUrl;
+  return `${RELAY_AUTHORIZE_BASE_URL}${RELAY_AUTHORIZE_ENDPOINT_PATH}`;
 }
 
 // ── Step processors ──────────────────────────────────────────────────

@@ -149,25 +149,28 @@ describe('assertHlBridgeActionIntent', () => {
 });
 
 describe('assertHlBridgeAuthorizeIntent', () => {
-  // The real captured NonceMapping authorize payload — domain, types, and
-  // value together, since assertHlBridgeAuthorizeIntent now pins the whole
-  // shape, not just the value's wallet/depositor fields.
+  // The real captured NonceMapping authorize payload (from a live read-only
+  // `bridge quote`, 2026-08-28) — domain, types, and value together, since
+  // assertHlBridgeAuthorizeIntent now pins the whole shape, not just the
+  // value's wallet/depositor fields. Note the domain name is "RelayNonceMapping"
+  // (not the plainer "Relay"), and wallet/depositor are `address`, id is
+  // `bytes32`, nonce is `uint256` — verified by capture, not guessed.
   const nonceMappingSign = (valueOverrides = {}) => ({
-    domain: { name: 'Relay', version: '1', chainId: 1, verifyingContract: '0x' + '0'.repeat(40) },
+    domain: { name: 'RelayNonceMapping', version: '2', chainId: 1, verifyingContract: '0x' + '0'.repeat(40) },
     types: { NonceMapping: [
       { name: 'chainId', type: 'string' },
-      { name: 'wallet', type: 'string' },
-      { name: 'nonce', type: 'uint64' },
-      { name: 'id', type: 'string' },
-      { name: 'depositor', type: 'string' },
+      { name: 'wallet', type: 'address' },
+      { name: 'depositor', type: 'address' },
+      { name: 'id', type: 'bytes32' },
+      { name: 'nonce', type: 'uint256' },
     ] },
     primaryType: 'NonceMapping',
     value: {
       chainId: 'hyperliquid',
       wallet: WALLET,
-      nonce: 1787885079283,
-      id: '0xae2365f8c41c422a5ceb36ceddcd94f4b72651824f0baf38c9a31c1e1bd4825f',
       depositor: WALLET,
+      id: '0xae2365f8c41c422a5ceb36ceddcd94f4b72651824f0baf38c9a31c1e1bd4825f',
+      nonce: 1787885079283,
       ...valueOverrides,
     },
   });
@@ -215,11 +218,25 @@ describe('assertHlBridgeAuthorizeIntent', () => {
     }
   });
 
-  it('throws UNEXPECTED_ACTION for a domain other than Relay', () => {
+  it('throws UNEXPECTED_ACTION for a domain name other than RelayNonceMapping', () => {
     const sign = nonceMappingSign();
     sign.domain = { ...sign.domain, name: 'SomeOtherProtocol' };
     expect(() => assertHlBridgeAuthorizeIntent(sign, WALLET)).toThrow(/unexpected signing domain/);
   });
+
+  // Regression guard for a real bug caught in a second review round: an
+  // earlier version checked only domain.name, leaving version/chainId/
+  // verifyingContract (and field TYPES, and field ORDER) unchecked — an
+  // altered domain version or reordered/retyped fields passed silently even
+  // though they change the actual EIP-712 struct hash being signed.
+  it.each(['version', 'chainId', 'verifyingContract'])(
+    'throws UNEXPECTED_ACTION when domain.%s is altered',
+    (field) => {
+      const sign = nonceMappingSign();
+      sign.domain = { ...sign.domain, [field]: field === 'chainId' ? 999 : 'altered' };
+      expect(() => assertHlBridgeAuthorizeIntent(sign, WALLET)).toThrow(/unexpected signing domain/);
+    },
+  );
 
   it('throws UNEXPECTED_ACTION when the NonceMapping field set is wrong (extra or missing fields)', () => {
     const missingField = nonceMappingSign();
@@ -229,6 +246,21 @@ describe('assertHlBridgeAuthorizeIntent', () => {
     const extraField = nonceMappingSign();
     extraField.types.NonceMapping = [...extraField.types.NonceMapping, { name: 'extra', type: 'string' }];
     expect(() => assertHlBridgeAuthorizeIntent(extraField, WALLET)).toThrow(/unexpected field set/);
+  });
+
+  it('throws UNEXPECTED_ACTION when a field is reordered (order affects the EIP-712 hash)', () => {
+    const sign = nonceMappingSign();
+    const [first, second, ...rest] = sign.types.NonceMapping;
+    sign.types.NonceMapping = [second, first, ...rest];
+    expect(() => assertHlBridgeAuthorizeIntent(sign, WALLET)).toThrow(/unexpected field set/);
+  });
+
+  it('throws UNEXPECTED_ACTION when a field type is altered (e.g. address swapped for string)', () => {
+    const sign = nonceMappingSign();
+    sign.types.NonceMapping = sign.types.NonceMapping.map(f =>
+      f.name === 'wallet' ? { ...f, type: 'string' } : f,
+    );
+    expect(() => assertHlBridgeAuthorizeIntent(sign, WALLET)).toThrow(/unexpected field set/);
   });
 
   it('throws UNEXPECTED_NETWORK when chainId is not "hyperliquid"', () => {
@@ -299,21 +331,21 @@ const authorizeStep = (authorizeOverrides = {}) => ({
   items: [{
     data: {
       sign: {
-        domain: { name: 'Relay', version: '1', chainId: 1, verifyingContract: '0x' + '0'.repeat(40) },
+        domain: { name: 'RelayNonceMapping', version: '2', chainId: 1, verifyingContract: '0x' + '0'.repeat(40) },
         types: { NonceMapping: [
           { name: 'chainId', type: 'string' },
-          { name: 'wallet', type: 'string' },
-          { name: 'nonce', type: 'uint64' },
-          { name: 'id', type: 'string' },
-          { name: 'depositor', type: 'string' },
+          { name: 'wallet', type: 'address' },
+          { name: 'depositor', type: 'address' },
+          { name: 'id', type: 'bytes32' },
+          { name: 'nonce', type: 'uint256' },
         ] },
         primaryType: 'NonceMapping',
         value: {
           chainId: 'hyperliquid',
           wallet: WALLET,
-          nonce: 1787885079283,
-          id: '0xae2365f8c41c422a5ceb36ceddcd94f4b72651824f0baf38c9a31c1e1bd4825f',
           depositor: WALLET,
+          id: '0xae2365f8c41c422a5ceb36ceddcd94f4b72651824f0baf38c9a31c1e1bd4825f',
+          nonce: 1787885079283,
           ...authorizeOverrides,
         },
       },
@@ -403,19 +435,27 @@ describe('bridge execute — Hyperliquid action intent binding', () => {
     await expect(execute('bridge-authorize-not-nonce-mapping')).rejects.toThrow(/unexpected EIP-712 type "Permit"/);
   });
 
-  it('rejects an authorize POST target outside the Relay host, before signing', async () => {
+  // The target URL is now built entirely from a hardcoded constant and never
+  // from the server-supplied endpoint (only compared against it), so an
+  // absolute attacker URL, an http:// downgrade, and an unexpected path on the
+  // real host are all just "doesn't match" — one check covers all three.
+  it.each([
+    ['an absolute attacker-controlled URL', 'https://attacker.example.com/authorize'],
+    ['an http (non-TLS) downgrade of the real host', 'http://api.relay.link/authorize'],
+    ['an unexpected path on the real host', 'https://api.relay.link/exfiltrate'],
+  ])('rejects an authorize POST target that is %s, before signing', async (_label, endpoint) => {
     const step = authorizeStep();
-    step.items[0].data.post.endpoint = 'https://attacker.example.com/authorize';
-    writeQuote('bridge-authorize-bad-host', [step]);
-    await expect(execute('bridge-authorize-bad-host')).rejects.toThrow(/outside the allowed Relay host/);
+    step.items[0].data.post.endpoint = endpoint;
+    writeQuote('bridge-authorize-bad-endpoint', [step]);
+    await expect(execute('bridge-authorize-bad-endpoint')).rejects.toThrow(/unexpected authorize endpoint/);
   });
 
-  it('Privy path: rejects an authorize POST target outside the Relay host before ethSignTypedDataV4 is called', async () => {
+  it('Privy path: rejects an authorize POST target outside the pinned endpoint before ethSignTypedDataV4 is called', async () => {
     const step = authorizeStep();
     step.items[0].data.post.endpoint = 'https://attacker.example.com/authorize';
-    writeQuote('bridge-authorize-bad-host-privy', [step], { walletProvider: 'privy' });
+    writeQuote('bridge-authorize-bad-endpoint-privy', [step], { walletProvider: 'privy' });
     showWallet.mockReturnValue({ name: 'p', evm: WALLET, provider: 'privy', privyWalletIds: { evm: 'pw-1' } });
-    await expect(execute('bridge-authorize-bad-host-privy')).rejects.toThrow(/outside the allowed Relay host/);
+    await expect(execute('bridge-authorize-bad-endpoint-privy')).rejects.toThrow(/unexpected authorize endpoint/);
     expect(ethSignTypedDataV4).not.toHaveBeenCalled();
   });
 
