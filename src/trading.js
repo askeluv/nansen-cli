@@ -1119,6 +1119,17 @@ export async function resolveEvmSwapGasLimit(currentQuote, { chain, from }) {
   return finalGas;
 }
 
+/** Log when gas was resolved from API vs estimate/fallback (all EVM signing paths). */
+function logEvmSwapGasResolution(log, currentQuote, txData, finalGas) {
+  const apiGas = parseInt(currentQuote.gas || '0', 10);
+  const txGas = parseInt(txData.gas || txData.gasLimit || '0', 10);
+  if (apiGas > 0 && finalGas !== txGas) {
+    log(`  ℹ Using API gas ${finalGas} (tx.gas was ${txGas})`);
+  } else if (finalGas > 0 && apiGas === 0 && txGas === 0) {
+    log(`  ℹ Using estimated gas ${finalGas} (quote had no gas)`);
+  }
+}
+
 /**
  * Read the current on-chain ERC-20 allowance, throwing on any RPC failure
  * instead of masking it. checkErc20Allowance below wraps this with a
@@ -2757,6 +2768,7 @@ EXAMPLES:
 
               const txData = currentQuote.transaction;
               const finalGas = await resolveEvmSwapGasLimit(currentQuote, { chain, from: walletAddress });
+              logEvmSwapGasResolution(log, currentQuote, txData, finalGas);
 
               log('  Fetching nonce...');
               const nonce = await getEvmNonce(chain, walletAddress);
@@ -3129,6 +3141,7 @@ EXAMPLES:
 
               const txData = currentQuote.transaction;
               const finalGas = await resolveEvmSwapGasLimit(currentQuote, { chain, from: wcAddress });
+              logEvmSwapGasResolution(log, currentQuote, txData, finalGas);
 
               // Send transaction via WalletConnect
               log('  Sending transaction via WalletConnect...');
@@ -3441,14 +3454,8 @@ EXAMPLES:
               }
 
               const txData = currentQuote.transaction;
-              const apiGas = parseInt(currentQuote.gas || '0', 10);
-              const txGas = parseInt(txData.gas || txData.gasLimit || '0', 10);
               const finalGas = await resolveEvmSwapGasLimit(currentQuote, { chain, from: walletAddress });
-              if (apiGas > 0 && finalGas !== txGas) {
-                log(`  ℹ Using API gas ${finalGas} (tx.gas was ${txGas})`);
-              } else if (finalGas > 0 && apiGas === 0 && txGas === 0) {
-                log(`  ℹ Using estimated gas ${finalGas} (quote had no gas)`);
-              }
+              logEvmSwapGasResolution(log, currentQuote, txData, finalGas);
               if (txData.gasLimit) txData.gasLimit = String(finalGas);
               else txData.gas = String(finalGas);
 

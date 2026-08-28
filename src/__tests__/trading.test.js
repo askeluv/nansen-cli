@@ -1536,12 +1536,14 @@ describe('WalletConnect execute support', () => {
       }),
     });
 
-    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (msg) => logs.push(msg), exit: () => {} });
     delete process.env.NANSEN_WALLET_PASSWORD;
 
     await cmds.execute([], null, { 'no-verify-outcome': true }, { quote: quoteId });
 
     expect(sendSpy).toHaveBeenCalledWith(expect.objectContaining({ gas: '31500' }));
+    expect(logs.some(l => l.includes('Using estimated gas 31500 (quote had no gas)'))).toBe(true);
 
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
@@ -1822,6 +1824,43 @@ describe('EVM swap gas zero fallback (execute)', () => {
     expect(sendSpy).toHaveBeenCalledWith(expect.objectContaining({ gas: '31500' }));
   });
 
+  it('WalletConnect ERC-20: logs estimated gas when quote has no gas', async () => {
+    const wcAddress = '0x742d35Cc6bF4F3f4e0e3a8DD7e37ff4e4Be4E4B4';
+    vi.spyOn(wcTrading, 'getWalletConnectAddress').mockResolvedValue(wcAddress);
+    vi.spyOn(wcTrading, 'sendTransactionViaWalletConnect').mockResolvedValue({ txHash: '0xmocktx' });
+    __setAllowanceTimingForTests({ verifyDelayMs: 0, propagationDelayMs: 0 });
+    stubGasFallbackFetch({ allowance: 300000n });
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'lifi',
+        inputMint: BASE_USDC,
+        outputMint: BASE_ETH,
+        inAmount: '100000',
+        inputAmount: '100000',
+        outAmount: '44000000000000',
+        approvalAddress: LIFI_ROUTER,
+        transaction: zeroGasErc20Tx(),
+      }],
+    }, 'base', 'walletconnect', null, null, {
+      swapMode: 'exactIn',
+      request: evmIntent({
+        walletAddress: wcAddress,
+        fromToken: BASE_USDC,
+        toToken: BASE_ETH,
+        amount: '100000',
+        maxInputAmount: '100000',
+      }),
+    });
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (msg) => logs.push(msg), exit: () => {} });
+    await cmds.execute([], null, { 'no-simulate': true, 'no-verify-outcome': true }, { quote: quoteId });
+
+    expect(logs.some(l => l.includes('Using estimated gas 31500 (quote had no gas)'))).toBe(true);
+  });
+
   it('local wallet ERC-20: signs swap with non-zero gas when quote has no gas', async () => {
     createWallet('default', 'testpass');
     process.env.NANSEN_WALLET_PASSWORD = 'testpass';
@@ -2034,6 +2073,49 @@ describe('EVM swap gas zero fallback (execute)', () => {
     expect(logs.some(l => l.includes('Transaction successful'))).toBe(true);
     expect(rpcMethods).not.toContain('eth_estimateGas');
     expect(privyTransactions.some(t => t.gas_limit === '0x33450')).toBe(true); // 210000
+  });
+
+  it('Privy: logs estimated gas when quote has no gas fields', async () => {
+    process.env.PRIVY_APP_ID = 'test-app-id';
+    process.env.PRIVY_APP_SECRET = 'test-secret';
+    const { rpcMethods, privyTransactions } = stubGasFallbackFetch();
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'lifi',
+        inputMint: BASE_ETH,
+        outputMint: BASE_USDC,
+        inAmount: '1000000000000000000',
+        outAmount: '3000000000',
+        transaction: {
+          to: LIFI_ROUTER,
+          data: '0x12345678',
+          value: '1000000000000000000',
+          gas: '0',
+          maxFeePerGas: '1000000',
+          maxPriorityFeePerGas: '1000000',
+        },
+      }],
+    }, 'base', 'privy', { evm: 'wl_evm_1', solana: 'wl_sol_1' }, null, {
+      swapMode: 'exactIn',
+      request: evmIntent({
+        walletAddress: '0xPrivyAddr',
+        fromToken: BASE_ETH,
+        toToken: BASE_USDC,
+        amount: '1000000000000000000',
+        maxInputAmount: '1000000000000000000',
+      }),
+    });
+
+    const logs = [];
+    const cmds = buildTradingCommands({ log: (msg) => logs.push(msg), exit: () => {} });
+    await cmds.execute([], null, { 'no-verify-outcome': true }, { quote: quoteId });
+
+    expect(logs.some(l => l.includes('Using estimated gas 31500 (quote had no gas)'))).toBe(true);
+    expect(rpcMethods).toContain('eth_estimateGas');
+    expect(privyTransactions.length).toBeGreaterThan(0);
+    expect(parseInt(privyTransactions[0].gas_limit, 16)).toBe(31500);
   });
 
   it('skips eth_estimateGas when quote already supplies gas', async () => {
