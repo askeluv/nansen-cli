@@ -562,6 +562,37 @@ function resolveRelayTargetUrl(endpoint, context = 'Bridge step') {
   return `${RELAY_AUTHORIZE_BASE_URL}${RELAY_AUTHORIZE_ENDPOINT_PATH}`;
 }
 
+// Build the exact same action object that gets signed AND submitted for a HL
+// action step (see processSignatureStepLocal for why: one object rules out
+// signed-vs-submitted drift).
+function buildHlBridgeAction(signData) {
+  return {
+    ...(signData.action.parameters || signData.action),
+    type: signData.action.type,
+    signatureChainId: HL_SIGNATURE_CHAIN_ID,
+  };
+}
+
+// Validate every signature step against user intent BEFORE any step is
+// signed or posted. Steps run in server-supplied order — the captured shape
+// is [authorize, sendAsset] — so without this preflight, the authorize leg
+// would already be signed and POSTed to Relay by the time a tampered
+// sendAsset step (later in the array) is reached and rejected. Static only:
+// same checks the per-step processors already run at their point of use,
+// just run up front across the whole plan first.
+function preflightHlBridgeSteps(steps, intent) {
+  for (const step of steps) {
+    for (const item of step.items || []) {
+      const { data: signData } = item;
+      if (signData.sign) {
+        assertHlBridgeAuthorizeIntent(signData.sign, intent.signerAddress, `Bridge step "${step.id}"`);
+      } else if (signData.action) {
+        assertHlBridgeActionIntent(buildHlBridgeAction(signData), intent, `Bridge step "${step.id}"`);
+      }
+    }
+  }
+}
+
 // ── Step processors ──────────────────────────────────────────────────
 
 // Headroom multiplier applied to the current base fee when setting maxFeePerGas.
@@ -764,11 +795,7 @@ async function processSignatureStepLocal(step, { privateKeyHex, log, apiInstance
       // perp.js/hl-action.js). The extra `type`/`signatureChainId` keys are not in
       // the EIP-712 type list so they don't affect the hash, but building one
       // object rules out any signed-vs-submitted drift.
-      const action = {
-        ...(signData.action.parameters || signData.action),
-        type: signData.action.type,
-        signatureChainId: HL_SIGNATURE_CHAIN_ID,
-      };
+      const action = buildHlBridgeAction(signData);
       assertHlBridgeActionIntent(action, intent, `Bridge step "${step.id}"`);
 
       const typedData = { domain, types, primaryType, message: action };
@@ -814,11 +841,7 @@ async function processSignatureStepPrivy(step, { privyClient, walletId, log, api
         message: signData.sign.value,
       };
     } else if (signData.action) {
-      hlAction = {
-        ...(signData.action.parameters || signData.action),
-        type: signData.action.type,
-        signatureChainId: HL_SIGNATURE_CHAIN_ID,
-      };
+      hlAction = buildHlBridgeAction(signData);
       assertHlBridgeActionIntent(hlAction, intent, `Bridge step "${step.id}"`);
       typedData = {
         domain: {
@@ -1280,15 +1303,23 @@ from a quote are the same ones that got stuck. Check the stuck nonce with
         // quote whose displayed send amount has drifted from the request,
         // rather than gating the cap itself.
         const currencyIn = quoteData.response.details?.currencyIn;
-        if (
-          quoteData.requestedAmountBaseUnits != null
-          && currencyIn?.amount != null
-          && BigInt(currencyIn.amount) !== BigInt(quoteData.requestedAmountBaseUnits)
-        ) {
-          throw new CommandError(
-            `Quote input ${currencyIn.amount} does not match the requested ${quoteData.requestedAmountBaseUnits}. Request a new quote.`,
-            'AMOUNT_MISMATCH',
-          );
+        if (quoteData.requestedAmountBaseUnits != null && currencyIn?.amount != null) {
+          let currencyInScaled, requestedScaled;
+          try {
+            currencyInScaled = BigInt(currencyIn.amount);
+            requestedScaled = BigInt(quoteData.requestedAmountBaseUnits);
+          } catch {
+            throw new CommandError(
+              `Quote input "${currencyIn.amount}" is not a valid amount. Request a new quote.`,
+              'AMOUNT_MISMATCH',
+            );
+          }
+          if (currencyInScaled !== requestedScaled) {
+            throw new CommandError(
+              `Quote input ${currencyIn.amount} does not match the requested ${quoteData.requestedAmountBaseUnits}. Request a new quote.`,
+              'AMOUNT_MISMATCH',
+            );
+          }
         }
         const hlIntent = {
           // Anchored to what the CLIENT persisted at quote time from the
@@ -1298,6 +1329,11 @@ from a quote are the same ones that got stuck. Check the stuck nonce with
           hlNetwork: 'Mainnet',
           signerAddress: signer.address,
         };
+        // Validate every step's payload (both the authorize leg and the HL
+        // action leg) before any of them are signed or posted — see
+        // preflightHlBridgeSteps for why this can't just be the per-step
+        // check the loops below already do.
+        preflightHlBridgeSteps(steps, hlIntent);
         if (creds.provider === 'privy') {
           const { PrivyClient } = await import('./privy.js');
           const privyClient = new PrivyClient(process.env.PRIVY_APP_ID, process.env.PRIVY_APP_SECRET);

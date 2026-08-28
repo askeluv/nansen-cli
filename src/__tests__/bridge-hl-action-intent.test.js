@@ -375,9 +375,10 @@ function writeQuote(quoteId, steps, { currencyIn, requestedAmountBaseUnits, wall
   }));
 }
 
-function api() {
+function api(calls) {
   return {
     request: async (endpoint, body) => {
+      calls?.push({ endpoint, target_url: body?.target_url });
       if (endpoint.includes('/sanctions/screen')) {
         return { results: (body?.addresses || []).map(address => ({ address, sanctioned: false })) };
       }
@@ -391,8 +392,8 @@ function api() {
   };
 }
 
-const execute = (quoteId, options = {}) =>
-  buildBridgeCommands({ log: () => {} }).execute([], api(), {}, { quote: quoteId, ...options });
+const execute = (quoteId, options = {}, calls) =>
+  buildBridgeCommands({ log: () => {} }).execute([], api(calls), {}, { quote: quoteId, ...options });
 
 beforeEach(() => {
   prevHome = process.env.HOME;
@@ -476,9 +477,41 @@ describe('bridge execute — Hyperliquid action intent binding', () => {
     await expect(execute('bridge-quote-drift')).rejects.toThrow(/Quote input .* does not match the requested/);
   });
 
+  it('rejects a malformed currencyIn.amount with a CommandError, not a raw BigInt conversion error', async () => {
+    writeQuote('bridge-malformed-currency-in', [depositStep()], {
+      currencyIn: { amount: '2.5e3', amountFormatted: '2.5e3' },
+    });
+    await expect(execute('bridge-malformed-currency-in')).rejects.toThrow(/is not a valid amount/);
+  });
+
   it('executes a clean captured-shape withdrawal end-to-end with no false-block', async () => {
     writeQuote('bridge-clean', [authorizeStep(), depositStep()]);
     await expect(execute('bridge-clean')).resolves.toBeUndefined();
+  });
+
+  it('rejects a tampered later step in the realistic [authorize, sendAsset] order before the authorize leg is ever posted', async () => {
+    writeQuote('bridge-realistic-order-inflated', [authorizeStep(), depositStep(undefined, { amount: '2000.000000' })]);
+    const calls = [];
+    await expect(execute('bridge-realistic-order-inflated', {}, calls)).rejects.toThrow(/more than the 200000000 base units/);
+    // Preflight must reject before the authorize step (first in the array) is
+    // signed and POSTed to Relay — only the sanctions screen may have run.
+    expect(calls.filter(c => c.endpoint.includes('/bridge/execute'))).toEqual([]);
+    const onDisk = JSON.parse(fs.readFileSync(path.join(quotesDir, 'bridge-realistic-order-inflated.json'), 'utf8'));
+    expect(onDisk.executedAt).toBeUndefined();
+  });
+
+  it('Privy path: rejects a tampered later step in the realistic [authorize, sendAsset] order before ethSignTypedDataV4 is ever called', async () => {
+    writeQuote('bridge-realistic-order-inflated-privy', [authorizeStep(), depositStep(undefined, { amount: '2000.000000' })], {
+      walletProvider: 'privy',
+    });
+    showWallet.mockReturnValue({
+      name: 'p',
+      evm: WALLET,
+      provider: 'privy',
+      privyWalletIds: { evm: 'pw-1' },
+    });
+    await expect(execute('bridge-realistic-order-inflated-privy')).rejects.toThrow(/more than the 200000000 base units/);
+    expect(ethSignTypedDataV4).not.toHaveBeenCalled();
   });
 
   it('Privy path: rejects an inflated amount before ethSignTypedDataV4 is called', async () => {
