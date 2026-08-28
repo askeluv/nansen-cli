@@ -1098,6 +1098,28 @@ export async function estimateEvmGas(chain, { from, to, data, value }) {
 }
 
 /**
+ * Resolve gas limit for an EVM swap from quote fields. When both quote.gas and
+ * tx.gas/gasLimit are zero/missing, fall back to eth_estimateGas (×1.5) then 210000.
+ */
+export async function resolveEvmSwapGasLimit(currentQuote, { chain, from }) {
+  const txData = currentQuote.transaction;
+  const apiGas = parseInt(currentQuote.gas || '0', 10);
+  const txGas = parseInt(txData.gas || txData.gasLimit || '0', 10);
+  let finalGas = apiGas > 0 ? apiGas : txGas;
+  if (finalGas === 0) {
+    const estimated = await estimateEvmGas(chain, {
+      from,
+      to: txData.to,
+      data: txData.data || '0x',
+      value: txData.value ? '0x' + BigInt(txData.value).toString(16) : '0x0',
+    });
+    if (estimated) finalGas = Math.ceil(estimated * 1.5);
+    if (finalGas === 0) finalGas = 210000;
+  }
+  return finalGas;
+}
+
+/**
  * Read the current on-chain ERC-20 allowance, throwing on any RPC failure
  * instead of masking it. checkErc20Allowance below wraps this with a
  * catch-to-0 fallback for the pre-trade check (safe there, since a follow-up
@@ -2733,30 +2755,8 @@ EXAMPLES:
                 }
               }
 
-              // Gas resolution — fall back to eth_estimateGas if quote has no gas
               const txData = currentQuote.transaction;
-              const apiGas = parseInt(currentQuote.gas || '0');
-              const txGas = parseInt(txData.gas || txData.gasLimit || '0');
-              let finalGas = apiGas > 0 ? apiGas : txGas;
-              if (finalGas === 0) {
-                try {
-                  const rpcUrl = CHAIN_RPCS[chain];
-                  const estRes = await fetch(rpcUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      jsonrpc: '2.0', id: 1, method: 'eth_estimateGas',
-                      params: [{
-                        from: walletAddress, to: txData.to, data: txData.data || '0x',
-                        value: txData.value ? '0x' + BigInt(txData.value).toString(16) : '0x0',
-                      }],
-                    }),
-                  });
-                  const estBody = await estRes.json();
-                  if (estBody.result) finalGas = Math.ceil(parseInt(estBody.result, 16) * 1.5);
-                } catch { /* ignore */ }
-                if (finalGas === 0) finalGas = 210000;
-              }
+              const finalGas = await resolveEvmSwapGasLimit(currentQuote, { chain, from: walletAddress });
 
               log('  Fetching nonce...');
               const nonce = await getEvmNonce(chain, walletAddress);
@@ -3127,11 +3127,8 @@ EXAMPLES:
                 }
               }
 
-              // Resolve gas
               const txData = currentQuote.transaction;
-              const apiGas = parseInt(currentQuote.gas || "0");
-              const txGas = parseInt(txData.gas || txData.gasLimit || "0");
-              const finalGas = apiGas > 0 ? apiGas : txGas;
+              const finalGas = await resolveEvmSwapGasLimit(currentQuote, { chain, from: wcAddress });
 
               // Send transaction via WalletConnect
               log('  Sending transaction via WalletConnect...');
@@ -3443,15 +3440,14 @@ EXAMPLES:
                 }
               }
 
-              // Use the Trading API's gas estimation (quote.gas) directly.
-              // The API already applies a 1.5x buffer over eth_estimateGas.
-              // Skip client-side re-estimation — it adds latency and the API value is reliable.
               const txData = currentQuote.transaction;
-              const apiGas = parseInt(currentQuote.gas || "0");
-              const txGas = parseInt(txData.gas || txData.gasLimit || "0");
-              const finalGas = apiGas > 0 ? apiGas : txGas;
-              if (finalGas !== txGas) {
+              const apiGas = parseInt(currentQuote.gas || '0', 10);
+              const txGas = parseInt(txData.gas || txData.gasLimit || '0', 10);
+              const finalGas = await resolveEvmSwapGasLimit(currentQuote, { chain, from: walletAddress });
+              if (apiGas > 0 && finalGas !== txGas) {
                 log(`  ℹ Using API gas ${finalGas} (tx.gas was ${txGas})`);
+              } else if (finalGas > 0 && apiGas === 0 && txGas === 0) {
+                log(`  ℹ Using estimated gas ${finalGas} (quote had no gas)`);
               }
               if (txData.gasLimit) txData.gasLimit = String(finalGas);
               else txData.gas = String(finalGas);
