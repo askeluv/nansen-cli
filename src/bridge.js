@@ -452,6 +452,11 @@ export function assertHlBridgeActionIntent(action, intent, context = 'Bridge act
   // the same scale reviewedAmountBaseUnits is already expressed in.
   const signedScaled = decimalToScaled(signed);
   const reviewedScaled = BigInt(intent.reviewedAmountBaseUnits);
+  // +1n is a fixed 1-base-unit slack (0.00000001 USDC) absorbing rounding when
+  // the server's 6-dp `amount` string is compared against the 8-dp reviewed
+  // value. It is one-sided, so the most it ever permits is over-signing by a
+  // single base unit — economically nothing. This is a rounding margin, NOT a
+  // user-tunable tolerance: do not widen it.
   if (signedScaled > reviewedScaled + 1n) {
     throw new CommandError(
       `${context} would send ${signed}, more than the ${intent.reviewedAmountBaseUnits} base units you requested. `
