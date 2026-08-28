@@ -115,8 +115,11 @@ describe('refuses to sign a bridge step with no EIP-712 type definition', () => 
         },
       }],
     });
+    // The deposit leg's field list is now pinned exactly (assertHlSendAssetEip712Shape),
+    // so an empty types map fails as a field-set mismatch — a strict superset of the
+    // generic empty-type-list guard — rather than reaching signEip712Local's check.
     await expect(execute('bridge-no-types')).rejects.toThrow(
-      /missing its EIP-712 type definition.*Refusing to sign/s,
+      /unexpected field set for "HyperliquidTransaction:SendAsset".*Refusing to sign/s,
     );
   });
 
@@ -134,12 +137,11 @@ describe('refuses to sign a bridge step with no EIP-712 type definition', () => 
     await expect(execute('bridge-named')).rejects.toThrow(/Bridge step "deposit"/);
   });
 
-  // A primaryType that doesn't match any key in types is the same failure as an
-  // absent types map: zero fields, so a signature over nothing. The deposit
-  // action's eip712Types isn't pinned to a fixed field set (unlike the
-  // authorize step's NonceMapping, which now IS — see
-  // bridge-hl-action-intent.test.js), so a mismatch here still reaches
-  // signEip712Local's own guard rather than a higher-level check.
+  // A primaryType the deposit leg doesn't expect is now caught by the pinned
+  // sendAsset shape (assertHlSendAssetEip712Shape), the same way the authorize
+  // step's NonceMapping is pinned — a mismatched primaryType can no longer
+  // select an attacker-chosen field list to sign over. It fails on the
+  // primaryType before the field-list comparison is even reached.
   it('throws when primaryType does not match the supplied types', async () => {
     writeQuote('bridge-mismatch', {
       id: 'deposit',
@@ -153,7 +155,7 @@ describe('refuses to sign a bridge step with no EIP-712 type definition', () => 
       }],
     });
     await expect(execute('bridge-mismatch')).rejects.toThrow(
-      /missing its EIP-712 type definition for "SomethingElse"/,
+      /unexpected EIP-712 type "SomethingElse" for the deposit action/,
     );
   });
 

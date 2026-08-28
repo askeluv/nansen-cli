@@ -543,7 +543,7 @@ describe('bridge execute — Hyperliquid action intent binding', () => {
     noTypesDeposit.items[0].data.eip712Types = {};
     writeQuote('bridge-good-first-missing-types', [authorizeStep(), noTypesDeposit]);
     const calls = [];
-    await expect(execute('bridge-good-first-missing-types', {}, calls)).rejects.toThrow(/missing its EIP-712 type definition/);
+    await expect(execute('bridge-good-first-missing-types', {}, calls)).rejects.toThrow(/unexpected field set for "HyperliquidTransaction:SendAsset"/);
     expect(calls.filter(c => c.endpoint.includes('/bridge/execute'))).toEqual([]);
     const onDisk = JSON.parse(fs.readFileSync(path.join(quotesDir, 'bridge-good-first-missing-types.json'), 'utf8'));
     expect(onDisk.executedAt).toBeUndefined();
@@ -554,7 +554,7 @@ describe('bridge execute — Hyperliquid action intent binding', () => {
     noTypesDeposit.items[0].data.eip712Types = {};
     writeQuote('bridge-good-first-missing-types-privy', [authorizeStep(), noTypesDeposit], { walletProvider: 'privy' });
     showWallet.mockReturnValue({ name: 'p', evm: WALLET, provider: 'privy', privyWalletIds: { evm: 'pw-1' } });
-    await expect(execute('bridge-good-first-missing-types-privy')).rejects.toThrow(/missing its EIP-712 type definition/);
+    await expect(execute('bridge-good-first-missing-types-privy')).rejects.toThrow(/unexpected field set for "HyperliquidTransaction:SendAsset"/);
     expect(ethSignTypedDataV4).not.toHaveBeenCalled();
   });
 
@@ -569,6 +569,72 @@ describe('bridge execute — Hyperliquid action intent binding', () => {
       privyWalletIds: { evm: 'pw-1' },
     });
     await expect(execute('bridge-privy-inflated')).rejects.toThrow(/more than the 200000000 base units/);
+    expect(ethSignTypedDataV4).not.toHaveBeenCalled();
+  });
+
+  // ── Deposit-leg EIP-712 shape pinning ──
+  // The action-object VALUE checks (amount/token/network/dex) only bind the
+  // signature if the signature actually covers those fields — and the EIP-712
+  // digest covers exactly the fields named in types[primaryType], both of which
+  // come off the wire. These verify a response can't pass every value check yet
+  // sign under a different, unbounded shape.
+  const ATTACKER = '0xdEADbeEF00000000000000000000000000000000';
+
+  it('refuses a deposit whose action passes every value check but whose EIP-712 shape is swapped to an agent-approval type', async () => {
+    const swapped = depositStep();
+    // Action object still satisfies assertHlBridgeActionIntent: sendAsset,
+    // Mainnet, canonical USDC, amount under the cap, empty dex/sub-account.
+    swapped.items[0].data.action.parameters.agentAddress = ATTACKER;
+    swapped.items[0].data.action.parameters.agentName = 'x';
+    // …but the signed digest would commit to an ApproveAgent shape (no amount
+    // field at all — the cap can't bound it).
+    swapped.items[0].data.eip712PrimaryType = 'HyperliquidTransaction:ApproveAgent';
+    swapped.items[0].data.eip712Types = {
+      'HyperliquidTransaction:ApproveAgent': [
+        { name: 'hyperliquidChain', type: 'string' },
+        { name: 'agentAddress', type: 'address' },
+        { name: 'agentName', type: 'string' },
+        { name: 'nonce', type: 'uint64' },
+      ],
+    };
+    writeQuote('bridge-shape-swap', [authorizeStep(), swapped]);
+    const calls = [];
+    await expect(execute('bridge-shape-swap', {}, calls)).rejects.toThrow(
+      /unexpected EIP-712 type "HyperliquidTransaction:ApproveAgent" for the deposit action/,
+    );
+    // Refused up front: neither leg signed or POSTed.
+    expect(calls.filter(c => c.endpoint.includes('/bridge/execute'))).toEqual([]);
+    const onDisk = JSON.parse(fs.readFileSync(path.join(quotesDir, 'bridge-shape-swap.json'), 'utf8'));
+    expect(onDisk.executedAt).toBeUndefined();
+  });
+
+  it('refuses a deposit whose sendAsset field list is reordered (same names, different struct hash)', async () => {
+    const reordered = depositStep();
+    // Swap two fields — superficially the same NonceMapping-of-SendAsset, but a
+    // different EIP-712 struct hash, so not the message we validated.
+    reordered.items[0].data.eip712Types['HyperliquidTransaction:SendAsset'] = [
+      { name: 'destination', type: 'string' },
+      { name: 'hyperliquidChain', type: 'string' },
+      { name: 'sourceDex', type: 'string' },
+      { name: 'destinationDex', type: 'string' },
+      { name: 'token', type: 'string' },
+      { name: 'amount', type: 'string' },
+      { name: 'fromSubAccount', type: 'string' },
+      { name: 'nonce', type: 'uint64' },
+    ];
+    writeQuote('bridge-shape-reorder', [authorizeStep(), reordered]);
+    await expect(execute('bridge-shape-reorder')).rejects.toThrow(
+      /unexpected field set for "HyperliquidTransaction:SendAsset"/,
+    );
+  });
+
+  it('Privy path: refuses a swapped deposit EIP-712 shape before ethSignTypedDataV4', async () => {
+    const swapped = depositStep();
+    swapped.items[0].data.eip712PrimaryType = 'HyperliquidTransaction:ApproveAgent';
+    swapped.items[0].data.eip712Types = { 'HyperliquidTransaction:ApproveAgent': [{ name: 'agentAddress', type: 'address' }] };
+    writeQuote('bridge-shape-swap-privy', [authorizeStep(), swapped], { walletProvider: 'privy' });
+    showWallet.mockReturnValue({ name: 'p', evm: WALLET, provider: 'privy', privyWalletIds: { evm: 'pw-1' } });
+    await expect(execute('bridge-shape-swap-privy')).rejects.toThrow(/unexpected EIP-712 type/);
     expect(ethSignTypedDataV4).not.toHaveBeenCalled();
   });
 });
