@@ -242,6 +242,22 @@ describe('mcp command handler', () => {
     expect(readCursor().mcpServers).toEqual({ other: { command: 'foo' } });
   });
 
+  it('uninstall --dry-run does not throw on an unparseable config', async () => {
+    fs.mkdirSync(path.dirname(cursorPath()), { recursive: true });
+    fs.writeFileSync(cursorPath(), '{ not valid json,,,', 'utf8');
+    await run(['uninstall', 'cursor'], { flags: { 'dry-run': true } });
+    expect(logs.join('\n')).toContain('Cannot preview');
+    expect(logs.join('\n')).toContain('No changes made.');
+    // the file is untouched
+    expect(fs.readFileSync(cursorPath(), 'utf8')).toBe('{ not valid json,,,');
+  });
+
+  it('uninstall without --dry-run still fails loudly on an unparseable config', async () => {
+    fs.mkdirSync(path.dirname(cursorPath()), { recursive: true });
+    fs.writeFileSync(cursorPath(), '{ not valid json,,,', 'utf8');
+    await expect(run(['uninstall', 'cursor'])).rejects.toThrow(/parse/i);
+  });
+
   it('uninstall backs up the config before writing (0600)', async () => {
     fs.mkdirSync(path.dirname(cursorPath()), { recursive: true });
     const original = JSON.stringify({ mcpServers: { nansen: { url: 'x' }, other: { command: 'foo' } } });

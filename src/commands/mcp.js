@@ -197,8 +197,20 @@ export function buildMcpCommands(deps = {}) {
       const configPath = resolveReal(resolveClientConfigPath(client, { platform, homedir: homedirFn(), env }));
 
       if (sub === 'uninstall') {
-        const { config, existed } = readConfig(configPath);
-        const { config: updated, removed } = removeNansenEntry(config, configPath);
+        let config, existed, updated, removed;
+        try {
+          ({ config, existed } = readConfig(configPath));
+          ({ config: updated, removed } = removeNansenEntry(config, configPath));
+        } catch (err) {
+          // --dry-run must not throw on an unparseable config: users reach for it
+          // precisely when unsure of the file's state. Install gates on dry-run
+          // before reading; this keeps uninstall consistent.
+          if (flags['dry-run']) {
+            log(`Cannot preview ${configPath}: ${err.message} No changes made.`);
+            return undefined;
+          }
+          throw err;
+        }
         if (!existed || !removed) {
           log(`No Nansen MCP entry found in ${configPath}. Nothing to do.`);
           return undefined;
