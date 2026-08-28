@@ -1142,6 +1142,77 @@ describe('buildTradingCommands', () => {
     delete process.env.NANSEN_WALLET_PASSWORD;
   });
 
+  it('bridge: passes the tx.value guard for a token-input bridge carrying a native fee within the cap', async () => {
+    // A token-input cross-chain bridge may carry a bounded native fee in
+    // tx.value. The guard must let it through (verifySwapOutcome downstream
+    // re-bounds the actual outflow to min(tx.value, cap)) rather than aborting
+    // it as an unexpected value — otherwise the native-fee tolerance is a no-op.
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const body = opts?.body ? JSON.parse(opts.body) : {};
+      if (body.method === 'eth_getCode') return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'lifi',
+        inputMint: BASE_USDC, // token input
+        outputMint: BASE_ETH,
+        inAmount: '1000000',
+        outAmount: '500000000000000',
+        transaction: { to: LIFI_ROUTER, data: '0x12345678', value: '1000000000000000', gas: '200000' }, // 0.001 ETH fee, under the 0.002 cap
+      }],
+    }, 'base', 'local', null, 'solana', { swapMode: 'exactIn', request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: BASE_USDC, toToken: BASE_ETH, toChain: 'solana' }) });
+
+    const logs = [];
+    const cmds = buildTradingCommands({
+      log: (msg) => logs.push(msg),
+      exit: () => {},
+    });
+
+    // Execution fails later (signing/broadcast), but must NOT abort at the value guard.
+    try { await cmds.execute([], null, {}, { quote: quoteId }); } catch { /* expected */ }
+    expect(logs.some(l => l.includes('non-zero tx.value'))).toBe(false);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+  });
+
+  it('bridge: still rejects a token-input bridge whose native tx.value exceeds the cap', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const body = opts?.body ? JSON.parse(opts.body) : {};
+      if (body.method === 'eth_getCode') return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [{
+        aggregator: 'lifi',
+        inputMint: BASE_USDC,
+        outputMint: BASE_ETH,
+        inAmount: '1000000',
+        outAmount: '500000000000000',
+        transaction: { to: LIFI_ROUTER, data: '0x12345678', value: '5000000000000000000', gas: '200000' }, // 5 ETH, far above the cap
+      }],
+    }, 'base', 'local', null, 'solana', { swapMode: 'exactIn', request: evmIntent({ walletAddress: showWallet('default').evm, fromToken: BASE_USDC, toToken: BASE_ETH, toChain: 'solana' }) });
+
+    const logs = [];
+    const cmds = buildTradingCommands({
+      log: (msg) => logs.push(msg),
+      exit: () => {},
+    });
+
+    await expect(cmds.execute([], null, {}, { quote: quoteId })).rejects.toThrow(/All quotes failed/);
+    expect(logs.some(l => l.includes('non-zero tx.value'))).toBe(true);
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+  });
+
   it('should pass validation for native ETH swap with matching value', async () => {
     createWallet('default', 'testpass');
     process.env.NANSEN_WALLET_PASSWORD = 'testpass';
@@ -5744,6 +5815,38 @@ describe('verifySwapOutcome (execute-path wiring)', () => {
     global.fetch = vi.fn().mockResolvedValue(simBody([tlog(USDC, WALLET, ROUTER, 5000000n)])); // 5x the cap
     const bridgeData = { ...quoteData, request: { ...quoteData.request, toChain: 'solana' } };
     const r = await verifySwapOutcome({ chain: 'base', from: WALLET, quote, quoteData: bridgeData });
+    expect(r.proceed).toBe(false);
+    expect(r.reason).toMatch(/SWAP_OUTCOME_MISMATCH/i);
+  });
+
+  it('tolerates a native-ETH bridge fee up to the declared tx.value (token input paying a native fee)', async () => {
+    // A token-input bridge that pays a fee via msg.value sends native ETH out as
+    // a sibling (a zero-address transfer normalises to the native sentinel).
+    // verifySwapOutcome tolerates it up to min(tx.value, cap); the fee here equals
+    // the declared value, so the bridge verifies instead of false-blocking.
+    const ZERO = '0x0000000000000000000000000000000000000000';
+    const feeQuote = { ...quote, transaction: { ...quote.transaction, value: '1000000000000000' } }; // 0.001 ETH
+    const bridgeData = { ...quoteData, request: { ...quoteData.request, toChain: 'solana' } };
+    global.fetch = vi.fn().mockResolvedValue(simBody([
+      tlog(USDC, WALLET, ROUTER, 1000000n),
+      tlog(ZERO, WALLET, ROUTER, 1000000000000000n), // native fee leaving the wallet
+    ]));
+    const r = await verifySwapOutcome({ chain: 'base', from: WALLET, quote: feeQuote, quoteData: bridgeData });
+    expect(r.proceed).toBe(true);
+  });
+
+  it('blocks a bridge that drains native ETH beyond the cap even when tx.value is inflated', async () => {
+    // The drain vector: a hostile quote sets a huge tx.value so an unbounded
+    // tolerance would wave through a full-balance native transfer. Capping the
+    // tolerance at min(tx.value, cap) keeps it blocked.
+    const ZERO = '0x0000000000000000000000000000000000000000';
+    const drainQuote = { ...quote, transaction: { ...quote.transaction, value: '10000000000000000000' } }; // 10 ETH declared
+    const bridgeData = { ...quoteData, request: { ...quoteData.request, toChain: 'solana' } };
+    global.fetch = vi.fn().mockResolvedValue(simBody([
+      tlog(USDC, WALLET, ROUTER, 1000000n),
+      tlog(ZERO, WALLET, ROUTER, 10000000000000000000n), // 10 ETH leaving
+    ]));
+    const r = await verifySwapOutcome({ chain: 'base', from: WALLET, quote: drainQuote, quoteData: bridgeData });
     expect(r.proceed).toBe(false);
     expect(r.reason).toMatch(/SWAP_OUTCOME_MISMATCH/i);
   });
