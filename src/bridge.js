@@ -215,7 +215,7 @@ async function getBridgeStatus(apiInstance, { requestId, txHash }) {
 
 // ── Quote caching ────────────────────────────────────────────────────
 
-function saveBridgeQuote(response, originChain, destinationChain, walletProvider, walletAddress, recipient) {
+function saveBridgeQuote(response, originChain, destinationChain, walletProvider, walletAddress, recipient, requestedAmountBaseUnits) {
   const dir = getQuotesDir();
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const hash = crypto.randomBytes(4).toString('hex');
@@ -228,6 +228,7 @@ function saveBridgeQuote(response, originChain, destinationChain, walletProvider
     walletProvider,
     walletAddress,
     recipient,
+    requestedAmountBaseUnits,
     timestamp: Date.now(),
     response,
   };
@@ -323,6 +324,108 @@ function signEip712Local(typedData, privateKeyHex, context = 'EIP-712 payload') 
   const msgHash = hashTypedData(domain, primaryType, fields, message);
   const { r, s, v } = signSecp256k1(msgHash, Buffer.from(privateKeyHex, 'hex'));
   return '0x' + r.toString('hex') + s.toString('hex') + (27 + v).toString(16).padStart(2, '0');
+}
+
+// Hyperliquid action types this bridge path is designed to produce and sign. The
+// server supplies the action; we refuse to sign anything outside this set so a
+// tampered response can't swap the intended withdrawal for a different
+// fund-moving action whose fields we don't validate. Confirmed from real quotes
+// across every supported withdrawal route (HL -> base/ethereum/arbitrum).
+const ALLOWED_HL_BRIDGE_ACTION_TYPES = new Set(['sendAsset']);
+
+// Parse a non-negative decimal string ("2", "2.000000", "1.97859") to an integer
+// scaled by `decimals`, via digit slicing (never parseFloat) so it is exact.
+export function decimalToScaled(raw, decimals = 8) {
+  const s = String(raw).trim();
+  if (!/^\d*\.?\d+$/.test(s)) {
+    throw new CommandError(`Cannot parse amount "${raw}". Request a new quote.`, 'INVALID_INPUT');
+  }
+  const [int, frac = ''] = s.split('.');
+  const scaledFrac = (frac + '0'.repeat(decimals)).slice(0, decimals);
+  return BigInt(int || '0') * 10n ** BigInt(decimals) + BigInt(scaledFrac);
+}
+
+// Bind a server-supplied Hyperliquid bridge ACTION to the user's intent before
+// signing. The pinned EIP-712 domain only proves this is *a* Hyperliquid
+// action; it says nothing about what the action does. Static only, no RPC.
+//
+// NOTE ON DESTINATION: in the relayer-mediated flow, action.destination is the
+// RELAYER's deposit address, not the user's — so it is deliberately NOT bound to
+// the recipient (doing so would reject every legitimate withdrawal). The final
+// payout recipient is held off-chain by the relayer and is not in anything we
+// sign; the amount cap below is what bounds the loss.
+//
+// Every check below fails CLOSED (throws) rather than silently skipping when
+// its anchor is missing. An earlier version skipped the amount cap whenever
+// the server's response omitted the field it compared against — which let a
+// malicious response null out just that one field to strip the cap while
+// still passing every other check. The anchors here are never legitimately
+// absent, so a missing one is itself a signal to refuse.
+//
+// intent.reviewedAmountBaseUnits — the amount the CLIENT persisted at quote
+//                         time from the user's own --amount (HL USDC is
+//                         8-decimal base units). Anchored to client-recorded
+//                         intent, not a server-supplied display field, so it
+//                         can't be nulled out by a tampered response. Cap
+//                         anchor for the amount leaving HL.
+// intent.hlNetwork      — 'Mainnet' (what the exchange POST targets).
+export function assertHlBridgeActionIntent(action, intent, context = 'Bridge action') {
+  if (!action || typeof action !== 'object') {
+    throw new CommandError(`${context}: no action to verify. Request a new quote.`, 'INVALID_INPUT');
+  }
+  // A. type allowlist
+  if (!ALLOWED_HL_BRIDGE_ACTION_TYPES.has(action.type)) {
+    throw new CommandError(
+      `${context} has an unexpected action type "${action.type}". Refusing to sign. Request a new quote.`,
+      'UNEXPECTED_ACTION',
+    );
+  }
+  // C. network
+  const net = action.hyperliquidChain ?? action.parameters?.hyperliquidChain;
+  if (net == null || net !== intent.hlNetwork) {
+    throw new CommandError(
+      `${context} targets Hyperliquid "${net}", expected "${intent.hlNetwork}". Refusing to sign.`,
+      'UNEXPECTED_NETWORK',
+    );
+  }
+  // B. one-sided amount cap
+  const signed = action.amount ?? action.parameters?.amount;
+  if (signed != null) {
+    if (intent.reviewedAmountBaseUnits == null) {
+      throw new CommandError(
+        `${context}: no reviewed amount recorded to check ${signed} against. Refusing to sign. Request a new quote.`,
+        'AMOUNT_MISMATCH',
+      );
+    }
+    // decimalToScaled's default (8) matches Hyperliquid USDC's native decimals,
+    // the same scale reviewedAmountBaseUnits is already expressed in.
+    const signedScaled = decimalToScaled(signed);
+    const reviewedScaled = BigInt(intent.reviewedAmountBaseUnits);
+    if (signedScaled > reviewedScaled + 1n) {
+      throw new CommandError(
+        `${context} would send ${signed}, more than the ${intent.reviewedAmountBaseUnits} base units you requested. `
+          + `Refusing to sign. Request a new quote.`,
+        'AMOUNT_MISMATCH',
+      );
+    }
+  }
+}
+
+// Bind the relayer NonceMapping authorize payload: any wallet/depositor address
+// field must be the signing wallet, so we can't be made to authorize a deposit
+// mapping for another account. Only checks fields that are present.
+export function assertHlBridgeAuthorizeIntent(value, signerAddress, context = 'Bridge authorize') {
+  if (!value || typeof value !== 'object') return;
+  for (const key of ['wallet', 'depositor']) {
+    const v = value[key];
+    if (v && String(v).toLowerCase() !== String(signerAddress).toLowerCase()) {
+      throw new CommandError(
+        `${context} names ${key} ${v}, but the signing wallet is ${signerAddress}. `
+          + `Refusing to sign. Request a new quote.`,
+        'SIGNER_MISMATCH',
+      );
+    }
+  }
 }
 
 // ── Step processors ──────────────────────────────────────────────────
@@ -482,12 +585,13 @@ async function processEvmStep(step, { chain, privateKeyHex, signerAddress, log, 
   }
 }
 
-async function processSignatureStepLocal(step, { privateKeyHex, log, apiInstance, onBroadcast }) {
+async function processSignatureStepLocal(step, { privateKeyHex, log, apiInstance, onBroadcast, intent }) {
   for (const item of step.items || []) {
     if (item.status === 'complete') continue;
     const { data: signData } = item;
 
     if (signData.sign) {
+      assertHlBridgeAuthorizeIntent(signData.sign.value, intent.signerAddress, `Bridge step "${step.id}"`);
       const typedData = {
         domain: signData.sign.domain,
         types: signData.sign.types,
@@ -531,6 +635,7 @@ async function processSignatureStepLocal(step, { privateKeyHex, log, apiInstance
         type: signData.action.type,
         signatureChainId: HL_SIGNATURE_CHAIN_ID,
       };
+      assertHlBridgeActionIntent(action, intent, `Bridge step "${step.id}"`);
 
       const typedData = { domain, types, primaryType, message: action };
       const signature = signEip712Local(typedData, privateKeyHex, `Bridge step "${step.id}"`);
@@ -553,7 +658,7 @@ async function processSignatureStepLocal(step, { privateKeyHex, log, apiInstance
   }
 }
 
-async function processSignatureStepPrivy(step, { privyClient, walletId, log, apiInstance, onBroadcast }) {
+async function processSignatureStepPrivy(step, { privyClient, walletId, log, apiInstance, onBroadcast, intent }) {
   for (const item of step.items || []) {
     if (item.status === 'complete') continue;
     const { data: signData } = item;
@@ -563,6 +668,7 @@ async function processSignatureStepPrivy(step, { privyClient, walletId, log, api
     // submitted (see the local path for why); hold onto it for the submit below.
     let hlAction = null;
     if (signData.sign) {
+      assertHlBridgeAuthorizeIntent(signData.sign.value, intent.signerAddress, `Bridge step "${step.id}"`);
       typedData = {
         domain: signData.sign.domain,
         types: signData.sign.types,
@@ -575,6 +681,7 @@ async function processSignatureStepPrivy(step, { privyClient, walletId, log, api
         type: signData.action.type,
         signatureChainId: HL_SIGNATURE_CHAIN_ID,
       };
+      assertHlBridgeActionIntent(hlAction, intent, `Bridge step "${step.id}"`);
       typedData = {
         domain: {
           name: 'HyperliquidSignTransaction',
@@ -867,6 +974,7 @@ OPTIONS:
         wallet.provider,
         wallet.address,
         recipient,
+        resolvedAmount,
       );
       log(`\n  Quote ID: ${quoteId}`);
       log(`  Execute:  nansen bridge execute --quote ${quoteId}`);
@@ -1025,6 +1133,32 @@ from a quote are the same ones that got stuck. Check the stuck nonce with
           markBroadcast(index);
         }
       } else if (execution_type === 'hyperliquid_signature') {
+        // Check E: the quote's own currencyIn.amount — the amount it displayed
+        // and will send through /perp/bridge/quote — must equal what was
+        // actually requested at quote time. The amount cap below (check B) is
+        // anchored to requestedAmountBaseUnits directly, not to this display
+        // field, so this check is UI-consistency defense-in-depth: it catches a
+        // quote whose displayed send amount has drifted from the request,
+        // rather than gating the cap itself.
+        const currencyIn = quoteData.response.details?.currencyIn;
+        if (
+          quoteData.requestedAmountBaseUnits != null
+          && currencyIn?.amount != null
+          && BigInt(currencyIn.amount) !== BigInt(quoteData.requestedAmountBaseUnits)
+        ) {
+          throw new CommandError(
+            `Quote input ${currencyIn.amount} does not match the requested ${quoteData.requestedAmountBaseUnits}. Request a new quote.`,
+            'AMOUNT_MISMATCH',
+          );
+        }
+        const hlIntent = {
+          // Anchored to what the CLIENT persisted at quote time from the
+          // user's own --amount, not to any server-supplied display field —
+          // see assertHlBridgeActionIntent for why.
+          reviewedAmountBaseUnits: quoteData.requestedAmountBaseUnits ?? null,
+          hlNetwork: 'Mainnet',
+          signerAddress: signer.address,
+        };
         if (creds.provider === 'privy') {
           const { PrivyClient } = await import('./privy.js');
           const privyClient = new PrivyClient(process.env.PRIVY_APP_ID, process.env.PRIVY_APP_SECRET);
@@ -1037,6 +1171,7 @@ from a quote are the same ones that got stuck. Check the stuck nonce with
               log,
               apiInstance,
               onBroadcast,
+              intent: hlIntent,
             });
             markBroadcast(index);
           }
@@ -1047,6 +1182,7 @@ from a quote are the same ones that got stuck. Check the stuck nonce with
               log,
               apiInstance,
               onBroadcast,
+              intent: hlIntent,
             });
             markBroadcast(index);
           }

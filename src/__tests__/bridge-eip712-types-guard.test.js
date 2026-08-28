@@ -61,8 +61,14 @@ function writeQuote(quoteId, step) {
     destinationChain: 'base',
     walletProvider: 'local',
     walletAddress: WALLET,
+    requestedAmountBaseUnits: '500000000',
     timestamp: Date.now(),
-    response: { execution_type: 'hyperliquid_signature', request_id: 'req-1', steps: [step] },
+    response: {
+      execution_type: 'hyperliquid_signature',
+      request_id: 'req-1',
+      details: { currencyIn: { amount: '500000000', amountFormatted: '5.0' } },
+      steps: [step],
+    },
   }));
 }
 
@@ -88,7 +94,7 @@ describe('refuses to sign a bridge step with no EIP-712 type definition', () => 
       kind: 'transaction',
       items: [{
         data: {
-          action: { type: 'sendAsset', parameters: { destination: WALLET, amount: '5' } },
+          action: { type: 'sendAsset', parameters: { hyperliquidChain: 'Mainnet', destination: WALLET, amount: '5' } },
           eip712PrimaryType: 'HyperliquidTransaction:SendAsset',
           eip712Types: {},
           nonce: 1700000000000,
@@ -105,7 +111,7 @@ describe('refuses to sign a bridge step with no EIP-712 type definition', () => 
       id: 'deposit',
       items: [{
         data: {
-          action: { type: 'sendAsset', parameters: {} },
+          action: { type: 'sendAsset', parameters: { hyperliquidChain: 'Mainnet', amount: '5' } },
           eip712PrimaryType: 'HyperliquidTransaction:SendAsset',
           nonce: 1,
         },
