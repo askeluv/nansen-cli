@@ -1,6 +1,5 @@
 # Dependencies
 node_modules/
-node_modules
 
 # Config with secrets
 /config.json
