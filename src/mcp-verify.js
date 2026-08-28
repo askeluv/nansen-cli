@@ -125,7 +125,7 @@ function authFailureCheck(message, httpStatus = null) {
       'mcp-auth',
       'error',
       `MCP server rejected the API key${text ? `: ${text}` : ''}`,
-      'Check the exact key in your MCP client\'s NANSEN-API-KEY header, or create/rotate it at https://app.nansen.ai/account?tab=api',
+      'Check the exact key in your MCP client\'s NANSEN-API-KEY header, or create/rotate it at https://app.nansen.ai/api?tab=api',
     );
   }
   if (/\b429\b|rate[- ]?limit|too many requests/i.test(combined)) {
@@ -194,7 +194,7 @@ export async function runMcpVerifyChecks({
       'mcp-api-key',
       'error',
       'No API key available for the authenticated MCP data-path check',
-      'Create an API key at https://app.nansen.ai/account?tab=api, then pass --api-key <key> or set NANSEN_API_KEY',
+      'Create an API key at https://app.nansen.ai/api?tab=api, then pass --api-key <key> or set NANSEN_API_KEY',
     ));
   }
 

@@ -37,6 +37,22 @@ function authSuccessResponse(contentType = 'application/json') {
   return contentType === 'text/event-stream' ? sse({ jsonrpc: '2.0', id: 1, result: message }) : rpcResult(message);
 }
 
+describe('remediation URLs (API-390)', () => {
+  // The auth-failure and missing-key remediations must point at the key
+  // MANAGEMENT view, not /auth/agent-setup: that page auto-mints a key on load
+  // and is plan-capped (Free = 1), so a user who already has one either gets a
+  // duplicate or a 403 -- a second failure on top of the one that sent them there.
+  // Matches nansen-ra src/nansen_mcp/api/utils/common.py and the Kong 401 in
+  // nansen-api kubernetes/nansen-api-wrapper/manifest.yaml.
+  it('uses the key management URL and none of the rejected alternatives', async () => {
+    const src = await import('node:fs').then((fs) =>
+      fs.readFileSync(new URL('../mcp-verify.js', import.meta.url), 'utf8'));
+    expect(src).toContain('https://app.nansen.ai/api?tab=api');
+    expect(src).not.toContain('/account?tab=api');
+    expect(src).not.toContain('/auth/agent-setup');
+  });
+});
+
 describe('mcp verify', () => {
   let tempHome;
   let env;
