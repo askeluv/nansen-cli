@@ -333,6 +333,31 @@ function signEip712Local(typedData, privateKeyHex, context = 'EIP-712 payload') 
 // across every supported withdrawal route (HL -> base/ethereum/arbitrum).
 const ALLOWED_HL_BRIDGE_ACTION_TYPES = new Set(['sendAsset']);
 
+// Hyperliquid's on-chain identifier for spot USDC — the only source token this
+// bridge path can ever legitimately request (resolveBridgeTokenDecimals never
+// resolves any other HL-origin token). Confirmed identical across all three
+// captured withdrawal routes (HL -> base/ethereum/arbitrum): it names the
+// SOURCE token, which does not vary by destination.
+const HYPERLIQUID_BRIDGE_USDC_TOKEN_ID = 'USDC:0x6d1e7cde53ba9467b783cb7c530ce054';
+
+// The relayer authorize step signs a "NonceMapping" typed-data payload whose
+// domain/types/primaryType/value ALL come from the server response — unlike
+// the deposit action, nothing about this one is pinned client-side. Left
+// unchecked, a malicious response could ask the wallet to sign a COMPLETELY
+// different EIP-712 message — a different protocol's Permit or approval,
+// anything with a non-empty type list — and relay the resulting signature to
+// an endpoint of its choosing. Pin the exact shape so this can only ever
+// produce a signature over a genuine NonceMapping.
+const RELAY_AUTHORIZE_PRIMARY_TYPE = 'NonceMapping';
+const RELAY_AUTHORIZE_DOMAIN_NAME = 'Relay';
+const RELAY_AUTHORIZE_FIELDS = new Set(['chainId', 'wallet', 'nonce', 'id', 'depositor']);
+
+// Hosts this bridge path is allowed to POST a produced signature to. Guards
+// the same gap from the other direction: even with the shape above pinned, an
+// absolute `post.endpoint` was used verbatim, so a malicious response could
+// redirect the signature to a server outside Relay entirely.
+const RELAY_AUTHORIZE_HOSTS = new Set(['api.relay.link']);
+
 // Parse a non-negative decimal string ("2", "2.000000", "1.97859") to an integer
 // scaled by `decimals`, via digit slicing (never parseFloat) so it is exact.
 export function decimalToScaled(raw, decimals = 8) {
@@ -388,37 +413,96 @@ export function assertHlBridgeActionIntent(action, intent, context = 'Bridge act
       'UNEXPECTED_NETWORK',
     );
   }
-  // B. one-sided amount cap
+  // B. amount cap — required, not optional. sendAsset's entire purpose is
+  // moving a nonzero amount; an action.type we allowlisted but with no amount
+  // to check is not a smaller withdrawal, it is a signal something is wrong
+  // with the response, so refuse rather than let it through unchecked.
   const signed = action.amount ?? action.parameters?.amount;
-  if (signed != null) {
-    if (intent.reviewedAmountBaseUnits == null) {
+  if (signed == null) {
+    throw new CommandError(
+      `${context} has no amount to verify. Refusing to sign. Request a new quote.`,
+      'AMOUNT_MISMATCH',
+    );
+  }
+  if (intent.reviewedAmountBaseUnits == null) {
+    throw new CommandError(
+      `${context}: no reviewed amount recorded to check ${signed} against. Refusing to sign. Request a new quote.`,
+      'AMOUNT_MISMATCH',
+    );
+  }
+  // decimalToScaled's default (8) matches Hyperliquid USDC's native decimals,
+  // the same scale reviewedAmountBaseUnits is already expressed in.
+  const signedScaled = decimalToScaled(signed);
+  const reviewedScaled = BigInt(intent.reviewedAmountBaseUnits);
+  if (signedScaled > reviewedScaled + 1n) {
+    throw new CommandError(
+      `${context} would send ${signed}, more than the ${intent.reviewedAmountBaseUnits} base units you requested. `
+        + `Refusing to sign. Request a new quote.`,
+      'AMOUNT_MISMATCH',
+    );
+  }
+  // F. token / source fields. Only USDC is ever a legitimate HL-origin source
+  // token, and every captured route used empty dex/sub-account fields (no
+  // dex-sourced or sub-account withdrawals are supported) — so anything else
+  // is off the only shape this bridge path is designed to produce.
+  const token = action.token ?? action.parameters?.token;
+  if (token !== HYPERLIQUID_BRIDGE_USDC_TOKEN_ID) {
+    throw new CommandError(
+      `${context} names an unexpected source token "${token}". Refusing to sign. Request a new quote.`,
+      'UNEXPECTED_ACTION',
+    );
+  }
+  for (const key of ['sourceDex', 'destinationDex', 'fromSubAccount']) {
+    const v = action[key] ?? action.parameters?.[key];
+    if (v !== '') {
       throw new CommandError(
-        `${context}: no reviewed amount recorded to check ${signed} against. Refusing to sign. Request a new quote.`,
-        'AMOUNT_MISMATCH',
-      );
-    }
-    // decimalToScaled's default (8) matches Hyperliquid USDC's native decimals,
-    // the same scale reviewedAmountBaseUnits is already expressed in.
-    const signedScaled = decimalToScaled(signed);
-    const reviewedScaled = BigInt(intent.reviewedAmountBaseUnits);
-    if (signedScaled > reviewedScaled + 1n) {
-      throw new CommandError(
-        `${context} would send ${signed}, more than the ${intent.reviewedAmountBaseUnits} base units you requested. `
-          + `Refusing to sign. Request a new quote.`,
-        'AMOUNT_MISMATCH',
+        `${context} has an unexpected ${key} "${v}" (expected empty). Refusing to sign. Request a new quote.`,
+        'UNEXPECTED_ACTION',
       );
     }
   }
 }
 
-// Bind the relayer NonceMapping authorize payload: any wallet/depositor address
-// field must be the signing wallet, so we can't be made to authorize a deposit
-// mapping for another account. Only checks fields that are present.
-export function assertHlBridgeAuthorizeIntent(value, signerAddress, context = 'Bridge authorize') {
-  if (!value || typeof value !== 'object') return;
+// Bind the relayer NonceMapping authorize payload (the FULL EIP-712 sign
+// object — domain, types, primaryType, value — not just its value fields) to
+// the user's intent before signing. See the constants above for why every
+// part of the shape needs pinning: nothing about this payload is fixed
+// client-side otherwise.
+export function assertHlBridgeAuthorizeIntent(sign, signerAddress, context = 'Bridge authorize') {
+  if (!sign || typeof sign !== 'object') {
+    throw new CommandError(`${context}: no authorize payload to verify. Request a new quote.`, 'INVALID_INPUT');
+  }
+  if (sign.primaryType !== RELAY_AUTHORIZE_PRIMARY_TYPE) {
+    throw new CommandError(
+      `${context} has an unexpected EIP-712 type "${sign.primaryType}". Refusing to sign. Request a new quote.`,
+      'UNEXPECTED_ACTION',
+    );
+  }
+  if (sign.domain?.name !== RELAY_AUTHORIZE_DOMAIN_NAME) {
+    throw new CommandError(
+      `${context} has an unexpected signing domain "${sign.domain?.name}". Refusing to sign. Request a new quote.`,
+      'UNEXPECTED_ACTION',
+    );
+  }
+  const fields = (sign.types?.[sign.primaryType] || []).map(f => f.name);
+  const hasExpectedFields = fields.length === RELAY_AUTHORIZE_FIELDS.size
+    && fields.every(name => RELAY_AUTHORIZE_FIELDS.has(name));
+  if (!hasExpectedFields) {
+    throw new CommandError(
+      `${context} has an unexpected field set for "${RELAY_AUTHORIZE_PRIMARY_TYPE}". Refusing to sign. Request a new quote.`,
+      'UNEXPECTED_ACTION',
+    );
+  }
+  const value = sign.value || {};
+  if (value.chainId !== 'hyperliquid') {
+    throw new CommandError(
+      `${context} targets chain "${value.chainId}", expected "hyperliquid". Refusing to sign.`,
+      'UNEXPECTED_NETWORK',
+    );
+  }
   for (const key of ['wallet', 'depositor']) {
     const v = value[key];
-    if (v && String(v).toLowerCase() !== String(signerAddress).toLowerCase()) {
+    if (!v || String(v).toLowerCase() !== String(signerAddress).toLowerCase()) {
       throw new CommandError(
         `${context} names ${key} ${v}, but the signing wallet is ${signerAddress}. `
           + `Refusing to sign. Request a new quote.`,
@@ -426,6 +510,31 @@ export function assertHlBridgeAuthorizeIntent(value, signerAddress, context = 'B
       );
     }
   }
+}
+
+// Resolve the relayer POST target the same way both sign paths did inline,
+// but refuse an endpoint outside Relay's own host. A relative endpoint always
+// resolved against api.relay.link; an absolute one was previously used
+// verbatim, so a malicious response could redirect a freshly-produced
+// signature to a server of its own choosing.
+function resolveRelayTargetUrl(endpoint, context = 'Bridge step') {
+  if (!endpoint || typeof endpoint !== 'string') {
+    throw new CommandError(`${context}: missing POST endpoint. Refusing to sign. Request a new quote.`, 'INVALID_INPUT');
+  }
+  const targetUrl = endpoint.startsWith('http') ? endpoint : `https://api.relay.link${endpoint}`;
+  let host;
+  try {
+    host = new URL(targetUrl).hostname;
+  } catch {
+    throw new CommandError(`${context} has a malformed POST endpoint "${endpoint}". Refusing to sign.`, 'INVALID_INPUT');
+  }
+  if (!RELAY_AUTHORIZE_HOSTS.has(host)) {
+    throw new CommandError(
+      `${context} would POST the signature to "${host}", outside the allowed Relay host. Refusing to sign.`,
+      'UNEXPECTED_ACTION',
+    );
+  }
+  return targetUrl;
 }
 
 // ── Step processors ──────────────────────────────────────────────────
@@ -591,7 +700,8 @@ async function processSignatureStepLocal(step, { privateKeyHex, log, apiInstance
     const { data: signData } = item;
 
     if (signData.sign) {
-      assertHlBridgeAuthorizeIntent(signData.sign.value, intent.signerAddress, `Bridge step "${step.id}"`);
+      assertHlBridgeAuthorizeIntent(signData.sign, intent.signerAddress, `Bridge step "${step.id}"`);
+      let targetUrl = resolveRelayTargetUrl(signData.post?.endpoint, `Bridge step "${step.id}"`);
       const typedData = {
         domain: signData.sign.domain,
         types: signData.sign.types,
@@ -600,10 +710,6 @@ async function processSignatureStepLocal(step, { privateKeyHex, log, apiInstance
       };
       const signature = signEip712Local(typedData, privateKeyHex, `Bridge step "${step.id}"`);
 
-      let targetUrl = signData.post.endpoint;
-      if (!targetUrl.startsWith('http')) {
-        targetUrl = `https://api.relay.link${targetUrl}`;
-      }
       const postBody = { ...signData.post.body };
 
       if (targetUrl.includes('/authorize')) {
@@ -667,8 +773,12 @@ async function processSignatureStepPrivy(step, { privyClient, walletId, log, api
     // For the HL action leg, the exact object that is signed is also the object
     // submitted (see the local path for why); hold onto it for the submit below.
     let hlAction = null;
+    // For the authorize leg, resolved up front (before signing) so a bad
+    // target refuses without ever calling out to Privy.
+    let targetUrl = null;
     if (signData.sign) {
-      assertHlBridgeAuthorizeIntent(signData.sign.value, intent.signerAddress, `Bridge step "${step.id}"`);
+      assertHlBridgeAuthorizeIntent(signData.sign, intent.signerAddress, `Bridge step "${step.id}"`);
+      targetUrl = resolveRelayTargetUrl(signData.post?.endpoint, `Bridge step "${step.id}"`);
       typedData = {
         domain: signData.sign.domain,
         types: signData.sign.types,
@@ -711,8 +821,6 @@ async function processSignatureStepPrivy(step, { privyClient, walletId, log, api
     const signature = result.data?.signature || result.signature || result;
 
     if (signData.sign) {
-      let targetUrl = signData.post.endpoint;
-      if (!targetUrl.startsWith('http')) targetUrl = `https://api.relay.link${targetUrl}`;
       const postBody = { ...signData.post.body };
       if (targetUrl.includes('/authorize')) {
         const sep = targetUrl.includes('?') ? '&' : '?';

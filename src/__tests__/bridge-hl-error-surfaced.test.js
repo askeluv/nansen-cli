@@ -51,9 +51,15 @@ function writeWithdrawQuote(quoteId) {
             data: {
               sign: {
                 domain: { name: 'Relay', version: '1', chainId: 1, verifyingContract: '0x' + '0'.repeat(40) },
-                types: { Authorize: [{ name: 'nonce', type: 'uint256' }] },
-                primaryType: 'Authorize',
-                value: { nonce: '1' },
+                types: { NonceMapping: [
+                  { name: 'chainId', type: 'string' },
+                  { name: 'wallet', type: 'string' },
+                  { name: 'nonce', type: 'uint64' },
+                  { name: 'id', type: 'string' },
+                  { name: 'depositor', type: 'string' },
+                ] },
+                primaryType: 'NonceMapping',
+                value: { chainId: 'hyperliquid', wallet: WALLET, nonce: 1, id: '0x1', depositor: WALLET },
               },
               post: { endpoint: '/authorize', body: {} },
             },
@@ -64,12 +70,30 @@ function writeWithdrawQuote(quoteId) {
           kind: 'transaction',
           items: [{
             data: {
-              action: { type: 'sendAsset', parameters: { hyperliquidChain: 'Mainnet', destination: WALLET, amount: '5' } },
+              action: {
+                type: 'sendAsset',
+                parameters: {
+                  hyperliquidChain: 'Mainnet',
+                  destination: WALLET,
+                  sourceDex: '',
+                  destinationDex: '',
+                  token: 'USDC:0x6d1e7cde53ba9467b783cb7c530ce054',
+                  amount: '5',
+                  fromSubAccount: '',
+                  nonce: 1700000000000,
+                },
+              },
               eip712PrimaryType: 'HyperliquidTransaction:SendAsset',
               eip712Types: {
                 'HyperliquidTransaction:SendAsset': [
+                  { name: 'hyperliquidChain', type: 'string' },
                   { name: 'destination', type: 'string' },
+                  { name: 'sourceDex', type: 'string' },
+                  { name: 'destinationDex', type: 'string' },
+                  { name: 'token', type: 'string' },
                   { name: 'amount', type: 'string' },
+                  { name: 'fromSubAccount', type: 'string' },
+                  { name: 'nonce', type: 'uint64' },
                 ],
               },
               nonce: 1700000000000,
