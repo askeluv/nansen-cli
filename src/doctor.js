@@ -313,7 +313,7 @@ export function runDoctorChecks(deps = {}) {
       }
     }
   } else {
-    checks.push(check('api-key', auth.configFileExists ? 'error' : 'warn', 'No API key configured', 'Run: nansen login --api-key <key>  (or fund an x402 wallet for pay-per-call access)'));
+    checks.push(check('api-key', auth.configFileExists ? 'error' : 'warn', 'No API key configured', 'Run: nansen login --human or set NANSEN_API_KEY  (or fund an x402 wallet for pay-per-call access)'));
   }
   // POSIX modes are meaningless on Windows — fs.stat reports 0o666 for every
   // file there, which would warn on all of them

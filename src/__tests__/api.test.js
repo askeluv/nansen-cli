@@ -459,6 +459,7 @@ describe('NansenAPI', () => {
 
           expect(url).toBe('https://api.nansen.ai/api/v1/account');
           expect(options.method).toBe('GET');
+          expect(options.redirect).toBe('error');
           expect(options.headers['Content-Type']).toBeUndefined();
           expect(options.headers['apikey']).toBe('test-api-key');
           expect(options.body).toBeUndefined();

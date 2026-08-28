@@ -15,6 +15,7 @@ import {
   formatCsv,
   parseSort,
   buildCommands,
+  prompt,
   runCLI,
   DEPRECATED_TO_RESEARCH,
   DEPRECATED_TO_TRADE,
@@ -1771,6 +1772,31 @@ describe('HELP', () => {
   });
 });
 
+describe('prompt', () => {
+  it('keeps hidden input masked when stdout is redirected', async () => {
+    let onData;
+    const input = {
+      isTTY: true,
+      setRawMode: vi.fn(),
+      resume: vi.fn(),
+      pause: vi.fn(),
+      setEncoding: vi.fn(),
+      on: vi.fn((_event, handler) => { onData = handler; }),
+      removeListener: vi.fn(),
+    };
+    const output = { isTTY: false, write: vi.fn() };
+    const secret = 'REDIRECTED_OUTPUT_TEST_KEY';
+
+    const result = prompt('Enter key: ', true, { input, output });
+    onData(secret);
+    onData('\n');
+
+    await expect(result).resolves.toBe(secret);
+    expect(input.setRawMode.mock.calls).toEqual([[true], [false]]);
+    expect(output.write.mock.calls.flat().join('')).not.toContain(secret);
+  });
+});
+
 describe('buildCommands', () => {
   let mockDeps;
   let commands;
@@ -1845,6 +1871,50 @@ describe('buildCommands', () => {
       } finally {
         if (savedEnv !== undefined) process.env.NANSEN_API_KEY = savedEnv;
       }
+    });
+
+    it('does not relay verification error text', async () => {
+      const key = 'VERIFICATION_TEST_KEY';
+      const encodedKey = Buffer.from(key).toString('base64');
+      const mockApi = { getAccount: vi.fn().mockRejectedValue(
+        Object.assign(new Error(`upstream echoed ${key} and ${encodedKey}`), { code: 'SOMETHING_ELSE' })
+      ) };
+      mockDeps.NansenAPIClass.mockImplementation(function() { return mockApi; });
+
+      const thrown = await commands.login([], null, {}, { 'api-key': key }).catch(e => e);
+
+      expect(thrown.message).toBe('Could not verify API key.');
+      expect(thrown.message).not.toContain(key);
+      expect(JSON.stringify(thrown.data ?? {})).not.toContain(encodedKey);
+    });
+
+    it('invalid-key resolution points at the key management view, never agent-setup', async () => {
+      const mockApi = { getAccount: vi.fn().mockRejectedValue(
+        Object.assign(new Error('unauthorized'), { code: ErrorCode.UNAUTHORIZED })
+      ) };
+      mockDeps.NansenAPIClass.mockImplementation(function() { return mockApi; });
+
+      let thrown;
+      try {
+        await commands.login([], null, {}, { 'api-key': 'some-invalid-key' });
+      } catch (e) { thrown = e; }
+      expect(thrown).toBeDefined();
+      const resolution = JSON.stringify(thrown.data?.resolution ?? []);
+      expect(resolution).toContain('https://app.nansen.ai/api?tab=api');
+      expect(resolution).not.toContain('/auth/agent-setup');
+    });
+
+    it('login help warns that literal keys land in shell history', async () => {
+      const logs = [];
+      const localCommands = buildCommands({ ...mockDeps, log: (m) => logs.push(m) });
+      await localCommands.login([], null, { help: true }, {});
+      const out = logs.join('\n');
+      expect(out).toContain('--human');
+      expect(out).toContain('uses NANSEN_API_KEY when already set');
+      expect(out).not.toContain('security find-generic-password');
+      expect(out).toMatch(/recorded in shell history/i);
+      // the safe path is listed before the history-recording one
+      expect(out.indexOf('--human')).toBeLessThan(out.indexOf('--api-key <key>'));
     });
 
     it('should save config with --api-key option after verification', async () => {

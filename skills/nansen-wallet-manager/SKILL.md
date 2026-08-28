@@ -21,10 +21,10 @@ allowed-tools: Bash(nansen:*)
 ## Auth Setup
 
 ```bash
-# Save API key (non-interactive)
-nansen login --api-key <key>
-# Or via env var:
-NANSEN_API_KEY=<key> nansen login
+# Save API key interactively
+nansen login --human
+# Or use NANSEN_API_KEY after provisioning it through your environment/secret manager
+nansen login
 
 # Verify
 nansen research profiler labels --address 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045 --chain ethereum
@@ -190,7 +190,7 @@ For detailed migration steps (from `~/.nansen/.env`, `.credentials`, or env-var-
 | Var | Purpose |
 |-----|---------|
 | `NANSEN_WALLET_PASSWORD` | Wallet encryption password — only needed for initial `wallet create`. After that, the OS keychain handles it. |
-| `NANSEN_API_KEY` | API key (also set via `nansen login --api-key <key>`) |
+| `NANSEN_API_KEY` | API key (can also be saved via `nansen login --human`) |
 | `PRIVY_APP_ID` | Privy application ID (required for `--provider privy`) |
 | `PRIVY_APP_SECRET` | Privy application secret (required for `--provider privy`) |
 | `NANSEN_WALLET_PROVIDER` | Default provider for wallet create — `local` or `privy` |

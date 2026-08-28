@@ -105,6 +105,7 @@ describe('NansenAPI._x402Retry', () => {
     const [, requestInit] = mockFetch.mock.calls[0];
     expect(requestInit.headers['Payment-Signature']).toBe('my-payment-sig');
     expect(requestInit.method).toBe('POST');
+    expect(requestInit.redirect).toBe('error');
     expect(requestInit.body).toBeDefined();
   });
 
