@@ -71,7 +71,7 @@ describe('buildServerEntry', () => {
     expect(entry.command).toBe('npx');
     expect(entry.args).toContain(MCP_REMOTE_PIN);
     expect(MCP_REMOTE_PIN).toMatch(/^mcp-remote@\d+\.\d+\.\d+$/); // exact pin, not a range
-    // no space after the colon (Claude Desktop mis-splits spaced args)
+    // key stays out of argv: it lives in env and mcp-remote substitutes ${NANSEN_API_KEY}
     expect(entry.args).toContain('NANSEN-API-KEY:${NANSEN_API_KEY}');
     expect(entry.args.join(' ')).not.toContain(API_KEY);
     expect(entry.env).toEqual({ NANSEN_API_KEY: API_KEY });
