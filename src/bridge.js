@@ -443,8 +443,12 @@ export function assertHlBridgeActionIntent(action, intent, context = 'Bridge act
     );
   }
   if (intent.reviewedAmountBaseUnits == null) {
+    // Expected for a quote saved by an older CLI version before this field
+    // existed, not a sign of a bad response — but it can't be verified, so
+    // still refuse. Name the likely cause so it doesn't read as a bug.
     throw new CommandError(
-      `${context}: no reviewed amount recorded to check ${signed} against. Refusing to sign. Request a new quote.`,
+      `${context}: no reviewed amount recorded to check ${signed} against (this quote may predate a nansen-cli update). `
+        + `Refusing to sign. Request a new quote.`,
       'AMOUNT_MISMATCH',
     );
   }
