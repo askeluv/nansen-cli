@@ -135,6 +135,44 @@ describe('bridge quote --amount-unit (M2)', () => {
     expect(api.captured.params.amount).toBe('200000000');
   });
 
+  // The floor changes what gets signed, so it must not be silent. Announce the
+  // before -> after adjustment on the default base-units path...
+  it('announces the floor on the default base-units path', async () => {
+    const msgs = [];
+    const cmds = buildBridgeCommands({ log: (m) => msgs.push(m) });
+    await cmds.quote([], fakeApi(), {}, {
+      'from-chain': 'hyperliquid', 'to-chain': 'base',
+      'from-token': 'USDC', amount: '200000050', wallet: 'w',
+    });
+    expect(msgs.some((m) => /floored 200000050 → 200000000 base units/.test(m))).toBe(true);
+  });
+
+  // ...and stay quiet when nothing was dropped, so aligned amounts don't emit a
+  // no-op notice.
+  it('emits no floor notice when the base-units amount is already aligned', async () => {
+    const msgs = [];
+    const cmds = buildBridgeCommands({ log: (m) => msgs.push(m) });
+    await cmds.quote([], fakeApi(), {}, {
+      'from-chain': 'hyperliquid', 'to-chain': 'base',
+      'from-token': 'USDC', amount: '200000000', wallet: 'w',
+    });
+    expect(msgs.some((m) => /floored/.test(m))).toBe(false);
+  });
+
+  // The second floor call site (the --amount-unit conversion path) announces too.
+  // 2.00000105 USDC at HL's 8 decimals is 200000105, floored to 200000100.
+  it('announces the floor on the --amount-unit token path', async () => {
+    const msgs = [];
+    const cmds = buildBridgeCommands({ log: (m) => msgs.push(m) });
+    const api = fakeApi();
+    await cmds.quote([], api, {}, {
+      'from-chain': 'hyperliquid', 'to-chain': 'base',
+      'from-token': 'USDC', amount: '2.00000105', 'amount-unit': 'token', wallet: 'w',
+    });
+    expect(api.captured.params.amount).toBe('200000100');
+    expect(msgs.some((m) => /floored 200000105 → 200000100 base units/.test(m))).toBe(true);
+  });
+
   it('rejects an unknown --amount-unit instead of silently using base units', async () => {
     const cmds = buildBridgeCommands({ log: () => {} });
     const api = fakeApi();
