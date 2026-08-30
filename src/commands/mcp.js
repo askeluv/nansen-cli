@@ -85,6 +85,15 @@ export function buildServerEntry(client, apiKey) {
       // Header name and value must be one arg. mcp-remote parses with
       // /^([A-Za-z0-9_-]+):\s*(.*)$/, so whitespace after the colon is trimmed;
       // what breaks it is an empty value.
+      // The ${NANSEN_API_KEY} placeholder is NOT shell syntax: mcp-remote itself
+      // substitutes ${VAR} in header values from its process env — see
+      // mcp-remote@0.2.1 dist/chunk-KIPEEEAF.js:29573-29576
+      // (`value.replace(/\$\{([^}]+)}/g, ...)`, logging "Replacing ${...} with
+      // environment value in header"). Claude Desktop injects the `env` block
+      // into the spawned npx process, mcp-remote expands the reference, and the
+      // key never appears in argv (visible in process listings). Verified live:
+      // the exact written config connects to prod with the substitution logged.
+      // Do NOT "fix" this by inlining the key into args.
       // No --allow-http: the URL is HTTPS.
       return {
         command: 'npx',
@@ -216,10 +225,17 @@ export function buildMcpCommands(deps = {}) {
       const configPath = resolveReal(resolveClientConfigPath(client, { platform, homedir: homedirFn(), env }));
 
       if (sub === 'uninstall') {
-        let config, existed, updated, removed;
+        // Single state object, null until the read+remove pair succeeds: the
+        // guard below treats any escape from the try as "nothing to do", so a
+        // future early-return added to the catch cannot leak undefined state
+        // into the backup/write path. (Per-variable defaults are rejected by
+        // no-useless-assignment — the analyzer proves every current path
+        // assigns or exits; this shape keeps that true structurally.)
+        let state = null;
         try {
-          ({ config, existed } = readConfig(configPath));
-          ({ config: updated, removed } = removeNansenEntry(config, configPath));
+          const { config, existed } = readConfig(configPath);
+          const { config: updated, removed } = removeNansenEntry(config, configPath);
+          state = { existed, updated, removed };
         } catch (err) {
           // --dry-run must not throw on an unparseable config: users reach for it
           // precisely when unsure of the file's state. A real uninstall still
@@ -230,10 +246,11 @@ export function buildMcpCommands(deps = {}) {
           }
           throw err;
         }
-        if (!existed || !removed) {
+        if (!state || !state.existed || !state.removed) {
           log(`No Nansen MCP entry found in ${configPath}. Nothing to do.`);
           return undefined;
         }
+        const { updated } = state;
         if (flags['dry-run']) {
           log(`Would remove "${SERVER_KEY}" entry from ${configPath} (no changes made).`);
           return undefined;
@@ -255,6 +272,11 @@ export function buildMcpCommands(deps = {}) {
         throw new CommandError('Not logged in. Run: nansen login', 'NOT_LOGGED_IN');
       }
 
+      // Deliberate asymmetry with uninstall --dry-run (which previews even an
+      // unparseable config): for install, a corrupt existing config is a
+      // blocking error even under --dry-run, because the eventual write would
+      // refuse it too — previewing a merge into a file we cannot parse would
+      // promise something install cannot deliver.
       const { config, existed } = readConfig(configPath);
 
       if (flags['dry-run']) {
