@@ -1176,6 +1176,16 @@ OPTIONS:
       // Default: --amount is base units. With --amount-unit, accept a human token
       // or USD amount and convert client-side using the source token's decimals.
       let resolvedAmount = amountInput;
+      // HL-USDC flooring drops sub-6dp digits so the persisted amount matches the
+      // 6-decimal precision the bridge actually signs (see
+      // floorHyperliquidUsdcBridgeAmount). The adjustment is tiny (< 1e-6 USDC)
+      // but it changes what gets signed, so announce it rather than adjusting
+      // silently. No-op notice when nothing was dropped.
+      const notifyIfFloored = (before, after) => {
+        if (after !== before) {
+          log(`  Note: amount floored ${before} → ${after} base units to match the 6-decimal USDC precision the bridge signs.`);
+        }
+      };
       if (amountUnit === 'token' || amountUnit === 'usd') {
         try {
           const decimals = await resolveBridgeTokenDecimals(originToken, originChain);
@@ -1191,7 +1201,9 @@ OPTIONS:
             humanAmount = (parseFloat(amountInput) / price).toFixed(decimals);
           }
           resolvedAmount = convertToBaseUnits(humanAmount, decimals);
+          const beforeFloor = resolvedAmount;
           resolvedAmount = floorHyperliquidUsdcBridgeAmount(resolvedAmount, decimals, originToken, originChain);
+          notifyIfFloored(beforeFloor, resolvedAmount);
         } catch (err) {
           throw new Error(`Error converting --amount: ${err.message}`, { cause: err });
         }
@@ -1207,7 +1219,9 @@ OPTIONS:
         // origins (floorHyperliquidUsdcBridgeAmount only acts on HL USDC), where
         // HL USDC's 8 decimals are the only case; the guard skips non-integer
         // input so a malformed base-units amount still surfaces the API's error.
+        const beforeFloor = resolvedAmount;
         resolvedAmount = floorHyperliquidUsdcBridgeAmount(resolvedAmount, 8, originToken, originChain);
+        notifyIfFloored(beforeFloor, resolvedAmount);
       }
 
       log(`\n  Fetching bridge quote: ${originChain} → ${destinationChain}...`);
