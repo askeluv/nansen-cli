@@ -118,16 +118,11 @@ function authFailureCheck(message, httpStatus = null) {
   const codes = [httpStatus, message?.error?.code, message?.result?.code].filter(Boolean).join(' ');
   const combined = `${codes} ${text}`;
 
-  // Order matters: auth rejection first, then rate limit before credits —
-  // rate-limit texts often mention "credit rate limit" and must stay a warn.
-  if (/\b40[13]\b|unauthorized|forbidden|api[- ]key.*(?:required|invalid|reject)|header is required/i.test(combined)) {
-    return check(
-      'mcp-auth',
-      'error',
-      `MCP server rejected the API key${text ? `: ${text}` : ''}`,
-      'Check the exact key in your MCP client\'s NANSEN-API-KEY header, or create/rotate it at https://app.nansen.ai/api?tab=api',
-    );
-  }
+  // Order matters, most-specific first. Rate limit before credits: rate-limit
+  // texts often say "credit rate limit" and must stay a warn. Credits before
+  // auth: the gateway maps 403 + "insufficient"/"credit" to CREDITS_EXHAUSTED,
+  // and a zero-balance user must not be told their key was rejected — the
+  // create/rotate remedy can itself fail on key-capped plans.
   if (/\b429\b|rate[- ]?limit|too many requests/i.test(combined)) {
     return check(
       'mcp-auth',
@@ -136,12 +131,20 @@ function authFailureCheck(message, httpStatus = null) {
       'Retry the verification shortly.',
     );
   }
-  if (/\b402\b|payment required|insufficient/i.test(combined)) {
+  if (/\b402\b|payment required|insufficient|credits?\b/i.test(combined)) {
     return check(
       'mcp-auth',
       'error',
       `MCP server reports insufficient credits${text ? `: ${text}` : ''}`,
       'Top up credits or check your Nansen plan.',
+    );
+  }
+  if (/\b40[13]\b|unauthorized|forbidden|api[- ]key.*(?:required|invalid|reject)|header is required/i.test(combined)) {
+    return check(
+      'mcp-auth',
+      'error',
+      `MCP server rejected the API key${text ? `: ${text}` : ''}`,
+      'Check the exact key in your MCP client\'s NANSEN-API-KEY header, or create/rotate it at https://app.nansen.ai/api?tab=api',
     );
   }
   return check(

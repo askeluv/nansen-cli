@@ -943,6 +943,14 @@ export function buildCommands(deps = {}) {
       if ('api-key' in options && typeof options['api-key'] !== 'string') {
         throw new NansenError('--api-key must be a single key string. Usage: nansen mcp verify --api-key <key>', ErrorCode.INVALID_PARAMS);
       }
+      // Same guards for --url: a valueless flag or a repeated/JSON-parsed value
+      // must fail loudly, not flow an array into fetch or silently fall back.
+      if (flags.url) {
+        throw new NansenError('--url requires a value. Usage: nansen mcp verify --url <url>', ErrorCode.MISSING_PARAM);
+      }
+      if ('url' in options && typeof options.url !== 'string') {
+        throw new NansenError('--url must be a single URL string. Usage: nansen mcp verify --url <url>', ErrorCode.INVALID_PARAMS);
+      }
 
       const url = options.url || DEFAULT_MCP_URL;
       const checks = await runMcpVerifyChecks({
@@ -973,7 +981,11 @@ export function buildCommands(deps = {}) {
       const message = `MCP setup verification failed — ${reason}`;
       if (flags.json) throw new CommandError(message, 'MCP_VERIFY_FAILED', result);
       log(formatMcpVerifyReport(checks, url, false));
-      throw new CommandError(message, 'MCP_VERIFY_FAILED');
+      // The human report above is the complete failure output; mark the error
+      // so runCLI exits non-zero without also emitting the JSON envelope.
+      const reportedError = new CommandError(message, 'MCP_VERIFY_FAILED');
+      reportedError.reported = true;
+      throw reportedError;
     },
 
     'web': async (args, apiInstance, flags, options) => {
@@ -2173,7 +2185,10 @@ export async function runCLI(rawArgs, deps = {}) {
     // data (e.g. PASSWORD_REQUIRED resolution steps) is preserved under `details`,
     // so agents get one consistent shape to branch on regardless of command.
     const errorData = formatError(error);
-    if (isUsageError(errorData, { pretty, table, csv, stream, isTTY })) {
+    if (error.reported) {
+      // The command already printed its full human-readable failure output;
+      // emitting the envelope too would produce two output shapes on stdout.
+    } else if (isUsageError(errorData, { pretty, table, csv, stream, isTTY })) {
       output(errorData.error);
     } else {
       const formatted = formatOutput(errorData, { pretty, table, csv });

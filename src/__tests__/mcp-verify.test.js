@@ -97,6 +97,42 @@ describe('mcp verify', () => {
     expect(authCall[1].headers['NANSEN-API-KEY']).toBe(API_KEY);
   });
 
+  it('classifies 403 insufficient-credits as credits, not key rejection (Codier P1)', async () => {
+    // The gateway maps 403 + "insufficient"/"credit" to CREDITS_EXHAUSTED. A
+    // zero-balance user must not be told to create/rotate a key -- on
+    // key-capped plans that remedy can itself fail.
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(listResponse())
+      .mockResolvedValueOnce(rpcError({ code: 403, message: 'Insufficient credits remaining for this request' }, 'application/json', 403));
+
+    const checks = await runChecks(fetchFn);
+    const auth = findCheck(checks, 'mcp-auth');
+    expect(auth.status).toBe('error');
+    expect(auth.message).toMatch(/insufficient credits/i);
+    expect(auth.message).not.toMatch(/rejected the API key/i);
+    expect(auth.fix).toMatch(/top up/i);
+  });
+
+  it('still classifies a bare 403 forbidden as key rejection', async () => {
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(listResponse())
+      .mockResolvedValueOnce(rpcError({ code: 403, message: 'Forbidden' }, 'application/json', 403));
+
+    const checks = await runChecks(fetchFn);
+    expect(findCheck(checks, 'mcp-auth').message).toMatch(/rejected the API key/i);
+  });
+
+  it('keeps "credit rate limit" texts as a rate-limit warn, not credits', async () => {
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(listResponse())
+      .mockResolvedValueOnce(rpcError({ code: 429, message: 'credit rate limit exceeded' }, 'application/json', 429));
+
+    const checks = await runChecks(fetchFn);
+    const auth = findCheck(checks, 'mcp-auth');
+    expect(auth.status).toBe('warn');
+    expect(auth.message).toMatch(/rate limited/i);
+  });
+
   it('verifies a plain JSON response body', async () => {
     const fetchFn = vi.fn()
       .mockResolvedValueOnce(listResponse())
@@ -291,6 +327,82 @@ describe('mcp verify', () => {
       if (originalCI === undefined) delete process.env.CI;
       else process.env.CI = originalCI;
     }
+  });
+
+  it('non-JSON failure prints the report once, no JSON envelope (Codier P2)', async () => {
+    const output = [];
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(listResponse())
+      .mockResolvedValueOnce(rpcError({ code: 401, message: 'Invalid API key' }, 'application/json', 401));
+
+    const result = await runCLI(['mcp', 'verify', '--api-key', API_KEY], {
+      output: value => output.push(value),
+      log: value => output.push(value),
+      exit: vi.fn(),
+      fetchFn,
+      env,
+      isTTY: true,
+    });
+
+    const text = output.join('\n');
+    expect(result.type).toBe('error');
+    expect(text).toMatch(/Nansen MCP verify — /);            // the human report header
+    expect(text).toMatch(/MCP setup is not verified/);        // and its verdict line
+    expect(text).not.toContain('"success": false');          // no envelope (pretty)
+    expect(text).not.toContain('"success":false');           // no envelope (compact)
+    expect(text).not.toContain('MCP_VERIFY_FAILED');         // envelope code never printed
+  });
+
+  it('--json failure still emits exactly the envelope, no human report (P2 counterpart)', async () => {
+    const output = [];
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(listResponse())
+      .mockResolvedValueOnce(rpcError({ code: 401, message: 'Invalid API key' }, 'application/json', 401));
+
+    await runCLI(['mcp', 'verify', '--json', '--api-key', API_KEY], {
+      output: value => output.push(value),
+      log: value => output.push(value),
+      exit: vi.fn(),
+      fetchFn,
+      env,
+      isTTY: true,
+    });
+
+    const text = output.join('\n');
+    expect(text).toContain('MCP_VERIFY_FAILED');
+    expect(text).not.toMatch(/✗|✓/);                          // no human report glyphs
+  });
+
+  it('rejects a repeated --url instead of fetching a joined string (Codier P3)', async () => {
+    const output = [];
+    const fetchFn = vi.fn();
+    const result = await runCLI(['mcp', 'verify', '--api-key', API_KEY, '--url', 'https://a.example/mcp', '--url', 'https://b.example/mcp'], {
+      output: value => output.push(value),
+      exit: vi.fn(),
+      fetchFn,
+      env,
+      isTTY: true,
+    });
+
+    expect(result.type).toBe('error');
+    expect(output.join('\n')).toMatch(/--url must be a single URL string/);
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it('rejects a valueless --url instead of silently using the default (Codier P3)', async () => {
+    const output = [];
+    const fetchFn = vi.fn();
+    const result = await runCLI(['mcp', 'verify', '--api-key', API_KEY, '--url'], {
+      output: value => output.push(value),
+      exit: vi.fn(),
+      fetchFn,
+      env,
+      isTTY: true,
+    });
+
+    expect(result.type).toBe('error');
+    expect(output.join('\n')).toMatch(/--url requires a value/);
+    expect(fetchFn).not.toHaveBeenCalled();
   });
 
   it('rejects a valueless --api-key instead of falling back to a saved key', async () => {
