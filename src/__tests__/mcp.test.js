@@ -28,6 +28,11 @@ describe('resolveClientConfigPath', () => {
     expect(resolveClientConfigPath('claude-code', { ...ctx, platform: 'win32' })).toBe(path.join('/home/u', '.claude.json'));
   });
 
+  it('claude-code honors CLAUDE_CONFIG_DIR', () => {
+    expect(resolveClientConfigPath('claude-code', { ...ctx, env: { CLAUDE_CONFIG_DIR: '/custom/claude' } }))
+      .toBe(path.join('/custom/claude', '.claude.json'));
+  });
+
   it('cursor -> ~/.cursor/mcp.json', () => {
     expect(resolveClientConfigPath('cursor', ctx)).toBe(path.join('/home/u', '.cursor', 'mcp.json'));
   });
@@ -159,6 +164,7 @@ describe('mcp command handler', () => {
     fs.mkdirSync(path.dirname(cursorPath()), { recursive: true });
     const original = JSON.stringify({ mcpServers: { other: { command: 'foo' } }, unrelated: true });
     fs.writeFileSync(cursorPath(), original);
+    fs.writeFileSync(`${cursorPath()}.bak`, 'older backup');
 
     await run(['install', 'cursor']);
 
@@ -168,6 +174,7 @@ describe('mcp command handler', () => {
     expect(cfg.mcpServers.nansen.url).toBe(NANSEN_MCP_URL);
     expect(fs.readFileSync(`${cursorPath()}.bak`, 'utf8')).toBe(original);
     expect(fs.statSync(`${cursorPath()}.bak`).mode & 0o777).toBe(0o600);
+    expect(logs.join('\n')).toContain(`Overwrote existing backup at ${cursorPath()}.bak`);
   });
 
   it('re-running install is idempotent and reports an update', async () => {
@@ -228,6 +235,14 @@ describe('mcp command handler', () => {
     expect(out).toContain(cursorPath());
     expect(out).toContain('<redacted>');
     expect(out).not.toContain(API_KEY);
+  });
+
+  it('install --dry-run validates existing JSON without modifying it', async () => {
+    fs.mkdirSync(path.dirname(cursorPath()), { recursive: true });
+    fs.writeFileSync(cursorPath(), '{ not json');
+    await expect(run(['install', 'cursor'], { flags: { 'dry-run': true } })).rejects.toThrow(/Could not parse/);
+    expect(fs.readFileSync(cursorPath(), 'utf8')).toBe('{ not json');
+    expect(fs.existsSync(`${cursorPath()}.bak`)).toBe(false);
   });
 
   it('install output never contains the key', async () => {
@@ -327,6 +342,8 @@ describe('mcp command handler', () => {
     await expect(run(['frobnicate'])).rejects.toThrow(/Unknown subcommand/);
     await expect(run(['install'])).rejects.toThrow(/claude-code, claude-desktop, cursor/);
     await expect(run(['install', 'vscode'])).rejects.toThrow(/claude-code, claude-desktop, cursor/);
+    await expect(run(['uninstall'])).rejects.toThrow(/nansen mcp uninstall <client>/);
+    await expect(run(['uninstall', 'vscode'])).rejects.toThrow(/nansen mcp uninstall <client>/);
   });
 
   it('follows a symlinked config instead of replacing the link', async () => {
@@ -342,6 +359,18 @@ describe('mcp command handler', () => {
     expect(fs.lstatSync(cursorPath()).isSymbolicLink()).toBe(true); // link survives
     expect(JSON.parse(fs.readFileSync(realFile, 'utf8')).mcpServers.nansen.url).toBe(NANSEN_MCP_URL);
   });
+
+  it('resolves a symlinked parent when installing a fresh config', async () => {
+    const realDir = path.join(tempDir, 'dotfiles', 'cursor');
+    fs.mkdirSync(realDir, { recursive: true });
+    fs.symlinkSync(realDir, path.join(tempDir, '.cursor'));
+
+    await run(['install', 'cursor']);
+
+    const realFile = path.join(realDir, 'mcp.json');
+    expect(JSON.parse(fs.readFileSync(realFile, 'utf8')).mcpServers.nansen.url).toBe(NANSEN_MCP_URL);
+    expect(logs.join('\n')).toContain(realFile);
+  });
 });
 
 describe('schema + CLI registration', () => {
@@ -352,6 +381,12 @@ describe('schema + CLI registration', () => {
     expect(Object.keys(schema.commands)).toContain('mcp');
     expect(Object.keys(schema.commands.mcp.subcommands).sort()).toEqual(['install', 'uninstall']);
     expect(schema.commands.mcp.subcommands.uninstall.options['dry-run'].type).toBe('boolean');
+  });
+
+  it('generated mcp help uses examples with the required client', async () => {
+    const { generateSubcommandHelp } = await import('../cli.js');
+    expect(generateSubcommandHelp('mcp', 'install')).toContain('Example: nansen mcp install claude-code');
+    expect(generateSubcommandHelp('mcp', 'uninstall')).toContain('Example: nansen mcp uninstall claude-code');
   });
 
   it('runCLI routes `mcp` and parses --dry-run as a boolean flag', async () => {

@@ -54,7 +54,7 @@ rotating your key to update the entry. Other clients: https://docs.nansen.ai/mcp
 export function resolveClientConfigPath(client, { platform = process.platform, homedir = houseHomedir(), env = process.env } = {}) {
   switch (client) {
     case 'claude-code':
-      return path.join(homedir, '.claude.json');
+      return path.join(env.CLAUDE_CONFIG_DIR || homedir, '.claude.json');
     case 'cursor':
       return path.join(homedir, '.cursor', 'mcp.json');
     case 'claude-desktop':
@@ -137,8 +137,16 @@ export function buildMcpCommands(deps = {}) {
 
   // Follow symlinks so dotfile-managed configs are edited in place instead of
   // having the link replaced by the atomic rename.
-  const resolveReal = (p) => {
-    try { return fsx.realpathSync(p); } catch { return p; }
+  const resolveReal = (targetPath) => {
+    let ancestor = targetPath;
+    const missing = [];
+    while (!fsx.existsSync(ancestor)) {
+      const parent = path.dirname(ancestor);
+      if (parent === ancestor) return targetPath;
+      missing.unshift(path.basename(ancestor));
+      ancestor = parent;
+    }
+    try { return path.join(fsx.realpathSync(ancestor), ...missing); } catch { return targetPath; }
   };
 
   const readConfig = (configPath) => {
@@ -173,9 +181,20 @@ export function buildMcpCommands(deps = {}) {
     try { fsx.chmodSync(configPath, 0o600); } catch { /* Windows / exotic fs */ }
   };
 
-  const requireClient = (client) => {
+  const backupConfig = (configPath) => {
+    const backupPath = `${configPath}.bak`;
+    const overwritten = fsx.existsSync(backupPath);
+    fsx.copyFileSync(configPath, backupPath);
+    try { fsx.chmodSync(backupPath, 0o600); } catch { /* best-effort */ }
+    log(overwritten
+      ? `Overwrote existing backup at ${backupPath}`
+      : `Backed up existing config to ${backupPath}`);
+    return backupPath;
+  };
+
+  const requireClient = (operation, client) => {
     if (!client || !SUPPORTED_CLIENTS.includes(client)) {
-      throw new CommandError(`Usage: nansen mcp install <client>. Supported: ${SUPPORTED_CLIENTS.join(', ')}`, 'INVALID_PARAMS');
+      throw new CommandError(`Usage: nansen mcp ${operation} <client>. Supported: ${SUPPORTED_CLIENTS.join(', ')}`, 'INVALID_PARAMS');
     }
   };
 
@@ -193,7 +212,7 @@ export function buildMcpCommands(deps = {}) {
         throw new CommandError(`Unknown subcommand: ${sub}\n\n${MCP_USAGE}`, 'INVALID_PARAMS');
       }
 
-      requireClient(client);
+      requireClient(sub, client);
       const configPath = resolveReal(resolveClientConfigPath(client, { platform, homedir: homedirFn(), env }));
 
       if (sub === 'uninstall') {
@@ -203,8 +222,8 @@ export function buildMcpCommands(deps = {}) {
           ({ config: updated, removed } = removeNansenEntry(config, configPath));
         } catch (err) {
           // --dry-run must not throw on an unparseable config: users reach for it
-          // precisely when unsure of the file's state. Install gates on dry-run
-          // before reading; this keeps uninstall consistent.
+          // precisely when unsure of the file's state. A real uninstall still
+          // fails before writing.
           if (flags['dry-run']) {
             log(`Cannot preview ${configPath}: ${err.message} No changes made.`);
             return undefined;
@@ -220,12 +239,8 @@ export function buildMcpCommands(deps = {}) {
           return undefined;
         }
         // Same backup contract as install: an accidental uninstall of the wrong
-        // client is recoverable. copyFileSync failures surface (like install);
-        // chmod is best-effort.
-        const backupPath = `${configPath}.bak`;
-        fsx.copyFileSync(configPath, backupPath);
-        try { fsx.chmodSync(backupPath, 0o600); } catch { /* best-effort */ }
-        log(`Backed up existing config to ${backupPath}`);
+        // client is recoverable. Backup failures surface before the config write.
+        const backupPath = backupConfig(configPath);
         writeConfig(configPath, updated);
         log(`Removed Nansen MCP server from ${configPath}`);
         // The backup still holds the entry we just removed, key included.
@@ -240,23 +255,22 @@ export function buildMcpCommands(deps = {}) {
         throw new CommandError('Not logged in. Run: nansen login', 'NOT_LOGGED_IN');
       }
 
+      const { config, existed } = readConfig(configPath);
+
       if (flags['dry-run']) {
         // The key is never printed — dry-run shows a redacted entry.
         const redacted = buildServerEntry(client, '<redacted>');
+        mergeNansenEntry(config, redacted, configPath);
         log(`Would write "${SERVER_KEY}" entry to ${configPath}:`);
         log(JSON.stringify({ mcpServers: { [SERVER_KEY]: redacted } }, null, 2));
         return undefined;
       }
 
-      const { config, existed } = readConfig(configPath);
       const hadEntry = !!config.mcpServers?.[SERVER_KEY];
       const merged = mergeNansenEntry(config, buildServerEntry(client, apiKey), configPath);
 
       if (existed) {
-        const backupPath = `${configPath}.bak`;
-        fsx.copyFileSync(configPath, backupPath);
-        try { fsx.chmodSync(backupPath, 0o600); } catch { /* best-effort */ }
-        log(`Backed up existing config to ${backupPath}`);
+        backupConfig(configPath);
       }
       writeConfig(configPath, merged);
 

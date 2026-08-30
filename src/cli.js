@@ -1808,13 +1808,13 @@ export function generateSubcommandHelp(command, subcommand, prefix = null) {
   const exampleValues = { address: '0x...', token: '0x...', query: '"term"', symbol: 'BTC', date: '2024-01-01' };
   const chain = subSchema.options?.chain?.default || 'solana';
   const cmdPrefix = prefix || (DEPRECATED_TO_RESEARCH.has(command) ? `research ${command}` : command);
-  let example = `nansen ${cmdPrefix} ${subcommand}`;
-  if (subSchema.options) {
+  let example = subSchema.examples?.[0] || `nansen ${cmdPrefix} ${subcommand}`;
+  if (!subSchema.examples?.length && subSchema.options) {
     for (const [name, opt] of Object.entries(subSchema.options)) {
       if (opt.required) example += ` --${name} ${exampleValues[name] || '<val>'}`;
     }
   }
-  if (subSchema.options?.chain && !subSchema.options.chain.required) {
+  if (!subSchema.examples?.length && subSchema.options?.chain && !subSchema.options.chain.required) {
     example += ` --chain ${chain}`;
   }
   lines.push(`Example: ${example}`);
