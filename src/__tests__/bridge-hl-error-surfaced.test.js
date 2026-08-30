@@ -37,10 +37,12 @@ function writeWithdrawQuote(quoteId) {
     destinationChain: 'base',
     walletProvider: 'local',
     walletAddress: WALLET,
+    requestedAmountBaseUnits: '500000000',
     timestamp: Date.now(),
     response: {
       execution_type: 'hyperliquid_signature',
       request_id: 'req-withdraw-1',
+      details: { currencyIn: { amount: '500000000', amountFormatted: '5.0' } },
       steps: [
         {
           id: 'authorize',
@@ -48,10 +50,16 @@ function writeWithdrawQuote(quoteId) {
           items: [{
             data: {
               sign: {
-                domain: { name: 'Relay', version: '1', chainId: 1, verifyingContract: '0x' + '0'.repeat(40) },
-                types: { Authorize: [{ name: 'nonce', type: 'uint256' }] },
-                primaryType: 'Authorize',
-                value: { nonce: '1' },
+                domain: { name: 'RelayNonceMapping', version: '2', chainId: 1, verifyingContract: '0x' + '0'.repeat(40) },
+                types: { NonceMapping: [
+                  { name: 'chainId', type: 'string' },
+                  { name: 'wallet', type: 'address' },
+                  { name: 'depositor', type: 'address' },
+                  { name: 'id', type: 'bytes32' },
+                  { name: 'nonce', type: 'uint256' },
+                ] },
+                primaryType: 'NonceMapping',
+                value: { chainId: 'hyperliquid', wallet: WALLET, depositor: WALLET, id: '0x1', nonce: 1 },
               },
               post: { endpoint: '/authorize', body: {} },
             },
@@ -62,12 +70,30 @@ function writeWithdrawQuote(quoteId) {
           kind: 'transaction',
           items: [{
             data: {
-              action: { type: 'sendAsset', parameters: { destination: WALLET, amount: '5' } },
+              action: {
+                type: 'sendAsset',
+                parameters: {
+                  hyperliquidChain: 'Mainnet',
+                  destination: WALLET,
+                  sourceDex: '',
+                  destinationDex: '',
+                  token: 'USDC:0x6d1e7cde53ba9467b783cb7c530ce054',
+                  amount: '5',
+                  fromSubAccount: '',
+                  nonce: 1700000000000,
+                },
+              },
               eip712PrimaryType: 'HyperliquidTransaction:SendAsset',
               eip712Types: {
                 'HyperliquidTransaction:SendAsset': [
+                  { name: 'hyperliquidChain', type: 'string' },
                   { name: 'destination', type: 'string' },
+                  { name: 'sourceDex', type: 'string' },
+                  { name: 'destinationDex', type: 'string' },
+                  { name: 'token', type: 'string' },
                   { name: 'amount', type: 'string' },
+                  { name: 'fromSubAccount', type: 'string' },
+                  { name: 'nonce', type: 'uint64' },
                 ],
               },
               nonce: 1700000000000,
