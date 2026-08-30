@@ -200,6 +200,11 @@ describe('telemetry tracking for all first-level commands', () => {
     }
   }));
 
+  it('mcp usage does not trigger telemetry or a probe', async () => {
+    await runCLI(['mcp'], baseDeps({ log: () => {} }));
+    expect(wasTracked()).toBe(0);
+  });
+
   it('wallet (help subcommand)', async () => {
     await runCLI(['wallet'], baseDeps());
     expect(wasTracked()).toBe(1);
@@ -289,7 +294,7 @@ describe('telemetry tracking for all first-level commands', () => {
       // operational ('auth' and 'doctor --offline' are tested as deliberately
       // untracked — the offline contract covers telemetry)
       'account', 'auth', 'doctor', 'login', 'logout', 'schema', 'cache', 'changelog',
-      'web',
+      'web', 'mcp',
       // wallet, trading, bridge & perp
       'wallet', 'trade', 'quote', 'execute', 'bridge-status', 'bridge', 'perp',
       // help is a meta command, intentionally not tracked

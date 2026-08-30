@@ -85,7 +85,7 @@ const DEV_CONFIG_PATH = path.join(__dirname, '..', 'config.json');
  * ~/.nansen/config.json, then the repo-local dev config.json, then env
  * overrides — but lazily and without secrets leaving this function unmasked.
  */
-function resolveAuthConfig(env, devConfigPath = DEV_CONFIG_PATH) {
+export function resolveAuthConfig(env, devConfigPath = DEV_CONFIG_PATH) {
   const userConfigPath = getConfigFilePath(env);
 
   let config = null;
@@ -249,7 +249,7 @@ export function getAuthStatus(deps = {}) {
 
 // ============= doctor =============
 
-function check(id, status, message, fix = null) {
+export function check(id, status, message, fix = null) {
   const result = { id, status, message };
   if (fix) result.fix = fix;
   return result;
@@ -455,6 +455,18 @@ export async function runConnectivityChecks(deps = {}) {
 const STATUS_ICONS = { ok: '✓', warn: '⚠️ ', error: '❌', info: 'ℹ' };
 
 /**
+ * Render check lines without a header or summary.
+ */
+export function formatChecks(checks) {
+  const lines = [];
+  for (const c of checks) {
+    lines.push(`${STATUS_ICONS[c.status] || ' '} ${c.message}`);
+    if (c.fix) lines.push(`    ${c.fix}`);
+  }
+  return lines.join('\n');
+}
+
+/**
  * Render doctor checks as human-readable lines with a summary tail.
  */
 export function formatDoctorReport(checks, { cliVersion = null, offline = false } = {}) {
@@ -464,10 +476,7 @@ export function formatDoctorReport(checks, { cliVersion = null, offline = false 
     : 'diagnostics (local checks + a credit-free connectivity probe; --offline to skip network)';
   lines.push(`Nansen CLI doctor${cliVersion ? ` v${cliVersion}` : ''} — ${mode}`);
   lines.push('');
-  for (const c of checks) {
-    lines.push(`${STATUS_ICONS[c.status] || ' '} ${c.message}`);
-    if (c.fix) lines.push(`    ${c.fix}`);
-  }
+  lines.push(formatChecks(checks));
   const warnings = checks.filter(c => c.status === 'warn').length;
   const errors = checks.filter(c => c.status === 'error').length;
   lines.push('');
