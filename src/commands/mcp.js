@@ -225,13 +225,13 @@ export function buildMcpCommands(deps = {}) {
       const configPath = resolveReal(resolveClientConfigPath(client, { platform, homedir: homedirFn(), env }));
 
       if (sub === 'uninstall') {
-        // Single state object, null until the read+remove pair succeeds: the
-        // guard below treats any escape from the try as "nothing to do", so a
-        // future early-return added to the catch cannot leak undefined state
-        // into the backup/write path. (Per-variable defaults are rejected by
-        // no-useless-assignment — the analyzer proves every current path
-        // assigns or exits; this shape keeps that true structurally.)
-        let state = null;
+        // Single state object, assigned only when the read+remove pair
+        // succeeds. The !state guard below treats any escape from the try as
+        // "nothing to do", so a future early-return added to the catch cannot
+        // leak partial state into the backup/write path. Deliberately no
+        // initializer: no-useless-assignment proves every current path assigns
+        // or exits, and undefined already reads as "nothing to do".
+        let state;
         try {
           const { config, existed } = readConfig(configPath);
           const { config: updated, removed } = removeNansenEntry(config, configPath);
