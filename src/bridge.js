@@ -24,6 +24,7 @@ import {
 } from './trading.js';
 import { screenOrThrow } from './perp.js';
 import { extractActionErrors } from './hl-client.js';
+import { encodeApproveCalldata } from './trade-validation.js';
 import { resolveEvmWallet, resolveSigningCredentials } from './wallet-signing.js';
 import { hashTypedData } from './x402-evm.js';
 
@@ -685,6 +686,213 @@ function preflightHlBridgeSteps(steps, intent) {
 
 // ── Step processors ──────────────────────────────────────────────────
 
+// ── EVM deposit-leg intent binding (Base → Hyperliquid) ──────────────
+//
+// The bridge EVM deposit path signs server-supplied transactions. Pin the
+// only shape this path is designed to produce so a tampered response cannot
+// swap in an arbitrary drain call or an unbounded approval.
+//
+// Captured from real read-only `bridge quote` responses (base → hyperliquid,
+// USDC, 2026-08-31), confirmed stable across three quotes (amounts 2/3/2 USDC,
+// one with a distinct --recipient). base → hyperliquid is the ONLY supported
+// deposit route (BRIDGE_ROUTES), so this allowlist is complete. Re-capture and
+// update if Relay changes its deposit contract.
+const ERC20_APPROVE_SELECTOR = '0x095ea7b3';
+
+// Relay deposit router for the Base → HL route. It is BOTH the approve spender
+// and the deposit call target (confirmed identical across every capture), so
+// one constant covers both. Lower-cased for comparison.
+const BRIDGE_DEPOSIT_TARGETS = {
+  base: new Set(['0x4cd00e387622c35bddb9b4c962c136462338bc31']),
+};
+
+// The deposit call selector on that router. Its calldata is a fixed 4-arg ABI
+// layout: deposit(address depositor, address token, uint256 amount, bytes32 id).
+const BRIDGE_DEPOSIT_SELECTOR = '0xe8017952';
+
+// True when calldata is an ERC-20 approve(spender, amount). 0x + 4-byte
+// selector + two 32-byte words = 138 hex chars; anything else is not a
+// well-formed approve and must not be treated as one.
+function isErc20Approve(data) {
+  return typeof data === 'string'
+    && data.length === 138
+    && data.slice(0, 10).toLowerCase() === ERC20_APPROVE_SELECTOR;
+}
+
+// Decode approve(spender, amount) from validated calldata. Only call after
+// isErc20Approve() is true.
+function decodeErc20Approve(data) {
+  const spender = '0x' + data.slice(34, 74);          // last 20 bytes of word 1
+  const amount = BigInt('0x' + data.slice(74, 138));  // word 2
+  return { spender, amount };
+}
+
+function selectorOf(data) {
+  return typeof data === 'string' ? data.slice(0, 10).toLowerCase() : '';
+}
+
+// Decode the Relay deposit call's fixed 4-arg layout:
+//   deposit(address depositor, address token, uint256 amount, bytes32 id)
+// 0x + selector(8) + 4 words(4 * 64) = 266 hex chars. Only call after the
+// selector matched BRIDGE_DEPOSIT_SELECTOR; a wrong length is itself a refusal.
+function decodeBridgeDeposit(data) {
+  if (typeof data !== 'string' || data.length !== 266) return null;
+  const w = i => data.slice(10 + i * 64, 10 + (i + 1) * 64);
+  return {
+    depositor: '0x' + w(0).slice(24),   // last 20 bytes of word 0
+    token: '0x' + w(1).slice(24),
+    amount: BigInt('0x' + w(2)),
+    // w(3) is the opaque relay id — intentionally not returned / not bound.
+  };
+}
+
+// Bind a server-supplied EVM bridge transaction to the user's intent before
+// signing. Static only, no RPC. Fails CLOSED — a missing anchor or an
+// unrecognized target is itself the signal to refuse.
+//
+// intent.chain                     — origin chain ('base')
+// intent.signerAddress             — the wallet that will sign (arg0 must match)
+// intent.requestedAmountBaseUnits  — the amount the CLIENT persisted at quote
+//                                    time from the user's own --amount (USDC on
+//                                    Base is 6 decimals). The approval cap AND
+//                                    the deposit-amount cap.
+//
+// Both the approve and deposit branches cap against the same client-persisted
+// anchor and refuse identically when it's missing; shared so the two copies
+// can't drift (a prior version of each had its own wording).
+function requireAmountAnchor(intent, context) {
+  if (intent.requestedAmountBaseUnits == null) {
+    throw new CommandError(
+      `${context}: no reviewed amount recorded to check the transaction against `
+        + `(this quote may predate a nansen-cli update). Refusing to sign. Request a new quote.`,
+      'AMOUNT_MISMATCH',
+    );
+  }
+}
+
+// Returns { data } — for an approve step, `data` is RE-ENCODED via
+// encodeApproveCalldata (rejects MAX_UINT256, caps to requestedAmountBaseUnits,
+// re-validates the spender width). For a deposit step, `data` is returned
+// unchanged after the to/selector allowlist AND the decoded-arg binding pass.
+export function assertEvmBridgeStepIntent(txData, intent, context = 'Bridge EVM step') {
+  if (!txData || typeof txData !== 'object' || typeof txData.data !== 'string') {
+    throw new CommandError(`${context}: no transaction data to verify. Request a new quote.`, 'INVALID_INPUT');
+  }
+  const to = String(txData.to || '').toLowerCase();
+
+  // A deposit carries no native value (confirmed value === 0 on every capture).
+  // A non-zero value on either leg is an ETH-drain vector — refuse it. (BigInt
+  // parses both '0' and '0x0'.)
+  if (txData.value != null && BigInt(txData.value) !== 0n) {
+    throw new CommandError(
+      `${context} carries a non-zero native value ${txData.value}; this bridge path never sends native ETH. `
+        + `Refusing to sign. Request a new quote.`,
+      'UNEXPECTED_ACTION',
+    );
+  }
+
+  // AC1: ERC-20 approve → re-scope through the hardened encoder.
+  if (isErc20Approve(txData.data)) {
+    requireAmountAnchor(intent, context);
+    // The approve call itself must target the origin chain's USDC contract —
+    // otherwise a spender/amount that both look legitimate could still grant
+    // the router an allowance over an unrelated token the wallet holds.
+    const usdc = BRIDGE_TOKENS[intent.chain]?.USDC;
+    if (!usdc || to !== usdc.toLowerCase()) {
+      throw new CommandError(
+        `${context} sends an approve to an unexpected contract ${txData.to}. Refusing to sign. Request a new quote.`,
+        'UNEXPECTED_ACTION',
+      );
+    }
+    const { spender, amount } = decodeErc20Approve(txData.data);
+    // The approve target you grant an allowance to must be the known deposit
+    // router for this route — otherwise you are approving an attacker.
+    if (!BRIDGE_DEPOSIT_TARGETS[intent.chain]?.has(spender.toLowerCase())) {
+      throw new CommandError(
+        `${context} approves an unexpected spender ${spender}. Refusing to sign. Request a new quote.`,
+        'UNEXPECTED_ACTION',
+      );
+    }
+    // encodeApproveCalldata rejects >= MAX_UINT256 and amount > maxAllowance,
+    // and re-validates the 20-byte spender width. Cap to the requested input.
+    const scoped = encodeApproveCalldata(spender, amount, {
+      maxAllowance: BigInt(intent.requestedAmountBaseUnits),
+    });
+    return { data: scoped };
+  }
+
+  // AC2: deposit call → to + selector must both be on the route's allowlist.
+  if (!BRIDGE_DEPOSIT_TARGETS[intent.chain]?.has(to)) {
+    throw new CommandError(
+      `${context} targets an unexpected contract ${txData.to}. Refusing to sign. Request a new quote.`,
+      'UNEXPECTED_ACTION',
+    );
+  }
+  if (selectorOf(txData.data) !== BRIDGE_DEPOSIT_SELECTOR) {
+    throw new CommandError(
+      `${context} calls an unexpected method ${selectorOf(txData.data)} on ${txData.to}. `
+        + `Refusing to sign. Request a new quote.`,
+      'UNEXPECTED_ACTION',
+    );
+  }
+
+  // AC3: bind the decodable deposit args. The layout is fixed (see
+  // decodeBridgeDeposit); a call that doesn't decode is off-shape → refuse.
+  const dep = decodeBridgeDeposit(txData.data);
+  if (!dep) {
+    throw new CommandError(
+      `${context} has a malformed deposit calldata. Refusing to sign. Request a new quote.`,
+      'INVALID_INPUT',
+    );
+  }
+  // arg0 (depositor) is the on-chain credit/refund address; in every capture it
+  // is the signer, even when --recipient differed. Binding it to the signer
+  // stops a tampered response from redirecting the credited deposit while the
+  // scoped approval still lets the router pull the funds.
+  if (String(dep.depositor).toLowerCase() !== String(intent.signerAddress).toLowerCase()) {
+    throw new CommandError(
+      `${context} deposits on behalf of ${dep.depositor}, but the signing wallet is ${intent.signerAddress}. `
+        + `Refusing to sign. Request a new quote.`,
+      'SIGNER_MISMATCH',
+    );
+  }
+  // arg1 (token) must be the origin chain's USDC — the only token this path bridges.
+  const usdc = BRIDGE_TOKENS[intent.chain]?.USDC;
+  if (!usdc || String(dep.token).toLowerCase() !== usdc.toLowerCase()) {
+    throw new CommandError(
+      `${context} deposits an unexpected token ${dep.token}. Refusing to sign. Request a new quote.`,
+      'UNEXPECTED_ACTION',
+    );
+  }
+  // arg2 (amount) must not exceed what the user requested (defense in depth —
+  // the scoped approval already bounds the pull; captures show exact equality).
+  requireAmountAnchor(intent, context);
+  if (dep.amount > BigInt(intent.requestedAmountBaseUnits)) {
+    throw new CommandError(
+      `${context} would deposit ${dep.amount}, more than the ${intent.requestedAmountBaseUnits} base units you requested. `
+        + `Refusing to sign. Request a new quote.`,
+      'AMOUNT_MISMATCH',
+    );
+  }
+  // arg3 (relay id) is an opaque off-chain handle and the --recipient never
+  // appears on-chain — both are the accepted relayer-trust residual, bounded by
+  // the checks above.
+
+  return { data: txData.data };
+}
+
+// Validate every EVM step's calldata against intent BEFORE any step is signed
+// or broadcast. Without this, a good approve step would already be on-chain by
+// the time a poisoned deposit step is reached and refused.
+function preflightEvmBridgeSteps(steps, intent) {
+  for (const step of steps) {
+    for (const item of step.items || []) {
+      if (item.status === 'complete') continue;   // don't re-check resumed steps
+      assertEvmBridgeStepIntent(item.data, intent, `Bridge step "${step.id}"`);
+    }
+  }
+}
+
 // Headroom multiplier applied to the current base fee when setting maxFeePerGas.
 // A type-2 transaction only ever pays baseFee + priority, so a generous cap
 // costs nothing extra — it just buys tolerance for the base fee moving between
@@ -783,7 +991,7 @@ export async function resolveEvmStepFees(chain, txData, overrides = {}) {
   return { gasPrice: await evmRpcCall(chain, 'eth_gasPrice') };
 }
 
-async function processEvmStep(step, { chain, privateKeyHex, signerAddress, log, onBroadcast, feeOverrides, nonceSequence }) {
+async function processEvmStep(step, { chain, privateKeyHex, signerAddress, log, onBroadcast, feeOverrides, nonceSequence, intent }) {
   for (const item of step.items || []) {
     if (item.status === 'complete') continue;
     const txData = item.data;
@@ -803,6 +1011,10 @@ async function processEvmStep(step, { chain, privateKeyHex, signerAddress, log, 
       );
     }
 
+    // Bind the server-supplied calldata to intent before signing: re-scope
+    // approvals through the hardened encoder, and pin the deposit to/selector.
+    const bound = assertEvmBridgeStepIntent(txData, intent, `Bridge step "${step.id}"`);
+
     const fees = await resolveEvmStepFees(chain, txData, feeOverrides);
     // getEvmNonce returns a decimal number and reconciles pending against the
     // mined count. An explicit --nonce skips both: it is how an operator
@@ -818,7 +1030,7 @@ async function processEvmStep(step, { chain, privateKeyHex, signerAddress, log, 
     if (nonceSequence) log(`  Nonce: ${nonce} (from --nonce)`);
 
     const signedTx = signEvmTransaction(
-      { ...txData, ...fees },
+      { ...txData, ...fees, data: bound.data },
       privateKeyHex,
       chain,
       nonce,
@@ -1399,6 +1611,15 @@ from a quote are the same ones that got stuck. Check the stuck nonce with
         });
 
       if (execution_type === 'evm_transaction') {
+        const evmIntent = {
+          chain: quoteData.originChain,
+          signerAddress: signer.address,
+          requestedAmountBaseUnits: quoteData.requestedAmountBaseUnits ?? null,
+        };
+        // Validate every step's calldata against intent before any step is
+        // signed or broadcast — see preflightEvmBridgeSteps for why this can't
+        // just be the per-step check processEvmStep already does.
+        preflightEvmBridgeSteps(steps, evmIntent);
         // Overrides move real money differently from what was quoted, so say so
         // rather than letting them apply silently.
         if (feeOverrides.priorityFeeWei || feeOverrides.maxFeeWei || nonceSequence) {
@@ -1417,6 +1638,7 @@ from a quote are the same ones that got stuck. Check the stuck nonce with
             onBroadcast,
             feeOverrides,
             nonceSequence,
+            intent: evmIntent,
           });
           markBroadcast(index);
         }
