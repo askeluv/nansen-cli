@@ -61,7 +61,7 @@ export class PrivyClient {
       // redirect: 'error' rejects with a bare TypeError on any server redirect;
       // convert it (and genuine network failures) into an actionable message
       // rather than surfacing an undecorated crash.
-      throw new Error(`Privy API request failed (${method} ${endpoint}): ${err.message}. If PRIVY_* points at a proxy that redirects, use the direct api.privy.io base URL.`);
+      throw new Error(`Privy API request failed (${method} ${endpoint}): ${err.message}. If PRIVY_* points at a proxy that redirects, use the direct api.privy.io base URL.`, { cause: err });
     }
 
     if (!response.ok) {

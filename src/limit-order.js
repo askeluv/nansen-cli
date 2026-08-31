@@ -118,7 +118,7 @@ async function loFetch(method, endpoint, { token, body, query } = {}) {
     // convert it (and genuine network failures) into a coded, actionable error
     // rather than letting an undecorated crash reach the CLI.
     throw Object.assign(
-      new Error(`Limit order API request failed (${method} ${url.pathname}): ${err.message}`),
+      new Error(`Limit order API request failed (${method} ${url.pathname}): ${err.message}`, { cause: err }),
       { code: 'LIMIT_ORDER_NETWORK_ERROR' }
     );
   }
