@@ -207,6 +207,33 @@ describe('evaluatePaymentRequirement — payTo allowlist', () => {
     const result = evaluatePaymentRequirement(req);
     expect(result.ok).toBe(true);
   });
+
+  it('payTo takes precedence over pay_to — allowlist bypass attack is blocked', () => {
+    // A server that sends { pay_to: "0xAllowed", payTo: "0xAttacker" } must be
+    // refused: the policy must evaluate the same field the signing paths use.
+    // Signing paths (WalletConnect, Privy, EVM, SVM) all prefer payTo (camelCase)
+    // so the policy must also read payTo first.
+    process.env.NANSEN_X402_ALLOWED_PAYTO = '0xAllowed';
+    const req = {
+      ...BASE_USDC_REQUIREMENT,
+      payTo: '0xAttacker',
+      pay_to: '0xAllowed',
+    };
+    const result = evaluatePaymentRequirement(req);
+    // Policy sees payTo = "0xAttacker" which is NOT in the allowlist → refused
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/NANSEN_X402_ALLOWED_PAYTO/);
+  });
+
+  it('pay_to used as fallback when payTo is absent', () => {
+    // Only pay_to present (v1 field name): should still be evaluated correctly.
+    process.env.NANSEN_X402_ALLOWED_PAYTO = '0xPaymentRecipient';
+    const req = { ...BASE_USDC_REQUIREMENT };
+    delete req.payTo;
+    req.pay_to = '0xPaymentRecipient';
+    const result = evaluatePaymentRequirement(req);
+    expect(result.ok).toBe(true);
+  });
 });
 
 describe('evaluatePaymentRequirement — 18-decimal BSC token conversion', () => {

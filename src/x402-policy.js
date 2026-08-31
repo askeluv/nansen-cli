@@ -73,7 +73,7 @@ export function isPayToAllowed(payTo) {
 export function evaluatePaymentRequirement(requirement) {
   const network = requirement.network;
   const asset = requirement.asset;
-  const payTo = requirement.pay_to || requirement.payTo;
+  const payTo = requirement.payTo ?? requirement.pay_to;
   const amountRaw = requirement.amount ?? requirement.maxAmountRequired;
 
   const known = resolveKnownToken(network, asset);

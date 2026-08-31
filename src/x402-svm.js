@@ -181,7 +181,7 @@ export function buildUnsignedSvmTransaction(
 
   const mint = requirements.asset;
   const amount = BigInt(requirements.amount);
-  const payTo = requirements.pay_to || requirements.payTo;
+  const payTo = requirements.payTo ?? requirements.pay_to;
 
   // Derive ATAs
   const sourceATA = deriveATA(walletAddress, mint, tokenProgram);
