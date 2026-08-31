@@ -8,6 +8,15 @@ import os from "os";
 import path from "path";
 import { PrivyClient, createPrivyPaymentSignatures } from "../privy.js";
 
+// Prevent evaluatePaymentRequirement → resolveMaxAmountUsd → getWalletConfig
+// from reading the real ~/.nansen/wallets/config.json. Without this mock the
+// cap check is coincidentally safe in CI (no config file exists), but would
+// break on a dev machine that has x402MaxAmount set below the test amounts.
+vi.mock("../wallet.js", async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, getWalletConfig: () => ({}) };
+});
+
 // ============= PrivyClient =============
 
 describe("PrivyClient", () => {
