@@ -6,6 +6,7 @@
 
 import crypto from 'crypto';
 import { keccak256, signSecp256k1 } from './crypto.js';
+import { resolvePaymentAmount } from './x402-policy.js';
 
 // ============= EIP-712 Type Hashing =============
 
@@ -229,6 +230,7 @@ export function createEvmPaymentPayload(requirements, privateKeyHex, walletAddre
   const now = Math.floor(Date.now() / 1000);
   const validAfter = '0';
   const validBefore = String(now + 3600);
+  const amount = resolvePaymentAmount(requirements);
 
   // EIP-712 domain
   const domain = {
@@ -242,7 +244,7 @@ export function createEvmPaymentPayload(requirements, privateKeyHex, walletAddre
   const message = {
     from: walletAddress,
     to: requirements.payTo ?? requirements.pay_to,
-    value: BigInt(requirements.amount),
+    value: BigInt(amount),
     validAfter: BigInt(validAfter),
     validBefore: BigInt(validBefore),
     nonce: nonce,
@@ -260,7 +262,7 @@ export function createEvmPaymentPayload(requirements, privateKeyHex, walletAddre
       authorization: {
         from: walletAddress,
         to: message.to,
-        value: String(requirements.amount),
+        value: String(amount),
         validAfter: validAfter,
         validBefore: validBefore,
         nonce: nonce,
@@ -307,9 +309,10 @@ export function createPermit2ExactPayload(requirements, privateKeyHex, walletAdd
   const nonce = BigInt('0x' + crypto.randomBytes(32).toString('hex')).toString();
   const deadline = String(now + 3600);
   const validAfter = String(now - 60); // allow clock skew
+  const amount = resolvePaymentAmount(requirements);
 
   const message = {
-    permitted: { token: requirements.asset, amount: BigInt(requirements.amount) },
+    permitted: { token: requirements.asset, amount: BigInt(amount) },
     spender,
     nonce: BigInt(nonce),
     deadline: BigInt(deadline),
@@ -324,7 +327,7 @@ export function createPermit2ExactPayload(requirements, privateKeyHex, walletAdd
     x402Version: 2,
     payload: {
       permit2Authorization: {
-        permitted: { token: requirements.asset, amount: String(requirements.amount) },
+        permitted: { token: requirements.asset, amount: String(amount) },
         from: walletAddress,
         spender,
         nonce,

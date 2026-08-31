@@ -134,6 +134,16 @@ describe('buildUnsignedSvmTransaction', () => {
     expect(messageBytes[1]).toBeGreaterThanOrEqual(2); // at least feePayer + client
   });
 
+  it('resolves maxAmountRequired when amount is an empty string (matches resolvePaymentAmount)', () => {
+    // Regression: this signer must resolve the amount the same way the policy
+    // guard does, so a signed transfer amount never diverges from the guarded one.
+    const req = { ...requirements, amount: '', maxAmountRequired: '999999' };
+    const { messageBytes } = buildUnsignedSvmTransaction(req, wallet.address, blockhash);
+    const expectedAmountBytes = Buffer.alloc(8);
+    expectedAmountBytes.writeBigUInt64LE(999999n);
+    expect(messageBytes.includes(expectedAmountBytes)).toBe(true);
+  });
+
   it('throws without feePayer in extra', () => {
     const badReqs = { ...requirements, extra: {} };
     expect(() => buildUnsignedSvmTransaction(badReqs, wallet.address, blockhash))
