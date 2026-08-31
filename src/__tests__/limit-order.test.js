@@ -332,6 +332,16 @@ describe('API client', () => {
 
     await expect(getVault('jwt', 'pub1')).rejects.toThrow('non-JSON response');
   });
+
+  it('converts a redirect rejection (redirect: error) into a coded, actionable error', async () => {
+    // undici throws a bare TypeError('fetch failed') when redirect:'error' hits a 3xx.
+    global.fetch.mockRejectedValueOnce(new TypeError('fetch failed'));
+
+    const err = await getVault('jwt', 'pub1').catch((e) => e);
+    expect(err.code).toBe('LIMIT_ORDER_NETWORK_ERROR');
+    expect(err.message).toMatch(/Limit order API request failed/);
+    expect(err.message).not.toBe('fetch failed'); // not the undecorated TypeError
+  });
 });
 
 // ============= Message Signing =============

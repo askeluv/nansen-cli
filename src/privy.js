@@ -54,7 +54,15 @@ export class PrivyClient {
     const opts = { method, headers, redirect: "error" };
     if (body) opts.body = JSON.stringify(body);
 
-    const response = await fetch(`${this.baseUrl}${endpoint}`, opts);
+    let response;
+    try {
+      response = await fetch(`${this.baseUrl}${endpoint}`, opts);
+    } catch (err) {
+      // redirect: 'error' rejects with a bare TypeError on any server redirect;
+      // convert it (and genuine network failures) into an actionable message
+      // rather than surfacing an undecorated crash.
+      throw new Error(`Privy API request failed (${method} ${endpoint}): ${err.message}. If PRIVY_* points at a proxy that redirects, use the direct api.privy.io base URL.`);
+    }
 
     if (!response.ok) {
       let msg = `Privy API error: ${response.status}`;

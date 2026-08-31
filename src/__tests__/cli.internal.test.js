@@ -1795,6 +1795,28 @@ describe('prompt', () => {
     expect(input.setRawMode.mock.calls).toEqual([[true], [false]]);
     expect(output.write.mock.calls.flat().join('')).not.toContain(secret);
   });
+
+  it('defaults masked output to stderr, never a redirected stdout', async () => {
+    let onData;
+    const input = {
+      isTTY: true,
+      setRawMode: vi.fn(), resume: vi.fn(), pause: vi.fn(), setEncoding: vi.fn(),
+      on: vi.fn((_e, h) => { onData = h; }), removeListener: vi.fn(),
+    };
+    const errSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const outSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      const result = prompt('Enter key: ', true, { input });   // no output → default stderr
+      onData('K'); onData('\n');
+      await expect(result).resolves.toBe('K');
+      // Prompt + mask went to stderr; stdout (which a user may redirect) untouched.
+      expect(errSpy.mock.calls.flat().join('')).toContain('*');
+      expect(outSpy).not.toHaveBeenCalled();
+    } finally {
+      errSpy.mockRestore();
+      outSpy.mockRestore();
+    }
+  });
 });
 
 describe('buildCommands', () => {

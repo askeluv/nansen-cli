@@ -59,6 +59,19 @@ describe("PrivyClient", () => {
     vi.unstubAllGlobals();
   });
 
+  it("converts a redirect rejection (redirect: 'error') into an actionable message", async () => {
+    const client = new PrivyClient("app-id", "app-secret");
+    // undici throws a bare TypeError('fetch failed') when redirect:'error' hits a 3xx.
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("fetch failed")));
+
+    const err = await client.listWallets().catch((e) => e);
+    expect(err.message).toMatch(/Privy API request failed/);
+    expect(err.message).toContain("GET /wallets");
+    expect(err.message).not.toBe("fetch failed"); // not the undecorated TypeError
+
+    vi.unstubAllGlobals();
+  });
+
   it("createWallet sends correct body", async () => {
     const client = new PrivyClient("app-id", "app-secret");
     const mockFetch = vi.fn().mockResolvedValue({

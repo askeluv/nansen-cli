@@ -829,8 +829,10 @@ CROSS-CHAIN NOTES (when using --to-chain):
   Bridge providers: Li.Fi or Relay (selected automatically based on best price)
   Typical bridge time: 1-5 minutes`;
 
-// Helper to prompt for input (exported for mocking)
-export async function prompt(question, hidden = false, { input = process.stdin, output = process.stdout } = {}) {
+// Helper to prompt for input (exported for mocking). Output defaults to stderr
+// so the prompt and masked `*` characters stay on the terminal and never land
+// in a redirected stdout (matching wallet.js promptPassword).
+export async function prompt(question, hidden = false, { input = process.stdin, output = process.stderr } = {}) {
   return new Promise((resolve) => {
     if (hidden && input.isTTY) {
       output.write(question);
