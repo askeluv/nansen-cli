@@ -317,6 +317,41 @@ describe("createPrivyPaymentSignatures", () => {
     expect(decoded.payload.signature).toBe("0xfakesignature");
   });
 
+  it("falls back to pay_to for the authorization recipient when payTo is absent", async () => {
+    // Legacy server sends only snake_case `pay_to`. The signed typed data uses
+    // the fallback, so the header's echoed `authorization.to` must match it too
+    // (otherwise the header recipient diverges from the signed authorization).
+    const { payTo: _drop, ...noCamel } = evmRequirement;
+    const legacyRequirement = { ...noCamel, pay_to: "0xlegacyrecipient" };
+
+    let callCount = 0;
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(() => {
+      callCount++;
+      if (callCount === 1) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            data: [{ id: "w-1", address: "0x1234567890abcdef1234567890abcdef12345678", chain_type: "ethereum" }],
+          }),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ data: { signature: "0xfakesignature" } }),
+      });
+    }));
+
+    const response = make402Response([legacyRequirement]);
+    const results = [];
+    for await (const r of createPrivyPaymentSignatures(response, "https://api.nansen.ai/test")) {
+      results.push(r);
+    }
+
+    expect(results).toHaveLength(1);
+    const decoded = JSON.parse(atob(results[0].signature));
+    expect(decoded.payload.authorization.to).toBe("0xlegacyrecipient");
+  });
+
   it("uses PRIVY_WALLET_ID when set", async () => {
     process.env.PRIVY_WALLET_ID = "w-specific";
 

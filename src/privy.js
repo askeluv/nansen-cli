@@ -307,7 +307,7 @@ export async function* createPrivyPaymentSignatures(response, url) {
 
           const authorization = {
             from: evmWallet.address,
-            to: requirement.payTo,
+            to: requirement.payTo ?? requirement.pay_to,
             value: (requirement.amount || requirement.maxAmountRequired).toString(),
             validAfter: typedData.message.validAfter.toString(),
             validBefore: typedData.message.validBefore.toString(),
