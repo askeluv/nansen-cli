@@ -33,7 +33,10 @@ export const DEFAULT_X402_MAX_AMOUNT_USD = 1.0;
  */
 export function resolveMaxAmountUsd() {
   const env = process.env.NANSEN_X402_MAX_AMOUNT;
-  if (env !== undefined) {
+  // An empty/whitespace-only value (e.g. an exported-but-unset shell var) must
+  // be treated as unset, not as Number('') === 0 — a $0.00 cap would refuse
+  // every real payment.
+  if (env !== undefined && env.trim() !== '') {
     if (env.trim().toLowerCase() === 'unlimited') return Infinity;
     const n = Number(env);
     if (Number.isFinite(n) && n >= 0) return n;
@@ -63,6 +66,21 @@ export function isPayToAllowed(payTo) {
 }
 
 /**
+ * Resolve the payment amount field, preferring `amount` over the legacy
+ * `maxAmountRequired` alias (older x402 implementations only send the latter).
+ * A present-but-empty `amount` (e.g. "") is treated as missing so it falls
+ * through to `maxAmountRequired` here too — the one place this decision is
+ * made. Signers must call this instead of re-deriving the fallback themselves;
+ * a mismatched `??` vs `||` between here and a signer is exactly the
+ * amount-substitution bypass this guard exists to prevent.
+ */
+export function resolvePaymentAmount(requirement) {
+  const amount = requirement.amount;
+  if (amount !== undefined && amount !== null && amount !== '') return amount;
+  return requirement.maxAmountRequired;
+}
+
+/**
  * Decide whether an x402 payment requirement is safe to auto-sign.
  * Returns { ok: true, usd, symbol } when allowed, or { ok: false, reason }
  * with a human-readable, actionable reason when refused.
@@ -74,7 +92,7 @@ export function evaluatePaymentRequirement(requirement) {
   const network = requirement.network;
   const asset = requirement.asset;
   const payTo = requirement.payTo ?? requirement.pay_to;
-  const amountRaw = requirement.amount ?? requirement.maxAmountRequired;
+  const amountRaw = resolvePaymentAmount(requirement);
 
   const known = resolveKnownToken(network, asset);
   if (!known) {

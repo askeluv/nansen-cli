@@ -6,6 +6,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../x402-policy.js', () => ({
   evaluatePaymentRequirement: vi.fn(),
+  resolvePaymentAmount: (requirement) =>
+    requirement.amount !== undefined && requirement.amount !== null && requirement.amount !== ''
+      ? requirement.amount
+      : requirement.maxAmountRequired,
 }));
 
 vi.mock('../walletconnect-exec.js', () => ({

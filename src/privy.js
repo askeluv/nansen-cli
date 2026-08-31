@@ -10,7 +10,7 @@ import fs from "fs";
 import path from "path";
 import { parsePaymentRequirements } from "./x402.js";
 import { isEvmNetwork } from "./x402-evm.js";
-import { evaluatePaymentRequirement } from "./x402-policy.js";
+import { evaluatePaymentRequirement, resolvePaymentAmount } from "./x402-policy.js";
 import {
   isSvmNetwork,
   getSolanaRpcUrl,
@@ -308,7 +308,7 @@ export async function* createPrivyPaymentSignatures(response, url) {
           const authorization = {
             from: evmWallet.address,
             to: requirement.payTo ?? requirement.pay_to,
-            value: (requirement.amount || requirement.maxAmountRequired).toString(),
+            value: resolvePaymentAmount(requirement).toString(),
             validAfter: typedData.message.validAfter.toString(),
             validBefore: typedData.message.validBefore.toString(),
             nonce: typedData.message.nonce,

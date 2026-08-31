@@ -15,6 +15,7 @@ const {
   resolveKnownToken,
   evaluatePaymentRequirement,
   resolveMaxAmountUsd,
+  resolvePaymentAmount,
   isPayToAllowed,
   DEFAULT_X402_MAX_AMOUNT_USD,
 } = await import('../x402-policy.js');
@@ -131,6 +132,34 @@ describe('evaluatePaymentRequirement — allowlist and basic pass', () => {
     const result = evaluatePaymentRequirement(req);
     expect(result.ok).toBe(true);
     expect(result.usd).toBe(0);
+  });
+
+  it('empty-string amount falls back to maxAmountRequired instead of evaluating as $0 (cap-bypass regression)', () => {
+    // A malicious server sending amount: "" alongside a huge maxAmountRequired
+    // must not slip through the cap at $0.00 while a signer later substitutes
+    // maxAmountRequired for the falsy amount and signs the large value instead.
+    const req = { ...BASE_USDC_REQUIREMENT, amount: '', maxAmountRequired: '1000000000000' };
+    const result = evaluatePaymentRequirement(req);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/exceeds the/i);
+  });
+});
+
+describe('resolvePaymentAmount', () => {
+  it('prefers amount over maxAmountRequired', () => {
+    expect(resolvePaymentAmount({ amount: '10000', maxAmountRequired: '999' })).toBe('10000');
+  });
+
+  it('falls back to maxAmountRequired when amount is undefined', () => {
+    expect(resolvePaymentAmount({ maxAmountRequired: '10000' })).toBe('10000');
+  });
+
+  it('falls back to maxAmountRequired when amount is an empty string', () => {
+    expect(resolvePaymentAmount({ amount: '', maxAmountRequired: '10000' })).toBe('10000');
+  });
+
+  it('keeps a literal 0 amount instead of falling back', () => {
+    expect(resolvePaymentAmount({ amount: 0, maxAmountRequired: '10000' })).toBe(0);
   });
 });
 
@@ -287,6 +316,17 @@ describe('resolveMaxAmountUsd', () => {
 
   it('ignores garbage env var and falls through to default', () => {
     process.env.NANSEN_X402_MAX_AMOUNT = 'garbage';
+    expect(resolveMaxAmountUsd()).toBe(DEFAULT_X402_MAX_AMOUNT_USD);
+  });
+
+  it('treats an empty-string env var as unset rather than a $0.00 cap', () => {
+    // Number('') === 0, which would otherwise refuse every non-zero payment.
+    process.env.NANSEN_X402_MAX_AMOUNT = '';
+    expect(resolveMaxAmountUsd()).toBe(DEFAULT_X402_MAX_AMOUNT_USD);
+  });
+
+  it('treats a whitespace-only env var as unset', () => {
+    process.env.NANSEN_X402_MAX_AMOUNT = '   ';
     expect(resolveMaxAmountUsd()).toBe(DEFAULT_X402_MAX_AMOUNT_USD);
   });
 });

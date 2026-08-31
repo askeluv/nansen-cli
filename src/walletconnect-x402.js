@@ -9,7 +9,7 @@ import crypto from 'crypto';
 import { NansenError, ErrorCode } from './api.js';
 import { wcExec } from './walletconnect-exec.js';
 import { EVM_CHAIN_IDS } from './chain-ids.js';
-import { evaluatePaymentRequirement } from './x402-policy.js';
+import { evaluatePaymentRequirement, resolvePaymentAmount } from './x402-policy.js';
 
 /**
  * Check if a WalletConnect wallet session is active.
@@ -55,8 +55,7 @@ function parseChainId(network) {
 export function buildEIP712TypedData({ fromAddress, requirement }) {
   const payTo = requirement.payTo ?? requirement.pay_to;
   const { asset, extra, maxTimeoutSeconds } = requirement;
-  // x402 uses "amount", fall back to "maxAmountRequired" for compatibility
-  const amount = requirement.amount || requirement.maxAmountRequired;
+  const amount = resolvePaymentAmount(requirement);
 
   // Determine chain ID: extra.chainId > parsed from network > fallback map > base
   const chainId = extra.chainId || parseChainId(requirement.network) || EVM_CHAIN_IDS[requirement.chain] || EVM_CHAIN_IDS.base;
@@ -123,7 +122,7 @@ export function buildPaymentSignatureHeader({ signature, authorization, resource
  */
 function formatPaymentAmount(requirement) {
   const { extra } = requirement;
-  const rawAmount = requirement.amount || requirement.maxAmountRequired;
+  const rawAmount = resolvePaymentAmount(requirement);
   const symbol = extra.symbol || extra.name || 'tokens';
   const decimals = extra.decimals || 6;
   const amount = Number(rawAmount) / Math.pow(10, decimals);
@@ -207,7 +206,7 @@ export async function handleX402Payment(paymentRequirements) {
   const authorization = {
     from: fromAddress,
     to: requirement.payTo ?? requirement.pay_to,
-    value: (requirement.amount || requirement.maxAmountRequired).toString(),
+    value: resolvePaymentAmount(requirement).toString(),
     validAfter: typedData.message.validAfter.toString(),
     validBefore: typedData.message.validBefore.toString(),
     nonce: typedData.message.nonce,
