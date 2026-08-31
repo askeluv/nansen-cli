@@ -88,6 +88,13 @@ describe('evaluatePaymentRequirement — allowlist and basic pass', () => {
     expect(result.reason).toMatch(/unparseable amount/i);
   });
 
+  it('11. negative amount → refused, no throw', () => {
+    const req = { ...BASE_USDC_REQUIREMENT, amount: '-1000000' };
+    const result = evaluatePaymentRequirement(req);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/negative amount/i);
+  });
+
   it('uses pay_to field when payTo is absent', () => {
     const req = { ...BASE_USDC_REQUIREMENT };
     delete req.payTo;
@@ -121,6 +128,14 @@ describe('evaluatePaymentRequirement — USD cap', () => {
     const req = { ...BASE_USDC_REQUIREMENT, amount: '990000' };
     const result = evaluatePaymentRequirement(req);
     expect(result.ok).toBe(true);
+  });
+
+  it('3c. amount exactly at $1.00 default cap → allowed (inclusive boundary)', () => {
+    // $1.00 = 1_000_000 base units; cap check is `usd > cap`, so exact cap passes
+    const req = { ...BASE_USDC_REQUIREMENT, amount: '1000000' };
+    const result = evaluatePaymentRequirement(req);
+    expect(result.ok).toBe(true);
+    expect(result.usd).toBe(1);
   });
 
   it('6. NANSEN_X402_MAX_AMOUNT=unlimited → $1M allowed', () => {

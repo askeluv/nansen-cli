@@ -1,6 +1,6 @@
 /**
  * x402 payment policy guard.
- * Decides whether an auto-payment is safe to sign before any key material is touched.
+ * Decides whether an auto-payment is safe to sign before any signature is produced.
  * Three layers: known-asset allowlist, optional payTo allowlist, per-payment USD cap.
  */
 
@@ -98,12 +98,20 @@ export function evaluatePaymentRequirement(requirement) {
     // BigInt base units → USD. Keep integer/fraction split to avoid float loss
     // on large values; final Number() is safe for display-scale amounts.
     const base = BigInt(amountRaw);
+    // A transfer authorization must be for a positive amount; a negative value
+    // is never legitimate and should never be signed.
+    if (base < 0n) {
+      return { ok: false, reason: `Refusing to auto-pay: negative amount ${amountRaw}.` };
+    }
     const scale = 10n ** BigInt(known.decimals);
     usd = Number(base / scale) + Number(base % scale) / Number(scale);
   } catch {
     return { ok: false, reason: `Refusing to auto-pay: unparseable amount ${amountRaw}.` };
   }
 
+  // Cap is inclusive: an amount exactly at the cap is allowed (usd > cap, not >=).
+  // Note a cap of 0 still permits a zero-value payment (0 > 0 is false); use
+  // NANSEN_X402_ALLOWED_PAYTO or an unfunded wallet to block signing entirely.
   const cap = resolveMaxAmountUsd();
   if (usd > cap) {
     const capStr = Number.isFinite(cap) ? `$${cap.toFixed(2)}` : 'unlimited';
