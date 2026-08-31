@@ -720,11 +720,17 @@ function isErc20Approve(data) {
 }
 
 // Decode approve(spender, amount) from validated calldata. Only call after
-// isErc20Approve() is true.
+// isErc20Approve() is true. Returns null if the amount word isn't valid hex —
+// length/selector alone don't guarantee that, and BigInt throws a raw
+// SyntaxError rather than failing closed with an actionable message.
 function decodeErc20Approve(data) {
   const spender = '0x' + data.slice(34, 74);          // last 20 bytes of word 1
-  const amount = BigInt('0x' + data.slice(74, 138));  // word 2
-  return { spender, amount };
+  try {
+    const amount = BigInt('0x' + data.slice(74, 138));  // word 2
+    return { spender, amount };
+  } catch {
+    return null;
+  }
 }
 
 function selectorOf(data) {
@@ -738,10 +744,19 @@ function selectorOf(data) {
 function decodeBridgeDeposit(data) {
   if (typeof data !== 'string' || data.length !== 266) return null;
   const w = i => data.slice(10 + i * 64, 10 + (i + 1) * 64);
+  let amount;
+  try {
+    amount = BigInt('0x' + w(2));
+  } catch {
+    // Right length and selector, but the amount word isn't valid hex — off-shape,
+    // same as a length mismatch. Fail closed via the caller's null check rather
+    // than a raw SyntaxError.
+    return null;
+  }
   return {
     depositor: '0x' + w(0).slice(24),   // last 20 bytes of word 0
     token: '0x' + w(1).slice(24),
-    amount: BigInt('0x' + w(2)),
+    amount,
     // w(3) is the opaque relay id — intentionally not returned / not bound.
   };
 }
@@ -778,17 +793,49 @@ export function assertEvmBridgeStepIntent(txData, intent, context = 'Bridge EVM 
   if (!txData || typeof txData !== 'object' || typeof txData.data !== 'string') {
     throw new CommandError(`${context}: no transaction data to verify. Request a new quote.`, 'INVALID_INPUT');
   }
+
+  // The nonce/signing key are the local wallet's regardless of what `from` the
+  // server sent, so a mismatched `from` would price this step against the wrong
+  // account while still signing it as ours. Checked here — not just per-step at
+  // broadcast time — so preflightEvmBridgeSteps catches it on EVERY step before
+  // any of them sign or broadcast; otherwise an earlier legitimate step in the
+  // same plan (e.g. the approve) could already be on-chain by the time a later
+  // step's `from` mismatch is caught.
+  if (
+    intent.signerAddress
+    && txData.from
+    && String(txData.from).toLowerCase() !== String(intent.signerAddress).toLowerCase()
+  ) {
+    throw new CommandError(
+      `${context} is addressed from ${txData.from}, but the signing wallet is ${intent.signerAddress}. `
+        + `Refusing to sign. Request a new quote.`,
+      'SIGNER_MISMATCH',
+    );
+  }
+
   const to = String(txData.to || '').toLowerCase();
 
   // A deposit carries no native value (confirmed value === 0 on every capture).
   // A non-zero value on either leg is an ETH-drain vector — refuse it. (BigInt
-  // parses both '0' and '0x0'.)
-  if (txData.value != null && BigInt(txData.value) !== 0n) {
-    throw new CommandError(
-      `${context} carries a non-zero native value ${txData.value}; this bridge path never sends native ETH. `
-        + `Refusing to sign. Request a new quote.`,
-      'UNEXPECTED_ACTION',
-    );
+  // parses both '0' and '0x0'.) A value that isn't parseable at all is just as
+  // much a reason to refuse as a non-zero one.
+  if (txData.value != null) {
+    let value;
+    try {
+      value = BigInt(txData.value);
+    } catch {
+      throw new CommandError(
+        `${context} has a malformed native value ${txData.value}. Refusing to sign. Request a new quote.`,
+        'INVALID_INPUT',
+      );
+    }
+    if (value !== 0n) {
+      throw new CommandError(
+        `${context} carries a non-zero native value ${txData.value}; this bridge path never sends native ETH. `
+          + `Refusing to sign. Request a new quote.`,
+        'UNEXPECTED_ACTION',
+      );
+    }
   }
 
   // AC1: ERC-20 approve → re-scope through the hardened encoder.
@@ -804,7 +851,14 @@ export function assertEvmBridgeStepIntent(txData, intent, context = 'Bridge EVM 
         'UNEXPECTED_ACTION',
       );
     }
-    const { spender, amount } = decodeErc20Approve(txData.data);
+    const decoded = decodeErc20Approve(txData.data);
+    if (!decoded) {
+      throw new CommandError(
+        `${context} has a malformed approve calldata. Refusing to sign. Request a new quote.`,
+        'INVALID_INPUT',
+      );
+    }
+    const { spender, amount } = decoded;
     // The approve target you grant an allowance to must be the known deposit
     // router for this route — otherwise you are approving an attacker.
     if (!BRIDGE_DEPOSIT_TARGETS[intent.chain]?.has(spender.toLowerCase())) {
@@ -886,12 +940,19 @@ export function assertEvmBridgeStepIntent(txData, intent, context = 'Bridge EVM 
 // the time a poisoned deposit step is reached and refused.
 //
 // Also bounds the PLAN, not just each item: a legitimate Base → HL deposit is
-// [approve?, deposit] — at most one approve and one deposit. The per-item amount
-// cap alone does not stop a tampered response from chaining repeated
-// [approve(requested), deposit(requested)] pairs — each pair passes every check,
-// but ERC-20 approve OVERWRITES the allowance, so N pairs pull N × the reviewed
-// amount and drain the whole balance despite the scoped approval. Refusing more
-// than one of either, up front, keeps the loss bounded to the requested amount.
+// [approve?, deposit] — at most one approve, and EXACTLY one deposit. The
+// per-item amount cap alone does not stop two kinds of tampered plan:
+//   - repeated [approve(requested), deposit(requested)] pairs — each pair
+//     passes every per-item check, but ERC-20 approve OVERWRITES the
+//     allowance, so N pairs pull N × the reviewed amount and drain the whole
+//     balance despite the scoped approval;
+//   - an approve with NO deposit at all — the CLI would sign and broadcast a
+//     live router allowance with no reviewed transaction ever pulling it, and
+//     the compromised API/Relay this defends against should not be able to
+//     make the CLI emit a standalone approval.
+// Requiring exactly one deposit (approve optional, at most one) keeps the loss
+// bounded to the requested amount and rules out an allowance with nothing
+// behind it.
 export function preflightEvmBridgeSteps(steps, intent) {
   let approveCount = 0;
   let depositCount = 0;
@@ -905,10 +966,10 @@ export function preflightEvmBridgeSteps(steps, intent) {
       else depositCount++;
     }
   }
-  if (approveCount > 1 || depositCount > 1) {
+  if (approveCount > 1 || depositCount !== 1) {
     throw new CommandError(
-      `Bridge plan has ${approveCount} approve and ${depositCount} deposit transaction(s); a legitimate deposit is at most one of each. `
-        + `Refusing to sign — repeated legs could move more than the amount you requested. Request a new quote.`,
+      `Bridge plan has ${approveCount} approve and ${depositCount} deposit transaction(s); a legitimate deposit is at most one approve and exactly one deposit. `
+        + `Refusing to sign — an approve with no deposit would leave a live allowance behind with nothing pulling it, and repeated legs could move more than the amount you requested. Request a new quote.`,
       'UNEXPECTED_ACTION',
     );
   }
@@ -1017,23 +1078,14 @@ async function processEvmStep(step, { chain, privateKeyHex, signerAddress, log, 
     if (item.status === 'complete') continue;
     const txData = item.data;
 
-    // The nonce is fetched for txData.from, but the transaction is signed with
-    // our key — so a server-returned `from` that isn't our wallet would price
-    // the nonce against the wrong account and sign anyway. Assert it matches the
-    // signer before touching the nonce.
-    if (
-      signerAddress
-      && txData.from
-      && String(txData.from).toLowerCase() !== String(signerAddress).toLowerCase()
-    ) {
-      throw new CommandError(
-        `Bridge step "${step.id}" is addressed from ${txData.from}, but the signing wallet is ${signerAddress}. Request a new quote.`,
-        'SIGNER_MISMATCH',
-      );
-    }
-
     // Bind the server-supplied calldata to intent before signing: re-scope
-    // approvals through the hardened encoder, and pin the deposit to/selector.
+    // approvals through the hardened encoder, pin the deposit to/selector, and
+    // check `from` against the signer (the nonce is fetched for the signer, but
+    // the transaction is signed with our key regardless of `from`, so a
+    // mismatch would price the nonce against the wrong account and sign
+    // anyway). preflightEvmBridgeSteps already ran this same check on every
+    // step up front; this call is what makes it a fail-closed invariant rather
+    // than trusting the preflight pass.
     const bound = assertEvmBridgeStepIntent(txData, intent, `Bridge step "${step.id}"`);
 
     const fees = await resolveEvmStepFees(chain, txData, feeOverrides);

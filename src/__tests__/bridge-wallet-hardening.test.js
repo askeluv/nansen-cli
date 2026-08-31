@@ -28,9 +28,37 @@ import { buildBridgeCommands } from '../bridge.js';
 
 const ADDR = '0x' + 'ab'.repeat(20);
 
+// Real captured Base -> HL deposit-router shape (see bridge-evm-deposit-intent
+// tests for the full decode). Used below to build a plan that actually passes
+// preflightEvmBridgeSteps, rather than an empty `steps: []` stand-in.
+const DEPOSIT_ROUTER = '0x4cd00e387622c35bddb9b4c962c136462338bc31';
+const BASE_USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
+const word = h => h.toLowerCase().replace(/^0x/, '').padStart(64, '0');
+const depositCalldata = (depositor, token, amount) =>
+  '0xe8017952' + word(depositor) + word(token) + word(amount.toString(16)) + word('a');
+
+// evmRpcCall goes through global fetch (see evm-nonce.test.js), so a test that
+// actually reaches processEvmStep needs a minimal fake chain behind it.
+function mockChainRpc() {
+  return vi.fn(async (url, init) => {
+    const body = JSON.parse(init.body);
+    let result;
+    switch (body.method) {
+      case 'eth_getTransactionCount': result = '0x0'; break;
+      case 'eth_gasPrice': result = '0x3b9aca00'; break;
+      case 'eth_sendRawTransaction': result = '0x' + 'ab'.repeat(32); break;
+      case 'eth_getTransactionReceipt': result = { status: '0x1', blockNumber: '0x1' }; break;
+      default: throw new Error(`unexpected RPC method ${body.method}`);
+    }
+    const payload = JSON.stringify({ jsonrpc: '2.0', id: body.id, result });
+    return { ok: true, status: 200, text: async () => payload };
+  });
+}
+
 let tmpHome;
 let prevHome;
 let quotesDir;
+let prevFetch;
 
 function writeQuote(quoteId, overrides = {}) {
   const data = {
@@ -69,11 +97,13 @@ beforeEach(() => {
   getWalletConfig.mockReturnValue({});
   retrievePassword.mockReturnValue({ password: null, source: null });
   cleanApi.request.mockImplementation(respond);
+  prevFetch = globalThis.fetch;
 });
 
 afterEach(() => {
   process.env.HOME = prevHome;
   fs.rmSync(tmpHome, { recursive: true, force: true });
+  globalThis.fetch = prevFetch;
 });
 
 describe('bridge execute wallet hardening', () => {
@@ -144,10 +174,21 @@ describe('bridge execute wallet hardening', () => {
     exportWallet.mockReturnValue({ evm: { privateKey: '11'.repeat(32) } });
     cleanApi.request.mockImplementation(async endpoint => {
       if (String(endpoint).includes('/bridge/quote')) {
-        return { execution_type: 'evm_transaction', steps: [], request_id: 'r1' };
+        return {
+          execution_type: 'evm_transaction',
+          steps: [{
+            id: 'deposit',
+            items: [{
+              status: 'incomplete',
+              data: { to: DEPOSIT_ROUTER, data: depositCalldata(ADDR, BASE_USDC, 5000000n), value: '0' },
+            }],
+          }],
+          request_id: 'r1',
+        };
       }
       return respond(endpoint);
     });
+    globalThis.fetch = mockChainRpc();
 
     await cmds.quote([], cleanApi, {}, {
       'from-chain': 'base',

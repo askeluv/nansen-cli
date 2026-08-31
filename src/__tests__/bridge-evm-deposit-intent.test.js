@@ -171,6 +171,57 @@ describe('assertEvmBridgeStepIntent — cross-cutting', () => {
       expect(e.code).toBe('INVALID_INPUT');
     }
   });
+
+  it('refuses a deposit whose amount word is not valid hex, instead of throwing a raw SyntaxError', () => {
+    const badAmount = '0xe8017952' + word(SIGNER) + word(USDC) + 'zz'.repeat(32) + word('a');
+    const txData = { to: ROUTER, data: badAmount, value: '0' };
+    expect(() => assertEvmBridgeStepIntent(txData, intent)).toThrow(/malformed deposit calldata/);
+    try {
+      assertEvmBridgeStepIntent(txData, intent);
+    } catch (e) {
+      expect(e.code).toBe('INVALID_INPUT');
+    }
+  });
+
+  it('refuses an approve whose amount word is not valid hex, instead of throwing a raw SyntaxError', () => {
+    const txData = { to: USDC, data: '0x095ea7b3' + word(ROUTER) + 'zz'.repeat(32), value: '0' };
+    expect(() => assertEvmBridgeStepIntent(txData, intent)).toThrow(/malformed approve calldata/);
+    try {
+      assertEvmBridgeStepIntent(txData, intent);
+    } catch (e) {
+      expect(e.code).toBe('INVALID_INPUT');
+    }
+  });
+
+  it('refuses an unparseable native value, instead of throwing a raw SyntaxError', () => {
+    const txData = { to: ROUTER, data: depositCalldata(), value: '0x' };
+    expect(() => assertEvmBridgeStepIntent(txData, intent)).toThrow(/malformed native value/);
+    try {
+      assertEvmBridgeStepIntent(txData, intent);
+    } catch (e) {
+      expect(e.code).toBe('INVALID_INPUT');
+    }
+  });
+
+  it('refuses a step addressed `from` a wallet other than the signer', () => {
+    const txData = { to: ROUTER, data: depositCalldata(), value: '0', from: ATTACKER };
+    expect(() => assertEvmBridgeStepIntent(txData, intent)).toThrow(/signing wallet is/);
+    try {
+      assertEvmBridgeStepIntent(txData, intent);
+    } catch (e) {
+      expect(e.code).toBe('SIGNER_MISMATCH');
+    }
+  });
+
+  it('accepts a step whose `from` matches the signer', () => {
+    const txData = { to: ROUTER, data: depositCalldata(), value: '0', from: SIGNER };
+    expect(() => assertEvmBridgeStepIntent(txData, intent)).not.toThrow();
+  });
+
+  it('accepts a step with no `from` at all (quotes may omit it)', () => {
+    const txData = { to: ROUTER, data: depositCalldata(), value: '0' };
+    expect(() => assertEvmBridgeStepIntent(txData, intent)).not.toThrow();
+  });
 });
 
 describe('preflightEvmBridgeSteps — plan-level bound', () => {
@@ -196,7 +247,7 @@ describe('preflightEvmBridgeSteps — plan-level bound', () => {
     // but two deposits of `requested` each would pull 2x what the user reviewed —
     // ERC-20 approve overwrites the allowance, so the second pair drains again.
     const plan = [approveStep(), depositStep(), approveStep(), depositStep()];
-    expect(() => preflightEvmBridgeSteps(plan, intent)).toThrow(/at most one of each/);
+    expect(() => preflightEvmBridgeSteps(plan, intent)).toThrow(/at most one approve and exactly one deposit/);
     try {
       preflightEvmBridgeSteps(plan, intent);
     } catch (e) {
@@ -206,7 +257,7 @@ describe('preflightEvmBridgeSteps — plan-level bound', () => {
 
   it('refuses a plan with two deposits sharing one approve', () => {
     expect(() => preflightEvmBridgeSteps([approveStep(), depositStep(), depositStep()], intent))
-      .toThrow(/at most one of each/);
+      .toThrow(/at most one approve and exactly one deposit/);
   });
 
   it('refuses multiple approve/deposit items bundled in a single step', () => {
@@ -217,7 +268,7 @@ describe('preflightEvmBridgeSteps — plan-level bound', () => {
         { status: 'incomplete', data: { to: ROUTER, data: depositCalldata(), value: '0' } },
       ],
     };
-    expect(() => preflightEvmBridgeSteps([bundled], intent)).toThrow(/at most one of each/);
+    expect(() => preflightEvmBridgeSteps([bundled], intent)).toThrow(/at most one approve and exactly one deposit/);
   });
 
   it('does not count already-complete (resumed) items toward the bound', () => {
@@ -230,5 +281,38 @@ describe('preflightEvmBridgeSteps — plan-level bound', () => {
       depositStep(),
     ];
     expect(() => preflightEvmBridgeSteps(resumed, intent)).not.toThrow();
+  });
+
+  it('refuses an approve-only plan — no live allowance without a reviewed deposit', () => {
+    // A compromised API/Relay response that drops the deposit step entirely
+    // would otherwise pass preflight (0 > 1 is false) and get the approve
+    // signed and broadcast with nothing ever pulling from it.
+    expect(() => preflightEvmBridgeSteps([approveStep()], intent))
+      .toThrow(/at most one approve and exactly one deposit/);
+    try {
+      preflightEvmBridgeSteps([approveStep()], intent);
+    } catch (e) {
+      expect(e.code).toBe('UNEXPECTED_ACTION');
+    }
+  });
+
+  it('refuses a plan whose deposit step is addressed from a different wallet, before the approve step ever signs', () => {
+    // Regression: the from/signer check used to live only in processEvmStep,
+    // per-step, during the broadcast loop — so [valid approve, deposit with a
+    // tampered `from`] passed preflight, the approve broadcast for real, and
+    // only the deposit was later refused. The check now runs inside
+    // assertEvmBridgeStepIntent, which preflightEvmBridgeSteps calls on every
+    // step up front, so this whole plan is refused before anything signs.
+    const tamperedDeposit = {
+      id: 'deposit',
+      items: [{ status: 'incomplete', data: { to: ROUTER, data: depositCalldata(), value: '0', from: ATTACKER } }],
+    };
+    expect(() => preflightEvmBridgeSteps([approveStep(), tamperedDeposit], intent))
+      .toThrow(/signing wallet is/);
+    try {
+      preflightEvmBridgeSteps([approveStep(), tamperedDeposit], intent);
+    } catch (e) {
+      expect(e.code).toBe('SIGNER_MISMATCH');
+    }
   });
 });
