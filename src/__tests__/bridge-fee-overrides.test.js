@@ -35,6 +35,18 @@ import { buildBridgeCommands, parseGweiToWei, resolveEvmStepFees } from '../brid
 
 const ADDR = '0x' + 'ab'.repeat(20);
 
+// Real Base -> Hyperliquid deposit router/selector (see the deposit-leg
+// hardening plan) — the new preflight rejects anything else, so fixtures for
+// the fee-override plumbing still need well-formed deposit calldata.
+const ROUTER = '0x4cd00e387622c35bddb9b4c962c136462338bc31';
+const USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
+const REQUESTED_AMOUNT = 2000000n;
+const word = h => h.toLowerCase().replace(/^0x/, '').padStart(64, '0');
+const depositCalldata = (depositor, amount = REQUESTED_AMOUNT) =>
+  '0xe8017952' + word(depositor) + word(USDC) + word(amount.toString(16)) + word('0x'.padEnd(66, 'a'));
+const approveCalldata = (spender, amount = REQUESTED_AMOUNT) =>
+  '0x095ea7b3' + word(spender) + word(amount.toString(16));
+
 describe('parseGweiToWei', () => {
   it('converts whole gwei', () => {
     expect(parseGweiToWei('1', 'priority-fee')).toBe(1000000000n);
@@ -118,6 +130,7 @@ describe('bridge execute overrides', () => {
       destinationChain: 'hyperliquid',
       walletProvider: 'local',
       walletAddress: ADDR,
+      requestedAmountBaseUnits: REQUESTED_AMOUNT.toString(),
       timestamp: Date.now(),
       response: {
         execution_type: 'evm_transaction',
@@ -126,7 +139,10 @@ describe('bridge execute overrides', () => {
           {
             id: 'deposit',
             kind: 'transaction',
-            items: [{ status: 'incomplete', data: { from: ADDR, to: ADDR, data: '0x', maxFeePerGas: '1000000' } }],
+            items: [{
+              status: 'incomplete',
+              data: { from: ADDR, to: ROUTER, data: depositCalldata(ADDR), value: '0', maxFeePerGas: '1000000' },
+            }],
           },
         ],
       },
@@ -191,7 +207,13 @@ describe('bridge execute overrides', () => {
           {
             id: 'deposit',
             kind: 'transaction',
-            items: [{ status: 'incomplete', data: { from: OTHER, to: ADDR, data: '0x', maxFeePerGas: '1000000' } }],
+            items: [{
+              status: 'incomplete',
+              // depositor (arg0) still binds to the signer ADDR — only `from`
+              // is wrong here, isolating the from-check from the intent-binding
+              // preflight (which would otherwise also refuse this fixture).
+              data: { from: OTHER, to: ROUTER, data: depositCalldata(ADDR), value: '0', maxFeePerGas: '1000000' },
+            }],
           },
         ],
       },
@@ -216,7 +238,10 @@ describe('bridge execute overrides', () => {
           {
             id: 'deposit',
             kind: 'transaction',
-            items: [{ status: 'incomplete', data: { to: ADDR, data: '0x', maxFeePerGas: '1000000' } }],
+            items: [{
+              status: 'incomplete',
+              data: { to: ROUTER, data: depositCalldata(ADDR), value: '0', maxFeePerGas: '1000000' },
+            }],
           },
         ],
       },
@@ -286,12 +311,18 @@ describe('bridge execute overrides', () => {
           {
             id: 'approve',
             kind: 'transaction',
-            items: [{ status: 'incomplete', data: { from: ADDR, to: ADDR, data: '0x', maxFeePerGas: '1000000' } }],
+            items: [{
+              status: 'incomplete',
+              data: { from: ADDR, to: USDC, data: approveCalldata(ROUTER), value: '0', maxFeePerGas: '1000000' },
+            }],
           },
           {
             id: 'deposit',
             kind: 'transaction',
-            items: [{ status: 'incomplete', data: { from: ADDR, to: ADDR, data: '0x', maxFeePerGas: '1000000' } }],
+            items: [{
+              status: 'incomplete',
+              data: { from: ADDR, to: ROUTER, data: depositCalldata(ADDR), value: '0', maxFeePerGas: '1000000' },
+            }],
           },
         ],
       },
