@@ -88,6 +88,15 @@ describe('evaluatePaymentRequirement — allowlist and basic pass', () => {
     expect(result.reason).toMatch(/unparseable amount/i);
   });
 
+  it('10a. missing amount and maxAmountRequired → refused with clear message', () => {
+    const req = { ...BASE_USDC_REQUIREMENT };
+    delete req.amount;
+    delete req.maxAmountRequired;
+    const result = evaluatePaymentRequirement(req);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/amount field is missing/i);
+  });
+
   it('11. negative amount → refused, no throw', () => {
     const req = { ...BASE_USDC_REQUIREMENT, amount: '-1000000' };
     const result = evaluatePaymentRequirement(req);

@@ -93,6 +93,10 @@ export function evaluatePaymentRequirement(requirement) {
     };
   }
 
+  if (amountRaw === undefined || amountRaw === null) {
+    return { ok: false, reason: 'Refusing to auto-pay: amount field is missing from the payment requirement.' };
+  }
+
   let usd;
   try {
     // BigInt base units → USD. Keep integer/fraction split to avoid float loss
