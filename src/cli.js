@@ -11,6 +11,7 @@ import { buildTradingCommands } from './trading.js';
 import { buildLimitOrderCommands } from './limit-order.js';
 import { formatAlertsTable, buildAlertsCommands } from './commands/alerts.js';
 import { buildAgentCommands } from './commands/agent.js';
+import { buildMcpCommands } from './commands/mcp.js';
 import { buildResearchCommands, RESEARCH_HISTORICAL_SUBCOMMANDS } from './commands/research.js';
 import { resolveAddress, isEnsName } from './ens.js';
 import fs from 'fs';
@@ -191,7 +192,7 @@ export function parseArgs(args) {
       const key = arg.slice(2);
       const next = args[i + 1];
       
-      if (key === 'pretty' || key === 'help' || key === 'version' || key === 'table' || key === 'no-retry' || key === 'cache' || key === 'no-cache' || key === 'stream' || key === 'enrich' || key === 'full' || key === 'human' || key === 'enabled' || key === 'disabled' || key === 'expert' || key === 'json' || key === 'offline' || key === 'no-simulate' || key === 'no-verify-outcome' || key === 'no-revoke-excessive-allowance') {
+      if (key === 'pretty' || key === 'help' || key === 'version' || key === 'table' || key === 'no-retry' || key === 'cache' || key === 'no-cache' || key === 'stream' || key === 'enrich' || key === 'full' || key === 'human' || key === 'enabled' || key === 'disabled' || key === 'expert' || key === 'json' || key === 'offline' || key === 'no-simulate' || key === 'no-verify-outcome' || key === 'no-revoke-excessive-allowance' || key === 'dry-run') {
         result.flags[key] = true;
       } else if (next && (!next.startsWith('-') || /^-\d/.test(next))) {
         // Try to parse as JSON first (for objects/arrays/booleans),
@@ -735,6 +736,7 @@ COMMANDS:
   agent       Ask the Nansen AI research agent (fast/expert modes)
   alerts      list, create, update, toggle, delete
   web         search, fetch
+  mcp         install/uninstall the Nansen MCP server (claude-code, claude-desktop, cursor)
   account     Show API key status, plan, and remaining credits
   auth        status — offline auth status: key source, wallets (no network)
   login       Save API key (--api-key <key>, --human, or NANSEN_API_KEY env var)
@@ -1875,13 +1877,13 @@ export function generateSubcommandHelp(command, subcommand, prefix = null) {
   const exampleValues = { address: '0x...', token: '0x...', query: '"term"', symbol: 'BTC', date: '2024-01-01' };
   const chain = subSchema.options?.chain?.default || 'solana';
   const cmdPrefix = prefix || (DEPRECATED_TO_RESEARCH.has(command) ? `research ${command}` : command);
-  let example = `nansen ${cmdPrefix} ${subcommand}`;
-  if (subSchema.options) {
+  let example = subSchema.examples?.[0] || `nansen ${cmdPrefix} ${subcommand}`;
+  if (!subSchema.examples?.length && subSchema.options) {
     for (const [name, opt] of Object.entries(subSchema.options)) {
       if (opt.required) example += ` --${name} ${exampleValues[name] || '<val>'}`;
     }
   }
-  if (subSchema.options?.chain && !subSchema.options.chain.required) {
+  if (!subSchema.examples?.length && subSchema.options?.chain && !subSchema.options.chain.required) {
     example += ` --chain ${chain}`;
   }
   lines.push(`Example: ${example}`);
@@ -1941,7 +1943,9 @@ export async function runCLI(rawArgs, deps = {}) {
     return '';
   };
 
-  const commands = { ...buildCommands(deps), ...buildWalletCommands(deps), ...buildTradingCommands(deps), ...buildAlertsCommands(deps), ...buildAgentCommands(deps), ...commandOverrides };
+  // mcp prints its own output via `log`; runCLI callers inject their stdout
+  // sink as `output`, so map it across (an explicit `log` dep still wins).
+  const commands = { ...buildCommands(deps), ...buildWalletCommands(deps), ...buildTradingCommands(deps), ...buildAlertsCommands(deps), ...buildAgentCommands(deps), ...buildMcpCommands({ ...deps, log: deps.log ?? output }), ...commandOverrides };
 
   if (flags.version || flags.v) {
     output(VERSION);
