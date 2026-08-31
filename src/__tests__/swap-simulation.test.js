@@ -175,6 +175,9 @@ describe('swap-simulation', () => {
       await simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET, apiKey: 'secret-key' });
       const [, opts] = global.fetch.mock.calls[0];
       expect('apikey' in opts.headers).toBe(false);
+      // Anonymous call to a third-party RPC carries no credential, so the
+      // redirect guard does not apply — it follows redirects as before.
+      expect(opts.redirect).toBe('follow');
     });
 
     it('flags an ERC-721 leaving the wallet as an NFT outflow', async () => {
