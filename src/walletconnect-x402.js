@@ -178,15 +178,15 @@ export async function handleX402Payment(paymentRequirements) {
     throw new Error(decision.reason);
   }
 
-  // 5. Build EIP-712 typed data
+  // 4. Build EIP-712 typed data
   const typedData = buildEIP712TypedData({ fromAddress, requirement });
   const typedDataJson = JSON.stringify(typedData);
 
-  // 6. Log payment info to stderr (stdout is for JSON output)
+  // 5. Log payment info to stderr (stdout is for JSON output)
   const amountStr = formatPaymentAmount(requirement);
   process.stderr.write(`x402: Requesting payment approval (${amountStr})...\n`);
 
-  // 7. Sign via walletconnect CLI (120s timeout for user approval)
+  // 6. Sign via walletconnect CLI (120s timeout for user approval)
   let signResult;
   try {
     const output = await wcExec('walletconnect', ['sign-typed-data', typedDataJson], 120000);
@@ -202,7 +202,7 @@ export async function handleX402Payment(paymentRequirements) {
     );
   }
 
-  // 8. Build Payment-Signature header (authorization values must be strings per x402 spec)
+  // 7. Build Payment-Signature header (authorization values must be strings per x402 spec)
   const authorization = {
     from: fromAddress,
     to: requirement.payTo,
