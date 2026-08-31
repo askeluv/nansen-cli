@@ -1,5 +1,42 @@
 # Changelog
 
+## 1.42.0
+
+### Minor Changes
+
+- [#508](https://github.com/nansen-ai/nansen-cli/pull/508) [`3fc6e6b`](https://github.com/nansen-ai/nansen-cli/commit/3fc6e6b3083d3a8e0ab738c800bbcaf24dc00bef) Thanks [@gulshngill](https://github.com/gulshngill)! - Add `nansen mcp verify` to verify the hosted Nansen MCP setup with an authenticated data-path check.
+
+- [#487](https://github.com/nansen-ai/nansen-cli/pull/487) [`bb3f33e`](https://github.com/nansen-ai/nansen-cli/commit/bb3f33ea28642effbda911012dec8810adc8d40c) Thanks [@gulshngill](https://github.com/gulshngill)! - Add `nansen mcp install <client>` / `nansen mcp uninstall <client>` for one-step setup of the hosted Nansen MCP server (https://mcp.nansen.ai/ra/mcp) in Claude Code, Claude Desktop, and Cursor. Writes are merge-only and atomic (existing servers preserved, `.bak` backup on install and uninstall, refuses unparseable configs), use the API key from `nansen login` / `NANSEN_API_KEY`, never print the key, and support `--dry-run`.
+
+### Patch Changes
+
+- [#536](https://github.com/nansen-ai/nansen-cli/pull/536) [`f5e48df`](https://github.com/nansen-ai/nansen-cli/commit/f5e48dfddc9f063225847f54ed4b20334cadc6ae) Thanks [@kome12](https://github.com/kome12)! - `bridge quote` now prints a notice when a Hyperliquid USDC amount is floored to the 6-decimal precision the bridge signs, instead of adjusting the amount silently. The adjustment is unchanged (it's what keeps the persisted amount matching what gets signed); it's just no longer hidden.
+
+- [#533](https://github.com/nansen-ai/nansen-cli/pull/533) [`a96418d`](https://github.com/nansen-ai/nansen-cli/commit/a96418d4c7af5d8f8874f7ccb27d1d59ce797098) Thanks [@kome12](https://github.com/kome12)! - Bridge withdrawals now verify the Hyperliquid action's type, amount, network, and source token/routing fields against your request before signing, so a tampered quote cannot inflate a withdrawal, swap in a different token, or authorize on another account. The deposit action's EIP-712 primary type and exact ordered field list are now pinned too — not just the shared signing domain — so a quote can no longer pass every value check yet have the wallet sign a differently shaped Hyperliquid action (e.g. an agent approval) that the amount cap doesn't bound. The relayer authorization step is likewise pinned exactly to its real EIP-712 domain, field shape, and signing wallet, and its signature can only ever be submitted to the relayer's own fixed authorize endpoint — closing a gap where a malicious quote could have requested a signature over unrelated typed data and relayed it elsewhere. All of a withdrawal's steps are verified against this before any of them are signed or posted, so a bad step later in a multi-step quote (e.g. the real [authorize, sendAsset] order) can no longer let an earlier, valid-looking step reach the relayer or Hyperliquid first.
+
+  Also fixes a false rejection: Hyperliquid withdrawals whose `--amount` was given in base units (the default, no `--amount-unit`) and whose last two digits weren't zero were rejected at execute time as an amount mismatch, because the amount wasn't floored to the 6-decimal precision the bridge actually sends. Base-unit amounts are now floored the same way `--amount-unit` amounts already were, so these withdrawals execute.
+
+- [#530](https://github.com/nansen-ai/nansen-cli/pull/530) [`4312b50`](https://github.com/nansen-ai/nansen-cli/commit/4312b5004e0644f0bfcdac2e5e3eda7128958d92) Thanks [@kome12](https://github.com/kome12)! - Trade safety: tolerate a bounded native-token fee on cross-chain bridge swaps. The pre-signing swap-outcome check rejected any non-input token leaving the wallet, which could reject a legitimate bridge that pays its network fee in the native token on a token-input route. The tolerance is capped and applies only to the native token on bridges; every other token, and all same-chain swaps, stay strict.
+
+- [#537](https://github.com/nansen-ai/nansen-cli/pull/537) [`2d630d5`](https://github.com/nansen-ai/nansen-cli/commit/2d630d545161d656b41867d7b439e02c0786a01f) Thanks [@kome12](https://github.com/kome12)! - Fix `nansen mcp verify` routing after merging MCP install commands.
+
+- [#538](https://github.com/nansen-ai/nansen-cli/pull/538) [`853c48a`](https://github.com/nansen-ai/nansen-cli/commit/853c48ac1779e42507513c7c47a8f57bbffd540d) Thanks [@kome12](https://github.com/kome12)! - Harden the Hyperliquid bridge deposit leg: EVM approvals are now re-scoped to the requested amount (never unlimited) and the deposit target contract/method is pinned, so a tampered quote can't drain the wallet.
+
+- [#534](https://github.com/nansen-ai/nansen-cli/pull/534) [`e23af5c`](https://github.com/nansen-ai/nansen-cli/commit/e23af5cd111eb596dda9f3b6c88b32ffa3e5e756) Thanks [@gulshngill](https://github.com/gulshngill)! - Credential hygiene: `nansen login` verification failures cannot relay the API
+  key, invalid-key remediation points at key management, and login guidance leads
+  with paths that avoid shell history. Every request that carries a credential —
+  API key, agent, limit-order JWT/X-API-Key, MCP verify, and Privy auth — now
+  refuses to follow HTTP redirects, so a credential can't be relayed to a redirect
+  target. Interactive password and API-key prompts stay masked (no cleartext echo)
+  even when stdout is redirected.
+
+- [#529](https://github.com/nansen-ai/nansen-cli/pull/529) [`45b8584`](https://github.com/nansen-ai/nansen-cli/commit/45b8584ba8e2a3859612d8702dd78f117911cf87) Thanks [@gulshngill](https://github.com/gulshngill)! - Docs: stop pointing at the retired Cursor install deep link, pin the
+  `mcp-remote` bridge to the version `mcp install` writes, and correct the
+  header-formatting note (whitespace after the colon is trimmed; the key belongs
+  in `env`, not in the argument list).
+
+- [#531](https://github.com/nansen-ai/nansen-cli/pull/531) [`9bb44a7`](https://github.com/nansen-ai/nansen-cli/commit/9bb44a7339e80bba30d9ec2e499b5d3e306ceb66) Thanks [@crazywriter1](https://github.com/crazywriter1)! - Honor the original HTTP method on x402 paid retries so GET/DELETE/PATCH requests are not resent as POST after payment.
+
 ## 1.41.1
 
 ### Patch Changes
