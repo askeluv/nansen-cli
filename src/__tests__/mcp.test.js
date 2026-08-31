@@ -374,12 +374,12 @@ describe('mcp command handler', () => {
 });
 
 describe('schema + CLI registration', () => {
-  it('schema.json documents mcp install/uninstall', async () => {
+  it('schema.json documents mcp install/uninstall/verify', async () => {
     const { fileURLToPath } = await import('url');
     const schema = JSON.parse(fs.readFileSync(
       path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'schema.json'), 'utf8'));
     expect(Object.keys(schema.commands)).toContain('mcp');
-    expect(Object.keys(schema.commands.mcp.subcommands).sort()).toEqual(['install', 'uninstall']);
+    expect(Object.keys(schema.commands.mcp.subcommands).sort()).toEqual(['install', 'uninstall', 'verify']);
     expect(schema.commands.mcp.subcommands.uninstall.options['dry-run'].type).toBe('boolean');
   });
 

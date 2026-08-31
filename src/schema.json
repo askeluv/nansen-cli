@@ -1894,34 +1894,6 @@
         "nansen doctor --json --pretty"
       ]
     },
-    "mcp": {
-      "description": "Verify the hosted Nansen MCP server setup with an authenticated paid data call (~1 credit). The unauthenticated tools/list response alone cannot validate an API key.",
-      "subcommands": {
-        "verify": {
-          "description": "Check MCP server reachability and verify an API key on the paid data path (~1 credit)",
-          "options": {
-            "api-key": {
-              "type": "string",
-              "description": "API key to test; overrides NANSEN_API_KEY and ~/.nansen/config.json"
-            },
-            "url": {
-              "type": "string",
-              "default": "https://mcp.nansen.ai/ra/mcp",
-              "description": "Hosted MCP server URL"
-            },
-            "json": {
-              "type": "boolean",
-              "description": "Return machine-readable verification checks and exit non-zero on failure"
-            }
-          },
-          "examples": [
-            "npx -y nansen-cli mcp verify --api-key <key>",
-            "nansen mcp verify --api-key <key> --json",
-            "nansen mcp verify --url https://mcp.example.dev/ra/mcp --api-key <key>"
-          ]
-        }
-      }
-    },
     "web": {
       "description": "Web search and fetch commands",
       "subcommands": {
@@ -1992,8 +1964,31 @@
       ]
     },
     "mcp": {
-      "description": "Install the hosted Nansen MCP server (https://mcp.nansen.ai/ra/mcp) into a local MCP client's config",
+      "description": "Install, uninstall, or verify the hosted Nansen MCP server (https://mcp.nansen.ai/ra/mcp)",
       "subcommands": {
+        "verify": {
+          "description": "Check MCP server reachability and verify an API key on the paid data path (~1 credit)",
+          "options": {
+            "api-key": {
+              "type": "string",
+              "description": "API key to test; overrides NANSEN_API_KEY and ~/.nansen/config.json"
+            },
+            "url": {
+              "type": "string",
+              "default": "https://mcp.nansen.ai/ra/mcp",
+              "description": "Hosted MCP server URL"
+            },
+            "json": {
+              "type": "boolean",
+              "description": "Return machine-readable verification checks and exit non-zero on failure"
+            }
+          },
+          "examples": [
+            "npx -y nansen-cli mcp verify --api-key <key>",
+            "nansen mcp verify --api-key <key> --json",
+            "nansen mcp verify --url https://mcp.example.dev/ra/mcp --api-key <key>"
+          ]
+        },
         "install": {
           "description": "Add the Nansen MCP server to a client's config. Client (positional): claude-code, claude-desktop, or cursor. Uses the API key from `nansen login` / NANSEN_API_KEY; re-run after key rotation to update the entry.",
           "options": {
