@@ -31,6 +31,7 @@ describe('Package Integrity', () => {
     const packOutput = execSync('npm pack --json', {
       encoding: 'utf-8',
       cwd: process.cwd(),
+      stdio: ['pipe', 'pipe', 'ignore'],
     });
     const [packInfo] = JSON.parse(packOutput);
     const tgzPath = join(process.cwd(), packInfo.filename);
@@ -58,6 +59,7 @@ describe('Package Integrity', () => {
     const packOutput = execSync('npm pack --dry-run --json', {
       encoding: 'utf-8',
       cwd: process.cwd(),
+      stdio: ['pipe', 'pipe', 'ignore'],
     });
     const [packInfo] = JSON.parse(packOutput);
     const files = packInfo.files.map(f => f.path);
