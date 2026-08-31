@@ -90,6 +90,10 @@ describe('mcp verify', () => {
     expect(fetchFn).toHaveBeenCalledTimes(2);
     const [listCall, authCall] = fetchFn.mock.calls;
     expect(listCall[1].headers).not.toHaveProperty('NANSEN-API-KEY');
+    // The authenticated canary carries NANSEN-API-KEY; both calls must refuse
+    // redirects so the key can't be relayed to a redirect target.
+    expect(listCall[1].redirect).toBe('error');
+    expect(authCall[1].redirect).toBe('error');
     expect(JSON.parse(authCall[1].body)).toMatchObject({
       method: 'tools/call',
       params: { name: 'nansen_score_top_tokens', arguments: { request: {} } },

@@ -20,11 +20,11 @@ Three options — pick whichever fits your setup:
 
 1. **API key** (subscription):
    ```bash
-   nansen login --api-key <key>   # save key to ~/.nansen/config.json
-   nansen login --human           # interactive prompt
-   export NANSEN_API_KEY=...      # env var (highest priority)
-   nansen logout                  # remove saved key
+   nansen login --human   # interactive prompt; saves to ~/.nansen/config.json
+   nansen login           # uses NANSEN_API_KEY when already set
+   nansen logout          # remove saved key
    ```
+   For automation, inject `NANSEN_API_KEY` through your environment or secret manager.
    Get your API key at [app.nansen.ai/auth/agent-setup](https://app.nansen.ai/auth/agent-setup).
 
 2. **x402 micropayment** (no key needed): `nansen wallet create`, fund with USDC on Base or Solana, or USDT0 on X Layer, then call any endpoint — the CLI signs `Payment-Signature` headers automatically on 402 responses. See [Wallet](#wallet).
@@ -36,7 +36,7 @@ Three options — pick whichever fits your setup:
 For the hosted Nansen MCP server, verify server reachability and the supplied API key on the paid data path with:
 
 ```bash
-npx -y nansen-cli mcp verify --api-key <key>
+npx -y nansen-cli mcp verify  # uses the saved key or NANSEN_API_KEY
 ```
 
 The check calls `tools/list` for reachability, then calls the paid `nansen_score_top_tokens` canary tool. A successful canary costs about 1 credit; tool listings and free tools alone do not prove that a key works. The CLI cannot inspect the key inside your MCP client, so make sure this same key is in the client's `NANSEN-API-KEY` header. For the final client-config check, ask your client: “Use the `nansen_score_top_tokens` tool.”
@@ -319,7 +319,7 @@ Any field may be absent or `null`, meaning unknown — never assume zero. A low-
 | `command not found` | `npm install -g nansen-cli` |
 | Global install reports an older version | `npm i -g nansen-cli@latest --registry=https://registry.npmjs.org/ --prefer-online`, then check `which -a nansen` for stale binaries |
 | `UNAUTHORIZED` after login | `nansen auth status` shows which key is active and where it comes from; re-run `nansen login` or set `NANSEN_API_KEY` |
-| MCP client lists tools but paid calls fail | Run `npx -y nansen-cli mcp verify --api-key <key>` and ensure that same key is in the client's `NANSEN-API-KEY` header |
+| MCP client lists tools but paid calls fail | Run `npx -y nansen-cli mcp verify` with the saved key or `NANSEN_API_KEY`, and ensure that same key is in the client's `NANSEN-API-KEY` header |
 | Anything else misbehaving | `nansen doctor` checks your whole setup (auth, wallets, caches, connectivity) with a fix per finding |
 | Empty perp _research_ results | Use `--symbol BTC`, not `--token`. Perps are Hyperliquid-only. |
 | `perp` _trading_ prints the usage banner | Trading needs `--coin BTC` (`--symbol` also works); see the Perpetuals section. |

@@ -213,6 +213,12 @@ async function postSim(rpcUrl, apiKey, method, params, timeoutMs) {
     const sendApiKey = Boolean(apiKey) && isNansenHostedUrl(rpcUrl);
     const res = await fetch(rpcUrl, {
       method: 'POST',
+      // Refuse redirects only when the apikey header is attached — undici
+      // forwards custom credential headers across a cross-origin redirect, so a
+      // redirect would hand the key to whatever host the response points at.
+      // An anonymous call to a user-configured third-party RPC carries nothing
+      // to leak, so it keeps following redirects as before.
+      redirect: sendApiKey ? 'error' : 'follow',
       headers: {
         'Content-Type': 'application/json',
         ...(sendApiKey ? { apikey: apiKey } : {}),

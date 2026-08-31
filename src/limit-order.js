@@ -102,12 +102,26 @@ async function loFetch(method, endpoint, { token, body, query } = {}) {
     headers['X-API-Key'] = process.env.NANSEN_API_KEY;
   }
 
-  const opts = { method, headers };
+  // Never follow a redirect on a request carrying the JWT / X-API-Key — undici
+  // forwards the custom X-API-Key header across a cross-origin redirect, leaking
+  // the key to the redirect target.
+  const opts = { method, headers, redirect: 'error' };
   if (body !== undefined) {
     opts.body = JSON.stringify(body);
   }
 
-  const res = await fetch(url.toString(), opts);
+  let res;
+  try {
+    res = await fetch(url.toString(), opts);
+  } catch (err) {
+    // redirect: 'error' rejects with a bare TypeError on any server redirect;
+    // convert it (and genuine network failures) into a coded, actionable error
+    // rather than letting an undecorated crash reach the CLI.
+    throw Object.assign(
+      new Error(`Limit order API request failed (${method} ${url.pathname}): ${err.message}`, { cause: err }),
+      { code: 'LIMIT_ORDER_NETWORK_ERROR' }
+    );
+  }
   const text = await res.text();
 
   let parsed;

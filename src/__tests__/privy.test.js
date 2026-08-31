@@ -39,6 +39,9 @@ describe("PrivyClient", () => {
       `Basic ${Buffer.from("app-id:app-secret").toString("base64")}`
     );
     expect(opts.headers["privy-app-id"]).toBe("app-id");
+    // Credentialed request must refuse redirects rather than relay Basic auth /
+    // privy-app-id to a redirect target.
+    expect(opts.redirect).toBe("error");
 
     vi.unstubAllGlobals();
   });
@@ -52,6 +55,19 @@ describe("PrivyClient", () => {
     }));
 
     await expect(client.createWallet("invalid")).rejects.toThrow("Invalid chain_type");
+
+    vi.unstubAllGlobals();
+  });
+
+  it("converts a redirect rejection (redirect: 'error') into an actionable message", async () => {
+    const client = new PrivyClient("app-id", "app-secret");
+    // undici throws a bare TypeError('fetch failed') when redirect:'error' hits a 3xx.
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("fetch failed")));
+
+    const err = await client.listWallets().catch((e) => e);
+    expect(err.message).toMatch(/Privy API request failed/);
+    expect(err.message).toContain("GET /wallets");
+    expect(err.message).not.toBe("fetch failed"); // not the undecorated TypeError
 
     vi.unstubAllGlobals();
   });

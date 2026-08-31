@@ -738,7 +738,7 @@ COMMANDS:
   mcp         install/uninstall/verify the Nansen MCP server
   account     Show API key status, plan, and remaining credits
   auth        status — offline auth status: key source, wallets (no network)
-  login       Save API key (--api-key <key>, --human, or NANSEN_API_KEY env var)
+  login       Save API key (--human, NANSEN_API_KEY, or --api-key <key>)
   logout      Remove saved API key
   doctor      Diagnostics: auth, wallets, caches, connectivity (--offline --json)
   schema      JSON schema for all commands (use "nansen schema <cmd>" for one)
@@ -829,43 +829,45 @@ CROSS-CHAIN NOTES (when using --to-chain):
   Bridge providers: Li.Fi or Relay (selected automatically based on best price)
   Typical bridge time: 1-5 minutes`;
 
-// Helper to prompt for input (exported for mocking)
-export async function prompt(question, hidden = false) {
+// Helper to prompt for input (exported for mocking). Output defaults to stderr
+// so the prompt and masked `*` characters stay on the terminal and never land
+// in a redirected stdout (matching wallet.js promptPassword).
+export async function prompt(question, hidden = false, { input = process.stdin, output = process.stderr } = {}) {
   return new Promise((resolve) => {
-    if (hidden && process.stdout.isTTY) {
-      process.stdout.write(question);
-      let input = '';
-      process.stdin.setRawMode(true);
-      process.stdin.resume();
-      process.stdin.setEncoding('utf8');
+    if (hidden && input.isTTY) {
+      output.write(question);
+      let value = '';
+      input.setRawMode(true);
+      input.resume();
+      input.setEncoding('utf8');
       
       const onData = (char) => {
         if (char === '\n' || char === '\r') {
-          process.stdin.setRawMode(false);
-          process.stdin.pause();
-          process.stdin.removeListener('data', onData);
-          process.stdout.write('\n');
-          resolve(input);
+          input.setRawMode(false);
+          input.pause();
+          input.removeListener('data', onData);
+          output.write('\n');
+          resolve(value);
         } else if (char === '\u0003') {
           // Ctrl+C
           process.exit();
         } else if (char === '\u007F' || char === '\b') {
           // Backspace
-          if (input.length > 0) {
-            input = input.slice(0, -1);
-            process.stdout.write('\b \b');
+          if (value.length > 0) {
+            value = value.slice(0, -1);
+            output.write('\b \b');
           }
         } else {
-          input += char;
-          process.stdout.write('*');
+          value += char;
+          output.write('*');
         }
       };
       
-      process.stdin.on('data', onData);
+      input.on('data', onData);
     } else {
       const rl = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout
+        input,
+        output
       });
       rl.question(question, (answer) => {
         rl.close();
@@ -996,13 +998,14 @@ export function buildCommands(deps = {}) {
       if (flags.help || flags.h) {
         log('nansen login - Save your Nansen API key\n');
         log('USAGE:');
-        log('  nansen login --api-key <key>');
-        log('  NANSEN_API_KEY=<key> nansen login');
-        log('  nansen login --human              (interactive prompt)\n');
+        log('  nansen login --human              (interactive prompt; key never enters shell history)');
+        log('  nansen login                      (uses NANSEN_API_KEY when already set)');
+        log('  nansen login --api-key <key>      (literal key IS recorded in shell history)\n');
         log('OPTIONS:');
-        log('  --api-key <key>   Your Nansen API key');
+        log('  --api-key <key>   Your Nansen API key (recorded in shell history — prefer --human)');
         log('  --human           Enable interactive prompt');
         log('  --help            Show this help\n');
+        log('Setting a literal key in a command may record it in shell history.');
         log('Get your API key at: https://app.nansen.ai/auth/agent-setup');
         return;
       }
@@ -1015,9 +1018,9 @@ export function buildCommands(deps = {}) {
 
       if (!apiKey && flags.human) {
         if (!isTTY) {
-          throw new CommandError('--human requires an interactive terminal. Use --api-key or NANSEN_API_KEY env var instead.', 'NOT_A_TTY', {
+          throw new CommandError('--human requires an interactive terminal. Set NANSEN_API_KEY in the environment (or pass --api-key <key>, which is recorded in shell history).', 'NOT_A_TTY', {
             error: 'NOT_A_TTY',
-            message: '--human requires an interactive terminal. Use --api-key or NANSEN_API_KEY env var instead.',
+            message: '--human requires an interactive terminal. Set NANSEN_API_KEY in the environment (or pass --api-key <key>, which is recorded in shell history).',
           });
         }
         log('Nansen CLI Login\n');
@@ -1030,8 +1033,8 @@ export function buildCommands(deps = {}) {
           error: 'API_KEY_REQUIRED',
           message: 'No API key provided.',
           resolution: [
-            'Run: nansen login --api-key <key>',
-            'Or set NANSEN_API_KEY environment variable',
+            'Run in an interactive terminal: nansen login --human',
+            'Or set NANSEN_API_KEY in the environment',
             'Get your API key at: https://app.nansen.ai/auth/agent-setup',
           ],
         });
@@ -1052,13 +1055,28 @@ export function buildCommands(deps = {}) {
           throw new CommandError('The API key is not valid.', 'INVALID_API_KEY', {
             error: 'INVALID_API_KEY',
             message: 'The API key is not valid.',
-            resolution: ['Check your key at https://app.nansen.ai/auth/agent-setup'],
+            resolution: ['Check or rotate your key at https://app.nansen.ai/api?tab=api'],
           });
         }
-        throw new CommandError(`Could not verify API key: ${error.message}`, 'VERIFICATION_FAILED', {
+        // Restore signal from the STRUCTURED error code only — never from
+        // error.message, which can echo the upstream response body (and the key
+        // with it). A transient failure shouldn't read as "check your key".
+        let message = 'Could not verify API key.';
+        let resolution = ['Check your internet connection', 'Try again'];
+        if (error.code === ErrorCode.RATE_LIMITED) {
+          message = 'Rate limited while verifying the API key.';
+          resolution = ['Wait a moment, then run nansen login again'];
+        } else if (error.code === ErrorCode.SERVER_ERROR || error.code === ErrorCode.SERVICE_UNAVAILABLE) {
+          message = 'The Nansen API is unavailable right now, so the key could not be verified.';
+          resolution = ['Try again shortly'];
+        } else if (error.code === ErrorCode.TIMEOUT) {
+          message = 'Timed out verifying the API key.';
+          resolution = ['Check your connection', 'Try again'];
+        }
+        throw new CommandError(message, 'VERIFICATION_FAILED', {
           error: 'VERIFICATION_FAILED',
-          message: `Could not verify API key: ${error.message}`,
-          resolution: ['Check your internet connection', 'Try again'],
+          message,
+          resolution,
         });
       }
 

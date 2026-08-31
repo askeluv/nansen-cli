@@ -552,6 +552,7 @@ export class NansenAPI {
     const isGet = method === 'GET';
     const paidResponse = await fetch(url, {
       method,
+      redirect: 'error',
       headers: {
         ...(!isGet && { 'Content-Type': 'application/json' }),
         'X-Client-Type': 'nansen-cli',
@@ -609,6 +610,7 @@ export class NansenAPI {
         const isGet = method === 'GET';
         response = await fetch(url, {
           method,
+          redirect: 'error',
           headers: {
             ...(!isGet && { 'Content-Type': 'application/json' }),
             'X-Client-Type': 'nansen-cli',
@@ -751,7 +753,7 @@ export class NansenAPI {
                   } catch (x402Err) {
                     if (!this.apiKey) {
                       message = 'No API key configured. Three ways to authenticate:\n' +
-                        '  1. API key: nansen login --api-key <key> (get key at https://app.nansen.ai/auth/agent-setup)\n' +
+                        '  1. API key: run `nansen login --human` or set NANSEN_API_KEY (get key at https://app.nansen.ai/auth/agent-setup)\n' +
                         '  2. x402 micropayment: nansen wallet create + fund with USDC on Base/Solana or USDT0 on X Layer (no API key needed)\n' +
                         '  3. MPP via tempo: install tempo CLI, run `tempo wallet login`, then call the API with `tempo request` (see skills/nansen-mpp-payment)';
                     } else {

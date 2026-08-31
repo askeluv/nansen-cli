@@ -132,7 +132,7 @@ async function installSkill() {
 async function testQuery() {
   if (!isLoggedIn()) {
     log();
-    log(`Not logged in yet. Run ${CYAN}nansen login --api-key <key>${RESET} to authenticate.`);
+    log(`Not logged in yet. Run ${CYAN}nansen login --human${RESET} to authenticate.`);
     log(`Get your API key at: ${CYAN}https://app.nansen.ai/auth/agent-setup${RESET}`);
     return;
   }
@@ -156,7 +156,7 @@ async function testQuery() {
     log(`${GREEN}✓${RESET} All set! Run ${CYAN}nansen help${RESET} to see all available commands.`);
   } else {
     log();
-    log(`${YELLOW}Query failed. Check your API key with: nansen login --api-key <key>${RESET}`);
+    log(`${YELLOW}Query failed. Check your API key with: nansen auth status${RESET}`);
   }
 }
 
@@ -172,7 +172,7 @@ async function main() {
     log(`${BOLD}Nansen CLI installed!${RESET}`);
     log();
     log(`Tip: Run '${CYAN}npx skills add ${SKILL_REPO}${RESET}' to install the Nansen AI coding skill.`);
-    log(`Tip: Run '${CYAN}nansen login --api-key <key>${RESET}' to authenticate.`);
+    log(`Tip: Run '${CYAN}nansen login --human${RESET}' to authenticate.`);
     log(`Tip: To trade, first create a wallet with '${CYAN}nansen wallet create${RESET}', then quote with '${CYAN}nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000${RESET}' and execute with '${CYAN}nansen trade execute --quote <id>${RESET}'.`);
     return;
   }

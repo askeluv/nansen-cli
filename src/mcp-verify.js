@@ -75,6 +75,10 @@ export async function mcpRequest(url, method, params, {
   try {
     response = await fetchFn(url, {
       method: 'POST',
+      // The canary carries NANSEN-API-KEY; undici forwards that custom header
+      // across a cross-origin redirect, so refuse to follow one rather than
+      // relay the key to whatever host the (possibly non-default) server points at.
+      redirect: 'error',
       headers,
       signal: controller.signal,
       body: JSON.stringify({ jsonrpc: '2.0', id: requestId, method, params }),
@@ -197,7 +201,7 @@ export async function runMcpVerifyChecks({
       'mcp-api-key',
       'error',
       'No API key available for the authenticated MCP data-path check',
-      'Create an API key at https://app.nansen.ai/api?tab=api, then pass --api-key <key> or set NANSEN_API_KEY',
+      'Create an API key at https://app.nansen.ai/api?tab=api, then set NANSEN_API_KEY or save it with `nansen login --human`',
     ));
   }
 
