@@ -101,6 +101,28 @@ describe('evaluatePaymentRequirement — allowlist and basic pass', () => {
     const result = evaluatePaymentRequirement(req);
     expect(result.ok).toBe(true);
   });
+
+  it('falls back to maxAmountRequired when amount is absent (v1 field name)', () => {
+    // Older x402 implementations send maxAmountRequired instead of amount.
+    // The guard must normalise both so it does not block payments the signing
+    // paths would handle correctly.
+    const req = { ...BASE_USDC_REQUIREMENT };
+    delete req.amount;
+    req.maxAmountRequired = '10000'; // 0.01 USDC — within cap
+    const result = evaluatePaymentRequirement(req);
+    expect(result.ok).toBe(true);
+    expect(result.usd).toBeCloseTo(0.01, 5);
+  });
+
+  it('maxAmountRequired=0 is honoured (not replaced by undefined)', () => {
+    // ?? not || ensures a literal 0 amount is not treated as falsy.
+    const req = { ...BASE_USDC_REQUIREMENT };
+    delete req.amount;
+    req.maxAmountRequired = '0';
+    const result = evaluatePaymentRequirement(req);
+    expect(result.ok).toBe(true);
+    expect(result.usd).toBe(0);
+  });
 });
 
 describe('evaluatePaymentRequirement — USD cap', () => {

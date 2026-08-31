@@ -74,7 +74,7 @@ export function evaluatePaymentRequirement(requirement) {
   const network = requirement.network;
   const asset = requirement.asset;
   const payTo = requirement.pay_to || requirement.payTo;
-  const amountRaw = requirement.amount;
+  const amountRaw = requirement.amount ?? requirement.maxAmountRequired;
 
   const known = resolveKnownToken(network, asset);
   if (!known) {
