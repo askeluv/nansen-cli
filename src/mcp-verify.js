@@ -75,6 +75,10 @@ export async function mcpRequest(url, method, params, {
   try {
     response = await fetchFn(url, {
       method: 'POST',
+      // The canary carries NANSEN-API-KEY; undici forwards that custom header
+      // across a cross-origin redirect, so refuse to follow one rather than
+      // relay the key to whatever host the (possibly non-default) server points at.
+      redirect: 'error',
       headers,
       signal: controller.signal,
       body: JSON.stringify({ jsonrpc: '2.0', id: requestId, method, params }),

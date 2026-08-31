@@ -21,6 +21,7 @@ import {
   setDefaultWallet,
   deleteWallet,
   getWalletConfig,
+  promptPassword,
 } from '../wallet.js';
 import { keccak256 } from '../crypto.js';
 
@@ -37,6 +38,56 @@ beforeEach(() => {
 afterEach(() => {
   process.env.HOME = originalHome;
   fs.rmSync(tempDir, { recursive: true, force: true });
+});
+
+describe('promptPassword masking', () => {
+  // A TTY stdin whose masked prompt output is redirected away from the terminal
+  // (e.g. `nansen wallet export > backup.json`). The password must never be
+  // echoed in cleartext, and nothing sensitive may reach the redirected stdout.
+  function fakeTtyStdin() {
+    let onData;
+    return {
+      isTTY: true,
+      setRawMode: vi.fn(),
+      resume: vi.fn(),
+      pause: vi.fn(),
+      setEncoding: vi.fn(),
+      on: vi.fn((_event, handler) => { onData = handler; }),
+      removeListener: vi.fn(),
+      feed: (s) => { for (const ch of s) onData(ch); },
+    };
+  }
+
+  it('masks a TTY password and never echoes it, even when stdout is redirected', async () => {
+    const input = fakeTtyStdin();
+    const output = { write: vi.fn() };            // stands in for stderr/terminal
+    const stdout = { isTTY: false, write: vi.fn() }; // redirected: must stay clean
+    const secret = 'WALLET_SECRET_PW_42';
+
+    const result = promptPassword('Enter wallet password: ', {}, { input, output });
+    input.feed(secret);
+    input.feed('\n');
+
+    await expect(result).resolves.toBe(secret);
+    // Raw mode toggled on then off — terminal echo disabled for the whole read.
+    expect(input.setRawMode.mock.calls).toEqual([[true], [false]]);
+    // Masked stream shows only asterisks, never the secret characters.
+    const written = output.write.mock.calls.flat().join('');
+    expect(written).not.toContain(secret);
+    expect(written).toContain('*');
+    // The redirected stdout was never written to at all.
+    expect(stdout.write).not.toHaveBeenCalled();
+  });
+
+  it('gates on stdin, not stdout — a redirected stdout still gets the masked path', async () => {
+    const input = fakeTtyStdin();
+    const output = { write: vi.fn() };
+    const result = promptPassword('pw: ', {}, { input, output });
+    input.feed('abc\n');
+    await expect(result).resolves.toBe('abc');
+    // Reaching raw mode at all proves the gate is stdin.isTTY, not stdout.isTTY.
+    expect(input.setRawMode).toHaveBeenCalled();
+  });
 });
 
 describe('keccak256', () => {

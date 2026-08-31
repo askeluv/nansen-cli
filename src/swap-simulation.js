@@ -213,6 +213,10 @@ async function postSim(rpcUrl, apiKey, method, params, timeoutMs) {
     const sendApiKey = Boolean(apiKey) && isNansenHostedUrl(rpcUrl);
     const res = await fetch(rpcUrl, {
       method: 'POST',
+      // Never follow a redirect when the apikey header is attached — undici
+      // forwards custom credential headers across a cross-origin redirect, so a
+      // redirect would hand the key to whatever host the response points at.
+      redirect: 'error',
       headers: {
         'Content-Type': 'application/json',
         ...(sendApiKey ? { apikey: apiKey } : {}),

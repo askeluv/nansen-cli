@@ -102,7 +102,10 @@ async function loFetch(method, endpoint, { token, body, query } = {}) {
     headers['X-API-Key'] = process.env.NANSEN_API_KEY;
   }
 
-  const opts = { method, headers };
+  // Never follow a redirect on a request carrying the JWT / X-API-Key — undici
+  // forwards the custom X-API-Key header across a cross-origin redirect, leaking
+  // the key to the redirect target.
+  const opts = { method, headers, redirect: 'error' };
   if (body !== undefined) {
     opts.body = JSON.stringify(body);
   }

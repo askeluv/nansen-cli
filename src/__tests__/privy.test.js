@@ -39,6 +39,9 @@ describe("PrivyClient", () => {
       `Basic ${Buffer.from("app-id:app-secret").toString("base64")}`
     );
     expect(opts.headers["privy-app-id"]).toBe("app-id");
+    // Credentialed request must refuse redirects rather than relay Basic auth /
+    // privy-app-id to a redirect target.
+    expect(opts.redirect).toBe("error");
 
     vi.unstubAllGlobals();
   });

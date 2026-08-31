@@ -1984,8 +1984,8 @@
             }
           },
           "examples": [
-            "npx -y nansen-cli mcp verify --api-key <key>",
-            "nansen mcp verify --api-key <key> --json",
+            "npx -y nansen-cli mcp verify",
+            "nansen mcp verify --json",
             "nansen mcp verify --url https://mcp.example.dev/ra/mcp --api-key <key>"
           ]
         },

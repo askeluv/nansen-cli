@@ -254,6 +254,10 @@ EXAMPLES:
       try {
         response = await fetch(url, {
           method: 'POST',
+          // Never follow a redirect on a request carrying the API key — undici
+          // forwards custom credential headers (apikey) across a cross-origin
+          // redirect, handing the key to whatever host the response points at.
+          redirect: 'error',
           headers: buildHeaders(apiInstance),
           body: JSON.stringify(body),
           signal: controller.signal,

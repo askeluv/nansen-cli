@@ -162,6 +162,9 @@ describe('swap-simulation', () => {
       await simulateAssetChanges('base', { to: ROUTER, data: '0x' }, { from: WALLET, apiKey: 'secret-key' });
       const [, opts] = global.fetch.mock.calls[0];
       expect(opts.headers.apikey).toBe('secret-key');
+      // The credentialed sim call must refuse redirects so the apikey can't be
+      // relayed to a redirect target.
+      expect(opts.redirect).toBe('error');
     });
 
     it('does NOT leak the apikey to a custom (non-Nansen) override RPC', async () => {

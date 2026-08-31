@@ -1016,9 +1016,9 @@ export function buildCommands(deps = {}) {
 
       if (!apiKey && flags.human) {
         if (!isTTY) {
-          throw new CommandError('--human requires an interactive terminal. Use --api-key or NANSEN_API_KEY env var instead.', 'NOT_A_TTY', {
+          throw new CommandError('--human requires an interactive terminal. Set NANSEN_API_KEY in the environment (or pass --api-key <key>, which is recorded in shell history).', 'NOT_A_TTY', {
             error: 'NOT_A_TTY',
-            message: '--human requires an interactive terminal. Use --api-key or NANSEN_API_KEY env var instead.',
+            message: '--human requires an interactive terminal. Set NANSEN_API_KEY in the environment (or pass --api-key <key>, which is recorded in shell history).',
           });
         }
         log('Nansen CLI Login\n');
@@ -1056,10 +1056,25 @@ export function buildCommands(deps = {}) {
             resolution: ['Check or rotate your key at https://app.nansen.ai/api?tab=api'],
           });
         }
-        throw new CommandError('Could not verify API key.', 'VERIFICATION_FAILED', {
+        // Restore signal from the STRUCTURED error code only — never from
+        // error.message, which can echo the upstream response body (and the key
+        // with it). A transient failure shouldn't read as "check your key".
+        let message = 'Could not verify API key.';
+        let resolution = ['Check your internet connection', 'Try again'];
+        if (error.code === ErrorCode.RATE_LIMITED) {
+          message = 'Rate limited while verifying the API key.';
+          resolution = ['Wait a moment, then run nansen login again'];
+        } else if (error.code === ErrorCode.SERVER_ERROR || error.code === ErrorCode.SERVICE_UNAVAILABLE) {
+          message = 'The Nansen API is unavailable right now, so the key could not be verified.';
+          resolution = ['Try again shortly'];
+        } else if (error.code === ErrorCode.TIMEOUT) {
+          message = 'Timed out verifying the API key.';
+          resolution = ['Check your connection', 'Try again'];
+        }
+        throw new CommandError(message, 'VERIFICATION_FAILED', {
           error: 'VERIFICATION_FAILED',
-          message: 'Could not verify API key.',
-          resolution: ['Check your internet connection', 'Try again'],
+          message,
+          resolution,
         });
       }
 

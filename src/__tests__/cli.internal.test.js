@@ -1888,6 +1888,23 @@ describe('buildCommands', () => {
       expect(JSON.stringify(thrown.data ?? {})).not.toContain(encodedKey);
     });
 
+    it('restores signal from the structured code without relaying the message', async () => {
+      const key = 'RATE_LIMIT_TEST_KEY';
+      const mockApi = { getAccount: vi.fn().mockRejectedValue(
+        // A transient rate-limit whose message still echoes the key: the branch
+        // must key off error.code, never interpolate the message.
+        Object.assign(new Error(`429 for ${key}`), { code: ErrorCode.RATE_LIMITED })
+      ) };
+      mockDeps.NansenAPIClass.mockImplementation(function() { return mockApi; });
+
+      const thrown = await commands.login([], null, {}, { 'api-key': key }).catch(e => e);
+
+      expect(thrown.code).toBe('VERIFICATION_FAILED');
+      expect(thrown.message).toMatch(/rate limited/i);
+      expect(thrown.message).not.toBe('Could not verify API key.'); // not the misleading generic
+      expect(JSON.stringify(thrown.data ?? {})).not.toContain(key);   // no message relay
+    });
+
     it('invalid-key resolution points at the key management view, never agent-setup', async () => {
       const mockApi = { getAccount: vi.fn().mockRejectedValue(
         Object.assign(new Error('unauthorized'), { code: ErrorCode.UNAUTHORIZED })

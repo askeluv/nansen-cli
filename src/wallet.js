@@ -281,27 +281,32 @@ function hashPassword(password) {
 
 // ============= Prompt Helper =============
 
-async function promptPassword(question, deps = {}) {
+// Exported for testing (mirrors the exported `prompt` in cli.js). The streams
+// are injectable so the masking behavior can be exercised without a real TTY.
+export async function promptPassword(question, deps = {}, { input: inStream = process.stdin, output: outStream = process.stderr } = {}) {
   const promptFn = deps.promptFn;
   if (promptFn) {
     return promptFn(question, true);
   }
   // Fallback to readline (only available in --human mode)
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   return new Promise((resolve) => {
-    if (process.stdout.isTTY) {
-      process.stdout.write(question);
+    // Gate on stdin, not stdout: raw-mode masking disables the terminal's own
+    // echo, so a redirected stdout (e.g. `wallet export > backup.json`) can no
+    // longer fall through to readline and echo the password in cleartext. Prompt
+    // and mask characters go to stderr so they stay on the terminal and never
+    // pollute — or leak into — a redirected stdout.
+    if (inStream.isTTY) {
+      outStream.write(question);
       let input = '';
-      process.stdin.setRawMode(true);
-      process.stdin.resume();
-      process.stdin.setEncoding('utf8');
+      inStream.setRawMode(true);
+      inStream.resume();
+      inStream.setEncoding('utf8');
       const onData = (char) => {
         if (char === '\n' || char === '\r') {
-          process.stdin.setRawMode(false);
-          process.stdin.pause();
-          process.stdin.removeListener('data', onData);
-          process.stdout.write('\n');
-          rl.close();
+          inStream.setRawMode(false);
+          inStream.pause();
+          inStream.removeListener('data', onData);
+          outStream.write('\n');
           resolve(input);
         } else if (char === '\u0003') {
           process.exit();
@@ -309,11 +314,12 @@ async function promptPassword(question, deps = {}) {
           input = input.slice(0, -1);
         } else {
           input += char;
-          process.stdout.write('*');
+          outStream.write('*');
         }
       };
-      process.stdin.on('data', onData);
+      inStream.on('data', onData);
     } else {
+      const rl = readline.createInterface({ input: inStream, output: outStream });
       rl.question(question, (answer) => { rl.close(); resolve(answer); });
     }
   });

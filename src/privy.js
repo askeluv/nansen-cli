@@ -49,7 +49,9 @@ export class PrivyClient {
       "Content-Type": "application/json",
     };
 
-    const opts = { method, headers };
+    // Never follow a redirect on a request carrying Basic auth / privy-app-id —
+    // a redirect target could otherwise be handed the app credentials.
+    const opts = { method, headers, redirect: "error" };
     if (body) opts.body = JSON.stringify(body);
 
     const response = await fetch(`${this.baseUrl}${endpoint}`, opts);

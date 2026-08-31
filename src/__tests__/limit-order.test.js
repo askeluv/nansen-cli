@@ -202,6 +202,9 @@ describe('API client', () => {
     const [url, opts] = global.fetch.mock.calls[0];
     expect(url).toContain('/limit-order/v2/auth/challenge');
     expect(JSON.parse(opts.body)).toEqual({ walletPubkey: 'myPubkey' });
+    // The client sends X-API-Key / Bearer JWT; never follow a redirect that
+    // could relay them to another host.
+    expect(opts.redirect).toBe('error');
   });
 
   it('verifyChallenge sends correct request', async () => {

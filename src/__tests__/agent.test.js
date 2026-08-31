@@ -142,6 +142,9 @@ describe('agent command', () => {
 
       const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
       expect(body.conversation_id).toBe('550e8400-e29b-41d4-a716-446655440000');
+      // The agent request carries the apikey header; never follow a redirect
+      // that could relay it to another host.
+      expect(fetchSpy.mock.calls[0][1].redirect).toBe('error');
     });
 
     it('rejects non-UUID conversation-id', async () => {
