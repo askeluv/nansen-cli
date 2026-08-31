@@ -884,12 +884,33 @@ export function assertEvmBridgeStepIntent(txData, intent, context = 'Bridge EVM 
 // Validate every EVM step's calldata against intent BEFORE any step is signed
 // or broadcast. Without this, a good approve step would already be on-chain by
 // the time a poisoned deposit step is reached and refused.
-function preflightEvmBridgeSteps(steps, intent) {
+//
+// Also bounds the PLAN, not just each item: a legitimate Base → HL deposit is
+// [approve?, deposit] — at most one approve and one deposit. The per-item amount
+// cap alone does not stop a tampered response from chaining repeated
+// [approve(requested), deposit(requested)] pairs — each pair passes every check,
+// but ERC-20 approve OVERWRITES the allowance, so N pairs pull N × the reviewed
+// amount and drain the whole balance despite the scoped approval. Refusing more
+// than one of either, up front, keeps the loss bounded to the requested amount.
+export function preflightEvmBridgeSteps(steps, intent) {
+  let approveCount = 0;
+  let depositCount = 0;
   for (const step of steps) {
     for (const item of step.items || []) {
-      if (item.status === 'complete') continue;   // don't re-check resumed steps
+      if (item.status === 'complete') continue;   // don't re-check / re-count resumed steps
       assertEvmBridgeStepIntent(item.data, intent, `Bridge step "${step.id}"`);
+      // assertEvmBridgeStepIntent above already proved each item is exactly one
+      // of these two shapes, so this classification is total.
+      if (isErc20Approve(item.data.data)) approveCount++;
+      else depositCount++;
     }
+  }
+  if (approveCount > 1 || depositCount > 1) {
+    throw new CommandError(
+      `Bridge plan has ${approveCount} approve and ${depositCount} deposit transaction(s); a legitimate deposit is at most one of each. `
+        + `Refusing to sign — repeated legs could move more than the amount you requested. Request a new quote.`,
+      'UNEXPECTED_ACTION',
+    );
   }
 }
 

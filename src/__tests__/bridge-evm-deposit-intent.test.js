@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { assertEvmBridgeStepIntent } from '../bridge.js';
+import { assertEvmBridgeStepIntent, preflightEvmBridgeSteps } from '../bridge.js';
 import { encodeApproveCalldata } from '../trade-validation.js';
 
 // Real captured shapes (base -> hyperliquid, USDC): the Relay router is both
@@ -170,5 +170,65 @@ describe('assertEvmBridgeStepIntent — cross-cutting', () => {
     } catch (e) {
       expect(e.code).toBe('INVALID_INPUT');
     }
+  });
+});
+
+describe('preflightEvmBridgeSteps — plan-level bound', () => {
+  const approveStep = () => ({
+    id: 'approve',
+    items: [{ status: 'incomplete', data: { to: USDC, data: approveCalldata(ROUTER, 2000000n), value: '0' } }],
+  });
+  const depositStep = () => ({
+    id: 'deposit',
+    items: [{ status: 'incomplete', data: { to: ROUTER, data: depositCalldata(), value: '0' } }],
+  });
+
+  it('accepts the legitimate [approve, deposit] plan', () => {
+    expect(() => preflightEvmBridgeSteps([approveStep(), depositStep()], intent)).not.toThrow();
+  });
+
+  it('accepts a deposit-only plan (no approve needed)', () => {
+    expect(() => preflightEvmBridgeSteps([depositStep()], intent)).not.toThrow();
+  });
+
+  it('refuses a plan that repeats [approve, deposit] to amplify past the cap', () => {
+    // Every item passes per-item binding (spender/router/token/amount all valid),
+    // but two deposits of `requested` each would pull 2x what the user reviewed —
+    // ERC-20 approve overwrites the allowance, so the second pair drains again.
+    const plan = [approveStep(), depositStep(), approveStep(), depositStep()];
+    expect(() => preflightEvmBridgeSteps(plan, intent)).toThrow(/at most one of each/);
+    try {
+      preflightEvmBridgeSteps(plan, intent);
+    } catch (e) {
+      expect(e.code).toBe('UNEXPECTED_ACTION');
+    }
+  });
+
+  it('refuses a plan with two deposits sharing one approve', () => {
+    expect(() => preflightEvmBridgeSteps([approveStep(), depositStep(), depositStep()], intent))
+      .toThrow(/at most one of each/);
+  });
+
+  it('refuses multiple approve/deposit items bundled in a single step', () => {
+    const bundled = {
+      id: 'bundle',
+      items: [
+        { status: 'incomplete', data: { to: ROUTER, data: depositCalldata(), value: '0' } },
+        { status: 'incomplete', data: { to: ROUTER, data: depositCalldata(), value: '0' } },
+      ],
+    };
+    expect(() => preflightEvmBridgeSteps([bundled], intent)).toThrow(/at most one of each/);
+  });
+
+  it('does not count already-complete (resumed) items toward the bound', () => {
+    // A resumed plan may carry a completed approve/deposit plus the remaining
+    // leg; the completed ones are skipped for signing, so they must not trip the
+    // amplification guard.
+    const resumed = [
+      { id: 'approve', items: [{ status: 'complete', data: { to: USDC, data: approveCalldata(ROUTER, 2000000n), value: '0' } }] },
+      { id: 'approve2', items: [{ status: 'incomplete', data: { to: USDC, data: approveCalldata(ROUTER, 2000000n), value: '0' } }] },
+      depositStep(),
+    ];
+    expect(() => preflightEvmBridgeSteps(resumed, intent)).not.toThrow();
   });
 });
