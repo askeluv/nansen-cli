@@ -53,7 +53,8 @@ function parseChainId(network) {
  * Build EIP-712 typed data for TransferWithAuthorization (EIP-3009).
  */
 export function buildEIP712TypedData({ fromAddress, requirement }) {
-  const { asset, payTo, extra, maxTimeoutSeconds } = requirement;
+  const payTo = requirement.payTo ?? requirement.pay_to;
+  const { asset, extra, maxTimeoutSeconds } = requirement;
   // x402 uses "amount", fall back to "maxAmountRequired" for compatibility
   const amount = requirement.amount || requirement.maxAmountRequired;
 
@@ -205,7 +206,7 @@ export async function handleX402Payment(paymentRequirements) {
   // 7. Build Payment-Signature header (authorization values must be strings per x402 spec)
   const authorization = {
     from: fromAddress,
-    to: requirement.payTo,
+    to: requirement.payTo ?? requirement.pay_to,
     value: (requirement.amount || requirement.maxAmountRequired).toString(),
     validAfter: typedData.message.validAfter.toString(),
     validBefore: typedData.message.validBefore.toString(),

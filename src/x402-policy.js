@@ -104,6 +104,9 @@ export function evaluatePaymentRequirement(requirement) {
       return { ok: false, reason: `Refusing to auto-pay: negative amount ${amountRaw}.` };
     }
     const scale = 10n ** BigInt(known.decimals);
+    // Number arithmetic is precise enough for stablecoin amounts at 6 or 18
+    // decimals against a dollar-scale cap. Would need BigInt-native comparison
+    // if supported decimals or cap magnitudes change significantly.
     usd = Number(base / scale) + Number(base % scale) / Number(scale);
   } catch {
     return { ok: false, reason: `Refusing to auto-pay: unparseable amount ${amountRaw}.` };
