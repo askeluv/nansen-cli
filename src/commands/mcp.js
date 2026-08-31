@@ -7,6 +7,7 @@
  */
 
 import { CommandError } from '../api.js';
+import { DEFAULT_MCP_URL, formatMcpVerifyReport, runMcpVerifyChecks } from '../mcp-verify.js';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -35,6 +36,8 @@ const MCP_USAGE = `nansen mcp — Install the Nansen MCP server into a local MCP
 USAGE:
   nansen mcp install <client>     Add the Nansen MCP server to the client's config
   nansen mcp uninstall <client>   Remove the Nansen MCP server from the client's config
+  nansen mcp verify [--api-key <key>] [--url <url>] [--json]
+                                  Verify the hosted MCP server and API key
 
 CLIENTS:
   claude-code      ~/.claude.json (user scope)
@@ -142,6 +145,8 @@ export function buildMcpCommands(deps = {}) {
     platform = process.platform,
     homedirFn = houseHomedir,
     env = process.env,
+    fetchFn = fetch,
+    devConfigPath,
   } = deps;
 
   // Follow symlinks so dotfile-managed configs are edited in place instead of
@@ -207,14 +212,74 @@ export function buildMcpCommands(deps = {}) {
     }
   };
 
+  const verify = async (flags, options) => {
+    // A valueless --api-key parses as a flag and would silently fall back to
+    // the saved key - the exact false positive this command exists to catch.
+    if (flags['api-key']) {
+      throw new CommandError('--api-key requires a value. Usage: nansen mcp verify --api-key <key>', 'MISSING_PARAM');
+    }
+    // parseArgs JSON-parses option values, so `--api-key null` arrives as
+    // null and a repeated flag as an array - both must fail, not fall back.
+    if ('api-key' in options && typeof options['api-key'] !== 'string') {
+      throw new CommandError('--api-key must be a single key string. Usage: nansen mcp verify --api-key <key>', 'INVALID_PARAMS');
+    }
+    // Same guards for --url: a valueless flag or a repeated/JSON-parsed value
+    // must fail loudly, not flow an array into fetch or silently fall back.
+    if (flags.url) {
+      throw new CommandError('--url requires a value. Usage: nansen mcp verify --url <url>', 'MISSING_PARAM');
+    }
+    if ('url' in options && typeof options.url !== 'string') {
+      throw new CommandError('--url must be a single URL string. Usage: nansen mcp verify --url <url>', 'INVALID_PARAMS');
+    }
+
+    const url = options.url || DEFAULT_MCP_URL;
+    const checks = await runMcpVerifyChecks({
+      apiKey: options['api-key'],
+      url,
+      env,
+      fetchFn,
+      devConfigPath,
+    });
+    const verified = checks.some(checkItem => checkItem.id === 'mcp-auth' && checkItem.status === 'ok');
+    const result = {
+      verified,
+      url,
+      checks,
+      errors: checks.filter(checkItem => checkItem.status === 'error').length,
+      warnings: checks.filter(checkItem => checkItem.status === 'warn').length,
+    };
+
+    if (verified) {
+      if (flags.json) return result;
+      log(formatMcpVerifyReport(checks, url, true));
+      return undefined;
+    }
+
+    const reason = (checks.find(checkItem => checkItem.status === 'error')
+      || checks.find(checkItem => checkItem.id === 'mcp-auth' && checkItem.status !== 'ok'))?.message
+      || 'the paid data path did not complete';
+    const message = `MCP setup verification failed - ${reason}`;
+    if (flags.json) throw new CommandError(message, 'MCP_VERIFY_FAILED', result);
+    log(formatMcpVerifyReport(checks, url, false));
+    // The human report above is the complete failure output; mark the error
+    // so runCLI exits non-zero without also emitting the JSON envelope.
+    const reportedError = new CommandError(message, 'MCP_VERIFY_FAILED');
+    reportedError.reported = true;
+    throw reportedError;
+  };
+
   return {
-    'mcp': async (args, apiInstance, flags, _options) => {
+    'mcp': async (args, apiInstance, flags, options) => {
       const sub = args[0];
       const client = args[1];
 
       if (!sub || flags.help || flags.h) {
         log(MCP_USAGE);
         return undefined;
+      }
+
+      if (sub === 'verify') {
+        return verify(flags, options);
       }
 
       if (sub !== 'install' && sub !== 'uninstall') {
