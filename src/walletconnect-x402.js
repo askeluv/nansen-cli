@@ -9,6 +9,7 @@ import crypto from 'crypto';
 import { NansenError, ErrorCode } from './api.js';
 import { wcExec } from './walletconnect-exec.js';
 import { EVM_CHAIN_IDS } from './chain-ids.js';
+import { evaluatePaymentRequirement } from './x402-policy.js';
 
 /**
  * Check if a WalletConnect wallet session is active.
@@ -171,15 +172,21 @@ export async function handleX402Payment(paymentRequirements) {
     );
   }
 
-  // 3. Build EIP-712 typed data
+  // 3. Evaluate payment policy before touching any signing material
+  const decision = evaluatePaymentRequirement(requirement);
+  if (!decision.ok) {
+    throw new Error(decision.reason);
+  }
+
+  // 5. Build EIP-712 typed data
   const typedData = buildEIP712TypedData({ fromAddress, requirement });
   const typedDataJson = JSON.stringify(typedData);
 
-  // 4. Log payment info to stderr (stdout is for JSON output)
+  // 6. Log payment info to stderr (stdout is for JSON output)
   const amountStr = formatPaymentAmount(requirement);
   process.stderr.write(`x402: Requesting payment approval (${amountStr})...\n`);
 
-  // 5. Sign via walletconnect CLI (120s timeout for user approval)
+  // 7. Sign via walletconnect CLI (120s timeout for user approval)
   let signResult;
   try {
     const output = await wcExec('walletconnect', ['sign-typed-data', typedDataJson], 120000);
@@ -195,7 +202,7 @@ export async function handleX402Payment(paymentRequirements) {
     );
   }
 
-  // 6. Build Payment-Signature header (authorization values must be strings per x402 spec)
+  // 8. Build Payment-Signature header (authorization values must be strings per x402 spec)
   const authorization = {
     from: fromAddress,
     to: requirement.payTo,

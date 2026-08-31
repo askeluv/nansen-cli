@@ -10,6 +10,7 @@ import fs from "fs";
 import path from "path";
 import { parsePaymentRequirements } from "./x402.js";
 import { isEvmNetwork } from "./x402-evm.js";
+import { evaluatePaymentRequirement } from "./x402-policy.js";
 import {
   isSvmNetwork,
   getSolanaRpcUrl,
@@ -287,6 +288,11 @@ export async function* createPrivyPaymentSignatures(response, url) {
     const evmWallet = await getPrivyEvmWallet(client);
     if (evmWallet) {
       for (const requirement of evmRequirements) {
+        const decision = evaluatePaymentRequirement(requirement);
+        if (!decision.ok) {
+          console.error(`[x402] ${decision.reason}`);
+          continue;
+        }
         try {
           const typedData = buildEIP712TypedData({
             fromAddress: evmWallet.address,
@@ -332,6 +338,11 @@ export async function* createPrivyPaymentSignatures(response, url) {
     const solWallet = await getPrivySolanaWallet(client);
     if (solWallet) {
       for (const requirement of svmRequirements) {
+        const svmDecision = evaluatePaymentRequirement(requirement);
+        if (!svmDecision.ok) {
+          console.error(`[x402] ${svmDecision.reason}`);
+          continue;
+        }
         try {
           const rpcUrl = getSolanaRpcUrl(requirement.network);
           const recentBlockhash = await fetchRecentBlockhash(rpcUrl);

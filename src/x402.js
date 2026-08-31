@@ -13,6 +13,9 @@ import {
 } from './x402-svm.js';
 import { resolvePassword } from './keychain.js';
 import { CHAIN_RPCS } from './rpc-urls.js';
+import { evaluatePaymentRequirement } from './x402-policy.js';
+import { EVM_X402_TOKENS } from './x402-tokens.js';
+export { EVM_X402_TOKENS } from './x402-tokens.js';
 
 /**
  * Parse PaymentRequirements from a 402 response.
@@ -94,6 +97,12 @@ async function hasPermit2Allowance(network, token, owner, amount) {
  * @returns {string|null} Base64 payment signature, or null on failure
  */
 async function buildPaymentForRequirement(requirement, exported, url) {
+  const decision = evaluatePaymentRequirement(requirement);
+  if (!decision.ok) {
+    console.error(`[x402] ${decision.reason}`);
+    return null;
+  }
+
   if (isEvmNetwork(requirement.network)) {
     if ((requirement.extra || {}).assetTransferMethod === 'permit2-exact') {
       const approved = await hasPermit2Allowance(
@@ -207,11 +216,6 @@ export async function createPaymentSignature(response, url, options = {}) {
   return null;
 }
 
-/**
- * x402 payment tokens per EVM network, matching the stablecoins the API
- * advertises in 402 `accepts` entries. `decimals` matters: USDT on BNB Smart
- * Chain uses 18 decimals, unlike the 6-decimal tokens on Base and X Layer.
- */
 // RPC endpoint per supported x402 EVM network.
 export const EVM_X402_RPCS = {
   'eip155:8453': CHAIN_RPCS.base,
@@ -223,24 +227,6 @@ function getEvmRpcUrl(network) {
   return EVM_X402_RPCS[network] || null;
 }
 
-// Known payment tokens per network, in the order servers typically advertise
-// them. A network can accept several stablecoins (BSC accepts four); `decimals`
-// is per token — every BSC stablecoin is an 18-decimal BEP-20 deployment,
-// unlike the 6-decimal tokens on Base and X Layer.
-export const EVM_X402_TOKENS = {
-  'eip155:8453': [
-    { token: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', symbol: 'USDC', decimals: 6 }, // Base USDC
-  ],
-  'eip155:196': [
-    { token: '0x779Ded0c9e1022225f8E0630b35a9b54bE713736', symbol: 'USDT0', decimals: 6 }, // X Layer USDT0
-  ],
-  'eip155:56': [
-    { token: '0xcE24439F2D9C6a2289F741120FE202248B666666', symbol: 'U', decimals: 18 }, // United Stables
-    { token: '0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d', symbol: 'USD1', decimals: 18 }, // World Liberty Financial USD
-    { token: '0x55d398326f99059fF775485246999027B3197955', symbol: 'USDT', decimals: 18 }, // Tether USD
-    { token: '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d', symbol: 'USDC', decimals: 18 }, // Binance-Peg USD Coin
-  ],
-};
 
 /**
  * Check stablecoin balance for x402 payment wallet on the given network.

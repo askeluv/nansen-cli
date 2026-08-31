@@ -366,7 +366,12 @@ describe("createPrivyPaymentSignatures", () => {
       });
     }));
 
-    const req2 = { ...evmRequirement, network: "eip155:1" };
+    // Use X Layer USDT0 as the second requirement (also in the known-asset allowlist).
+    const req2 = {
+      ...evmRequirement,
+      network: "eip155:196",
+      asset: "0x779Ded0c9e1022225f8E0630b35a9b54bE713736",
+    };
     const response = make402Response([evmRequirement, req2]);
     const results = [];
     for await (const r of createPrivyPaymentSignatures(response, "https://api.nansen.ai/test")) {
@@ -375,7 +380,7 @@ describe("createPrivyPaymentSignatures", () => {
 
     // First failed, second succeeded
     expect(results).toHaveLength(1);
-    expect(results[0].network).toBe("eip155:1");
+    expect(results[0].network).toBe("eip155:196");
   });
 });
 
