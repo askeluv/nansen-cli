@@ -702,6 +702,10 @@ const ERC20_APPROVE_SELECTOR = '0x095ea7b3';
 // Relay deposit router for the Base → HL route. It is BOTH the approve spender
 // and the deposit call target (confirmed identical across every capture), so
 // one constant covers both. Lower-cased for comparison.
+//
+// Keyed by origin chain, in lockstep with the deposit rows of BRIDGE_ROUTES:
+// widening the EVM deposit side (a new signable origin chain) MUST add that
+// chain's router here too, or every deposit on the new route fails closed.
 const BRIDGE_DEPOSIT_TARGETS = {
   base: new Set(['0x4cd00e387622c35bddb9b4c962c136462338bc31']),
 };
