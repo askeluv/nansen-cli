@@ -8,17 +8,39 @@ import { EVM_X402_TOKENS, SVM_X402_TOKENS } from './x402-tokens.js';
 import { getWalletConfig } from './wallet.js';
 
 /**
+ * True for the exact Solana CAIP-2 network prefix ("solana:..."), matching
+ * isSvmNetwork() in x402-svm.js. Duplicated here (rather than imported) to
+ * avoid a circular dependency: x402-svm.js imports resolvePaymentAmount from
+ * this module.
+ */
+function isSvmNetworkString(network) {
+  return typeof network === 'string' && network.startsWith('solana:');
+}
+
+/**
  * Look up the known token entry for a (network, asset) pair.
  * Returns { token, symbol, decimals } or null if the pair is not a known
- * Nansen x402 payment asset. Comparison is case-insensitive on the address.
+ * Nansen x402 payment asset.
+ *
+ * EVM addresses are compared case-insensitively (hex is case-insensitive
+ * modulo EIP-55 checksum casing). Solana mint addresses are base58 and
+ * MUST be compared case-sensitively — flipping the case of a base58 string
+ * decodes to different bytes entirely, not the same address in a different
+ * checksum casing.
  */
 export function resolveKnownToken(network, asset) {
   if (typeof network !== 'string' || typeof asset !== 'string') return null;
-  let table = null;
-  if (network.startsWith('eip155:')) table = EVM_X402_TOKENS[network];
-  else if (network.startsWith('solana')) table = SVM_X402_TOKENS['solana'];
-  if (!table) return null;
-  return table.find(t => t.token.toLowerCase() === asset.toLowerCase()) || null;
+  if (network.startsWith('eip155:')) {
+    const table = EVM_X402_TOKENS[network];
+    if (!table) return null;
+    return table.find(t => t.token.toLowerCase() === asset.toLowerCase()) || null;
+  }
+  if (isSvmNetworkString(network)) {
+    const table = SVM_X402_TOKENS['solana'];
+    if (!table) return null;
+    return table.find(t => t.token === asset) || null;
+  }
+  return null;
 }
 
 // Default per-payment ceiling in USD. x402 API calls cost cents; $1.00 is a
@@ -55,14 +77,20 @@ export function resolveMaxAmountUsd() {
 /**
  * Optional payTo allowlist.
  * If NANSEN_X402_ALLOWED_PAYTO is set (comma-separated addresses), only those
- * recipients may be paid. Unset = no recipient restriction. Case-insensitive.
+ * recipients may be paid. Unset = no recipient restriction.
+ *
+ * Comparison is case-insensitive for EVM (hex) but case-sensitive for Solana
+ * (base58) — see resolveKnownToken for why. `network` is required to know
+ * which rule applies; omit it only for EVM-style (case-insensitive) checks.
  */
-export function isPayToAllowed(payTo) {
+export function isPayToAllowed(payTo, network) {
   const raw = process.env.NANSEN_X402_ALLOWED_PAYTO;
   if (!raw) return true;
-  const allow = raw.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+  const caseSensitive = isSvmNetworkString(network);
+  const normalize = (s) => (caseSensitive ? s.trim() : s.trim().toLowerCase());
+  const allow = raw.split(',').map(normalize).filter(Boolean);
   if (allow.length === 0) return true;
-  return typeof payTo === 'string' && allow.includes(payTo.toLowerCase());
+  return typeof payTo === 'string' && allow.includes(normalize(payTo));
 }
 
 /**
@@ -81,6 +109,19 @@ export function resolvePaymentAmount(requirement) {
 }
 
 /**
+ * Resolve the payment recipient field, preferring `payTo` (camelCase) over
+ * the legacy `pay_to` (snake_case) alias. A present-but-empty `payTo` (e.g.
+ * "") is treated as missing, exactly like resolvePaymentAmount — the same
+ * single-source-of-truth rule signers must use instead of re-deriving the
+ * fallback themselves.
+ */
+export function resolvePayTo(requirement) {
+  const payTo = requirement.payTo;
+  if (payTo !== undefined && payTo !== null && payTo !== '') return payTo;
+  return requirement.pay_to;
+}
+
+/**
  * Decide whether an x402 payment requirement is safe to auto-sign.
  * Returns { ok: true, usd, symbol } when allowed, or { ok: false, reason }
  * with a human-readable, actionable reason when refused.
@@ -91,7 +132,7 @@ export function resolvePaymentAmount(requirement) {
 export function evaluatePaymentRequirement(requirement) {
   const network = requirement.network;
   const asset = requirement.asset;
-  const payTo = requirement.payTo ?? requirement.pay_to;
+  const payTo = resolvePayTo(requirement);
   const amountRaw = resolvePaymentAmount(requirement);
 
   const known = resolveKnownToken(network, asset);
@@ -104,7 +145,7 @@ export function evaluatePaymentRequirement(requirement) {
     };
   }
 
-  if (!isPayToAllowed(payTo)) {
+  if (!isPayToAllowed(payTo, network)) {
     return {
       ok: false,
       reason: `Refusing to auto-pay: recipient ${payTo} is not in NANSEN_X402_ALLOWED_PAYTO.`,

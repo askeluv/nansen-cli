@@ -16,6 +16,7 @@ const {
   evaluatePaymentRequirement,
   resolveMaxAmountUsd,
   resolvePaymentAmount,
+  resolvePayTo,
   isPayToAllowed,
   DEFAULT_X402_MAX_AMOUNT_USD,
 } = await import('../x402-policy.js');
@@ -57,6 +58,39 @@ describe('resolveKnownToken', () => {
   it('returns null when network or asset is not a string', () => {
     expect(resolveKnownToken(null, '0x123')).toBeNull();
     expect(resolveKnownToken('eip155:8453', null)).toBeNull();
+  });
+
+  it('is case-SENSITIVE on Solana mint addresses (base58, not checksummed hex)', () => {
+    // Regression: flipping case in a base58 string decodes to different bytes
+    // entirely — unlike EVM hex, there is no case-insensitive equivalence.
+    const caseFlipped = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1V'; // last char V not v
+    const entry = resolveKnownToken('solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', caseFlipped);
+    expect(entry).toBeNull();
+  });
+
+  it('requires the exact "solana:" prefix, matching isSvmNetwork (no bare "solana" match)', () => {
+    // Regression: resolveKnownToken previously used network.startsWith('solana')
+    // (no colon), which disagreed with isSvmNetwork()'s exact 'solana:' check
+    // in x402-svm.js and could let the guard approve a requirement neither
+    // isEvmNetwork nor isSvmNetwork would ever dispatch to a signer.
+    const entry = resolveKnownToken('solana-devnet', 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
+    expect(entry).toBeNull();
+  });
+});
+
+describe('resolvePayTo', () => {
+  it('prefers payTo over pay_to', () => {
+    expect(resolvePayTo({ payTo: '0xCamel', pay_to: '0xSnake' })).toBe('0xCamel');
+  });
+
+  it('falls back to pay_to when payTo is undefined', () => {
+    expect(resolvePayTo({ pay_to: '0xSnake' })).toBe('0xSnake');
+  });
+
+  it('falls back to pay_to when payTo is an empty string', () => {
+    // Regression: an empty payTo must not be treated as a real recipient —
+    // this is the same class of bug resolvePaymentAmount closes for amount.
+    expect(resolvePayTo({ payTo: '', pay_to: '0xSnake' })).toBe('0xSnake');
   });
 });
 
@@ -108,6 +142,14 @@ describe('evaluatePaymentRequirement — allowlist and basic pass', () => {
   it('uses pay_to field when payTo is absent', () => {
     const req = { ...BASE_USDC_REQUIREMENT };
     delete req.payTo;
+    const result = evaluatePaymentRequirement(req);
+    expect(result.ok).toBe(true);
+  });
+
+  it('falls back to pay_to when payTo is an empty string (not refused by an unset allowlist)', () => {
+    // Regression: empty payTo must resolve to pay_to everywhere the guard and
+    // the signers look at it, exactly like the amount empty-string fallback.
+    const req = { ...BASE_USDC_REQUIREMENT, payTo: '' };
     const result = evaluatePaymentRequirement(req);
     expect(result.ok).toBe(true);
   });
@@ -348,5 +390,20 @@ describe('isPayToAllowed', () => {
   it('returns false for an address not in the allowlist', () => {
     process.env.NANSEN_X402_ALLOWED_PAYTO = '0xABC';
     expect(isPayToAllowed('0xXYZ')).toBe(false);
+  });
+
+  it('is case-insensitive for an EVM network', () => {
+    process.env.NANSEN_X402_ALLOWED_PAYTO = '0xAbCdEf';
+    expect(isPayToAllowed('0xabcdef', 'eip155:8453')).toBe(true);
+  });
+
+  it('is case-SENSITIVE for a Solana network (base58 allowlist)', () => {
+    // Regression: lowercasing both sides let a case-flipped Solana address
+    // pass an allowlist meant to restrict to one exact address.
+    const real = 'J7ZvJEspvwP1oRxQZ7mYmNmT22NTm3GWq3t7HEbvPZYx';
+    const caseFlipped = 'J7ZvJEspvwP1oRxQZ7mYmNmT22NTm3GWq3t7HEbvPZYX'; // last char X not x
+    process.env.NANSEN_X402_ALLOWED_PAYTO = real;
+    expect(isPayToAllowed(real, 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp')).toBe(true);
+    expect(isPayToAllowed(caseFlipped, 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp')).toBe(false);
   });
 });

@@ -6,7 +6,7 @@
 
 import crypto from 'crypto';
 import { keccak256, signSecp256k1 } from './crypto.js';
-import { resolvePaymentAmount } from './x402-policy.js';
+import { resolvePaymentAmount, resolvePayTo } from './x402-policy.js';
 
 // ============= EIP-712 Type Hashing =============
 
@@ -243,7 +243,7 @@ export function createEvmPaymentPayload(requirements, privateKeyHex, walletAddre
   // EIP-3009 message
   const message = {
     from: walletAddress,
-    to: requirements.payTo ?? requirements.pay_to,
+    to: resolvePayTo(requirements),
     value: BigInt(amount),
     validAfter: BigInt(validAfter),
     validBefore: BigInt(validBefore),
@@ -303,7 +303,7 @@ export function createPermit2ExactPayload(requirements, privateKeyHex, walletAdd
     throw new Error('spenderAddress missing from requirements.extra (required for permit2-exact)');
   }
 
-  const payTo = requirements.payTo ?? requirements.pay_to;
+  const payTo = resolvePayTo(requirements);
   const now = Math.floor(Date.now() / 1000);
   // 256-bit random nonce — Permit2 uses an unordered nonce bitmap.
   const nonce = BigInt('0x' + crypto.randomBytes(32).toString('hex')).toString();

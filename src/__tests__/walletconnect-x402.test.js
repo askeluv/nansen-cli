@@ -10,6 +10,10 @@ vi.mock('../x402-policy.js', () => ({
     requirement.amount !== undefined && requirement.amount !== null && requirement.amount !== ''
       ? requirement.amount
       : requirement.maxAmountRequired,
+  resolvePayTo: (requirement) =>
+    requirement.payTo !== undefined && requirement.payTo !== null && requirement.payTo !== ''
+      ? requirement.payTo
+      : requirement.pay_to,
 }));
 
 vi.mock('../walletconnect-exec.js', () => ({

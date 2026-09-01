@@ -9,7 +9,7 @@ import crypto from 'crypto';
 import { NansenError, ErrorCode } from './api.js';
 import { wcExec } from './walletconnect-exec.js';
 import { EVM_CHAIN_IDS } from './chain-ids.js';
-import { evaluatePaymentRequirement, resolvePaymentAmount } from './x402-policy.js';
+import { evaluatePaymentRequirement, resolvePaymentAmount, resolvePayTo } from './x402-policy.js';
 
 /**
  * Check if a WalletConnect wallet session is active.
@@ -53,7 +53,7 @@ function parseChainId(network) {
  * Build EIP-712 typed data for TransferWithAuthorization (EIP-3009).
  */
 export function buildEIP712TypedData({ fromAddress, requirement }) {
-  const payTo = requirement.payTo ?? requirement.pay_to;
+  const payTo = resolvePayTo(requirement);
   const { asset, extra, maxTimeoutSeconds } = requirement;
   const amount = resolvePaymentAmount(requirement);
 
@@ -205,7 +205,7 @@ export async function handleX402Payment(paymentRequirements) {
   // 7. Build Payment-Signature header (authorization values must be strings per x402 spec)
   const authorization = {
     from: fromAddress,
-    to: requirement.payTo ?? requirement.pay_to,
+    to: resolvePayTo(requirement),
     value: resolvePaymentAmount(requirement).toString(),
     validAfter: typedData.message.validAfter.toString(),
     validBefore: typedData.message.validBefore.toString(),

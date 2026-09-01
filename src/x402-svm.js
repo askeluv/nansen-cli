@@ -6,7 +6,7 @@
 import crypto from 'crypto';
 import { base58Encode, base58DecodePubkey } from './wallet.js';
 import { encodeCompactU16, deriveATA as _deriveATA } from './transfer.js';
-import { resolvePaymentAmount } from './x402-policy.js';
+import { resolvePaymentAmount, resolvePayTo } from './x402-policy.js';
 
 // ============= Constants =============
 
@@ -182,7 +182,7 @@ export function buildUnsignedSvmTransaction(
 
   const mint = requirements.asset;
   const amount = BigInt(resolvePaymentAmount(requirements));
-  const payTo = requirements.payTo ?? requirements.pay_to;
+  const payTo = resolvePayTo(requirements);
 
   // Derive ATAs
   const sourceATA = deriveATA(walletAddress, mint, tokenProgram);
