@@ -145,6 +145,13 @@ export function evaluatePaymentRequirement(requirement) {
     };
   }
 
+  if (payTo === undefined || payTo === null || payTo === '') {
+    return {
+      ok: false,
+      reason: 'Refusing to auto-pay: payTo field is missing from the payment requirement.',
+    };
+  }
+
   if (!isPayToAllowed(payTo, network)) {
     return {
       ok: false,
