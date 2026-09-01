@@ -13,7 +13,7 @@ import {
 } from './x402-svm.js';
 import { resolvePassword } from './keychain.js';
 import { CHAIN_RPCS } from './rpc-urls.js';
-import { evaluatePaymentRequirement } from './x402-policy.js';
+import { evaluatePaymentRequirement, resolvePaymentAmount } from './x402-policy.js';
 import { EVM_X402_TOKENS } from './x402-tokens.js';
 export { EVM_X402_TOKENS } from './x402-tokens.js';
 
@@ -105,17 +105,18 @@ async function buildPaymentForRequirement(requirement, exported, url) {
 
   if (isEvmNetwork(requirement.network)) {
     if ((requirement.extra || {}).assetTransferMethod === 'permit2-exact') {
+      const resolvedAmount = resolvePaymentAmount(requirement);
       const approved = await hasPermit2Allowance(
         requirement.network,
         requirement.asset,
         exported.evm.address,
-        requirement.amount,
+        resolvedAmount,
       );
       if (!approved) {
         console.error(
           `[x402] Skipping ${requirement.network} permit2 option: Permit2 ` +
           `(${PERMIT2_ADDRESS}) allowance for token ${requirement.asset} is ` +
-          `missing or below the payment amount (${requirement.amount}). ` +
+          `missing or below the payment amount (${resolvedAmount}). ` +
           `Send approve(${PERMIT2_ADDRESS}, <amount>) from the wallet to enable it.`,
         );
         return null;

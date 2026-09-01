@@ -250,6 +250,57 @@ describe('createPaymentSignatures — policy guard integration', () => {
     vi.doUnmock('../x402-evm.js');
     vi.doUnmock('../x402-svm.js');
   });
+
+  it('13. permit2-exact preflight checks allowance against resolvePaymentAmount, not raw empty amount', async () => {
+    // Regression: hasPermit2Allowance must be called with the guard's resolved
+    // amount, not requirement.amount directly — otherwise amount: "" coerces to
+    // 0n via BigInt("") and the allowance check is silently skipped.
+    const req = {
+      scheme: 'exact',
+      network: 'eip155:8453',
+      asset: BASE_USDC_ASSET,
+      amount: '',
+      maxAmountRequired: '10000', // $0.01 — within the $1.00 default cap
+      pay_to: '0xRecipient',
+      payTo: '0xRecipient',
+      extra: { name: 'USD Coin', version: '2', assetTransferMethod: 'permit2-exact' },
+      maxTimeoutSeconds: 120,
+    };
+
+    // Real (non-zero) allowance is 0; a correct preflight against the
+    // resolved $0.01 amount must reject this option.
+    mockFetch.mockResolvedValue({ json: async () => ({ result: '0x0' }) });
+
+    const createEvmSpy = vi.fn().mockReturnValue('fake-sig');
+    vi.doMock('../x402-evm.js', () => ({
+      createEvmPaymentPayload: createEvmSpy,
+      isEvmNetwork: (n) => n.startsWith('eip155:'),
+      PERMIT2_ADDRESS: '0x000000000022D473030F116dDEE9F6B43aC78BA3',
+    }));
+    vi.doMock('../x402-svm.js', () => ({
+      createSvmPaymentPayload: vi.fn(),
+      isSvmNetwork: () => false,
+      fetchRecentBlockhash: vi.fn(),
+      getSolanaRpcUrl: vi.fn(),
+    }));
+
+    const { createPaymentSignatures } = await import('../x402.js');
+    const response = makeResponse(req);
+
+    const results = [];
+    for await (const item of createPaymentSignatures(response, 'https://api.nansen.ai/test')) {
+      results.push(item);
+    }
+
+    expect(results).toHaveLength(0);
+    expect(createEvmSpy).not.toHaveBeenCalled();
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('missing or below the payment amount (10000)'),
+    );
+
+    vi.doUnmock('../x402-evm.js');
+    vi.doUnmock('../x402-svm.js');
+  });
 });
 
 describe('parsePaymentRequirements — UTF-8 decode', () => {
