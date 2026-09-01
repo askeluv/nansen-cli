@@ -9,6 +9,7 @@ import crypto from 'crypto';
 import { NansenError, ErrorCode } from './api.js';
 import { wcExec } from './walletconnect-exec.js';
 import { EVM_CHAIN_IDS } from './chain-ids.js';
+import { evaluatePaymentRequirement, resolvePaymentAmount, resolvePayTo } from './x402-policy.js';
 
 /**
  * Check if a WalletConnect wallet session is active.
@@ -52,9 +53,9 @@ function parseChainId(network) {
  * Build EIP-712 typed data for TransferWithAuthorization (EIP-3009).
  */
 export function buildEIP712TypedData({ fromAddress, requirement }) {
-  const { asset, payTo, extra, maxTimeoutSeconds } = requirement;
-  // x402 uses "amount", fall back to "maxAmountRequired" for compatibility
-  const amount = requirement.amount || requirement.maxAmountRequired;
+  const payTo = resolvePayTo(requirement);
+  const { asset, extra, maxTimeoutSeconds } = requirement;
+  const amount = resolvePaymentAmount(requirement);
 
   // Determine chain ID: extra.chainId > parsed from network > fallback map > base
   const chainId = extra.chainId || parseChainId(requirement.network) || EVM_CHAIN_IDS[requirement.chain] || EVM_CHAIN_IDS.base;
@@ -121,7 +122,7 @@ export function buildPaymentSignatureHeader({ signature, authorization, resource
  */
 function formatPaymentAmount(requirement) {
   const { extra } = requirement;
-  const rawAmount = requirement.amount || requirement.maxAmountRequired;
+  const rawAmount = resolvePaymentAmount(requirement);
   const symbol = extra.symbol || extra.name || 'tokens';
   const decimals = extra.decimals || 6;
   const amount = Number(rawAmount) / Math.pow(10, decimals);
@@ -171,15 +172,21 @@ export async function handleX402Payment(paymentRequirements) {
     );
   }
 
-  // 3. Build EIP-712 typed data
+  // 3. Evaluate payment policy before touching any signing material
+  const decision = evaluatePaymentRequirement(requirement);
+  if (!decision.ok) {
+    throw new Error(decision.reason);
+  }
+
+  // 4. Build EIP-712 typed data
   const typedData = buildEIP712TypedData({ fromAddress, requirement });
   const typedDataJson = JSON.stringify(typedData);
 
-  // 4. Log payment info to stderr (stdout is for JSON output)
+  // 5. Log payment info to stderr (stdout is for JSON output)
   const amountStr = formatPaymentAmount(requirement);
   process.stderr.write(`x402: Requesting payment approval (${amountStr})...\n`);
 
-  // 5. Sign via walletconnect CLI (120s timeout for user approval)
+  // 6. Sign via walletconnect CLI (120s timeout for user approval)
   let signResult;
   try {
     const output = await wcExec('walletconnect', ['sign-typed-data', typedDataJson], 120000);
@@ -195,11 +202,11 @@ export async function handleX402Payment(paymentRequirements) {
     );
   }
 
-  // 6. Build Payment-Signature header (authorization values must be strings per x402 spec)
+  // 7. Build Payment-Signature header (authorization values must be strings per x402 spec)
   const authorization = {
     from: fromAddress,
-    to: requirement.payTo,
-    value: (requirement.amount || requirement.maxAmountRequired).toString(),
+    to: resolvePayTo(requirement),
+    value: resolvePaymentAmount(requirement).toString(),
     validAfter: typedData.message.validAfter.toString(),
     validBefore: typedData.message.validBefore.toString(),
     nonce: typedData.message.nonce,

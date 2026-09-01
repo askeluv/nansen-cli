@@ -1800,7 +1800,7 @@
       }
     },
     "wallet": {
-      "description": "Wallet management",
+      "description": "Wallet management. x402 auto-payments are guarded by a client-side policy: per-payment USD cap via NANSEN_X402_MAX_AMOUNT (default 1.00; 'unlimited' to disable) and an optional recipient allowlist via NANSEN_X402_ALLOWED_PAYTO (comma-separated addresses).",
       "subcommands": {
         "create": {
           "description": "Create a new wallet"

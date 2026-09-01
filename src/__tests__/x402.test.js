@@ -116,6 +116,193 @@ describe('checkX402Balance — EVM per-network lookup', () => {
   });
 });
 
+describe('createPaymentSignatures — policy guard integration', () => {
+  // Canonical Base USDC requirement used across integration tests.
+  // The `pay_to` and `payTo` fields are set to the same value to cover both field names.
+  const BASE_USDC_ASSET = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+
+  function makeRequirement(amountBaseUnits) {
+    return {
+      scheme: 'exact',
+      network: 'eip155:8453',
+      asset: BASE_USDC_ASSET,
+      amount: String(amountBaseUnits),
+      pay_to: '0xRecipient',
+      payTo: '0xRecipient',
+      extra: { name: 'USD Coin', version: '2' },
+      maxTimeoutSeconds: 120,
+    };
+  }
+
+  function makeResponse(requirement) {
+    const payload = { accepts: [requirement] };
+    const header = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');
+    return {
+      headers: { get: (k) => (k === 'payment-required' ? header : null) },
+    };
+  }
+
+  // Fake exported wallet with dummy key material (no real signing needed —
+  // createEvmPaymentPayload is mocked).
+  const FAKE_EXPORTED = {
+    evm: { privateKey: '0x' + 'aa'.repeat(32), address: '0xFakeAddress' },
+    solana: { privateKey: new Uint8Array(64), address: 'FakeSolanaAddr' },
+  };
+
+  let mockFetch;
+  let consoleErrorSpy;
+
+  beforeEach(() => {
+    mockFetch = vi.fn().mockResolvedValue({ json: async () => ({}) });
+    vi.stubGlobal('fetch', mockFetch);
+    vi.resetModules();
+
+    // Mock wallet.js for all paths (createPaymentSignatures + getWalletConfig in policy).
+    vi.doMock('../wallet.js', () => ({
+      listWallets: () => ({
+        defaultWallet: 'test',
+        wallets: [{ name: 'test', evm: '0xFakeAddress', solana: 'FakeSolanaAddr' }],
+      }),
+      exportWallet: () => FAKE_EXPORTED,
+      getWalletConfig: () => ({ passwordHash: null }),
+    }));
+
+    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.doUnmock('../wallet.js');
+    consoleErrorSpy.mockRestore();
+    delete process.env.NANSEN_X402_MAX_AMOUNT;
+  });
+
+  it('11. over-cap amount → yields nothing, logs refusal, createEvmPaymentPayload not called', async () => {
+    // $1001 worth of USDC (6 decimals) = well above the $1.00 default cap
+    const overCapAmount = 1_001_000_000n; // $1001
+    const req = makeRequirement(overCapAmount);
+
+    const createEvmSpy = vi.fn().mockReturnValue('fake-sig');
+    vi.doMock('../x402-evm.js', () => ({
+      createEvmPaymentPayload: createEvmSpy,
+      isEvmNetwork: (n) => n.startsWith('eip155:'),
+      PERMIT2_ADDRESS: '0x000000000022D473030F116dDEE9F6B43aC78BA3',
+    }));
+    vi.doMock('../x402-svm.js', () => ({
+      createSvmPaymentPayload: vi.fn(),
+      isSvmNetwork: () => false,
+      fetchRecentBlockhash: vi.fn(),
+      getSolanaRpcUrl: vi.fn(),
+    }));
+
+    const { createPaymentSignatures } = await import('../x402.js');
+    const response = makeResponse(req);
+
+    const results = [];
+    for await (const item of createPaymentSignatures(response, 'https://api.nansen.ai/test')) {
+      results.push(item);
+    }
+
+    expect(results).toHaveLength(0);
+    expect(createEvmSpy).not.toHaveBeenCalled();
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Refusing to auto-pay'),
+    );
+
+    vi.doUnmock('../x402-evm.js');
+    vi.doUnmock('../x402-svm.js');
+  });
+
+  it('12. within-cap amount → yields one signature, createEvmPaymentPayload is called', async () => {
+    // $0.01 worth of USDC = 10_000 base units, well within the $1.00 cap
+    const withinCapAmount = 10_000n;
+    const req = makeRequirement(withinCapAmount);
+
+    const createEvmSpy = vi.fn().mockReturnValue('fake-sig-ok');
+    vi.doMock('../x402-evm.js', () => ({
+      createEvmPaymentPayload: createEvmSpy,
+      isEvmNetwork: (n) => n.startsWith('eip155:'),
+      PERMIT2_ADDRESS: '0x000000000022D473030F116dDEE9F6B43aC78BA3',
+    }));
+    vi.doMock('../x402-svm.js', () => ({
+      createSvmPaymentPayload: vi.fn(),
+      isSvmNetwork: () => false,
+      fetchRecentBlockhash: vi.fn(),
+      getSolanaRpcUrl: vi.fn(),
+    }));
+
+    const { createPaymentSignatures } = await import('../x402.js');
+    const response = makeResponse(req);
+
+    const results = [];
+    for await (const item of createPaymentSignatures(response, 'https://api.nansen.ai/test')) {
+      results.push(item);
+    }
+
+    expect(results).toHaveLength(1);
+    expect(createEvmSpy).toHaveBeenCalledTimes(1);
+    // No refusal logged
+    const refusalLogged = consoleErrorSpy.mock.calls.some(
+      args => String(args[0]).includes('Refusing to auto-pay'),
+    );
+    expect(refusalLogged).toBe(false);
+
+    vi.doUnmock('../x402-evm.js');
+    vi.doUnmock('../x402-svm.js');
+  });
+
+  it('13. permit2-exact preflight checks allowance against resolvePaymentAmount, not raw empty amount', async () => {
+    // Regression: hasPermit2Allowance must be called with the guard's resolved
+    // amount, not requirement.amount directly — otherwise amount: "" coerces to
+    // 0n via BigInt("") and the allowance check is silently skipped.
+    const req = {
+      scheme: 'exact',
+      network: 'eip155:8453',
+      asset: BASE_USDC_ASSET,
+      amount: '',
+      maxAmountRequired: '10000', // $0.01 — within the $1.00 default cap
+      pay_to: '0xRecipient',
+      payTo: '0xRecipient',
+      extra: { name: 'USD Coin', version: '2', assetTransferMethod: 'permit2-exact' },
+      maxTimeoutSeconds: 120,
+    };
+
+    // Real (non-zero) allowance is 0; a correct preflight against the
+    // resolved $0.01 amount must reject this option.
+    mockFetch.mockResolvedValue({ json: async () => ({ result: '0x0' }) });
+
+    const createEvmSpy = vi.fn().mockReturnValue('fake-sig');
+    vi.doMock('../x402-evm.js', () => ({
+      createEvmPaymentPayload: createEvmSpy,
+      isEvmNetwork: (n) => n.startsWith('eip155:'),
+      PERMIT2_ADDRESS: '0x000000000022D473030F116dDEE9F6B43aC78BA3',
+    }));
+    vi.doMock('../x402-svm.js', () => ({
+      createSvmPaymentPayload: vi.fn(),
+      isSvmNetwork: () => false,
+      fetchRecentBlockhash: vi.fn(),
+      getSolanaRpcUrl: vi.fn(),
+    }));
+
+    const { createPaymentSignatures } = await import('../x402.js');
+    const response = makeResponse(req);
+
+    const results = [];
+    for await (const item of createPaymentSignatures(response, 'https://api.nansen.ai/test')) {
+      results.push(item);
+    }
+
+    expect(results).toHaveLength(0);
+    expect(createEvmSpy).not.toHaveBeenCalled();
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('missing or below the payment amount (10000)'),
+    );
+
+    vi.doUnmock('../x402-evm.js');
+    vi.doUnmock('../x402-svm.js');
+  });
+});
+
 describe('parsePaymentRequirements — UTF-8 decode', () => {
   // Regression: atob() returns a Latin-1 binary string, which corrupts
   // multi-byte UTF-8 chars like ₮ (0xE2 0x82 0xAE) in extra.name = 'USD₮0'.

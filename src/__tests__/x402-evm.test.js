@@ -4,7 +4,7 @@
 
 import { describe, it, expect } from 'vitest';
 import crypto from 'crypto';
-import { hashTypedData, createEvmPaymentPayload, isEvmNetwork } from '../x402-evm.js';
+import { hashTypedData, createEvmPaymentPayload, createPermit2ExactPayload, isEvmNetwork } from '../x402-evm.js';
 import { generateEvmWallet } from '../wallet.js';
 
 describe('EIP-712 hashTypedData', () => {
@@ -103,6 +103,31 @@ describe('createEvmPaymentPayload', () => {
     expect(decoded.resource.url).toBe('https://api.nansen.ai/v1/test');
   });
 
+  it('signs maxAmountRequired when amount is an empty string (matches resolvePaymentAmount, not a raw fallback)', () => {
+    // Regression: this signer must resolve the amount the same way the policy
+    // guard does, so a signed value never diverges from the guarded value.
+    const wallet = generateEvmWallet();
+    const requirements = {
+      scheme: 'exact',
+      network: 'eip155:8453',
+      asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+      amount: '',
+      maxAmountRequired: '50000',
+      pay_to: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd',
+      extra: { name: 'USD Coin', version: '2' },
+    };
+
+    const result = createEvmPaymentPayload(
+      requirements,
+      wallet.privateKey,
+      wallet.address,
+      'https://api.nansen.ai/v1/test',
+    );
+
+    const decoded = JSON.parse(Buffer.from(result, 'base64').toString('utf8'));
+    expect(decoded.payload.authorization.value).toBe('50000');
+  });
+
   it('should throw if extra.name is missing', () => {
     const wallet = generateEvmWallet();
     const requirements = {
@@ -116,6 +141,31 @@ describe('createEvmPaymentPayload', () => {
     expect(() => createEvmPaymentPayload(
       requirements, wallet.privateKey, wallet.address, 'https://test.com',
     )).toThrow('name missing');
+  });
+});
+
+describe('createPermit2ExactPayload', () => {
+  it('signs maxAmountRequired when amount is an empty string (matches resolvePaymentAmount)', () => {
+    const wallet = generateEvmWallet();
+    const requirements = {
+      scheme: 'exact',
+      network: 'eip155:56',
+      asset: '0x55d398326f99059fF775485246999027B3197955',
+      amount: '',
+      maxAmountRequired: '10000000000000000',
+      pay_to: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd',
+      extra: { spenderAddress: '0x3038f7ac3b4D1a3fe886BdCB5cD01e9f6BDd8633' },
+    };
+
+    const result = createPermit2ExactPayload(
+      requirements,
+      wallet.privateKey,
+      wallet.address,
+      'https://api.nansen.ai/v1/test',
+    );
+
+    const decoded = JSON.parse(Buffer.from(result, 'base64').toString('utf8'));
+    expect(decoded.payload.permit2Authorization.permitted.amount).toBe('10000000000000000');
   });
 });
 
