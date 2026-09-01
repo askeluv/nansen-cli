@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.43.0
+
+### Minor Changes
+
+- [#539](https://github.com/nansen-ai/nansen-cli/pull/539) [`2ba6c40`](https://github.com/nansen-ai/nansen-cli/commit/2ba6c40376b5c1cc4d7105592cd63d47b5130f02) Thanks [@kome12](https://github.com/kome12)! - x402 auto-payment now refuses to sign payments for unknown tokens/networks and enforces a configurable per-payment USD cap (NANSEN_X402_MAX_AMOUNT, default $1.00) before signing.
+
+### Patch Changes
+
+- [#535](https://github.com/nansen-ai/nansen-cli/pull/535) [`863ef23`](https://github.com/nansen-ai/nansen-cli/commit/863ef2372dd042eb37d198f16513eedf5df97dab) Thanks [@crazywriter1](https://github.com/crazywriter1)! - Fix EVM swap execution when quotes omit gas limits: WalletConnect and local wallet paths now fall back to eth_estimateGas (×1.5) and then 210000, matching the Privy path.
+
+- [#541](https://github.com/nansen-ai/nansen-cli/pull/541) [`7492bbe`](https://github.com/nansen-ai/nansen-cli/commit/7492bbe6a86cd848168b400ba7c8a53c403d264c) Thanks [@kome12](https://github.com/kome12)! - Refuse x402 auto-payments whose payment requirement is missing a payTo/pay_to recipient, matching the existing missing-amount check. Previously this fell through to the per-signing-path field validation inconsistently, and the WalletConnect path had no check at all.
+
 ## 1.42.0
 
 ### Minor Changes
