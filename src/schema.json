@@ -1158,7 +1158,7 @@
         "points": {
           "subcommands": {
             "leaderboard": {
-              "description": "Points leaderboard"
+              "description": "Points leaderboard (unavailable)"
             }
           }
         },
