@@ -139,6 +139,15 @@ describe('evaluatePaymentRequirement — allowlist and basic pass', () => {
     expect(result.reason).toMatch(/negative amount/i);
   });
 
+  it('12. missing payTo and pay_to → refused with clear message', () => {
+    const req = { ...BASE_USDC_REQUIREMENT };
+    delete req.payTo;
+    delete req.pay_to;
+    const result = evaluatePaymentRequirement(req);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/payTo field is missing/i);
+  });
+
   it('uses pay_to field when payTo is absent', () => {
     const req = { ...BASE_USDC_REQUIREMENT };
     delete req.payTo;
