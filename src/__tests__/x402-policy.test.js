@@ -148,6 +148,16 @@ describe('evaluatePaymentRequirement — allowlist and basic pass', () => {
     expect(result.reason).toMatch(/payTo field is missing/i);
   });
 
+  it('13. payTo and pay_to both empty strings → refused, not resolved to "" (reviewer regression)', () => {
+    // resolvePayTo("") falls through to pay_to, but pay_to is also "" here, so
+    // the resolved value is itself "" — must be treated as missing, not as a
+    // real (empty) recipient that then reaches a signer's deriveATA/EIP-712.
+    const req = { ...BASE_USDC_REQUIREMENT, payTo: '', pay_to: '' };
+    const result = evaluatePaymentRequirement(req);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/payTo field is missing/i);
+  });
+
   it('uses pay_to field when payTo is absent', () => {
     const req = { ...BASE_USDC_REQUIREMENT };
     delete req.payTo;
