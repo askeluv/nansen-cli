@@ -801,13 +801,15 @@ export function buildWalletCommands(deps = {}) {
             throw new CommandError('Usage: nansen wallet delete <name>', 'MISSING_ARGS');
           }
 
-          // Check if this is a Privy wallet (no password needed)
+          // Check if this is a Privy wallet (no password needed).
+          // getWalletFile() runs validateWalletName(), which rejects any name
+          // outside [a-zA-Z0-9_-]{1,64} — so the path is confined to the wallets
+          // dir and cannot traverse. deleteWallet() re-validates below.
           let isPrivy = false;
           try {
-            const walletFile = path.join(getWalletsDir(), `${name}.json`);
-            const data = JSON.parse(fs.readFileSync(walletFile, 'utf8'));
+            const data = JSON.parse(fs.readFileSync(getWalletFile(name), 'utf8'));
             if (data.provider === 'privy') isPrivy = true;
-          } catch { /* file might not exist, deleteWallet will throw */ }
+          } catch { /* invalid/missing name; deleteWallet will validate and throw */ }
 
           let password = null;
           if (!isPrivy) {
@@ -862,8 +864,10 @@ export function buildWalletCommands(deps = {}) {
             try {
               const walletName = options.wallet || getWalletConfig().defaultWallet;
               if (walletName) {
-                const walletFile = path.join(getWalletsDir(), `${walletName}.json`);
-                const data = JSON.parse(fs.readFileSync(walletFile, 'utf8'));
+                // getWalletFile() runs validateWalletName(), confining the path to
+                // the wallets dir; an invalid name throws and is ignored here, and
+                // the real wallet load downstream validates again.
+                const data = JSON.parse(fs.readFileSync(getWalletFile(walletName), 'utf8'));
                 if (data.provider === 'privy') isPrivyWallet = true;
               }
             } catch { /* ignore */ }

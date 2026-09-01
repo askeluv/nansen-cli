@@ -708,3 +708,117 @@ describe('Wallet list/show CLI output for provider', () => {
     expect(joined).toContain('privy');
   });
 });
+
+describe('Path traversal vulnerability mitigation', () => {
+  const PASSWORD = 'test-password-123!!';
+
+  // The wallets dir the CLI actually uses (HOME is stubbed to tempDir).
+  const walletsDir = () => path.join(tempDir, '.nansen', 'wallets');
+
+  // The absolute path the *vulnerable* pre-read would resolve `${name}.json` to.
+  // Planting the fixture here means a regressed guard would genuinely read it,
+  // so the "planted file is never read" assertion below is guard-sensitive.
+  const traversedTarget = (name) => path.resolve(walletsDir(), `${name}.json`);
+
+  const canon = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+
+  // Assert fs.readFileSync was never handed the planted out-of-dir file.
+  // Compare via realpath so the macOS /var -> /private/var symlink doesn't
+  // make an in-dir read look like an escape (or vice versa).
+  const assertTargetNeverRead = (spy, target) => {
+    const canonTarget = canon(target);
+    for (const call of spy.mock.calls) {
+      const arg = call[0];
+      if (typeof arg !== 'string') continue;
+      expect(canon(arg), `readFileSync read the out-of-dir target: ${canonTarget}`)
+        .not.toBe(canonTarget);
+    }
+  };
+
+  it('never reads the traversal target for traversal/absolute/encoded delete names', async () => {
+    createWallet('legitimate', PASSWORD);
+
+    const { buildWalletCommands } = await import('../wallet.js');
+    const cmds = buildWalletCommands({
+      log: () => {},
+      exit: () => {},
+      promptFn: vi.fn().mockResolvedValue(PASSWORD),
+    });
+
+    const attempts = [
+      '../sensitive',
+      '../../sensitive',
+      '../../../etc/passwd',
+      '..\\..\\sensitive',       // Windows-style
+      '..%2F..%2Fsensitive',     // URL encoded
+      '%2e%2e%2fsensitive',      // fully encoded
+    ];
+
+    for (const attempt of attempts) {
+      // Plant a file exactly where the vulnerable pre-read would look, so a
+      // regressed guard would actually read it (and trip the assertion).
+      const target = traversedTarget(attempt);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, JSON.stringify({ provider: 'privy', secret: 'data' }));
+
+      const spy = vi.spyOn(fs, 'readFileSync');
+      // --human so the password resolves and we reach deleteWallet()'s guard.
+      const error = await cmds.wallet(['delete'], null, { human: true }, { name: attempt })
+        .catch(e => e);
+
+      // Rejected by validateWalletName before any destructive action.
+      expect(error).toBeDefined();
+      expect(error.message).toMatch(/Wallet name must be/i);
+      // And neither the pre-read nor the delete ever read the planted file.
+      assertTargetNeverRead(spy, target);
+      spy.mockRestore();
+
+      // The planted file is untouched.
+      expect(fs.existsSync(target)).toBe(true);
+    }
+  });
+
+  it('never reads the traversal target for a send wallet name', async () => {
+    // Plant a Privy wallet file where the vulnerable pre-read would resolve it.
+    const target = traversedTarget('../malicious');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, JSON.stringify({
+      provider: 'privy',
+      evm: { address: '0xMalicious' },
+      solana: { address: 'MaliciousSol' },
+    }));
+
+    const { buildWalletCommands } = await import('../wallet.js');
+    const cmds = buildWalletCommands({ log: () => {}, exit: () => {} });
+
+    const spy = vi.spyOn(fs, 'readFileSync');
+    const error = await cmds.wallet(['send'], null, { 'dry-run': true }, {
+      wallet: '../malicious',
+      to: '0x742d35Cc6bF4F3f4e0e3a8DD7e37ff4e4Be4E4B4',
+      amount: '0.01',
+      chain: 'base',
+    }).catch(e => e);
+
+    // The command does not succeed with the out-of-dir wallet...
+    expect(error).toBeDefined();
+    // ...and the Privy pre-read never read the planted file.
+    assertTargetNeverRead(spy, target);
+    spy.mockRestore();
+    expect(fs.existsSync(target)).toBe(true);
+  });
+
+  it('allows a legitimate wallet delete', async () => {
+    const result = createWallet('safe-wallet', PASSWORD);
+    expect(result.name).toBe('safe-wallet');
+
+    const { buildWalletCommands } = await import('../wallet.js');
+    const cmds = buildWalletCommands({
+      log: () => {},
+      exit: () => {},
+      promptFn: vi.fn().mockResolvedValue(PASSWORD),
+    });
+
+    await cmds.wallet(['delete'], null, { human: true }, { name: 'safe-wallet' });
+    expect(() => showWallet('safe-wallet')).toThrow(/not found/);
+  });
+});
