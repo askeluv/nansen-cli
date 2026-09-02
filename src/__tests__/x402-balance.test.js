@@ -43,3 +43,33 @@ describe('EVM_X402_TOKENS registry', () => {
     }
   });
 });
+
+describe('checkX402Balance BigInt precision (18 decimals)', () => {
+  it('returns correct balance for wei values above MAX_SAFE_INTEGER', async () => {
+    const { vi } = await import('vitest');
+    // 100.5 USDT on BSC = 100.5e18 wei = 0x57014A42E52A6A8000
+    // This exceeds Number.MAX_SAFE_INTEGER (2^53) and would lose precision with parseInt.
+    const mockHex = '0x00000000000000000000000000000000000000000000000057014a42e52a6a8000';
+    const mockWallets = {
+      defaultWallet: 'test',
+      wallets: [{ name: 'test', evm: '0x' + '11'.repeat(20) }],
+    };
+    vi.doMock('../wallet.js', () => ({
+      listWallets: () => mockWallets,
+      exportWallet: vi.fn(),
+    }));
+    global.fetch = vi.fn().mockResolvedValue({
+      json: () => Promise.resolve({ jsonrpc: '2.0', id: 1, result: mockHex }),
+    });
+
+    const { checkX402Balance } = await import('../x402.js');
+    const result = await checkX402Balance('eip155:56', '0x55d398326f99059fF775485246999027B3197955');
+
+    expect(result).not.toBeNull();
+    expect(result.symbol).toBe('USDT');
+    expect(result.balance).toBeCloseTo(100.5, 1);
+
+    vi.doUnmock('../wallet.js');
+    delete global.fetch;
+  });
+});
