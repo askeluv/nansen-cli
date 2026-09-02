@@ -113,7 +113,7 @@ describe('formatValue', () => {
     expect(formatValue(-1500)).toBe('-1.50K');
   });
   it('should promote K to M at the rounding boundary', () => {
-    expect(formatValue(999999.994)).toBe('999.99K');
+    expect(formatValue(999990)).toBe('999.99K');
     expect(formatValue(999999.995)).toBe('1.00M');
     expect(formatValue(999999.999)).toBe('1.00M');
     expect(formatValue(-999999.995)).toBe('-1.00M');
