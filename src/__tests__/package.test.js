@@ -28,19 +28,22 @@ describe('Package Integrity', () => {
     tmpDirs.push(tmpDir);
 
     // Pack from repo root
-    const packOutput = execSync('npm pack --json 2>/dev/null', {
+    const packOutput = execSync('npm pack --json', {
       encoding: 'utf-8',
       cwd: process.cwd(),
+      stdio: ['pipe', 'pipe', 'ignore'],
     });
     const [packInfo] = JSON.parse(packOutput);
     const tgzPath = join(process.cwd(), packInfo.filename);
 
     // Install in isolated temp directory
     execSync('npm init -y', { cwd: tmpDir, stdio: 'ignore' });
-    execSync(`npm install ${tgzPath}`, { cwd: tmpDir, stdio: 'ignore' });
+    execSync(`npm install "${tgzPath}"`, { cwd: tmpDir, stdio: 'ignore' });
 
-    // Smoke test - if any import fails (e.g., missing src/commands/), this crashes
-    const result = execSync('./node_modules/.bin/nansen --help', {
+    // Smoke test - if any import fails (e.g., missing src/commands/), this crashes.
+    // Resolve the .cmd extension on Windows, where node_modules/.bin shims aren't extensionless.
+    const binary = join(tmpDir, 'node_modules', '.bin', process.platform === 'win32' ? 'nansen.cmd' : 'nansen');
+    const result = execSync(`"${binary}" --help`, {
       cwd: tmpDir,
       encoding: 'utf-8',
     });
@@ -53,9 +56,10 @@ describe('Package Integrity', () => {
   });
 
   it('should not include test files in package', () => {
-    const packOutput = execSync('npm pack --dry-run --json 2>/dev/null', {
+    const packOutput = execSync('npm pack --dry-run --json', {
       encoding: 'utf-8',
       cwd: process.cwd(),
+      stdio: ['pipe', 'pipe', 'ignore'],
     });
     const [packInfo] = JSON.parse(packOutput);
     const files = packInfo.files.map(f => f.path);
