@@ -49,7 +49,7 @@ function validateSolanaAddress(address) {
 // ============= Amount Parsing =============
 
 function parseAmount(amountStr, decimals) {
-  if (typeof amountStr === 'string' && amountStr.startsWith('-')) throw new Error('Amount must be positive');
+  if (String(amountStr).startsWith('-')) throw new Error('Amount must be positive');
   const parts = amountStr.split('.');
   const whole = parts[0] || '0';
   let frac = (parts[1] || '').padEnd(decimals, '0').slice(0, decimals);
