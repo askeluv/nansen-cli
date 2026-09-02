@@ -74,7 +74,7 @@
   "dependencies": {
     "@ethereumjs/rlp": "^10.1.1",
     "@noble/curves": "^2.4.0",
-    "@noble/hashes": "^2.0.1",
+    "@noble/hashes": "^2.4.0",
     "@scure/base": "^2.0.0"
   }
 }

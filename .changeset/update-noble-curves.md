@@ -2,4 +2,4 @@
 "nansen-cli": patch
 ---
 
-Update @noble/curves to the patched 2.4.x release.
+Update Noble crypto dependencies to the patched 2.4.x releases.
