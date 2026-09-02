@@ -656,6 +656,14 @@
                 },
                 "delay": {
                   "default": 1000
+                },
+                "addresses": {
+                  "type": "string",
+                  "description": "Comma-separated list or JSON array of wallet addresses to profile"
+                },
+                "file": {
+                  "type": "string",
+                  "description": "Path to a file of addresses: a JSON array of strings, or one address per line"
                 }
               }
             },
@@ -931,6 +939,10 @@
                 "include-stablecoins": {
                   "description": "Whether to include stablecoins in screener results (default true on API side)",
                   "default": true
+                },
+                "search": {
+                  "type": "string",
+                  "description": "Case-insensitive substring filter applied client-side to the returned tokens"
                 }
               }
             },
@@ -1387,6 +1399,36 @@
       "subcommands": {
         "list": {
           "description": "List all alerts",
+          "options": {
+            "type": {
+              "type": "string",
+              "description": "Only show alerts of this type"
+            },
+            "enabled": {
+              "type": "boolean",
+              "description": "Only show enabled alerts; cannot be combined with --disabled"
+            },
+            "disabled": {
+              "type": "boolean",
+              "description": "Only show disabled alerts; cannot be combined with --enabled"
+            },
+            "token-address": {
+              "type": "string",
+              "description": "Only show alerts referencing this token address"
+            },
+            "chain": {
+              "type": "string",
+              "description": "Only show alerts for this chain"
+            },
+            "offset": {
+              "type": "string",
+              "description": "Skip this many alerts before returning results"
+            },
+            "limit": {
+              "type": "string",
+              "description": "Maximum number of alerts to return"
+            }
+          },
           "returns": [
             "id",
             "name",
@@ -1446,6 +1488,174 @@
             "disabled": {
               "type": "boolean",
               "description": "Create alert in disabled state"
+            },
+            "inflow-1h-min": {
+              "type": "string",
+              "description": "Minimum inflow over 1h (sm-token-flows); sets the min of the inflow_1h range"
+            },
+            "inflow-1h-max": {
+              "type": "string",
+              "description": "Maximum inflow over 1h (sm-token-flows); sets the max of the inflow_1h range"
+            },
+            "inflow-1d-min": {
+              "type": "string",
+              "description": "Minimum inflow over 1d (sm-token-flows); sets the min of the inflow_1d range"
+            },
+            "inflow-1d-max": {
+              "type": "string",
+              "description": "Maximum inflow over 1d (sm-token-flows); sets the max of the inflow_1d range"
+            },
+            "inflow-7d-min": {
+              "type": "string",
+              "description": "Minimum inflow over 7d (sm-token-flows); sets the min of the inflow_7d range"
+            },
+            "inflow-7d-max": {
+              "type": "string",
+              "description": "Maximum inflow over 7d (sm-token-flows); sets the max of the inflow_7d range"
+            },
+            "outflow-1h-min": {
+              "type": "string",
+              "description": "Minimum outflow over 1h (sm-token-flows); sets the min of the outflow_1h range"
+            },
+            "outflow-1h-max": {
+              "type": "string",
+              "description": "Maximum outflow over 1h (sm-token-flows); sets the max of the outflow_1h range"
+            },
+            "outflow-1d-min": {
+              "type": "string",
+              "description": "Minimum outflow over 1d (sm-token-flows); sets the min of the outflow_1d range"
+            },
+            "outflow-1d-max": {
+              "type": "string",
+              "description": "Maximum outflow over 1d (sm-token-flows); sets the max of the outflow_1d range"
+            },
+            "outflow-7d-min": {
+              "type": "string",
+              "description": "Minimum outflow over 7d (sm-token-flows); sets the min of the outflow_7d range"
+            },
+            "outflow-7d-max": {
+              "type": "string",
+              "description": "Maximum outflow over 7d (sm-token-flows); sets the max of the outflow_7d range"
+            },
+            "netflow-1h-min": {
+              "type": "string",
+              "description": "Minimum netflow over 1h (sm-token-flows); sets the min of the netflow_1h range"
+            },
+            "netflow-1h-max": {
+              "type": "string",
+              "description": "Maximum netflow over 1h (sm-token-flows); sets the max of the netflow_1h range"
+            },
+            "netflow-1d-min": {
+              "type": "string",
+              "description": "Minimum netflow over 1d (sm-token-flows); sets the min of the netflow_1d range"
+            },
+            "netflow-1d-max": {
+              "type": "string",
+              "description": "Maximum netflow over 1d (sm-token-flows); sets the max of the netflow_1d range"
+            },
+            "netflow-7d-min": {
+              "type": "string",
+              "description": "Minimum netflow over 7d (sm-token-flows); sets the min of the netflow_7d range"
+            },
+            "netflow-7d-max": {
+              "type": "string",
+              "description": "Maximum netflow over 7d (sm-token-flows); sets the max of the netflow_7d range"
+            },
+            "token": {
+              "type": "string",
+              "description": "Token address or symbol to include, comma-separated for several (sm-token-flows, common-token-transfer)"
+            },
+            "exclude-token": {
+              "type": "string",
+              "description": "Token address or symbol to exclude, comma-separated for several (sm-token-flows, common-token-transfer)"
+            },
+            "token-sector": {
+              "type": "string",
+              "description": "Token sector(s) to include (sm-token-flows, common-token-transfer)"
+            },
+            "exclude-token-sector": {
+              "type": "string",
+              "description": "Token sector(s) to exclude (sm-token-flows, common-token-transfer)"
+            },
+            "token-age-min": {
+              "type": "string",
+              "description": "Minimum token age (common-token-transfer)"
+            },
+            "token-age-max": {
+              "type": "string",
+              "description": "Maximum token age (sm-token-flows, common-token-transfer)"
+            },
+            "market-cap-min": {
+              "type": "string",
+              "description": "Minimum market cap (sm-token-flows, common-token-transfer)"
+            },
+            "market-cap-max": {
+              "type": "string",
+              "description": "Maximum market cap (sm-token-flows, common-token-transfer)"
+            },
+            "fdv-min": {
+              "type": "string",
+              "description": "Minimum fully diluted valuation (sm-token-flows)"
+            },
+            "fdv-max": {
+              "type": "string",
+              "description": "Maximum fully diluted valuation (sm-token-flows)"
+            },
+            "token-amount-min": {
+              "type": "string",
+              "description": "Minimum transferred token amount (common-token-transfer)"
+            },
+            "token-amount-max": {
+              "type": "string",
+              "description": "Maximum transferred token amount (common-token-transfer)"
+            },
+            "usd-min": {
+              "type": "string",
+              "description": "Minimum USD value (common-token-transfer, smart-contract-call)"
+            },
+            "usd-max": {
+              "type": "string",
+              "description": "Maximum USD value (common-token-transfer, smart-contract-call)"
+            },
+            "events": {
+              "type": "string",
+              "description": "Transfer event type(s) to match (common-token-transfer)"
+            },
+            "subject": {
+              "type": "string",
+              "description": "Subject address(es) or label(s) to watch (common-token-transfer)"
+            },
+            "counterparty": {
+              "type": "string",
+              "description": "Counterparty address(es) or label(s) (common-token-transfer)"
+            },
+            "exclude-from": {
+              "type": "string",
+              "description": "Sender address(es) to exclude (common-token-transfer)"
+            },
+            "exclude-to": {
+              "type": "string",
+              "description": "Recipient address(es) to exclude (common-token-transfer)"
+            },
+            "caller": {
+              "type": "string",
+              "description": "Caller address(es) to include (smart-contract-call)"
+            },
+            "contract": {
+              "type": "string",
+              "description": "Contract address(es) to include (smart-contract-call)"
+            },
+            "exclude-caller": {
+              "type": "string",
+              "description": "Caller address(es) to exclude (smart-contract-call)"
+            },
+            "exclude-contract": {
+              "type": "string",
+              "description": "Contract address(es) to exclude (smart-contract-call)"
+            },
+            "signature-hash": {
+              "type": "string",
+              "description": "Function signature hash(es) to match (smart-contract-call)"
             }
           }
         },
@@ -1499,6 +1709,174 @@
             "disabled": {
               "type": "boolean",
               "description": "Disable alert"
+            },
+            "inflow-1h-min": {
+              "type": "string",
+              "description": "Minimum inflow over 1h (sm-token-flows); sets the min of the inflow_1h range"
+            },
+            "inflow-1h-max": {
+              "type": "string",
+              "description": "Maximum inflow over 1h (sm-token-flows); sets the max of the inflow_1h range"
+            },
+            "inflow-1d-min": {
+              "type": "string",
+              "description": "Minimum inflow over 1d (sm-token-flows); sets the min of the inflow_1d range"
+            },
+            "inflow-1d-max": {
+              "type": "string",
+              "description": "Maximum inflow over 1d (sm-token-flows); sets the max of the inflow_1d range"
+            },
+            "inflow-7d-min": {
+              "type": "string",
+              "description": "Minimum inflow over 7d (sm-token-flows); sets the min of the inflow_7d range"
+            },
+            "inflow-7d-max": {
+              "type": "string",
+              "description": "Maximum inflow over 7d (sm-token-flows); sets the max of the inflow_7d range"
+            },
+            "outflow-1h-min": {
+              "type": "string",
+              "description": "Minimum outflow over 1h (sm-token-flows); sets the min of the outflow_1h range"
+            },
+            "outflow-1h-max": {
+              "type": "string",
+              "description": "Maximum outflow over 1h (sm-token-flows); sets the max of the outflow_1h range"
+            },
+            "outflow-1d-min": {
+              "type": "string",
+              "description": "Minimum outflow over 1d (sm-token-flows); sets the min of the outflow_1d range"
+            },
+            "outflow-1d-max": {
+              "type": "string",
+              "description": "Maximum outflow over 1d (sm-token-flows); sets the max of the outflow_1d range"
+            },
+            "outflow-7d-min": {
+              "type": "string",
+              "description": "Minimum outflow over 7d (sm-token-flows); sets the min of the outflow_7d range"
+            },
+            "outflow-7d-max": {
+              "type": "string",
+              "description": "Maximum outflow over 7d (sm-token-flows); sets the max of the outflow_7d range"
+            },
+            "netflow-1h-min": {
+              "type": "string",
+              "description": "Minimum netflow over 1h (sm-token-flows); sets the min of the netflow_1h range"
+            },
+            "netflow-1h-max": {
+              "type": "string",
+              "description": "Maximum netflow over 1h (sm-token-flows); sets the max of the netflow_1h range"
+            },
+            "netflow-1d-min": {
+              "type": "string",
+              "description": "Minimum netflow over 1d (sm-token-flows); sets the min of the netflow_1d range"
+            },
+            "netflow-1d-max": {
+              "type": "string",
+              "description": "Maximum netflow over 1d (sm-token-flows); sets the max of the netflow_1d range"
+            },
+            "netflow-7d-min": {
+              "type": "string",
+              "description": "Minimum netflow over 7d (sm-token-flows); sets the min of the netflow_7d range"
+            },
+            "netflow-7d-max": {
+              "type": "string",
+              "description": "Maximum netflow over 7d (sm-token-flows); sets the max of the netflow_7d range"
+            },
+            "token": {
+              "type": "string",
+              "description": "Token address or symbol to include, comma-separated for several (sm-token-flows, common-token-transfer)"
+            },
+            "exclude-token": {
+              "type": "string",
+              "description": "Token address or symbol to exclude, comma-separated for several (sm-token-flows, common-token-transfer)"
+            },
+            "token-sector": {
+              "type": "string",
+              "description": "Token sector(s) to include (sm-token-flows, common-token-transfer)"
+            },
+            "exclude-token-sector": {
+              "type": "string",
+              "description": "Token sector(s) to exclude (sm-token-flows, common-token-transfer)"
+            },
+            "token-age-min": {
+              "type": "string",
+              "description": "Minimum token age (common-token-transfer)"
+            },
+            "token-age-max": {
+              "type": "string",
+              "description": "Maximum token age (sm-token-flows, common-token-transfer)"
+            },
+            "market-cap-min": {
+              "type": "string",
+              "description": "Minimum market cap (sm-token-flows, common-token-transfer)"
+            },
+            "market-cap-max": {
+              "type": "string",
+              "description": "Maximum market cap (sm-token-flows, common-token-transfer)"
+            },
+            "fdv-min": {
+              "type": "string",
+              "description": "Minimum fully diluted valuation (sm-token-flows)"
+            },
+            "fdv-max": {
+              "type": "string",
+              "description": "Maximum fully diluted valuation (sm-token-flows)"
+            },
+            "token-amount-min": {
+              "type": "string",
+              "description": "Minimum transferred token amount (common-token-transfer)"
+            },
+            "token-amount-max": {
+              "type": "string",
+              "description": "Maximum transferred token amount (common-token-transfer)"
+            },
+            "usd-min": {
+              "type": "string",
+              "description": "Minimum USD value (common-token-transfer, smart-contract-call)"
+            },
+            "usd-max": {
+              "type": "string",
+              "description": "Maximum USD value (common-token-transfer, smart-contract-call)"
+            },
+            "events": {
+              "type": "string",
+              "description": "Transfer event type(s) to match (common-token-transfer)"
+            },
+            "subject": {
+              "type": "string",
+              "description": "Subject address(es) or label(s) to watch (common-token-transfer)"
+            },
+            "counterparty": {
+              "type": "string",
+              "description": "Counterparty address(es) or label(s) (common-token-transfer)"
+            },
+            "exclude-from": {
+              "type": "string",
+              "description": "Sender address(es) to exclude (common-token-transfer)"
+            },
+            "exclude-to": {
+              "type": "string",
+              "description": "Recipient address(es) to exclude (common-token-transfer)"
+            },
+            "caller": {
+              "type": "string",
+              "description": "Caller address(es) to include (smart-contract-call)"
+            },
+            "contract": {
+              "type": "string",
+              "description": "Contract address(es) to include (smart-contract-call)"
+            },
+            "exclude-caller": {
+              "type": "string",
+              "description": "Caller address(es) to exclude (smart-contract-call)"
+            },
+            "exclude-contract": {
+              "type": "string",
+              "description": "Contract address(es) to exclude (smart-contract-call)"
+            },
+            "signature-hash": {
+              "type": "string",
+              "description": "Function signature hash(es) to match (smart-contract-call)"
             }
           }
         },
