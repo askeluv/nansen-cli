@@ -49,8 +49,10 @@ function validateSolanaAddress(address) {
 // ============= Amount Parsing =============
 
 function parseAmount(amountStr, decimals) {
-  if (String(amountStr).startsWith('-')) throw new Error('Amount must be positive');
-  const parts = amountStr.split('.');
+  const str = String(amountStr).trim();
+  if (str.startsWith('-')) throw new Error('Amount must be positive');
+  if (!/^\d+(\.\d+)?$/.test(str)) throw new Error('Amount must be a valid number');
+  const parts = str.split('.');
   const whole = parts[0] || '0';
   let frac = (parts[1] || '').padEnd(decimals, '0').slice(0, decimals);
   return BigInt(whole) * (10n ** BigInt(decimals)) + BigInt(frac);
