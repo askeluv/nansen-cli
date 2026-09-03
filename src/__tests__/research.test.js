@@ -324,10 +324,10 @@ describe('buildResearchCommands handler', () => {
     mockApi = makeMockApi();
     const options = { 'token-address': TOKENS.solana, 'from-date': FROM, timeframe: '1d' };
     await expect(cmds.research(['historical-token-ohlcv'], mockApi, {}, options))
-      .rejects.toThrow(/exactly one/);
+      .rejects.toThrow(/one of --as-of-date or --as-of-ts/);
     await expect(cmds.research(['historical-token-ohlcv'], mockApi, {}, {
       ...options, 'as-of-date': TO, 'as-of-ts': `${TO}T00:00:00Z`,
-    })).rejects.toThrow(/exactly one/);
+    })).rejects.toThrow(/mutually exclusive/);
   });
 
   it('rejects unknown subcommand', async () => {

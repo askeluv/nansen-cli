@@ -205,9 +205,15 @@ export function buildResearchCommands(deps = {}) {
           { 'token-address': options['token-address'] || options.token, 'from-date': fromDate, timeframe: options.timeframe },
           ['token-address', 'from-date', 'timeframe'],
         );
-        if (Boolean(asOfDate) === Boolean(asOfTs)) {
+        if (!asOfDate && !asOfTs) {
           throw new NansenError(
-            'Provide exactly one of --as-of-date or --as-of-ts',
+            'Provide one of --as-of-date or --as-of-ts',
+            ErrorCode.MISSING_PARAM,
+          );
+        }
+        if (asOfDate && asOfTs) {
+          throw new NansenError(
+            '--as-of-date and --as-of-ts are mutually exclusive',
             ErrorCode.INVALID_PARAMS,
           );
         }
