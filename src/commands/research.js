@@ -77,7 +77,7 @@ function parseChains(options) {
 const HELP_TOP = `nansen research — Direct API analytics
 
 SUBCOMMANDS:
-  token-sectors                    List token sectors available for filtering
+  token-sectors                     List token sectors available for filtering
   historical-dex-trades             Historical DEX trades for a token
   historical-pnl-leaderboard        Historical PnL leaderboard for a token
   historical-token-flow-summary     Historical token flow summary
@@ -182,13 +182,13 @@ export function buildResearchCommands(deps = {}) {
         return;
       }
 
+      if (sub === 'token-sectors') return apiInstance.tokenSectors();
+
       const orderBy = parseSort(options.sort, options['order-by']);
       const pagination = buildPagination(options);
       const filters = options.filters || {};
       const { fromDate, toDate } = resolveDateRange(options);
       const asOfDate = options['as-of-date'];
-
-      if (sub === 'token-sectors') return apiInstance.tokenSectors();
 
       // Range-based token endpoints (require --from-date + --to-date)
       const rangeTokenHandlers = {
