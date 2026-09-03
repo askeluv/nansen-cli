@@ -3574,6 +3574,12 @@ EXAMPLES:
               // Privy EVM, Privy Solana, local/WalletConnect Solana, the
               // WalletConnect sign-only fallback, and --gasless Relay — every
               // path that reaches this shared broadcast call.
+              //
+              // Deliberate: a broadcast that later reverts on-chain (the
+              // "Trying next quote" path below) still consumes the quote —
+              // the revert still burned the nonce, so re-signing this same
+              // quote for a retry would race the reverted tx's nonce. This is
+              // intentional, not an oversight.
               markQuoteExecuted(quoteId, { broadcast: { txHash: txId } });
 
               // For EVM: verify the tx actually succeeded on-chain
@@ -3678,6 +3684,15 @@ EXAMPLES:
             } else {
               log(`\n  ✗ Quote ${quoteName} failed: ${result.status}`);
               if (result.error) log(`    Error:  ${result.error}`);
+              // A non-Success result can still carry a hash — the same
+              // /execute response shape (status: 'Failed' + txHash) is
+              // observed for approval broadcasts in trading.test.js, so a
+              // "Failed" swap isn't provably unbroadcast either. We can't
+              // tell from here whether the hash means the tx actually went
+              // out, but the asymmetry favors marking: a needless re-quote
+              // is cheaper than a silent double broadcast.
+              const failedTxId = result.signature || result.txHash;
+              if (failedTxId) markQuoteExecuted(quoteId, { broadcast: { txHash: failedTxId } });
               lastQuoteError = `${quoteName}: ${result.error || result.status}`;
               if (qi + 1 < endIndex) log(`  Trying next quote...`);
             }

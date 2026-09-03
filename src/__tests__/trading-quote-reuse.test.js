@@ -218,4 +218,54 @@ describe('swap quote reuse guard (mirrors bridge quotes)', () => {
 
     expect(executeBodies).toHaveLength(1);
   });
+
+  it('marks the quote spent when /execute returns a non-Success status with a txHash', async () => {
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    const walletAddress = showWallet('default').evm;
+
+    const executeBodies = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const body = opts?.body ? JSON.parse(opts.body) : {};
+
+      if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
+        executeBodies.push(body);
+        // Same response shape observed for approval broadcasts in
+        // trading.test.js ("fails closed when reapproval fails after a
+        // successful revoke"): status !== 'Success' alongside a txHash.
+        const txHash = evmTxHash(body.signedTransaction);
+        return Promise.resolve({
+          ok: true,
+          text: () => Promise.resolve(JSON.stringify({ status: 'Failed', error: 'simulation reverted', chainType: 'evm', broadcaster: 'test', txHash })),
+        });
+      }
+
+      if (body.method === 'eth_getCode') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      }
+      if (body.method === 'eth_getTransactionCount') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+      }
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    const quoteId = saveEvmQuote(walletAddress);
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    const flags = { 'no-simulate': true, 'no-verify-outcome': true };
+
+    // Single-candidate quote, so the Failed result exhausts the loop.
+    await expect(cmds.execute([], null, flags, { quote: quoteId }))
+      .rejects.toThrow(/all quotes failed/i);
+    expect(executeBodies).toHaveLength(1);
+
+    const quoteFile = JSON.parse(fs.readFileSync(path.join(getQuotesDir(), `${quoteId}.json`), 'utf8'));
+    expect(quoteFile.executedAt).toBeTypeOf('number');
+    expect(quoteFile.broadcasts?.[0]?.txHash).toBeTruthy();
+
+    // A retry must be refused, not re-broadcast under a fresh nonce.
+    await expect(cmds.execute([], null, flags, { quote: quoteId }))
+      .rejects.toThrow(/already executed/i);
+    expect(executeBodies).toHaveLength(1);
+  });
 });
