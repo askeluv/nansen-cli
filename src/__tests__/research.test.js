@@ -312,6 +312,14 @@ describe('buildResearchCommands handler', () => {
     })).rejects.toThrow(/to-date/);
   });
 
+  it('requires an address for perp PnL summary', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['perp-pnl-summary'], mockApi, {}, {
+      'from-date': FROM, 'to-date': TO,
+    })).rejects.toThrow(/address/);
+    expect(mockApi.addressPerpPnlSummary).not.toHaveBeenCalled();
+  });
+
   it('rejects unknown subcommand', async () => {
     mockApi = makeMockApi();
     await expect(cmds.research(['not-a-real-sub'], mockApi, {}, {}))
