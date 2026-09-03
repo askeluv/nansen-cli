@@ -1,9 +1,7 @@
 /**
  * Nansen CLI - Research command
  *
- * Historical/point-in-time analytics. Each subcommand resolves labels and
- * metrics at the requested date rather than current state — useful for
- * backtesting and historical research.
+ * Direct API analytics, including historical/point-in-time research.
  */
 
 import { NansenError, ErrorCode } from '../api.js';
@@ -41,6 +39,7 @@ const SUBCOMMANDS = [
 ];
 
 export const RESEARCH_HISTORICAL_SUBCOMMANDS = new Set(SUBCOMMANDS);
+export const RESEARCH_SUBCOMMANDS = new Set(['position-intelligence', ...SUBCOMMANDS]);
 
 function requireOptions(options, required) {
   const missing = required.filter(name => !options[name]);
@@ -75,9 +74,10 @@ function parseChains(options) {
   return undefined;
 }
 
-const HELP_TOP = `nansen research — Historical/point-in-time analytics
+const HELP_TOP = `nansen research — Direct API analytics
 
 SUBCOMMANDS:
+  position-intelligence            Aggregate Hyperliquid positions by trader cohort
   historical-dex-trades             Historical DEX trades for a token
   historical-pnl-leaderboard        Historical PnL leaderboard for a token
   historical-token-flow-summary     Historical token flow summary
@@ -102,6 +102,10 @@ COMMON OPTIONS:
 Run: nansen research <subcommand> --help`;
 
 const SUB_HELP = {
+  'position-intelligence': `nansen research position-intelligence — Aggregate Hyperliquid positions by trader cohort
+
+USAGE:
+  nansen research position-intelligence --symbol <symbol>`,
   'historical-dex-trades': `nansen research historical-dex-trades — Historical DEX trades for a token
 
 USAGE:
@@ -166,9 +170,9 @@ export function buildResearchCommands(deps = {}) {
         return;
       }
 
-      if (!RESEARCH_HISTORICAL_SUBCOMMANDS.has(sub)) {
+      if (!RESEARCH_SUBCOMMANDS.has(sub)) {
         throw new NansenError(
-          `Unknown research subcommand: ${sub}. Available: ${SUBCOMMANDS.join(', ')}`,
+          `Unknown research subcommand: ${sub}. Available: ${[...RESEARCH_SUBCOMMANDS].join(', ')}`,
           ErrorCode.UNKNOWN,
         );
       }
@@ -183,6 +187,12 @@ export function buildResearchCommands(deps = {}) {
       const filters = options.filters || {};
       const { fromDate, toDate } = resolveDateRange(options);
       const asOfDate = options['as-of-date'];
+
+      if (sub === 'position-intelligence') {
+        const symbol = options.symbol || options['token-address'] || options.token;
+        requireOptions({ symbol }, ['symbol']);
+        return apiInstance.tokenPositionIntelligence({ tokenAddress: symbol });
+      }
 
       // Range-based token endpoints (require --from-date + --to-date)
       const rangeTokenHandlers = {
