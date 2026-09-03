@@ -762,7 +762,7 @@ Labels: Fund, Smart Trader, 30D/90D/180D Smart Trader, Smart HL Perps Trader
 Docs: https://docs.nansen.ai
 Skills: npx skills add nansen-ai/nansen-cli (agent-optimised docs per command group)
 
-Telemetry: anonymous usage stats (commands, timing, errors). Perp order/close additionally send the order side and Hyperliquid order id. Disable: DO_NOT_TRACK=1
+Telemetry: anonymous usage stats (commands, timing, errors). Perp order/close additionally send each leg's side, outcome, order id, shared submission id, and a SHA-256 wallet identifier. Raw wallet, price, size, and exchange error text are not sent. Disable: DO_NOT_TRACK=1
 `;
 
 // Usage text for the `trade` command group. Shared by the trade handler and the

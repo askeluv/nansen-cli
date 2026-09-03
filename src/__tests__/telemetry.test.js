@@ -291,9 +291,18 @@ describe('telemetry', () => {
   });
 
   describe('trackPerpOrderCompleted', () => {
-    const baseOutcome = { command: 'order', side: 'buy', oid: 55 };
+    const baseOutcome = {
+      command: 'order',
+      side: 'buy',
+      outcome: 'filled',
+      submission_id: '1234567890',
+      leg_index: 0,
+      leg: 'parent',
+      wallet_address: '0x1111111111111111111111111111111111111111',
+      oid: 55,
+    };
 
-    it('sends a perp_order_completed event with only side and order id', () => {
+    it('sends a privacy-minimal canonical per-leg outcome', () => {
       trackPerpOrderCompleted(baseOutcome);
 
       expect(fetchMock).toHaveBeenCalledOnce();
@@ -307,13 +316,19 @@ describe('telemetry', () => {
       expect(body.session_id).toBeTruthy();
       expect(body.event_id).toBeTruthy();
       expect(body.timestamp).toBeTruthy();
-      // Only side + oid (plus the standard version tag). No asset, price, size,
-      // fill status, or TP/SL detail — and `command` must not leak into properties.
       expect(body.properties).toEqual({
         source: expect.stringContaining('nansen-cli/'),
         side: 'buy',
+        outcome: 'filled',
+        submission_id: '1234567890',
+        leg_index: 0,
+        leg: 'parent',
+        wallet_address_hash: expect.any(String),
         oid: 55,
       });
+      expect(body.properties).not.toHaveProperty('wallet_address');
+      expect(body.properties).not.toHaveProperty('price');
+      expect(body.properties).not.toHaveProperty('size');
       expect(body.context.client_type).toBe('nansen-cli');
     });
 
@@ -329,6 +344,15 @@ describe('telemetry', () => {
       const body = JSON.parse(fetchMock.mock.calls[0][1].body);
       expect(body.properties.side).toBe('sell');
       expect(body.properties).not.toHaveProperty('oid');
+    });
+
+    it('uses a deterministic event id for duplicate delivery of the same leg', () => {
+      trackPerpOrderCompleted(baseOutcome);
+      trackPerpOrderCompleted(baseOutcome);
+      const first = JSON.parse(fetchMock.mock.calls[0][1].body);
+      const second = JSON.parse(fetchMock.mock.calls[1][1].body);
+      expect(first.event_id).toBe(second.event_id);
+      expect(first.event_id).toMatch(/^[0-9a-f-]{36}$/);
     });
 
     it('respects the DO_NOT_TRACK opt-out', async () => {
