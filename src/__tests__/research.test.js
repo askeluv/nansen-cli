@@ -310,6 +310,23 @@ describe('buildResearchCommands handler', () => {
     expect(mockApi.chainRank).not.toHaveBeenCalled();
   });
 
+  it('rejects --timeframe-days 0 on historical-token-screener (API requires at least 1)', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['historical-token-screener'], mockApi, {}, {
+      'timeframe-days': '0', 'to-date': TO,
+    })).rejects.toThrow('--timeframe-days must be a positive integer');
+    expect(mockApi.researchTokenScreener).not.toHaveBeenCalled();
+  });
+
+  it('prints chain-rank help without calling the API', async () => {
+    mockApi = makeMockApi();
+    const logged = [];
+    const helpCmds = buildResearchCommands({ log: line => logged.push(line) });
+    await helpCmds.research(['chain-rank', 'help'], mockApi, {}, {});
+    expect(logged.join('\n')).toContain('nansen research chain-rank');
+    expect(mockApi.chainRank).not.toHaveBeenCalled();
+  });
+
   it('rejects chain-rank with an unknown chain type', async () => {
     mockApi = makeMockApi();
     await expect(cmds.research(['chain-rank'], mockApi, {}, { 'chain-type': 'solana' }))
