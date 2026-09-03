@@ -5,28 +5,7 @@
  */
 
 import { NansenError, ErrorCode } from '../api.js';
-
-// Local copies of CLI helpers to avoid a circular import with src/cli.js.
-function buildPagination(options) {
-  if (options.limit === undefined && options.page === undefined) return undefined;
-  const perPage = options.limit === undefined ? undefined : Number(options.limit);
-  if (perPage !== undefined && (!Number.isInteger(perPage) || perPage < 1)) {
-    throw new NansenError('--limit must be a positive integer', ErrorCode.INVALID_PARAMS);
-  }
-  return {
-    page: Math.max(1, parseInt(options.page, 10) || 1),
-    per_page: perPage,
-  };
-}
-
-function parseSort(sortOption, orderByOption) {
-  if (orderByOption) return orderByOption;
-  if (!sortOption) return undefined;
-  const parts = String(sortOption).split(':');
-  const field = parts[0];
-  const direction = (parts[1] || 'desc').toUpperCase();
-  return [{ field, direction }];
-}
+import { buildPagination, parseSort } from '../query-options.js';
 
 const SUBCOMMANDS = [
   'historical-dex-trades',

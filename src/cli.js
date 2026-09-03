@@ -13,6 +13,8 @@ import { formatAlertsTable, buildAlertsCommands } from './commands/alerts.js';
 import { buildAgentCommands } from './commands/agent.js';
 import { buildMcpCommands } from './commands/mcp.js';
 import { buildResearchCommands, RESEARCH_HISTORICAL_SUBCOMMANDS, RESEARCH_SUBCOMMANDS } from './commands/research.js';
+import { buildPagination, parseSort } from './query-options.js';
+export { buildPagination, parseSort };
 import { resolveAddress, isEnsName } from './ens.js';
 import fs from 'fs';
 import { getUpdateNotification, getUpgradeNotice, scheduleUpdateCheck } from './update-check.js';
@@ -52,14 +54,6 @@ export function resolveBooleanOption(options, flags, key) {
   }
   if (flags[key] !== undefined) return Boolean(flags[key]);
   return undefined;
-}
-
-export function buildPagination(options) {
-  if (!options.limit && !options.page) return undefined;
-  return {
-    page: Math.max(1, parseInt(options.page, 10) || 1),
-    per_page: options.limit,
-  };
 }
 
 // ============= Field Filtering =============
@@ -458,22 +452,6 @@ export function parseDateOption(dateOption, days = 30) {
   const to = new Date().toISOString().split('T')[0];
   const from = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
   return { from, to };
-}
-
-// Parse simple sort syntax: "field:direction" or "field" (defaults to DESC)
-export function parseSort(sortOption, orderByOption) {
-  // If --order-by is provided, use it (full JSON control)
-  if (orderByOption) return orderByOption;
-  
-  // If no --sort, return undefined
-  if (!sortOption) return undefined;
-  
-  // Parse --sort field:direction or --sort field
-  const parts = sortOption.split(':');
-  const field = parts[0];
-  const direction = (parts[1] || 'desc').toUpperCase();
-  
-  return [{ field, direction }];
 }
 
 // Enrich transfers with Nansen labels for from/to addresses
