@@ -1162,6 +1162,23 @@
             }
           }
         },
+        "perp-pnl-summary": {
+          "endpoint": "/api/v1/profiler/perp-pnl-summary",
+          "description": "Summarize realized Hyperliquid PnL for an address",
+          "options": {
+            "address": {
+              "required": true
+            },
+            "from-date": {
+              "required": true,
+              "description": "Start of date range"
+            },
+            "to-date": {
+              "required": true,
+              "description": "End of date range"
+            }
+          }
+        },
         "historical-dex-trades": {
           "endpoint": "/api/v1beta1/tgm/historical-dex-trades",
           "description": "Historical DEX trades for a token at a point in time",

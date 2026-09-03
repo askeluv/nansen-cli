@@ -30,6 +30,7 @@ const DOCUMENTED_ENDPOINTS = {
     { name: 'pnl-summary', method: 'addressPnlSummary', endpoint: '/api/v1/profiler/address/pnl-summary' },
     { name: 'perp-positions', method: 'addressPerpPositions', endpoint: '/api/v1/profiler/perp-positions' },
     { name: 'perp-trades', method: 'addressPerpTrades', endpoint: '/api/v1/profiler/perp-trades' },
+    { name: 'perp-pnl-summary', method: 'addressPerpPnlSummary', endpoint: '/api/v1/profiler/perp-pnl-summary' },
     { name: 'dex-trades', method: 'addressDexTrades', endpoint: '/api/v1/profiler/dex-trades' },
   ],
   tokenGodMode: [
