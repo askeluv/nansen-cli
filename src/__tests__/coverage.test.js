@@ -10,6 +10,9 @@ import { batchProfile, traceCounterparties, compareWallets } from '../cli.js';
 
 // All documented endpoints from Nansen API
 const DOCUMENTED_ENDPOINTS = {
+  chains: [
+    { name: 'chain-rank', method: 'chainRank', endpoint: '/api/v1/chains/chain-rank' },
+  ],
   smartMoney: [
     { name: 'netflow', method: 'smartMoneyNetflow', endpoint: '/api/v1/smart-money/netflow' },
     { name: 'holdings', method: 'smartMoneyHoldings', endpoint: '/api/v1/smart-money/holdings' },
@@ -17,10 +20,12 @@ const DOCUMENTED_ENDPOINTS = {
     { name: 'dcas', method: 'smartMoneyDcas', endpoint: '/api/v1/smart-money/dcas' },
     { name: 'perp-trades', method: 'smartMoneyPerpTrades', endpoint: '/api/v1/smart-money/perp-trades' },
     { name: 'historical-holdings', method: 'smartMoneyHistoricalHoldings', endpoint: '/api/v1/smart-money/historical-holdings' },
+    { name: 'pnl-leaderboard', method: 'smartMoneyPnlLeaderboard', endpoint: '/api/v1/smart-money/pnl-leaderboard' },
   ],
   profiler: [
     { name: 'balance', method: 'addressBalance', endpoint: '/api/v1/profiler/address/current-balance' },
     { name: 'labels', method: 'addressLabels', endpoint: '/api/v1/profiler/address/labels' },
+    { name: 'premium-labels', method: 'addressPremiumLabels', endpoint: '/api/v1/profiler/address/premium-labels' },
     { name: 'transactions', method: 'addressTransactions', endpoint: '/api/v1/profiler/address/transactions' },
     { name: 'pnl', method: 'addressPnl', endpoint: '/api/v1/profiler/address/pnl-and-trade-performance' },
     { name: 'search', method: 'entitySearch', endpoint: '/api/beta/profiler/entity-name-search' },
@@ -30,6 +35,7 @@ const DOCUMENTED_ENDPOINTS = {
     { name: 'pnl-summary', method: 'addressPnlSummary', endpoint: '/api/v1/profiler/address/pnl-summary' },
     { name: 'perp-positions', method: 'addressPerpPositions', endpoint: '/api/v1/profiler/perp-positions' },
     { name: 'perp-trades', method: 'addressPerpTrades', endpoint: '/api/v1/profiler/perp-trades' },
+    { name: 'perp-pnl-summary', method: 'addressPerpPnlSummary', endpoint: '/api/v1/profiler/perp-pnl-summary' },
     { name: 'dex-trades', method: 'addressDexTrades', endpoint: '/api/v1/profiler/dex-trades' },
   ],
   tokenGodMode: [
@@ -46,8 +52,10 @@ const DOCUMENTED_ENDPOINTS = {
     { name: 'jup-dca', method: 'tokenJupDca', endpoint: '/api/v1/tgm/jup-dca' },
     { name: 'perp-trades', method: 'tokenPerpTrades', endpoint: '/api/v1/tgm/perp-trades' },
     { name: 'perp-positions', method: 'tokenPerpPositions', endpoint: '/api/v1/tgm/perp-positions' },
+    { name: 'position-intelligence', method: 'tokenPositionIntelligence', endpoint: '/api/v1/tgm/position-intelligence' },
     { name: 'perp-pnl-leaderboard', method: 'tokenPerpPnlLeaderboard', endpoint: '/api/v1/tgm/perp-pnl-leaderboard' },
     { name: 'top-tokens', method: 'topTokens', endpoint: '/api/v1/nansen-score/top-tokens' },
+    { name: 'historical-token-ohlcv', method: 'researchHistoricalTokenOhlcv', endpoint: '/api/v1beta1/tgm/historical-token-ohlcv' },
   ],
   composite: [
     { name: 'batch-profile', fn: batchProfile, endpoint: 'composite' },
@@ -59,6 +67,10 @@ const DOCUMENTED_ENDPOINTS = {
   ],
   search: [
     { name: 'general-search', method: 'generalSearch', endpoint: '/api/v1/search/general' },
+    { name: 'token-sectors', method: 'tokenSectors', endpoint: '/api/v1/search/token-sectors' },
+  ],
+  transactions: [
+    { name: 'transaction-with-token-transfer-lookup', method: 'transactionWithTokenTransferLookup', endpoint: '/api/v1/transaction-with-token-transfer-lookup' },
   ],
   predictionMarket: [
     { name: 'ohlcv', method: 'pmOhlcv', endpoint: '/api/v1/prediction-market/ohlcv' },
@@ -84,6 +96,14 @@ const NOT_IMPLEMENTED = [
 
 describe('API Endpoint Coverage', () => {
   const api = new NansenAPI('test-key');
+
+  describe('Chain Endpoints', () => {
+    for (const ep of DOCUMENTED_ENDPOINTS.chains) {
+      it(`should have ${ep.name} method`, () => {
+        expect(typeof api[ep.method]).toBe('function');
+      });
+    }
+  });
 
   describe('Smart Money Endpoints', () => {
     for (const ep of DOCUMENTED_ENDPOINTS.smartMoney) {
@@ -133,6 +153,14 @@ describe('API Endpoint Coverage', () => {
     }
   });
 
+  describe('Transaction Endpoints', () => {
+    for (const ep of DOCUMENTED_ENDPOINTS.transactions) {
+      it(`should have ${ep.name} method`, () => {
+        expect(typeof api[ep.method]).toBe('function');
+      });
+    }
+  });
+
   describe('Prediction Market Endpoints', () => {
     for (const ep of DOCUMENTED_ENDPOINTS.predictionMarket) {
       it(`should have ${ep.name} method`, () => {
@@ -144,12 +172,14 @@ describe('API Endpoint Coverage', () => {
   describe('Coverage Summary', () => {
     it('should report implemented endpoints', () => {
       const implemented = [
+        ...DOCUMENTED_ENDPOINTS.chains,
         ...DOCUMENTED_ENDPOINTS.smartMoney,
         ...DOCUMENTED_ENDPOINTS.profiler,
         ...DOCUMENTED_ENDPOINTS.tokenGodMode,
         ...DOCUMENTED_ENDPOINTS.composite,
         ...DOCUMENTED_ENDPOINTS.portfolio,
         ...DOCUMENTED_ENDPOINTS.search,
+        ...DOCUMENTED_ENDPOINTS.transactions,
         ...DOCUMENTED_ENDPOINTS.predictionMarket,
       ];
       
