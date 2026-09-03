@@ -301,6 +301,15 @@ describe('buildResearchCommands handler', () => {
     expect(mockApi.chainRank).not.toHaveBeenCalled();
   });
 
+  it('rejects non-integer --timeframe-days values', async () => {
+    mockApi = makeMockApi();
+    for (const value of ['30.5', '30abc', '-7', '0']) {
+      await expect(cmds.research(['chain-rank'], mockApi, {}, { 'timeframe-days': value }))
+        .rejects.toThrow('--timeframe-days must be a positive integer');
+    }
+    expect(mockApi.chainRank).not.toHaveBeenCalled();
+  });
+
   it('rejects chain-rank with an unknown chain type', async () => {
     mockApi = makeMockApi();
     await expect(cmds.research(['chain-rank'], mockApi, {}, { 'chain-type': 'solana' }))

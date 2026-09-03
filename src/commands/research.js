@@ -60,11 +60,11 @@ function resolveDateRange(options) {
 
 function parseTimeframeDays(value) {
   if (value === undefined || value === null || value === '') return undefined;
-  const n = parseInt(value, 10);
-  if (Number.isNaN(n)) {
-    throw new NansenError('--timeframe-days must be an integer', ErrorCode.INVALID_PARAMS);
+  const trimmed = String(value).trim();
+  if (!/^[1-9]\d*$/.test(trimmed)) {
+    throw new NansenError('--timeframe-days must be a positive integer', ErrorCode.INVALID_PARAMS);
   }
-  return n;
+  return parseInt(trimmed, 10);
 }
 
 function parseChains(options) {
