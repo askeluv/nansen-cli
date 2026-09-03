@@ -92,6 +92,10 @@ describe('Amount Parsing', () => {
     expect(parseAmount('1.123456789', 6)).toBe(1123456n);
   });
 
+  test('rejects negative amounts', () => {
+    expect(() => parseAmount('-1.5', 6)).toThrow('Amount must be positive');
+    expect(() => parseAmount('-0.1', 18)).toThrow('Amount must be positive');
+  });
   test('pads short decimals', () => {
     expect(parseAmount('1.1', 18)).toBe(1100000000000000000n);
   });
