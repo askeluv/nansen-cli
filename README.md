@@ -56,7 +56,7 @@ nansen schema [command] [--pretty]    # full command reference (no API key neede
 
 **Research categories:** `smart-money` (`sm`), `token` (`tgm`), `profiler` (`prof`), `portfolio` (`port`), `prediction-market` (`pm`), `search`, `perp`, `points`
 
-**Direct research subcommand:** `perp-pnl-summary`
+**Research subcommands:** `perp-pnl-summary` (direct), plus the `historical-*` point-in-time commands — run `nansen research help` for the full list
 
 **Trade:** `quote`, `execute`, `bridge-status`, `limit-order` — DEX swaps on Solana and Base, cross-chain bridges, and Solana limit orders.
 
