@@ -649,7 +649,7 @@ describe('perp direct-to-HL flow (Chunk 3/4/5)', () => {
     expect(out).not.toMatch(/9007199254740992/); // never present the rounded id
   });
 
-  describe('perp_order_completed telemetry', () => {
+  describe('canonical perps outcome telemetry', () => {
     function trackingCmds() {
       const track = vi.fn();
       return { track, telCmds: buildPerpCommands({ log: () => {}, warn: () => {}, track }) };
@@ -719,13 +719,14 @@ describe('perp direct-to-HL flow (Chunk 3/4/5)', () => {
       expect(track).toHaveBeenCalledTimes(3);
       expect(track.mock.calls.map(([event]) => ({
         side: event.side,
+        position_side: event.position_side,
         outcome: event.outcome,
         leg: event.leg,
         oid: event.oid,
       }))).toEqual([
-        { side: 'buy', outcome: 'filled', leg: 'parent', oid: 1 },
-        { side: 'sell', outcome: 'resting', leg: 'take-profit', oid: 2 },
-        { side: 'sell', outcome: 'resting', leg: 'stop-loss', oid: 3 },
+        { side: 'buy', position_side: 'long', outcome: 'filled', leg: 'parent', oid: 1 },
+        { side: 'sell', position_side: 'long', outcome: 'resting', leg: 'take-profit', oid: 2 },
+        { side: 'sell', position_side: 'long', outcome: 'resting', leg: 'stop-loss', oid: 3 },
       ]);
       expect(new Set(track.mock.calls.map(([event]) => event.submission_id)).size).toBe(1);
     });
@@ -813,7 +814,7 @@ describe('summarizeOrderResult', () => {
       { response: { type: 'order', data: { statuses: [{ resting: { oid: 123 } }] } } },
       order(),
     );
-    expect(r).toEqual([{ index: 0, leg: 'parent', side: 'buy', kind: 'resting', oid: 123, oidSafe: true }]);
+    expect(r).toEqual([{ index: 0, leg: 'parent', side: 'buy', positionSide: 'long', kind: 'resting', oid: 123, oidSafe: true }]);
   });
 
   it('extracts a fill with size and average price', () => {
@@ -822,7 +823,7 @@ describe('summarizeOrderResult', () => {
       order(),
     );
     expect(r).toEqual([{
-      index: 0, leg: 'parent', side: 'buy', kind: 'filled', oid: 456,
+      index: 0, leg: 'parent', side: 'buy', positionSide: 'long', kind: 'filled', oid: 456,
       oidSafe: true, totalSz: '0.01', avgPx: '2000.5',
     }]);
   });

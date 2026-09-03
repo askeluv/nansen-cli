@@ -178,7 +178,12 @@ function hashWalletAddress(walletAddress) {
 }
 
 function perpOutcomeEventId({ wallet_address, submission_id, leg_index, outcome }) {
-  if (wallet_address === undefined || submission_id === undefined || leg_index === undefined) {
+  if (
+    wallet_address === undefined
+    || submission_id === undefined
+    || leg_index === undefined
+    || outcome === undefined
+  ) {
     return crypto.randomUUID();
   }
   // Use a UUID-shaped, content-derived id because the event service dedupes on
@@ -286,7 +291,7 @@ export function trackCommandFailed({
 }
 
 /**
- * Track a completed Hyperliquid perp order (`nansen perp order` / `perp close`).
+ * Track one Hyperliquid perp response leg (`nansen perp order` / `perp close`).
  *
  * Fired from `buildScreenSignSubmit` in perp.js AFTER the HL /exchange response
  * is parsed (`summarizeOrderResult`). This is the only event that sees the order
@@ -296,7 +301,9 @@ export function trackCommandFailed({
  * Hyperliquid — Decision D4), so the backend never sees the response either;
  * this client-side event is the only way order outcomes reach BI.
  *
- * Exchange rejections with a parsed response emit `outcome=rejected` before
+ * Reuse the canonical trade_perps order/close succeeded/failed event names so
+ * CLI, web, mobile, and backend share one BI vocabulary. Exchange rejections
+ * with a parsed response emit the matching `*_failed` event before
  * the original command error is rethrown. Network and indeterminate timeout
  * failures remain covered only by `cli_command_failed` because no authoritative
  * exchange response exists.
@@ -310,6 +317,7 @@ export function trackCommandFailed({
  * @param {object} opts
  * @param {'order'|'close'} opts.command  - Which perp command placed the order (routes `path`)
  * @param {'buy'|'sell'} opts.side        - This leg's normalized trade side
+ * @param {'long'|'short'} [opts.position_side] - Position side after accounting for reduce-only
  * @param {'filled'|'resting'|'rejected'} opts.outcome - Exchange outcome
  * @param {string} opts.submission_id     - Shared id for all legs in one action
  * @param {number} opts.leg_index         - Zero-based response-leg index
@@ -321,6 +329,7 @@ export function trackCommandFailed({
 export function trackPerpOrderCompleted({
   command,
   side,
+  position_side,
   outcome,
   submission_id,
   leg_index,
@@ -330,10 +339,15 @@ export function trackPerpOrderCompleted({
   error_code,
 }) {
   const walletAddressHash = hashWalletAddress(wallet_address);
+  const eventId = perpOutcomeEventId({ wallet_address, submission_id, leg_index, outcome });
+  const event = `trade_perps_${command === 'close' ? 'close' : 'order'}_${outcome === 'rejected' ? 'failed' : 'succeeded'}`;
+  const positionSide = position_side ?? (command === 'close'
+    ? (side === 'buy' ? 'short' : 'long')
+    : (side === 'buy' ? 'long' : 'short'));
   return sendEvent({
-    event: 'perp_order_completed',
+    event,
     event_source: getEventSource(),
-    event_id: perpOutcomeEventId({ wallet_address, submission_id, leg_index, outcome }),
+    event_id: eventId,
     user_id: null,
     anonymous_id: getAnonymousId(),
     session_id: getSessionId(),
@@ -342,9 +356,13 @@ export function trackPerpOrderCompleted({
     // "/perp/close"), so BI can line the two events up per command.
     path: commandToPath(`perp ${command}`),
     properties: {
-      source: `nansen-cli/${cliVersion}`,
-      side,
-      outcome,
+      source: 'cli',
+      chain: 'hyperliquid',
+      attempt_id: eventId,
+      action: command === 'close' ? 'close' : 'open',
+      position_side: positionSide,
+      order_side: side,
+      execution_status: outcome,
       ...(submission_id !== undefined && { submission_id: String(submission_id) }),
       leg_index,
       leg,

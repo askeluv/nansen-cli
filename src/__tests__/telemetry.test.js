@@ -309,7 +309,7 @@ describe('telemetry', () => {
       const [url, opts] = fetchMock.mock.calls[0];
       expect(url).toContain('bi-data-sources.nansen.ai');
       const body = JSON.parse(opts.body);
-      expect(body.event).toBe('perp_order_completed');
+      expect(body.event).toBe('trade_perps_order_succeeded');
       expect(body.event_source).toBe('cli_prod');
       expect(body.path).toBe('/perp/order');
       expect(body.anonymous_id).toBeTruthy();
@@ -317,9 +317,13 @@ describe('telemetry', () => {
       expect(body.event_id).toBeTruthy();
       expect(body.timestamp).toBeTruthy();
       expect(body.properties).toEqual({
-        source: expect.stringContaining('nansen-cli/'),
-        side: 'buy',
-        outcome: 'filled',
+        source: 'cli',
+        chain: 'hyperliquid',
+        attempt_id: body.event_id,
+        action: 'open',
+        position_side: 'long',
+        order_side: 'buy',
+        execution_status: 'filled',
         submission_id: '1234567890',
         leg_index: 0,
         leg: 'parent',
@@ -335,14 +339,29 @@ describe('telemetry', () => {
     it('maps the close command to path /perp/close without leaking command', () => {
       trackPerpOrderCompleted({ ...baseOutcome, command: 'close' });
       const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body.event).toBe('trade_perps_close_succeeded');
       expect(body.path).toBe('/perp/close');
+      expect(body.properties.action).toBe('close');
+      expect(body.properties.position_side).toBe('short');
       expect(body.properties).not.toHaveProperty('command');
+    });
+
+    it('uses the canonical failed event names for rejected outcomes', () => {
+      trackPerpOrderCompleted({ ...baseOutcome, outcome: 'rejected', error_code: 'HL_ACTION_REJECTED' });
+      const order = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(order.event).toBe('trade_perps_order_failed');
+      expect(order.properties.execution_status).toBe('rejected');
+      expect(order.properties.error_code).toBe('HL_ACTION_REJECTED');
+
+      trackPerpOrderCompleted({ ...baseOutcome, command: 'close', outcome: 'rejected' });
+      const close = JSON.parse(fetchMock.mock.calls[1][1].body);
+      expect(close.event).toBe('trade_perps_close_failed');
     });
 
     it('omits oid when it is not provided (imprecise / unknown)', () => {
       trackPerpOrderCompleted({ command: 'order', side: 'sell' });
       const body = JSON.parse(fetchMock.mock.calls[0][1].body);
-      expect(body.properties.side).toBe('sell');
+      expect(body.properties.order_side).toBe('sell');
       expect(body.properties).not.toHaveProperty('oid');
     });
 

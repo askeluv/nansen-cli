@@ -2,4 +2,4 @@
 "nansen-cli": minor
 ---
 
-Emit canonical per-leg Hyperliquid order attribution with deterministic outcomes and privacy-preserving wallet identity.
+Emit privacy-preserving per-leg Hyperliquid attribution through the canonical trade-perps outcome events.

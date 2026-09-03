@@ -275,14 +275,20 @@ export function summarizeOrderResult(result, action) {
     // a wrong oid presented as authoritative.
     const orderSide = action.orders?.[index]?.b;
     const side = orderSide === true ? 'buy' : orderSide === false ? 'sell' : undefined;
+    const reduceOnly = action.orders?.[index]?.r === true;
+    const positionSide = side === undefined
+      ? undefined
+      : reduceOnly
+        ? (side === 'buy' ? 'short' : 'long')
+        : (side === 'buy' ? 'long' : 'short');
     if (entry.filled && entry.filled.oid !== undefined) {
       const { oid, totalSz, avgPx } = entry.filled;
-      out.push({ index, leg, side, kind: 'filled', oid, oidSafe: Number.isSafeInteger(oid), totalSz, avgPx });
+      out.push({ index, leg, side, positionSide, kind: 'filled', oid, oidSafe: Number.isSafeInteger(oid), totalSz, avgPx });
     } else if (entry.resting && entry.resting.oid !== undefined) {
       const { oid } = entry.resting;
-      out.push({ index, leg, side, kind: 'resting', oid, oidSafe: Number.isSafeInteger(oid) });
+      out.push({ index, leg, side, positionSide, kind: 'resting', oid, oidSafe: Number.isSafeInteger(oid) });
     } else if ('error' in entry) {
-      out.push({ index, leg, side, kind: 'rejected' });
+      out.push({ index, leg, side, positionSide, kind: 'rejected' });
     }
   }
   return out;
@@ -295,6 +301,7 @@ function emitPerpOrderCompleted(telemetry, summary, walletAddress, submissionId,
   return Promise.all(summary.map((order) => telemetry.track({
     command: telemetry.command,
     side: order.side ?? telemetry.side,
+    position_side: order.positionSide,
     outcome: order.kind,
     submission_id: String(submissionId),
     leg_index: order.index,
