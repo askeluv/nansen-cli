@@ -294,6 +294,20 @@ describe('buildResearchCommands handler', () => {
     expect(mockApi.chainRank).toHaveBeenCalledWith({ timeFrame: 30, chainType: 'evm' });
   });
 
+  it('rejects chain-rank with a timeframe outside 7/30/365', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['chain-rank'], mockApi, {}, { 'timeframe-days': '99' }))
+      .rejects.toThrow('--timeframe-days must be one of: 7, 30, 365');
+    expect(mockApi.chainRank).not.toHaveBeenCalled();
+  });
+
+  it('rejects chain-rank with an unknown chain type', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['chain-rank'], mockApi, {}, { 'chain-type': 'solana' }))
+      .rejects.toThrow('--chain-type must be one of: all, evm');
+    expect(mockApi.chainRank).not.toHaveBeenCalled();
+  });
+
   it('rejects unknown subcommand', async () => {
     mockApi = makeMockApi();
     await expect(cmds.research(['not-a-real-sub'], mockApi, {}, {}))

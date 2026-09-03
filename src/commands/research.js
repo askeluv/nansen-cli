@@ -41,6 +41,9 @@ const SUBCOMMANDS = [
 export const RESEARCH_HISTORICAL_SUBCOMMANDS = new Set(SUBCOMMANDS);
 export const RESEARCH_SUBCOMMANDS = new Set(['chain-rank', ...SUBCOMMANDS]);
 
+const CHAIN_RANK_TIMEFRAMES = new Set([7, 30, 365]);
+const CHAIN_RANK_CHAIN_TYPES = new Set(['all', 'evm']);
+
 function requireOptions(options, required) {
   const missing = required.filter(name => !options[name]);
   if (missing.length > 0) {
@@ -189,10 +192,21 @@ export function buildResearchCommands(deps = {}) {
       const asOfDate = options['as-of-date'];
 
       if (sub === 'chain-rank') {
-        return apiInstance.chainRank({
-          timeFrame: parseTimeframeDays(options['timeframe-days']) ?? 7,
-          chainType: options['chain-type'] || 'all',
-        });
+        const timeFrame = parseTimeframeDays(options['timeframe-days']) ?? 7;
+        if (!CHAIN_RANK_TIMEFRAMES.has(timeFrame)) {
+          throw new NansenError(
+            `--timeframe-days must be one of: ${[...CHAIN_RANK_TIMEFRAMES].join(', ')}`,
+            ErrorCode.INVALID_PARAMS,
+          );
+        }
+        const chainType = options['chain-type'] || 'all';
+        if (!CHAIN_RANK_CHAIN_TYPES.has(chainType)) {
+          throw new NansenError(
+            `--chain-type must be one of: ${[...CHAIN_RANK_CHAIN_TYPES].join(', ')}`,
+            ErrorCode.INVALID_PARAMS,
+          );
+        }
+        return apiInstance.chainRank({ timeFrame, chainType });
       }
 
       // Range-based token endpoints (require --from-date + --to-date)
