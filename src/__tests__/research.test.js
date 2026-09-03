@@ -55,6 +55,27 @@ describe('NansenAPI research (historical) methods', () => {
     return JSON.parse(options.body);
   }
 
+  it('uses the historical token OHLCV endpoint and request shape', async () => {
+    setupMock();
+    await api.researchHistoricalTokenOhlcv({
+      tokenAddress: TOKENS.solana,
+      chain: 'solana',
+      fromDate: FROM,
+      asOfDate: TO,
+      timeframe: '1d',
+      applyBlacklistFilter: false,
+    });
+    const body = lastCall('/api/v1beta1/tgm/historical-token-ohlcv');
+    expect(body).toEqual({
+      token_address: TOKENS.solana,
+      chain: 'solana',
+      date_from: FROM,
+      as_of_date: TO,
+      timeframe: '1d',
+      apply_blacklist_filter: false,
+    });
+  });
+
   describe('researchDexTrades', () => {
     it('hits historical-dex-trades with token_address, chain, and date_range {from,to}', async () => {
       setupMock();
@@ -270,11 +291,43 @@ describe('buildResearchCommands handler', () => {
       researchWalletBalances: vi.fn().mockResolvedValue({ data: [] }),
       researchTxLookup: vi.fn().mockResolvedValue({ data: [] }),
       researchWalletTransactions: vi.fn().mockResolvedValue({ data: [] }),
+      researchHistoricalTokenOhlcv: vi.fn().mockResolvedValue({ data: [] }),
     };
   }
 
-  it('exports all 11 subcommands', () => {
-    expect(RESEARCH_HISTORICAL_SUBCOMMANDS.size).toBe(11);
+  it('exports all 12 subcommands', () => {
+    expect(RESEARCH_HISTORICAL_SUBCOMMANDS.size).toBe(12);
+  });
+
+  it('dispatches historical-token-ohlcv', async () => {
+    mockApi = makeMockApi();
+    await cmds.research(['historical-token-ohlcv'], mockApi, {}, {
+      'token-address': TOKENS.solana,
+      chain: 'solana',
+      'from-date': FROM,
+      'as-of-date': TO,
+      timeframe: '1d',
+      'apply-blacklist-filter': 'false',
+    });
+    expect(mockApi.researchHistoricalTokenOhlcv).toHaveBeenCalledWith({
+      tokenAddress: TOKENS.solana,
+      chain: 'solana',
+      fromDate: FROM,
+      asOfDate: TO,
+      asOfTs: undefined,
+      timeframe: '1d',
+      applyBlacklistFilter: false,
+    });
+  });
+
+  it('requires exactly one historical OHLCV snapshot anchor', async () => {
+    mockApi = makeMockApi();
+    const options = { 'token-address': TOKENS.solana, 'from-date': FROM, timeframe: '1d' };
+    await expect(cmds.research(['historical-token-ohlcv'], mockApi, {}, options))
+      .rejects.toThrow(/exactly one/);
+    await expect(cmds.research(['historical-token-ohlcv'], mockApi, {}, {
+      ...options, 'as-of-date': TO, 'as-of-ts': `${TO}T00:00:00Z`,
+    })).rejects.toThrow(/exactly one/);
   });
 
   it('rejects unknown subcommand', async () => {

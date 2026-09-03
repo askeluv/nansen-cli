@@ -38,6 +38,7 @@ const SUBCOMMANDS = [
   'historical-wallet-balances',
   'historical-tx-lookup',
   'historical-wallet-transactions',
+  'historical-token-ohlcv',
 ];
 
 export const RESEARCH_HISTORICAL_SUBCOMMANDS = new Set(SUBCOMMANDS);
@@ -65,6 +66,15 @@ function parseTimeframeDays(value) {
   return n;
 }
 
+function parseBooleanOption(options, flags, key) {
+  const value = options[key] ?? flags[key];
+  if (value === undefined) return undefined;
+  if (typeof value === 'boolean') return value;
+  if (value === 'true' || value === '1') return true;
+  if (value === 'false' || value === '0') return false;
+  throw new NansenError(`--${key} must be true or false`, ErrorCode.INVALID_PARAMS);
+}
+
 function parseChains(options) {
   if (options.chains) {
     return Array.isArray(options.chains)
@@ -89,6 +99,7 @@ SUBCOMMANDS:
   historical-wallet-balances        Historical token balances for a wallet
   historical-tx-lookup              Lookup a historical transaction by hash
   historical-wallet-transactions    Historical transactions for a wallet
+  historical-token-ohlcv            Historical token OHLCV candles
 
 COMMON OPTIONS:
   --from-date <YYYY-MM-DD>   Start of date range (for range-based subcommands)
@@ -152,6 +163,10 @@ NOTE: Providing --block-timestamp skips a slow hash-resolution step and returns 
 
 USAGE:
   nansen research historical-wallet-transactions --address <addr> --as-of-date <YYYY-MM-DD> [--chain <chain>]`,
+  'historical-token-ohlcv': `nansen research historical-token-ohlcv — Historical token OHLCV candles
+
+USAGE:
+  nansen research historical-token-ohlcv --token-address <addr> --from-date <date> --timeframe <5m|15m|30m|1h|1d|1w> (--as-of-date <date> | --as-of-ts <timestamp>) [--chain <chain>] [--apply-blacklist-filter <true|false>]`,
 };
 
 export function buildResearchCommands(deps = {}) {
@@ -183,6 +198,29 @@ export function buildResearchCommands(deps = {}) {
       const filters = options.filters || {};
       const { fromDate, toDate } = resolveDateRange(options);
       const asOfDate = options['as-of-date'];
+
+      if (sub === 'historical-token-ohlcv') {
+        const asOfTs = options['as-of-ts'];
+        requireOptions(
+          { 'token-address': options['token-address'] || options.token, 'from-date': fromDate, timeframe: options.timeframe },
+          ['token-address', 'from-date', 'timeframe'],
+        );
+        if (Boolean(asOfDate) === Boolean(asOfTs)) {
+          throw new NansenError(
+            'Provide exactly one of --as-of-date or --as-of-ts',
+            ErrorCode.INVALID_PARAMS,
+          );
+        }
+        return apiInstance.researchHistoricalTokenOhlcv({
+          tokenAddress: options['token-address'] || options.token,
+          chain: options.chain || 'solana',
+          fromDate,
+          asOfDate,
+          asOfTs,
+          timeframe: options.timeframe,
+          applyBlacklistFilter: parseBooleanOption(options, flags, 'apply-blacklist-filter'),
+        });
+      }
 
       // Range-based token endpoints (require --from-date + --to-date)
       const rangeTokenHandlers = {

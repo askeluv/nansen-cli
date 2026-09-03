@@ -1162,6 +1162,38 @@
             }
           }
         },
+        "historical-token-ohlcv": {
+          "endpoint": "/api/v1beta1/tgm/historical-token-ohlcv",
+          "description": "Historical token OHLCV candles",
+          "options": {
+            "token-address": {
+              "required": true,
+              "description": "Token address or Hyperliquid asset symbol"
+            },
+            "chain": {
+              "enum": ["base", "bnb", "ethereum", "hyperliquid", "solana"],
+              "default": "solana"
+            },
+            "from-date": {
+              "required": true,
+              "description": "Start of data window"
+            },
+            "as-of-date": {
+              "description": "End of data window; mutually exclusive with --as-of-ts"
+            },
+            "as-of-ts": {
+              "description": "Exact Hyperliquid cutoff; mutually exclusive with --as-of-date"
+            },
+            "timeframe": {
+              "required": true,
+              "enum": ["5m", "15m", "30m", "1h", "1d", "1w"]
+            },
+            "apply-blacklist-filter": {
+              "type": "boolean",
+              "description": "Apply blacklist filtering for 1d/1w non-Hyperliquid requests"
+            }
+          }
+        },
         "historical-dex-trades": {
           "endpoint": "/api/v1beta1/tgm/historical-dex-trades",
           "description": "Historical DEX trades for a token at a point in time",

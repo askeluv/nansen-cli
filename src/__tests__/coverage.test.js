@@ -48,6 +48,7 @@ const DOCUMENTED_ENDPOINTS = {
     { name: 'perp-positions', method: 'tokenPerpPositions', endpoint: '/api/v1/tgm/perp-positions' },
     { name: 'perp-pnl-leaderboard', method: 'tokenPerpPnlLeaderboard', endpoint: '/api/v1/tgm/perp-pnl-leaderboard' },
     { name: 'top-tokens', method: 'topTokens', endpoint: '/api/v1/nansen-score/top-tokens' },
+    { name: 'historical-token-ohlcv', method: 'researchHistoricalTokenOhlcv', endpoint: '/api/v1beta1/tgm/historical-token-ohlcv' },
   ],
   composite: [
     { name: 'batch-profile', fn: batchProfile, endpoint: 'composite' },
