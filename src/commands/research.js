@@ -9,14 +9,15 @@ import { NansenError, ErrorCode } from '../api.js';
 // Local copies of CLI helpers to avoid a circular import with src/cli.js.
 function buildPagination(options) {
   if (options.limit === undefined && options.page === undefined) return undefined;
-  const perPage = options.limit === undefined ? undefined : Number(options.limit);
-  if (perPage !== undefined && (!Number.isInteger(perPage) || perPage < 1)) {
-    throw new NansenError('--limit must be a positive integer', ErrorCode.INVALID_PARAMS);
+  const pagination = { page: Math.max(1, parseInt(options.page, 10) || 1) };
+  if (options.limit !== undefined) {
+    const perPage = Number(options.limit);
+    if (!Number.isInteger(perPage) || perPage < 1) {
+      throw new NansenError('--limit must be a positive integer', ErrorCode.INVALID_PARAMS);
+    }
+    pagination.per_page = perPage;
   }
-  return {
-    page: Math.max(1, parseInt(options.page, 10) || 1),
-    per_page: perPage,
-  };
+  return pagination;
 }
 
 function parseSort(sortOption, orderByOption) {
@@ -81,7 +82,7 @@ function parseChains(options) {
 const HELP_TOP = `nansen research — Direct API analytics
 
 SUBCOMMANDS:
-  address-premium-labels           Get all labels for an address, including premium labels
+  address-premium-labels            Get all labels for an address, including premium labels
   historical-dex-trades             Historical DEX trades for a token
   historical-pnl-leaderboard        Historical PnL leaderboard for a token
   historical-token-flow-summary     Historical token flow summary

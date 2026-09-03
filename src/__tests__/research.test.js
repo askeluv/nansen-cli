@@ -306,6 +306,18 @@ describe('buildResearchCommands handler', () => {
     });
   });
 
+  it('omits per_page when only --page is supplied', async () => {
+    mockApi = makeMockApi();
+    await cmds.research(['address-premium-labels'], mockApi, {}, {
+      address: ADDRESSES.ethereum, page: '3',
+    });
+    expect(mockApi.addressPremiumLabels).toHaveBeenCalledWith({
+      address: ADDRESSES.ethereum,
+      chain: 'all',
+      pagination: { page: 3 },
+    });
+  });
+
   it('rejects an invalid pagination limit', async () => {
     mockApi = makeMockApi();
     await expect(cmds.research(['address-premium-labels'], mockApi, {}, {

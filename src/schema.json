@@ -1171,6 +1171,12 @@
             },
             "chain": {
               "default": "all"
+            },
+            "page": {
+              "default": 1
+            },
+            "limit": {
+              "default": 100
             }
           }
         },
