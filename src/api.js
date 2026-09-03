@@ -1092,6 +1092,15 @@ export class NansenAPI {
     });
   }
 
+  async transactionWithTokenTransferLookup(params = {}) {
+    const { chain = 'ethereum', transactionHash, blockTimestamp } = params;
+    return this.request('/api/v1/transaction-with-token-transfer-lookup', {
+      chain,
+      transaction_hash: transactionHash,
+      block_timestamp: blockTimestamp
+    });
+  }
+
   // ============= Token God Mode Endpoints =============
 
   async tokenScreener(params = {}) {

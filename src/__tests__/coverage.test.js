@@ -60,6 +60,9 @@ const DOCUMENTED_ENDPOINTS = {
   search: [
     { name: 'general-search', method: 'generalSearch', endpoint: '/api/v1/search/general' },
   ],
+  transactions: [
+    { name: 'transaction-with-token-transfer-lookup', method: 'transactionWithTokenTransferLookup', endpoint: '/api/v1/transaction-with-token-transfer-lookup' },
+  ],
   predictionMarket: [
     { name: 'ohlcv', method: 'pmOhlcv', endpoint: '/api/v1/prediction-market/ohlcv' },
     { name: 'orderbook', method: 'pmOrderbook', endpoint: '/api/v1/prediction-market/orderbook' },
@@ -133,6 +136,14 @@ describe('API Endpoint Coverage', () => {
     }
   });
 
+  describe('Transaction Endpoints', () => {
+    for (const ep of DOCUMENTED_ENDPOINTS.transactions) {
+      it(`should have ${ep.name} method`, () => {
+        expect(typeof api[ep.method]).toBe('function');
+      });
+    }
+  });
+
   describe('Prediction Market Endpoints', () => {
     for (const ep of DOCUMENTED_ENDPOINTS.predictionMarket) {
       it(`should have ${ep.name} method`, () => {
@@ -150,6 +161,7 @@ describe('API Endpoint Coverage', () => {
         ...DOCUMENTED_ENDPOINTS.composite,
         ...DOCUMENTED_ENDPOINTS.portfolio,
         ...DOCUMENTED_ENDPOINTS.search,
+        ...DOCUMENTED_ENDPOINTS.transactions,
         ...DOCUMENTED_ENDPOINTS.predictionMarket,
       ];
       

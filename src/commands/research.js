@@ -1,9 +1,7 @@
 /**
  * Nansen CLI - Research command
  *
- * Historical/point-in-time analytics. Each subcommand resolves labels and
- * metrics at the requested date rather than current state — useful for
- * backtesting and historical research.
+ * Direct API analytics, including historical/point-in-time research.
  */
 
 import { NansenError, ErrorCode } from '../api.js';
@@ -41,6 +39,7 @@ const SUBCOMMANDS = [
 ];
 
 export const RESEARCH_HISTORICAL_SUBCOMMANDS = new Set(SUBCOMMANDS);
+export const RESEARCH_SUBCOMMANDS = new Set(['transaction-with-token-transfer-lookup', ...SUBCOMMANDS]);
 
 function requireOptions(options, required) {
   const missing = required.filter(name => !options[name]);
@@ -75,9 +74,11 @@ function parseChains(options) {
   return undefined;
 }
 
-const HELP_TOP = `nansen research — Historical/point-in-time analytics
+const HELP_TOP = `nansen research — Direct API analytics
 
 SUBCOMMANDS:
+  transaction-with-token-transfer-lookup
+                                   Look up a transaction and its token/NFT transfers
   historical-dex-trades             Historical DEX trades for a token
   historical-pnl-leaderboard        Historical PnL leaderboard for a token
   historical-token-flow-summary     Historical token flow summary
@@ -102,6 +103,12 @@ COMMON OPTIONS:
 Run: nansen research <subcommand> --help`;
 
 const SUB_HELP = {
+  'transaction-with-token-transfer-lookup': `nansen research transaction-with-token-transfer-lookup — Look up a transaction and its token/NFT transfers
+
+USAGE:
+  nansen research transaction-with-token-transfer-lookup --transaction-hash <hash> [--chain <chain>] [--block-timestamp "YYYY-MM-DD HH:MM:SS"]
+
+NOTE: --block-timestamp is required for bitcoin, tron, ton, starknet, and sui.`,
   'historical-dex-trades': `nansen research historical-dex-trades — Historical DEX trades for a token
 
 USAGE:
@@ -166,9 +173,9 @@ export function buildResearchCommands(deps = {}) {
         return;
       }
 
-      if (!RESEARCH_HISTORICAL_SUBCOMMANDS.has(sub)) {
+      if (!RESEARCH_SUBCOMMANDS.has(sub)) {
         throw new NansenError(
-          `Unknown research subcommand: ${sub}. Available: ${SUBCOMMANDS.join(', ')}`,
+          `Unknown research subcommand: ${sub}. Available: ${[...RESEARCH_SUBCOMMANDS].join(', ')}`,
           ErrorCode.UNKNOWN,
         );
       }
@@ -183,6 +190,20 @@ export function buildResearchCommands(deps = {}) {
       const filters = options.filters || {};
       const { fromDate, toDate } = resolveDateRange(options);
       const asOfDate = options['as-of-date'];
+
+      if (sub === 'transaction-with-token-transfer-lookup') {
+        const chain = options.chain || 'ethereum';
+        const blockTimestamp = options['block-timestamp'];
+        requireOptions({ 'transaction-hash': options['transaction-hash'] }, ['transaction-hash']);
+        if (['bitcoin', 'tron', 'ton', 'starknet', 'sui'].includes(chain)) {
+          requireOptions({ 'block-timestamp': blockTimestamp }, ['block-timestamp']);
+        }
+        return apiInstance.transactionWithTokenTransferLookup({
+          transactionHash: options['transaction-hash'],
+          chain,
+          blockTimestamp,
+        });
+      }
 
       // Range-based token endpoints (require --from-date + --to-date)
       const rangeTokenHandlers = {
