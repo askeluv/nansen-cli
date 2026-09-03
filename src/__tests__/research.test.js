@@ -313,6 +313,14 @@ describe('buildResearchCommands handler', () => {
     })).rejects.toThrow(/block-timestamp/);
   });
 
+  it('errors when required transaction-hash is missing', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['transaction-with-token-transfer-lookup'], mockApi, {}, {
+      chain: 'ethereum',
+    })).rejects.toThrow(/transaction-hash/);
+    expect(mockApi.transactionWithTokenTransferLookup).not.toHaveBeenCalled();
+  });
+
   it('rejects unknown subcommand', async () => {
     mockApi = makeMockApi();
     await expect(cmds.research(['not-a-real-sub'], mockApi, {}, {}))
