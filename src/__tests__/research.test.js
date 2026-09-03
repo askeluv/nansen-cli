@@ -332,6 +332,13 @@ describe('buildResearchCommands handler', () => {
     })).rejects.toThrow(/--page must be a positive integer/);
   });
 
+  it('rejects an invalid --page on historical subcommands', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['historical-dex-trades'], mockApi, {}, {
+      'token-address': TOKENS.solana, 'from-date': FROM, 'to-date': TO, page: '0',
+    })).rejects.toThrow(/--page must be a positive integer/);
+  });
+
   it('rejects unknown subcommand', async () => {
     mockApi = makeMockApi();
     await expect(cmds.research(['not-a-real-sub'], mockApi, {}, {}))
