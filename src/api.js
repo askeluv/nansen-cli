@@ -970,6 +970,10 @@ export class NansenAPI {
     return this.request('/api/v1/search/general', body);
   }
 
+  async tokenSectors() {
+    return this.request('/api/v1/search/token-sectors', {}, { method: 'GET' });
+  }
+
   async webSearch(params = {}) {
     const { queries, numResults = 10 } = params;
     if (!queries || queries.length === 0) {

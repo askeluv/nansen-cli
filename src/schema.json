@@ -1162,6 +1162,10 @@
             }
           }
         },
+        "token-sectors": {
+          "endpoint": "/api/v1/search/token-sectors",
+          "description": "List token sectors available for filtering"
+        },
         "historical-dex-trades": {
           "endpoint": "/api/v1beta1/tgm/historical-dex-trades",
           "description": "Historical DEX trades for a token at a point in time",
