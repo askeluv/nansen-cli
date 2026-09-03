@@ -353,6 +353,8 @@ describe('telemetry', () => {
       const second = JSON.parse(fetchMock.mock.calls[1][1].body);
       expect(first.event_id).toBe(second.event_id);
       expect(first.event_id).toMatch(/^[0-9a-f-]{36}$/);
+      expect(first.event_id.split('-')[2][0]).toBe('5');
+      expect(first.event_id.split('-')[3][0]).toMatch(/[89ab]/);
     });
 
     it('respects the DO_NOT_TRACK opt-out', async () => {

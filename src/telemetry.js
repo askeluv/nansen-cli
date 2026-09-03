@@ -181,12 +181,18 @@ function perpOutcomeEventId({ wallet_address, submission_id, leg_index, outcome 
   if (wallet_address === undefined || submission_id === undefined || leg_index === undefined) {
     return crypto.randomUUID();
   }
-  const hex = crypto
+  // Use a UUID-shaped, content-derived id because the event service dedupes on
+  // event_id. Set the RFC 4122 version/variant bits in-place rather than
+  // dropping hash nibbles while formatting.
+  const bytes = crypto
     .createHash('sha256')
     .update(`${String(wallet_address).toLowerCase()}:${submission_id}:${leg_index}:${outcome}`)
-    .digest('hex')
-    .slice(0, 32);
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20)}`;
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 // ─── public API ────────────────────────────────────────────

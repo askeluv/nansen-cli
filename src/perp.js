@@ -301,6 +301,8 @@ function emitPerpOrderCompleted(telemetry, summary, walletAddress, submissionId,
     leg: order.leg,
     wallet_address: walletAddress,
     oid: order.oidSafe ? order.oid : undefined,
+    // A mixed response is a command-level PARTIAL_FILL, but successful legs
+    // remain successful. Attach the stable code only to rejected legs.
     ...(order.kind === 'rejected' && errorCode ? { error_code: errorCode } : {}),
   })));
 }
