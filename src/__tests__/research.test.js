@@ -8,7 +8,7 @@
 
 import { describe, it, expect, beforeAll, afterEach, afterAll, vi } from 'vitest';
 import { NansenAPI, NansenError } from '../api.js';
-import { buildResearchCommands, RESEARCH_HISTORICAL_SUBCOMMANDS } from '../commands/research.js';
+import { buildResearchCommands, RESEARCH_HISTORICAL_SUBCOMMANDS, RESEARCH_SUBCOMMANDS } from '../commands/research.js';
 
 const FROM = '2025-01-01';
 const TO = '2025-01-31';
@@ -54,6 +54,21 @@ describe('NansenAPI research (historical) methods', () => {
     expect(options.headers['Content-Type']).toBe('application/json');
     return JSON.parse(options.body);
   }
+
+  it('uses the premium-labels endpoint and request shape', async () => {
+    setupMock();
+    await api.addressPremiumLabels({
+      address: ADDRESSES.ethereum,
+      chain: 'ethereum',
+      pagination: { page: 2, per_page: 5 },
+    });
+    const body = lastCall('/api/v1/profiler/address/premium-labels');
+    expect(body).toEqual({
+      address: ADDRESSES.ethereum,
+      chain: 'ethereum',
+      pagination: { page: 2, per_page: 5 },
+    });
+  });
 
   describe('researchDexTrades', () => {
     it('hits historical-dex-trades with token_address, chain, and date_range {from,to}', async () => {
@@ -270,11 +285,32 @@ describe('buildResearchCommands handler', () => {
       researchWalletBalances: vi.fn().mockResolvedValue({ data: [] }),
       researchTxLookup: vi.fn().mockResolvedValue({ data: [] }),
       researchWalletTransactions: vi.fn().mockResolvedValue({ data: [] }),
+      addressPremiumLabels: vi.fn().mockResolvedValue({ data: [] }),
     };
   }
 
-  it('exports all 11 subcommands', () => {
+  it('exports historical and direct subcommands', () => {
     expect(RESEARCH_HISTORICAL_SUBCOMMANDS.size).toBe(11);
+    expect(RESEARCH_SUBCOMMANDS.size).toBe(12);
+  });
+
+  it('dispatches address-premium-labels', async () => {
+    mockApi = makeMockApi();
+    await cmds.research(['address-premium-labels'], mockApi, {}, {
+      address: ADDRESSES.ethereum, chain: 'ethereum', page: '2', limit: '5',
+    });
+    expect(mockApi.addressPremiumLabels).toHaveBeenCalledWith({
+      address: ADDRESSES.ethereum,
+      chain: 'ethereum',
+      pagination: { page: 2, per_page: 5 },
+    });
+  });
+
+  it('rejects an invalid pagination limit', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['address-premium-labels'], mockApi, {}, {
+      address: ADDRESSES.ethereum, limit: '5x',
+    })).rejects.toThrow(/positive integer/);
   });
 
   it('rejects unknown subcommand', async () => {

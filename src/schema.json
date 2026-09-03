@@ -1162,6 +1162,18 @@
             }
           }
         },
+        "address-premium-labels": {
+          "endpoint": "/api/v1/profiler/address/premium-labels",
+          "description": "Get all labels for an address, including premium labels",
+          "options": {
+            "address": {
+              "required": true
+            },
+            "chain": {
+              "default": "all"
+            }
+          }
+        },
         "historical-dex-trades": {
           "endpoint": "/api/v1beta1/tgm/historical-dex-trades",
           "description": "Historical DEX trades for a token at a point in time",

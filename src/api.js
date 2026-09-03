@@ -921,6 +921,16 @@ export class NansenAPI {
     });
   }
 
+  async addressPremiumLabels(params = {}) {
+    const { address, chain = 'all', pagination = { page: 1, per_page: 100 } } = params;
+    if (address) requireValidAddress(address, chain);
+    return this.request('/api/v1/profiler/address/premium-labels', {
+      address,
+      chain,
+      pagination
+    });
+  }
+
   async addressTransactions(params = {}) {
     const { address, chain = 'ethereum', filters = {}, orderBy, pagination, days = 30, date } = params;
     if (address) requireValidAddress(address, chain);
