@@ -45,6 +45,8 @@ const SUBCOMMANDS = [
 export const RESEARCH_HISTORICAL_SUBCOMMANDS = new Set(SUBCOMMANDS);
 export const RESEARCH_SUBCOMMANDS = new Set(['smart-money-pnl-leaderboard', ...SUBCOMMANDS]);
 
+const SM_PNL_TIMEFRAME_DAYS = [1, 7, 30, 90, 180];
+
 function requireOptions(options, required) {
   const missing = required.filter(name => !options[name]);
   if (missing.length > 0) {
@@ -81,7 +83,7 @@ function parseChains(options) {
 const HELP_TOP = `nansen research — Direct API analytics
 
 SUBCOMMANDS:
-  smart-money-pnl-leaderboard      Rank smart money wallets by PnL
+  smart-money-pnl-leaderboard       Rank smart money wallets by PnL
   historical-dex-trades             Historical DEX trades for a token
   historical-pnl-leaderboard        Historical PnL leaderboard for a token
   historical-token-flow-summary     Historical token flow summary
@@ -193,9 +195,16 @@ export function buildResearchCommands(deps = {}) {
       const asOfDate = options['as-of-date'];
 
       if (sub === 'smart-money-pnl-leaderboard') {
+        const timeframe = parseTimeframeDays(options['timeframe-days']) ?? 7;
+        if (!SM_PNL_TIMEFRAME_DAYS.includes(timeframe)) {
+          throw new NansenError(
+            `--timeframe-days must be one of: ${SM_PNL_TIMEFRAME_DAYS.join(', ')}`,
+            ErrorCode.INVALID_PARAMS,
+          );
+        }
         return apiInstance.smartMoneyPnlLeaderboard({
           chains: parseChains(options) || ['solana'],
-          timeframe: parseTimeframeDays(options['timeframe-days']) ?? 7,
+          timeframe,
           filters, orderBy, pagination,
         });
       }

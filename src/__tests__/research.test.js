@@ -317,6 +317,14 @@ describe('buildResearchCommands handler', () => {
     })).rejects.toThrow(/positive integer/);
   });
 
+  it('rejects an unsupported smart money leaderboard timeframe', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['smart-money-pnl-leaderboard'], mockApi, {}, {
+      'timeframe-days': '14',
+    })).rejects.toThrow(/must be one of: 1, 7, 30, 90, 180/);
+    expect(mockApi.smartMoneyPnlLeaderboard).not.toHaveBeenCalled();
+  });
+
   it('rejects unknown subcommand', async () => {
     mockApi = makeMockApi();
     await expect(cmds.research(['not-a-real-sub'], mockApi, {}, {}))

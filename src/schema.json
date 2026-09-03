@@ -1173,7 +1173,25 @@
             "timeframe-days": {
               "type": "number",
               "enum": [1, 7, 30, 90, 180],
-              "default": 7
+              "default": 7,
+              "description": "Timeframe in days"
+            },
+            "filters": {
+              "type": "string",
+              "description": "Filters as JSON object"
+            },
+            "sort": {
+              "type": "string",
+              "description": "Sort order (field[:asc|desc])"
+            },
+            "page": {
+              "type": "number",
+              "default": 1,
+              "description": "1-based page number; maps to pagination.page"
+            },
+            "limit": {
+              "type": "number",
+              "description": "Max results per page; maps to pagination.per_page"
             }
           }
         },
