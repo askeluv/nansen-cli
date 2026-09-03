@@ -192,7 +192,12 @@ export function buildResearchCommands(deps = {}) {
 
       if (sub === 'position-intelligence') {
         const symbol = options.symbol || options['token-address'] || options.token;
-        requireOptions({ symbol }, ['symbol']);
+        if (!symbol) {
+          throw new NansenError(
+            'Required: --symbol (or --token-address)',
+            ErrorCode.MISSING_PARAM,
+          );
+        }
         return apiInstance.tokenPositionIntelligence({ tokenAddress: symbol });
       }
 
