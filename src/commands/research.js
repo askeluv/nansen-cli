@@ -77,7 +77,7 @@ function parseChains(options) {
 const HELP_TOP = `nansen research — Direct API analytics
 
 SUBCOMMANDS:
-  perp-pnl-summary                 Summarize realized Hyperliquid PnL for an address
+  perp-pnl-summary                  Summarize realized Hyperliquid PnL for an address
   historical-dex-trades             Historical DEX trades for a token
   historical-pnl-leaderboard        Historical PnL leaderboard for a token
   historical-token-flow-summary     Historical token flow summary
