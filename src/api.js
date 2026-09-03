@@ -1635,6 +1635,9 @@ export class NansenAPI {
   async researchHistoricalTokenOhlcv(params = {}) {
     const { chain = 'solana', tokenAddress, fromDate, asOfDate, asOfTs, timeframe, applyBlacklistFilter } = params;
     if (tokenAddress) requireValidToken(tokenAddress, chain);
+    if (asOfDate && asOfTs) {
+      throw new NansenError('asOfDate and asOfTs are mutually exclusive', ErrorCode.INVALID_PARAMS);
+    }
     return this.request('/api/v1beta1/tgm/historical-token-ohlcv', {
       chain,
       token_address: tokenAddress,

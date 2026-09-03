@@ -76,6 +76,36 @@ describe('NansenAPI research (historical) methods', () => {
     });
   });
 
+  it('sends as_of_ts and omits as_of_date when only asOfTs is supplied', async () => {
+    setupMock();
+    await api.researchHistoricalTokenOhlcv({
+      tokenAddress: TOKENS.solana,
+      chain: 'solana',
+      fromDate: FROM,
+      asOfTs: `${TO}T00:00:00Z`,
+      timeframe: '1h',
+    });
+    const body = lastCall('/api/v1beta1/tgm/historical-token-ohlcv');
+    expect(body).toEqual({
+      token_address: TOKENS.solana,
+      chain: 'solana',
+      date_from: FROM,
+      as_of_ts: `${TO}T00:00:00Z`,
+      timeframe: '1h',
+    });
+  });
+
+  it('rejects asOfDate and asOfTs together at the API layer', async () => {
+    await expect(api.researchHistoricalTokenOhlcv({
+      tokenAddress: TOKENS.solana,
+      chain: 'solana',
+      fromDate: FROM,
+      asOfDate: TO,
+      asOfTs: `${TO}T00:00:00Z`,
+      timeframe: '1d',
+    })).rejects.toThrow(/mutually exclusive/);
+  });
+
   describe('researchDexTrades', () => {
     it('hits historical-dex-trades with token_address, chain, and date_range {from,to}', async () => {
       setupMock();
