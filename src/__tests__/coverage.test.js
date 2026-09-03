@@ -17,6 +17,7 @@ const DOCUMENTED_ENDPOINTS = {
     { name: 'dcas', method: 'smartMoneyDcas', endpoint: '/api/v1/smart-money/dcas' },
     { name: 'perp-trades', method: 'smartMoneyPerpTrades', endpoint: '/api/v1/smart-money/perp-trades' },
     { name: 'historical-holdings', method: 'smartMoneyHistoricalHoldings', endpoint: '/api/v1/smart-money/historical-holdings' },
+    { name: 'pnl-leaderboard', method: 'smartMoneyPnlLeaderboard', endpoint: '/api/v1/smart-money/pnl-leaderboard' },
   ],
   profiler: [
     { name: 'balance', method: 'addressBalance', endpoint: '/api/v1/profiler/address/current-balance' },
