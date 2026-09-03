@@ -319,7 +319,7 @@ describe('telemetry', () => {
       expect(body.properties).toEqual({
         source: 'cli',
         chain: 'hyperliquid',
-        attempt_id: body.event_id,
+        attempt_id: expect.any(String),
         action: 'open',
         position_side: 'long',
         order_side: 'buy',
@@ -333,6 +333,7 @@ describe('telemetry', () => {
       expect(body.properties).not.toHaveProperty('wallet_address');
       expect(body.properties).not.toHaveProperty('price');
       expect(body.properties).not.toHaveProperty('size');
+      expect(body.properties.attempt_id).not.toBe(body.event_id);
       expect(body.context.client_type).toBe('nansen-cli');
     });
 
@@ -374,6 +375,16 @@ describe('telemetry', () => {
       expect(first.event_id).toMatch(/^[0-9a-f-]{36}$/);
       expect(first.event_id.split('-')[2][0]).toBe('5');
       expect(first.event_id.split('-')[3][0]).toMatch(/[89ab]/);
+      expect(first.properties.attempt_id).toBe(second.properties.attempt_id);
+    });
+
+    it('keeps the leg attempt id stable when its terminal outcome changes', () => {
+      trackPerpOrderCompleted(baseOutcome);
+      trackPerpOrderCompleted({ ...baseOutcome, outcome: 'rejected' });
+      const first = JSON.parse(fetchMock.mock.calls[0][1].body);
+      const second = JSON.parse(fetchMock.mock.calls[1][1].body);
+      expect(first.properties.attempt_id).toBe(second.properties.attempt_id);
+      expect(first.event_id).not.toBe(second.event_id);
     });
 
     it('respects the DO_NOT_TRACK opt-out', async () => {

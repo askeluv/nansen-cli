@@ -336,6 +336,9 @@ async function buildScreenSignSubmit(apiInstance, prepared, ctx) {
     result = await submitExchange({ action, nonce, signature, vaultAddress: null });
   } catch (error) {
     if (telemetry && error.exchangeResult) {
+      // exchangeResult is either a structured HL action response or an opaque
+      // HTTP error body. summarizeOrderResult deliberately returns [] for the
+      // latter, which selects the single rejected-leg fallback below.
       const rejected = summarizeOrderResult(error.exchangeResult, action);
       const outcomes = rejected.length ? rejected : [{
         index: 0,

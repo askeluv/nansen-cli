@@ -177,6 +177,21 @@ function hashWalletAddress(walletAddress) {
     .digest('base64');
 }
 
+function contentDerivedUuid(value) {
+  const bytes = crypto.createHash('sha256').update(value).digest().subarray(0, 16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function perpLegAttemptId({ wallet_address, submission_id, leg_index }) {
+  if (wallet_address === undefined || submission_id === undefined || leg_index === undefined) {
+    return crypto.randomUUID();
+  }
+  return contentDerivedUuid(`${String(wallet_address).toLowerCase()}:${submission_id}:${leg_index}`);
+}
+
 function perpOutcomeEventId({ wallet_address, submission_id, leg_index, outcome }) {
   if (
     wallet_address === undefined
@@ -186,18 +201,9 @@ function perpOutcomeEventId({ wallet_address, submission_id, leg_index, outcome 
   ) {
     return crypto.randomUUID();
   }
-  // Use a UUID-shaped, content-derived id because the event service dedupes on
-  // event_id. Set the RFC 4122 version/variant bits in-place rather than
-  // dropping hash nibbles while formatting.
-  const bytes = crypto
-    .createHash('sha256')
-    .update(`${String(wallet_address).toLowerCase()}:${submission_id}:${leg_index}:${outcome}`)
-    .digest()
-    .subarray(0, 16);
-  bytes[6] = (bytes[6] & 0x0f) | 0x50;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const hex = bytes.toString('hex');
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  return contentDerivedUuid(
+    `${String(wallet_address).toLowerCase()}:${submission_id}:${leg_index}:${outcome}`,
+  );
 }
 
 // ─── public API ────────────────────────────────────────────
@@ -339,6 +345,7 @@ export function trackPerpOrderCompleted({
   error_code,
 }) {
   const walletAddressHash = hashWalletAddress(wallet_address);
+  const attemptId = perpLegAttemptId({ wallet_address, submission_id, leg_index });
   const eventId = perpOutcomeEventId({ wallet_address, submission_id, leg_index, outcome });
   const event = `trade_perps_${command === 'close' ? 'close' : 'order'}_${outcome === 'rejected' ? 'failed' : 'succeeded'}`;
   const positionSide = position_side ?? (command === 'close'
@@ -358,7 +365,7 @@ export function trackPerpOrderCompleted({
     properties: {
       source: 'cli',
       chain: 'hyperliquid',
-      attempt_id: eventId,
+      attempt_id: attemptId,
       action: command === 'close' ? 'close' : 'open',
       position_side: positionSide,
       order_side: side,
