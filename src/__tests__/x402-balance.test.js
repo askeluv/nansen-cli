@@ -48,7 +48,7 @@ describe('checkX402Balance BigInt precision (18 decimals)', () => {
   it('returns correct balance for wei values above MAX_SAFE_INTEGER', async () => {
     const { vi } = await import('vitest');
     vi.resetModules();
-    const mockHex = '0x00000000000000000000000000000000000000000000000057014a42e52a6a8000';
+    const mockHex = '0x00000000000000000000000000000000000000000000000572b7b98736c20000';
     const mockWallets = {
       defaultWallet: 'test',
       wallets: [{ name: 'test', evm: '0x' + '11'.repeat(20) }],
