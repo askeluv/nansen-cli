@@ -325,6 +325,13 @@ describe('buildResearchCommands handler', () => {
     })).rejects.toThrow(/positive integer/);
   });
 
+  it('rejects an invalid pagination page', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['address-premium-labels'], mockApi, {}, {
+      address: ADDRESSES.ethereum, page: '0',
+    })).rejects.toThrow(/--page must be a positive integer/);
+  });
+
   it('rejects unknown subcommand', async () => {
     mockApi = makeMockApi();
     await expect(cmds.research(['not-a-real-sub'], mockApi, {}, {}))
