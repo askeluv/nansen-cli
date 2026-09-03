@@ -77,7 +77,7 @@ function parseChains(options) {
 const HELP_TOP = `nansen research — Direct API analytics
 
 SUBCOMMANDS:
-  position-intelligence            Aggregate Hyperliquid positions by trader cohort
+  position-intelligence             Aggregate Hyperliquid positions by trader cohort
   historical-dex-trades             Historical DEX trades for a token
   historical-pnl-leaderboard        Historical PnL leaderboard for a token
   historical-token-flow-summary     Historical token flow summary
@@ -105,7 +105,9 @@ const SUB_HELP = {
   'position-intelligence': `nansen research position-intelligence — Aggregate Hyperliquid positions by trader cohort
 
 USAGE:
-  nansen research position-intelligence --symbol <symbol>`,
+  nansen research position-intelligence --symbol <symbol>
+
+NOTE: --token-address is accepted as an alias for --symbol (the API request field is token_address).`,
   'historical-dex-trades': `nansen research historical-dex-trades — Historical DEX trades for a token
 
 USAGE:

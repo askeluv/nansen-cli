@@ -1168,7 +1168,7 @@
           "options": {
             "symbol": {
               "required": true,
-              "description": "Hyperliquid asset symbol"
+              "description": "Hyperliquid asset symbol (--token-address is accepted as an alias)"
             }
           }
         },

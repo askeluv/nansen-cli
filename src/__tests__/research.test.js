@@ -292,6 +292,12 @@ describe('buildResearchCommands handler', () => {
     expect(mockApi.tokenPositionIntelligence).toHaveBeenCalledWith({ tokenAddress: 'BTC' });
   });
 
+  it('dispatches position-intelligence via the --token-address alias', async () => {
+    mockApi = makeMockApi();
+    await cmds.research(['position-intelligence'], mockApi, {}, { 'token-address': 'BTC' });
+    expect(mockApi.tokenPositionIntelligence).toHaveBeenCalledWith({ tokenAddress: 'BTC' });
+  });
+
   it('requires a position-intelligence symbol', async () => {
     mockApi = makeMockApi();
     await expect(cmds.research(['position-intelligence'], mockApi, {}, {}))
