@@ -8,7 +8,7 @@
 
 import { describe, it, expect, beforeAll, afterEach, afterAll, vi } from 'vitest';
 import { NansenAPI, NansenError } from '../api.js';
-import { buildResearchCommands, RESEARCH_HISTORICAL_SUBCOMMANDS } from '../commands/research.js';
+import { buildResearchCommands, RESEARCH_HISTORICAL_SUBCOMMANDS, RESEARCH_SUBCOMMANDS } from '../commands/research.js';
 
 const FROM = '2025-01-01';
 const TO = '2025-01-31';
@@ -54,6 +54,25 @@ describe('NansenAPI research (historical) methods', () => {
     expect(options.headers['Content-Type']).toBe('application/json');
     return JSON.parse(options.body);
   }
+
+  it.each([
+    ['chainRank', { timeFrame: 30, chainType: 'evm' }, '/api/v1/chains/chain-rank', 'POST', { time_frame: 30, chain_type: 'evm' }],
+    ['tokenSectors', undefined, '/api/v1/search/token-sectors', 'GET', undefined],
+    ['addressPremiumLabels', { address: ADDRESSES.ethereum, chain: 'ethereum', pagination: { page: 2, per_page: 5 } }, '/api/v1/profiler/address/premium-labels', 'POST', { address: ADDRESSES.ethereum, chain: 'ethereum', pagination: { page: 2, per_page: 5 } }],
+    ['smartMoneyPnlLeaderboard', { chains: ['ethereum'], timeframe: 30, filters: { include_smart_money_labels: ['Fund'] }, orderBy: [{ field: 'total_pnl_usd', direction: 'DESC' }], pagination: { page: 1, per_page: 10 } }, '/api/v1/smart-money/pnl-leaderboard', 'POST', { chains: ['ethereum'], timeframe: 30, filters: { include_smart_money_labels: ['Fund'] }, order_by: [{ field: 'total_pnl_usd', direction: 'DESC' }], pagination: { page: 1, per_page: 10 } }],
+    ['tokenPositionIntelligence', { tokenAddress: 'BTC' }, '/api/v1/tgm/position-intelligence', 'POST', { token_address: 'BTC' }],
+    ['addressPerpPnlSummary', { address: ADDRESSES.ethereum, fromDate: FROM, toDate: TO }, '/api/v1/profiler/perp-pnl-summary', 'POST', { address: ADDRESSES.ethereum, date: { from: FROM, to: TO } }],
+    ['researchHistoricalTokenOhlcv', { tokenAddress: TOKENS.solana, chain: 'solana', fromDate: FROM, asOfDate: TO, timeframe: '1d', applyBlacklistFilter: false }, '/api/v1beta1/tgm/historical-token-ohlcv', 'POST', { token_address: TOKENS.solana, chain: 'solana', date_from: FROM, as_of_date: TO, timeframe: '1d', apply_blacklist_filter: false }],
+    ['transactionWithTokenTransferLookup', { transactionHash: '0xabc123', chain: 'ethereum', blockTimestamp: '2025-01-01 00:00:00' }, '/api/v1/transaction-with-token-transfer-lookup', 'POST', { transaction_hash: '0xabc123', chain: 'ethereum', block_timestamp: '2025-01-01 00:00:00' }],
+  ])('%s uses the exact public endpoint and request shape', async (methodName, params, endpoint, verb, expectedBody) => {
+    setupMock();
+    await api[methodName](params);
+
+    const [url, request] = mockFetch.mock.calls.at(-1);
+    expect(url).toBe(`https://api.nansen.ai${endpoint}`);
+    expect(request.method).toBe(verb);
+    expect(request.body ? JSON.parse(request.body) : undefined).toEqual(expectedBody);
+  });
 
   describe('researchDexTrades', () => {
     it('hits historical-dex-trades with token_address, chain, and date_range {from,to}', async () => {
@@ -270,11 +289,36 @@ describe('buildResearchCommands handler', () => {
       researchWalletBalances: vi.fn().mockResolvedValue({ data: [] }),
       researchTxLookup: vi.fn().mockResolvedValue({ data: [] }),
       researchWalletTransactions: vi.fn().mockResolvedValue({ data: [] }),
+      chainRank: vi.fn().mockResolvedValue({ data: [] }),
+      tokenSectors: vi.fn().mockResolvedValue({ data: [] }),
+      addressPremiumLabels: vi.fn().mockResolvedValue({ data: [] }),
+      smartMoneyPnlLeaderboard: vi.fn().mockResolvedValue({ data: [] }),
+      tokenPositionIntelligence: vi.fn().mockResolvedValue({ data: [] }),
+      addressPerpPnlSummary: vi.fn().mockResolvedValue({ data: [] }),
+      researchHistoricalTokenOhlcv: vi.fn().mockResolvedValue({ data: [] }),
+      transactionWithTokenTransferLookup: vi.fn().mockResolvedValue({ data: [] }),
     };
   }
 
-  it('exports all 11 subcommands', () => {
-    expect(RESEARCH_HISTORICAL_SUBCOMMANDS.size).toBe(11);
+  it('exports all direct and historical subcommands', () => {
+    expect(RESEARCH_SUBCOMMANDS.size).toBe(19);
+    expect(RESEARCH_HISTORICAL_SUBCOMMANDS.size).toBe(12);
+  });
+
+  it.each([
+    ['chain-rank', 'chainRank', { 'timeframe-days': '30', 'chain-type': 'evm' }, { timeFrame: 30, chainType: 'evm' }],
+    ['token-sectors', 'tokenSectors', {}, undefined],
+    ['address-premium-labels', 'addressPremiumLabels', { address: ADDRESSES.ethereum, chain: 'ethereum', page: '2', limit: '5' }, { address: ADDRESSES.ethereum, chain: 'ethereum', pagination: { page: 2, per_page: 5 } }],
+    ['smart-money-pnl-leaderboard', 'smartMoneyPnlLeaderboard', { chains: 'ethereum,solana', 'timeframe-days': '30' }, { chains: ['ethereum', 'solana'], timeframe: 30 }],
+    ['position-intelligence', 'tokenPositionIntelligence', { symbol: 'BTC' }, { tokenAddress: 'BTC' }],
+    ['perp-pnl-summary', 'addressPerpPnlSummary', { address: ADDRESSES.ethereum, 'from-date': FROM, 'to-date': TO }, { address: ADDRESSES.ethereum, fromDate: FROM, toDate: TO }],
+    ['historical-token-ohlcv', 'researchHistoricalTokenOhlcv', { 'token-address': TOKENS.solana, chain: 'solana', 'from-date': FROM, 'as-of-date': TO, timeframe: '1d', 'apply-blacklist-filter': 'false' }, { tokenAddress: TOKENS.solana, chain: 'solana', fromDate: FROM, asOfDate: TO, timeframe: '1d', applyBlacklistFilter: false }],
+    ['transaction-with-token-transfer-lookup', 'transactionWithTokenTransferLookup', { 'transaction-hash': '0xabc', chain: 'ethereum' }, { transactionHash: '0xabc', chain: 'ethereum' }],
+  ])('dispatches %s', async (subcommand, methodName, options, expected) => {
+    mockApi = makeMockApi();
+    await cmds.research([subcommand], mockApi, {}, options);
+    if (expected === undefined) expect(mockApi[methodName]).toHaveBeenCalledWith();
+    else expect(mockApi[methodName]).toHaveBeenCalledWith(expect.objectContaining(expected));
   });
 
   it('rejects unknown subcommand', async () => {
@@ -424,6 +468,30 @@ describe('buildResearchCommands handler', () => {
     mockApi = makeMockApi();
     await expect(cmds.research(['historical-token-screener'], mockApi, {}, { chains: 'solana' }))
       .rejects.toThrow(/timeframe-days/);
+  });
+
+  it('requires exactly one historical OHLCV snapshot anchor', async () => {
+    mockApi = makeMockApi();
+    const options = { 'token-address': TOKENS.solana, 'from-date': FROM, timeframe: '1d' };
+    await expect(cmds.research(['historical-token-ohlcv'], mockApi, {}, options))
+      .rejects.toThrow(/exactly one/);
+    await expect(cmds.research(['historical-token-ohlcv'], mockApi, {}, {
+      ...options, 'as-of-date': TO, 'as-of-ts': `${TO}T00:00:00Z`,
+    })).rejects.toThrow(/exactly one/);
+  });
+
+  it('rejects an invalid pagination limit', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['address-premium-labels'], mockApi, {}, {
+      address: ADDRESSES.ethereum, limit: '5x',
+    })).rejects.toThrow(/positive integer/);
+  });
+
+  it('requires a block timestamp for non-EVM transaction lookup chains', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['transaction-with-token-transfer-lookup'], mockApi, {}, {
+      'transaction-hash': 'abc', chain: 'bitcoin',
+    })).rejects.toThrow(/block-timestamp/);
   });
 
   it('rejects --page/--limit on historical-token-flow-summary', async () => {

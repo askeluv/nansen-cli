@@ -56,6 +56,8 @@ nansen schema [command] [--pretty]    # full command reference (no API key neede
 
 **Research categories:** `smart-money` (`sm`), `token` (`tgm`), `profiler` (`prof`), `portfolio` (`port`), `prediction-market` (`pm`), `search`, `perp`, `points`
 
+**Direct research subcommands:** `chain-rank`, `token-sectors`, `address-premium-labels`, `smart-money-pnl-leaderboard`, `position-intelligence`, `perp-pnl-summary`, `historical-token-ohlcv`, `transaction-with-token-transfer-lookup`
+
 **Trade:** `quote`, `execute`, `bridge-status`, `limit-order` — DEX swaps on Solana and Base, cross-chain bridges, and Solana limit orders.
 
 **Wallet:** `create`, `list`, `show`, `export`, `default`, `delete`, `send` — local or Privy server-side wallets (EVM + Solana).
