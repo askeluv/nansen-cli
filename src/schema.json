@@ -1162,6 +1162,21 @@
             }
           }
         },
+        "chain-rank": {
+          "endpoint": "/api/v1/chains/chain-rank",
+          "description": "Rank chains by growth metrics",
+          "options": {
+            "timeframe-days": {
+              "type": "number",
+              "enum": [7, 30, 365],
+              "default": 7
+            },
+            "chain-type": {
+              "enum": ["all", "evm"],
+              "default": "all"
+            }
+          }
+        },
         "historical-dex-trades": {
           "endpoint": "/api/v1beta1/tgm/historical-dex-trades",
           "description": "Historical DEX trades for a token at a point in time",

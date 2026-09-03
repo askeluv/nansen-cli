@@ -8,7 +8,7 @@
 
 import { describe, it, expect, beforeAll, afterEach, afterAll, vi } from 'vitest';
 import { NansenAPI, NansenError } from '../api.js';
-import { buildResearchCommands, RESEARCH_HISTORICAL_SUBCOMMANDS } from '../commands/research.js';
+import { buildResearchCommands, RESEARCH_HISTORICAL_SUBCOMMANDS, RESEARCH_SUBCOMMANDS } from '../commands/research.js';
 
 const FROM = '2025-01-01';
 const TO = '2025-01-31';
@@ -54,6 +54,13 @@ describe('NansenAPI research (historical) methods', () => {
     expect(options.headers['Content-Type']).toBe('application/json');
     return JSON.parse(options.body);
   }
+
+  it('uses the chain-rank endpoint and request shape', async () => {
+    setupMock();
+    await api.chainRank({ timeFrame: 30, chainType: 'evm' });
+    const body = lastCall('/api/v1/chains/chain-rank');
+    expect(body).toEqual({ time_frame: 30, chain_type: 'evm' });
+  });
 
   describe('researchDexTrades', () => {
     it('hits historical-dex-trades with token_address, chain, and date_range {from,to}', async () => {
@@ -270,11 +277,21 @@ describe('buildResearchCommands handler', () => {
       researchWalletBalances: vi.fn().mockResolvedValue({ data: [] }),
       researchTxLookup: vi.fn().mockResolvedValue({ data: [] }),
       researchWalletTransactions: vi.fn().mockResolvedValue({ data: [] }),
+      chainRank: vi.fn().mockResolvedValue({ data: [] }),
     };
   }
 
-  it('exports all 11 subcommands', () => {
+  it('exports historical and direct subcommands', () => {
     expect(RESEARCH_HISTORICAL_SUBCOMMANDS.size).toBe(11);
+    expect(RESEARCH_SUBCOMMANDS.size).toBe(12);
+  });
+
+  it('dispatches chain-rank', async () => {
+    mockApi = makeMockApi();
+    await cmds.research(['chain-rank'], mockApi, {}, {
+      'timeframe-days': '30', 'chain-type': 'evm',
+    });
+    expect(mockApi.chainRank).toHaveBeenCalledWith({ timeFrame: 30, chainType: 'evm' });
   });
 
   it('rejects unknown subcommand', async () => {
