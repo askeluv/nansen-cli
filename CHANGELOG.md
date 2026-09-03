@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.43.1
+
+### Patch Changes
+
+- [#526](https://github.com/nansen-ai/nansen-cli/pull/526) [`a7ab05c`](https://github.com/nansen-ai/nansen-cli/commit/a7ab05c592bddd1e0ca33c08586ef325bcc19277) Thanks [@dolmaciabdullah-byte](https://github.com/dolmaciabdullah-byte)! - Fix `formatValue` displaying `1000.00K` instead of `1.00M` when a value like 999999.995 rounds up at the K/M boundary.
+
+- [#548](https://github.com/nansen-ai/nansen-cli/pull/548) [`000d01a`](https://github.com/nansen-ai/nansen-cli/commit/000d01a8530de7e5bb6af8a637ba1b4fe406b732) Thanks [@Sertug17](https://github.com/Sertug17)! - Fix `parseAmount` silently producing wrong values for negative decimal inputs. Negative amounts are now rejected with a clear error.
+
+- [#551](https://github.com/nansen-ai/nansen-cli/pull/551) [`092535a`](https://github.com/nansen-ai/nansen-cli/commit/092535aa32bedb8c11a6ee624936bffca247d2d5) Thanks [@kome12](https://github.com/kome12)! - Harden `parseAmount` input validation: reject negative amounts wrapped in whitespace (previously silently miscalculated), and reject non-numeric or malformed inputs (e.g. `abc`, empty string, `1.`, `.5`) with a clear error instead of throwing a raw error or silently returning `0`.
+
+- [#433](https://github.com/nansen-ai/nansen-cli/pull/433) [`977fbc5`](https://github.com/nansen-ai/nansen-cli/commit/977fbc51a75ef4a0764db161b4bbee26d1ebc3ae) Thanks [@aikido-autofix](https://github.com/apps/aikido-autofix)! - Validate the wallet name before the Privy pre-read in `wallet delete` and `wallet send`, routing both reads through `getWalletFile()` so the path stays confined to the wallets directory.
+
+- [#545](https://github.com/nansen-ai/nansen-cli/pull/545) [`642eb20`](https://github.com/nansen-ai/nansen-cli/commit/642eb20a48fe1ff5a9ba17fcbeac4604c7172698) Thanks [@kome12](https://github.com/kome12)! - Update Noble crypto dependencies to the patched 2.4.x releases.
+
 ## 1.43.0
 
 ### Minor Changes
