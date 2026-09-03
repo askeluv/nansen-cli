@@ -1631,7 +1631,7 @@ export function buildCommands(deps = {}) {
   // it, so it has to be taken exactly once, here.
   const perpAnalytics = cmds['perp'];
 
-  const researchHistorical = buildResearchCommands(deps).research;
+  const researchSub = buildResearchCommands(deps).research;
 
   cmds['research'] = async (args, apiInstance, flags, options) => {
     const rawCategory = args[0];
@@ -1646,7 +1646,7 @@ export function buildCommands(deps = {}) {
       };
     }
     if (RESEARCH_SUBCOMMANDS.has(rawCategory)) {
-      return researchHistorical(args, apiInstance, flags, options);
+      return researchSub(args, apiInstance, flags, options);
     }
     const category = RESEARCH_CATEGORY_ALIASES[rawCategory] || rawCategory;
     if (!RESEARCH_CATEGORIES.has(category)) {

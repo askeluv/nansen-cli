@@ -304,9 +304,11 @@ describe('buildResearchCommands handler', () => {
       .rejects.toThrow(/--symbol \(or --token-address\)/);
   });
 
-  it('rejects an empty position-intelligence symbol', async () => {
+  it('rejects an empty or whitespace-only position-intelligence symbol', async () => {
     mockApi = makeMockApi();
     await expect(cmds.research(['position-intelligence'], mockApi, {}, { symbol: '' }))
+      .rejects.toThrow(/--symbol/);
+    await expect(cmds.research(['position-intelligence'], mockApi, {}, { symbol: '   ' }))
       .rejects.toThrow(/--symbol/);
     expect(mockApi.tokenPositionIntelligence).not.toHaveBeenCalled();
   });

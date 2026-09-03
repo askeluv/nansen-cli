@@ -191,7 +191,7 @@ export function buildResearchCommands(deps = {}) {
       const asOfDate = options['as-of-date'];
 
       if (sub === 'position-intelligence') {
-        const symbol = options.symbol || options['token-address'] || options.token;
+        const symbol = String(options.symbol || options['token-address'] || options.token || '').trim();
         if (!symbol) {
           throw new NansenError(
             'Required: --symbol (or --token-address)',
