@@ -195,6 +195,8 @@ export function buildResearchCommands(deps = {}) {
         const chain = options.chain || 'ethereum';
         const blockTimestamp = options['block-timestamp'];
         requireOptions({ 'transaction-hash': options['transaction-hash'] }, ['transaction-hash']);
+        // 'all' is deliberately absent: the API resolves the hash across chains
+        // server-side and accepts it without a timestamp.
         if (['bitcoin', 'tron', 'ton', 'starknet', 'sui'].includes(chain)) {
           requireOptions({ 'block-timestamp': blockTimestamp }, ['block-timestamp']);
         }
