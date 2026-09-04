@@ -62,6 +62,15 @@ describe('NansenAPI research (historical) methods', () => {
     expect(body).toEqual({ time_frame: 30, chain_type: 'evm' });
   });
 
+  it('uses the token-sectors endpoint with GET', async () => {
+    setupMock();
+    await api.tokenSectors();
+    const [url, request] = mockFetch.mock.calls.at(-1);
+    expect(url).toBe('https://api.nansen.ai/api/v1/search/token-sectors');
+    expect(request.method).toBe('GET');
+    expect(request.body).toBeUndefined();
+  });
+
   describe('researchDexTrades', () => {
     it('hits historical-dex-trades with token_address, chain, and date_range {from,to}', async () => {
       setupMock();
@@ -278,12 +287,13 @@ describe('buildResearchCommands handler', () => {
       researchTxLookup: vi.fn().mockResolvedValue({ data: [] }),
       researchWalletTransactions: vi.fn().mockResolvedValue({ data: [] }),
       chainRank: vi.fn().mockResolvedValue({ data: [] }),
+      tokenSectors: vi.fn().mockResolvedValue({ data: [] }),
     };
   }
 
   it('exports historical and direct subcommands', () => {
     expect(RESEARCH_HISTORICAL_SUBCOMMANDS.size).toBe(11);
-    expect(RESEARCH_SUBCOMMANDS.size).toBe(12);
+    expect(RESEARCH_SUBCOMMANDS.size).toBe(13);
   });
 
   it('dispatches chain-rank', async () => {
@@ -332,6 +342,12 @@ describe('buildResearchCommands handler', () => {
     await expect(cmds.research(['chain-rank'], mockApi, {}, { 'chain-type': 'solana' }))
       .rejects.toThrow('--chain-type must be one of: all, evm');
     expect(mockApi.chainRank).not.toHaveBeenCalled();
+  });
+
+  it('dispatches token-sectors', async () => {
+    mockApi = makeMockApi();
+    await cmds.research(['token-sectors'], mockApi, {}, {});
+    expect(mockApi.tokenSectors).toHaveBeenCalledWith();
   });
 
   it('rejects unknown subcommand', async () => {

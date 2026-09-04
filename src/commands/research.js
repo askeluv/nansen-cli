@@ -39,7 +39,7 @@ const SUBCOMMANDS = [
 ];
 
 export const RESEARCH_HISTORICAL_SUBCOMMANDS = new Set(SUBCOMMANDS);
-export const RESEARCH_SUBCOMMANDS = new Set(['chain-rank', ...SUBCOMMANDS]);
+export const RESEARCH_SUBCOMMANDS = new Set(['chain-rank', 'token-sectors', ...SUBCOMMANDS]);
 
 const CHAIN_RANK_TIMEFRAMES = new Set([7, 30, 365]);
 const CHAIN_RANK_CHAIN_TYPES = new Set(['all', 'evm']);
@@ -81,6 +81,7 @@ const HELP_TOP = `nansen research — Direct API analytics
 
 SUBCOMMANDS:
   chain-rank                       Rank chains by growth metrics
+  token-sectors                     List token sectors available for filtering
   historical-dex-trades             Historical DEX trades for a token
   historical-pnl-leaderboard        Historical PnL leaderboard for a token
   historical-token-flow-summary     Historical token flow summary
@@ -109,6 +110,10 @@ const SUB_HELP = {
 
 USAGE:
   nansen research chain-rank [--timeframe-days 7|30|365] [--chain-type all|evm]`,
+  'token-sectors': `nansen research token-sectors — List token sectors available for filtering
+
+USAGE:
+  nansen research token-sectors`,
   'historical-dex-trades': `nansen research historical-dex-trades — Historical DEX trades for a token
 
 USAGE:
@@ -184,6 +189,8 @@ export function buildResearchCommands(deps = {}) {
         log(SUB_HELP[sub] || HELP_TOP);
         return;
       }
+
+      if (sub === 'token-sectors') return apiInstance.tokenSectors();
 
       const orderBy = parseSort(options.sort, options['order-by']);
       const pagination = buildPagination(options);

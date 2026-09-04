@@ -62,6 +62,7 @@ const DOCUMENTED_ENDPOINTS = {
   ],
   search: [
     { name: 'general-search', method: 'generalSearch', endpoint: '/api/v1/search/general' },
+    { name: 'token-sectors', method: 'tokenSectors', endpoint: '/api/v1/search/token-sectors' },
   ],
   predictionMarket: [
     { name: 'ohlcv', method: 'pmOhlcv', endpoint: '/api/v1/prediction-market/ohlcv' },
