@@ -1077,15 +1077,45 @@ export async function resolveEvmStepFees(chain, txData, overrides = {}) {
   return { gasPrice: await evmRpcCall(chain, 'eth_gasPrice') };
 }
 
-// A send failure is DEFINITIVE when the node itself refused the transaction (a
-// JSON-RPC error) or the request never left this process (no RPC configured):
-// nothing is in flight, so the quote stays reusable. Every other failure — a
-// non-JSON gateway page, a dropped connection — is AMBIGUOUS: the node may have
-// accepted the tx before the ack was lost, so callers must fail closed and
-// consume the quote rather than let a re-execute re-sign at a fresh nonce.
-// See evmRpcCall (trading.js) for the error codes.
-function isDefinitiveRpcRejection(err) {
-  return err?.code === 'RPC_JSON_ERROR' || err?.code === 'RPC_UNCONFIGURED';
+// eth_sendRawTransaction JSON-RPC error messages that PROVE the tx never
+// entered the mempool: the node rejected it during validation, so nothing is in
+// flight and the quote stays reusable. Matched case-insensitively as substrings
+// of the node's error text. Everything NOT listed here fails closed — crucially
+// the txpool states ("already known", "known transaction", "already imported",
+// "nonce too low", "replacement transaction underpriced") that mean a tx is
+// ALREADY in flight; treating those as safe rejections would let a re-execute
+// sign a fresh nonce and broadcast a second bridge tx.
+const PRE_BROADCAST_SEND_ERRORS = [
+  'insufficient funds',
+  'intrinsic gas too low',
+  'gas too low',
+  'exceeds block gas limit',
+  'exceeds the block gas limit',
+  'max fee per gas less than block base fee',
+  'fee cap less than block base fee',
+  'max priority fee per gas higher than max fee per gas',
+  'transaction underpriced', // NB: "replacement transaction underpriced" is excluded below
+  'invalid sender',
+  'invalid signature',
+  'could not decode',
+  'rlp',
+  'negative value',
+];
+
+// True when we are CONFIDENT a failed send never put the tx into the mempool, so
+// the bridge quote may be retried. This is deliberately NARROW: a definitive
+// answer requires a JSON-RPC rejection (RPC_JSON_ERROR) whose message is on the
+// pre-broadcast allowlist, or a missing-RPC config error (the request never
+// left this process). A transport/HTTP failure, or ANY other JSON-RPC error
+// (including in-flight txpool states), is ambiguous and must fail closed — see
+// evmRpcCall (trading.js) for the error codes.
+function isPreBroadcastSendRejection(err) {
+  if (err?.code === 'RPC_UNCONFIGURED') return true;
+  if (err?.code !== 'RPC_JSON_ERROR') return false;
+  const msg = (err.message || '').toLowerCase();
+  // A tx at this nonce is already pending — the EXISTING one is in flight.
+  if (msg.includes('replacement transaction underpriced')) return false;
+  return PRE_BROADCAST_SEND_ERRORS.some(pattern => msg.includes(pattern));
 }
 
 async function processEvmStep(step, { chain, privateKeyHex, signerAddress, log, onBroadcast, feeOverrides, nonceSequence, intent }) {
@@ -1129,12 +1159,14 @@ async function processEvmStep(step, { chain, privateKeyHex, signerAddress, log, 
     try {
       txHash = await evmRpcCall(chain, 'eth_sendRawTransaction', [signedTx]);
     } catch (sendErr) {
-      // A definitive rejection (the node refused this tx) leaves nothing in
-      // flight, so let it propagate WITHOUT consuming the quote. Any other
-      // failure is indistinguishable from "sent, ack lost": fail closed — mark
-      // the quote spent so a later re-execute can't re-sign this step at a fresh
-      // nonce and double-broadcast — then rethrow to abort the bridge.
-      if (!isDefinitiveRpcRejection(sendErr)) onBroadcast?.(step.id, null);
+      // Fail closed UNLESS we're confident the tx never entered the mempool (a
+      // pre-broadcast validation rejection, or no RPC configured). Everything
+      // else — a lost ack, a gateway error, OR an in-flight txpool state like
+      // "already known" / "nonce too low" that a node reports as a JSON-RPC
+      // error — may already be broadcasting, so mark the quote spent before
+      // rethrowing to abort, so a later re-execute can't re-sign this step at a
+      // fresh nonce and double-broadcast.
+      if (!isPreBroadcastSendRejection(sendErr)) onBroadcast?.(step.id, null);
       throw sendErr;
     }
     // In flight now: record it before waiting on the receipt, because a receipt

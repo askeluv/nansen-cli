@@ -161,22 +161,48 @@ describe('bridge EVM broadcast fail-closed', () => {
     expect(readQuote('bridge-net').executedAt).toBeTypeOf('number');
   });
 
-  it('leaves the quote REUSABLE on a DEFINITIVE JSON-RPC rejection (nonce too low)', async () => {
-    // The node explicitly refused the tx — nothing is in flight — so a burned
-    // quote here would be a needless re-quote for a plainly retryable error.
-    stubSend(Object.assign(new Error('RPC error (eth_sendRawTransaction): nonce too low'), { code: 'RPC_JSON_ERROR' }));
+  it('leaves the quote REUSABLE on a PRE-BROADCAST JSON-RPC rejection (insufficient funds)', async () => {
+    // The node rejected the tx during validation — it never entered the mempool
+    // — so a burned quote here would be a needless re-quote for a plainly
+    // retryable error (fund the wallet and re-run the same quote).
+    stubSend(Object.assign(new Error('RPC error (eth_sendRawTransaction): insufficient funds for gas * price + value'), { code: 'RPC_JSON_ERROR' }));
     const cmds = buildBridgeCommands({ log: () => {} });
-    writeQuote('bridge-nonce');
+    writeQuote('bridge-funds');
 
-    await expect(cmds.execute([], api, {}, { quote: 'bridge-nonce', wallet: 'w' }))
-      .rejects.toThrow(/nonce too low/i);
+    await expect(cmds.execute([], api, {}, { quote: 'bridge-funds', wallet: 'w' }))
+      .rejects.toThrow(/insufficient funds/i);
 
     // Not consumed: no executedAt, and a second attempt actually re-signs
     // (it is NOT blocked by the single-use guard).
-    expect(readQuote('bridge-nonce').executedAt).toBeUndefined();
+    expect(readQuote('bridge-funds').executedAt).toBeUndefined();
     signEvmTransaction.mockClear();
-    await expect(cmds.execute([], api, {}, { quote: 'bridge-nonce', wallet: 'w' }))
-      .rejects.toThrow(/nonce too low/i);
+    await expect(cmds.execute([], api, {}, { quote: 'bridge-funds', wallet: 'w' }))
+      .rejects.toThrow(/insufficient funds/i);
     expect(signEvmTransaction).toHaveBeenCalled();
+  });
+
+  // In-flight txpool states come back as JSON-RPC errors too, but the tx is
+  // ALREADY broadcasting — these MUST fail closed, not stay reusable.
+  it.each([
+    ['already known', 'already known'],
+    ['known transaction', 'known transaction: 0xabc'],
+    ['nonce too low', 'nonce too low'],
+    ['replacement underpriced', 'replacement transaction underpriced'],
+  ])('marks the quote spent on an in-flight txpool JSON-RPC error (%s)', async (label, message) => {
+    stubSend(Object.assign(new Error(`RPC error (eth_sendRawTransaction): ${message}`), { code: 'RPC_JSON_ERROR' }));
+    const cmds = buildBridgeCommands({ log: () => {} });
+    const qid = `bridge-inflight-${label.replace(/\s+/g, '-')}`;
+    writeQuote(qid);
+
+    await expect(cmds.execute([], api, {}, { quote: qid, wallet: 'w' }))
+      .rejects.toThrow(new RegExp(message.split(':')[0], 'i'));
+
+    // The tx may already be in the mempool — the quote is consumed, and a retry
+    // is refused before it re-signs.
+    expect(readQuote(qid).executedAt).toBeTypeOf('number');
+    signEvmTransaction.mockClear();
+    await expect(cmds.execute([], api, {}, { quote: qid, wallet: 'w' }))
+      .rejects.toThrow(/partially executed|already executed/i);
+    expect(signEvmTransaction).not.toHaveBeenCalled();
   });
 });
