@@ -379,12 +379,11 @@ describe('buildCommonTokenTransferData', () => {
   });
 
   it('rejects a non-numeric --token-age-min/--token-age-max', () => {
-expect(() => buildCommonTokenTransferData({ 'token-age-min': 'abc' }))
-  .toThrow('--token-age-min must be a number');
-expect(() => buildCommonTokenTransferData({ 'token-age-max': 'abc' }))
-  .toThrow('--token-age-max must be a number');
-
-});
+    expect(() => buildCommonTokenTransferData({ 'token-age-min': 'abc' }))
+      .toThrow('--token-age-min must be a number');
+    expect(() => buildCommonTokenTransferData({ 'token-age-max': 'abc' }))
+      .toThrow('--token-age-max must be a number');
+  });
 });
 
 describe('buildAlertData', () => {
@@ -804,10 +803,6 @@ describe('alerts list — client-side filtering', () => {
   });
 
   it('rejects a non-numeric --limit instead of silently returning an empty list (regression)', async () => {
-    // Before the fix: `if (options.limit) alerts.slice(0, Number(options.limit))`
-    // -- Number('abc') is NaN, and Array.prototype.slice(0, NaN) evaluates the
-    // end index as 0, so a typo'd --limit silently returned [] instead of an
-    // error, indistinguishable from "you really have zero alerts".
     const { mockApi, cmd } = setup();
     await expect(cmd(['list'], mockApi, {}, { limit: 'abc' }))
       .rejects.toThrow('--limit must be a positive integer');
@@ -822,10 +817,6 @@ describe('alerts list — client-side filtering', () => {
   });
 
   it('rejects a negative --offset instead of silently counting from the end (regression)', async () => {
-    // Before the fix: `if (options.offset) alerts.slice(Number(options.offset))`
-    // -- Array.prototype.slice with a negative start counts from the end of
-    // the array, so --offset -2 silently returned the *last* 2 alerts
-    // instead of erroring on what is clearly not a valid pagination offset.
     const { mockApi, cmd } = setup();
     await expect(cmd(['list'], mockApi, {}, { offset: '-2' }))
       .rejects.toThrow('--offset must be a non-negative integer');

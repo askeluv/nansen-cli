@@ -644,15 +644,9 @@ USAGE:
             });
           }
 
-          // Pagination (applied after filtering). Validated the same way as
-          // the API-side pagination in query-options.js/research.js's
-          // buildPagination: a non-numeric value must error, not silently
-          // degrade. Without this, Number('abc') is NaN and
-          // Array.prototype.slice(0, NaN) evaluates the end index as 0, so a
-          // typo'd --limit silently returned an empty list instead of an
-          // error. A negative --offset has the same problem in the opposite
-          // direction: slice() treats a negative index as "count from the
-          // end", so --offset -2 would silently return the last 2 alerts.
+          // Pagination (applied after filtering). Validate first -- an
+          // unvalidated Number() on bad input silently degrades (NaN -> empty
+          // list via slice(0, NaN); negative index -> tail via slice()).
           if (options.offset !== undefined) {
             const offset = Number(options.offset);
             if (!Number.isInteger(offset) || offset < 0) {
