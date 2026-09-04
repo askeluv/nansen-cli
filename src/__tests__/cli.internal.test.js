@@ -776,6 +776,48 @@ describe('alerts list — client-side filtering', () => {
     expect(result[1].id).toBe('3');
   });
 
+  it('should honor --limit 0 (return zero results) instead of treating it as unset', async () => {
+    const { mockApi, cmd } = setup();
+    const result = await cmd(['list'], mockApi, {}, { limit: 0 });
+    expect(result).toHaveLength(0);
+  });
+
+  it('should honor --offset 0 (a no-op, not "unset") without erroring', async () => {
+    const { mockApi, cmd } = setup();
+    const result = await cmd(['list'], mockApi, {}, { offset: 0 });
+    expect(result).toHaveLength(5);
+  });
+
+  it('should reject a non-numeric --limit instead of silently returning zero results', async () => {
+    const { mockApi, cmd } = setup();
+    await expect(cmd(['list'], mockApi, {}, { limit: 'abc' }))
+      .rejects.toThrow('--limit must be a non-negative integer');
+  });
+
+  it('should reject a non-numeric --offset instead of silently no-op-ing', async () => {
+    const { mockApi, cmd } = setup();
+    await expect(cmd(['list'], mockApi, {}, { offset: 'abc' }))
+      .rejects.toThrow('--offset must be a non-negative integer');
+  });
+
+  it('should reject a negative --limit', async () => {
+    const { mockApi, cmd } = setup();
+    await expect(cmd(['list'], mockApi, {}, { limit: -1 }))
+      .rejects.toThrow('--limit must be a non-negative integer');
+  });
+
+  it('should reject a negative --offset instead of silently slicing from the end', async () => {
+    const { mockApi, cmd } = setup();
+    await expect(cmd(['list'], mockApi, {}, { offset: -1 }))
+      .rejects.toThrow('--offset must be a non-negative integer');
+  });
+
+  it('should reject a non-integer --limit (e.g. "2.5")', async () => {
+    const { mockApi, cmd } = setup();
+    await expect(cmd(['list'], mockApi, {}, { limit: '2.5' }))
+      .rejects.toThrow('--limit must be a non-negative integer');
+  });
+
   it('should combine type + chain filters', async () => {
     const { mockApi, cmd } = setup();
     const result = await cmd(['list'], mockApi, {}, { type: 'sm-token-flows', chain: 'base' });

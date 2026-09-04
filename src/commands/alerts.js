@@ -606,9 +606,32 @@ USAGE:
             });
           }
 
-          // Pagination (applied after filtering)
-          if (options.offset) alerts = alerts.slice(Number(options.offset));
-          if (options.limit) alerts = alerts.slice(0, Number(options.limit));
+          // Pagination (applied after filtering). Validate strictly rather than
+          // silently misbehaving on bad input:
+          //   - `if (options.offset)` / `if (options.limit)` treat 0 as "not set"
+          //     (falsy), so `--offset 0` / `--limit 0` were silently ignored
+          //     instead of being honored.
+          //   - `Number("abc")` is NaN, and `Array.prototype.slice` coerces a NaN
+          //     argument to 0 — so `--offset abc` silently became a no-op and
+          //     `--limit abc` silently returned zero results, with no error
+          //     telling the caller their input wasn't a number at all.
+          //   - Negative values (`--offset -1`) were accepted and fed straight
+          //     into `slice()`, which treats negative indices as "from the end" —
+          //     silently returning the wrong slice instead of rejecting the input.
+          if (options.offset !== undefined) {
+            const offset = Number(options.offset);
+            if (!Number.isInteger(offset) || offset < 0) {
+              throw new NansenError(`--offset must be a non-negative integer, got "${options.offset}"`, ErrorCode.INVALID_PARAMS);
+            }
+            alerts = alerts.slice(offset);
+          }
+          if (options.limit !== undefined) {
+            const limit = Number(options.limit);
+            if (!Number.isInteger(limit) || limit < 0) {
+              throw new NansenError(`--limit must be a non-negative integer, got "${options.limit}"`, ErrorCode.INVALID_PARAMS);
+            }
+            alerts = alerts.slice(0, limit);
+          }
 
           return alerts;
         },
