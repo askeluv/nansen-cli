@@ -1044,7 +1044,7 @@
                 "token": {
                   "type": "string",
                   "required": true,
-                  "description": "Token contract address (mint address on Solana)"
+                  "description": "Token contract address"
                 }
               }
             },
@@ -1281,9 +1281,9 @@
                   "description": "Maximum 24-hour volume in USD"
                 },
                 "neg-risk": {
-                  "type": "string",
+                  "type": "boolean",
                   "enum": ["true", "false"],
-                  "description": "Only negative-risk markets (true) or only standard markets (false)"
+                  "description": "Only negative-risk markets (true, or the bare flag) or only standard markets (false)"
                 },
                 "min-open-interest": {
                   "type": "number",
@@ -1352,9 +1352,9 @@
                   "description": "Maximum 24-hour volume in USD"
                 },
                 "neg-risk": {
-                  "type": "string",
+                  "type": "boolean",
                   "enum": ["true", "false"],
-                  "description": "Only negative-risk markets (true) or only standard markets (false)"
+                  "description": "Only negative-risk markets (true, or the bare flag) or only standard markets (false)"
                 },
                 "min-open-interest": {
                   "type": "number",

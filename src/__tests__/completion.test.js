@@ -110,6 +110,13 @@ describe('buildCompletionSpec', () => {
     expect(quote.options.find(o => o.name === '--chain').values).toEqual([]);
   });
 
+  it('keeps a boolean option with an enum value-taking so its values are offered', () => {
+    const screener = spec.nodes.find(n => n.path === 'research prediction-market market-screener');
+    expect(screener.options.find(o => o.name === '--neg-risk').values).toEqual(['true', 'false']);
+    expect(spec.valuelessFlags).not.toContain('--neg-risk');
+    expect(spec.valuelessFlags).toContain('--premium-labels'); // plain boolean stays valueless
+  });
+
   it('carries positional enum values without making them subcommands', () => {
     const install = spec.nodes.find(n => n.path === 'mcp install');
     expect(install.args).toEqual(['claude-code', 'claude-desktop', 'cursor']);
@@ -235,6 +242,7 @@ describe('bash completion behaviour', () => {
   it('completes enum values after an option', () => {
     expect(complete(['nansen', 'perp', 'order', '--tif', ''])).toEqual(['Gtc', 'Ioc', 'Alo']);
     expect(complete(['nansen', 'research', 'smart-money', 'netflow', '--chain', ''])).toEqual(SCHEMA.chains);
+    expect(complete(['nansen', 'research', 'prediction-market', 'market-screener', '--neg-risk', ''])).toEqual(['true', 'false']);
   });
 
   it('does not lose the command path across a global flag', () => {

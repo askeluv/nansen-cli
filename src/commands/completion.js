@@ -92,6 +92,16 @@ function safeList(values) {
 }
 
 /**
+ * A boolean option never consumes the next word — unless it also declares an
+ * enum, which means it accepts an explicit value (`--neg-risk true`, resolved
+ * by resolveBooleanOption). Those stay value-taking so the enum is offered
+ * after them and the walker skips the value.
+ */
+function isValueless(opt) {
+  return opt.type === 'boolean' && !Array.isArray(opt.enum);
+}
+
+/**
  * Values to offer after an option. Explicit `enum` first; `--chain` under the
  * research tree falls back to schema.chains, which is exactly the list the
  * research endpoints accept. Trade/bridge chains are narrower and are left to
@@ -121,7 +131,7 @@ export function buildCompletionSpec({ schema = schemaDefinition, version = VERSI
     const options = [];
     for (const [name, opt] of Object.entries(node.options || {})) {
       if (!SAFE_TOKEN.test(name)) continue;
-      if (opt.type === 'boolean') valueless.add(name);
+      if (isValueless(opt)) valueless.add(name);
       options.push({
         name: `--${name}`,
         description: shortDesc(opt.description),
@@ -142,7 +152,7 @@ export function buildCompletionSpec({ schema = schemaDefinition, version = VERSI
   const globalOptions = Object.entries(schema.globalOptions || {})
     .filter(([name]) => SAFE_TOKEN.test(name))
     .map(([name, opt]) => {
-      if (opt.type === 'boolean') valueless.add(name);
+      if (isValueless(opt)) valueless.add(name);
       return {
         name: `--${name}`,
         description: shortDesc(opt.description),
