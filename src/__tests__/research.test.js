@@ -177,6 +177,15 @@ describe('NansenAPI research (historical) methods', () => {
     })).rejects.toThrow(/mutually exclusive/);
   });
 
+  it('rejects a missing snapshot anchor at the API layer', async () => {
+    await expect(api.researchHistoricalTokenOhlcv({
+      tokenAddress: TOKENS.solana,
+      chain: 'solana',
+      fromDate: FROM,
+      timeframe: '1d',
+    })).rejects.toThrow(/required/i);
+  });
+
   describe('researchDexTrades', () => {
     it('hits historical-dex-trades with token_address, chain, and date_range {from,to}', async () => {
       setupMock();

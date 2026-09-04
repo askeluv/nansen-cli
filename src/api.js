@@ -1690,6 +1690,9 @@ export class NansenAPI {
     if (asOfDate && asOfTs) {
       throw new NansenError('asOfDate and asOfTs are mutually exclusive', ErrorCode.INVALID_PARAMS);
     }
+    if (!asOfDate && !asOfTs) {
+      throw new NansenError('One of asOfDate or asOfTs is required', ErrorCode.MISSING_PARAM);
+    }
     return this.request('/api/v1beta1/tgm/historical-token-ohlcv', {
       chain,
       token_address: tokenAddress,
