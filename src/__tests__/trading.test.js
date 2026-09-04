@@ -3489,7 +3489,13 @@ describe('API error handling', () => {
     global.fetch = origFetch;
   });
 
-  it('should surface UPSTREAM_BROADCAST_ERROR from execute API', async () => {
+  it('fails closed on a 502 from execute API, preserving the upstream body as details', async () => {
+    // A 502 is ambiguous no matter the body: the gateway may have forwarded the
+    // signed tx upstream before failing, so we can't trust a JSON error code
+    // (even "simulation failed") to prove the tx never went out. executeTransaction
+    // classifies it BROADCAST_FAILED — the fail-closed class that marks the quote
+    // spent and aborts — rather than surfacing the upstream code as nonfatal. The
+    // original code/message is preserved as `details` so nothing is lost.
     const origFetch = global.fetch;
     const errorBody = JSON.stringify({
       code: 'UPSTREAM_BROADCAST_ERROR',
@@ -3502,10 +3508,15 @@ describe('API error handling', () => {
     });
 
     const { executeTransaction } = await import('../trading.js');
+    // retries default to 2 with a 1.5s delay; drop both so the test doesn't wait.
     await expect(executeTransaction({
       signedTransaction: 'test',
       chain: 'solana',
-    })).rejects.toThrow('simulation failed');
+    }, { retries: 0 })).rejects.toMatchObject({
+      code: 'BROADCAST_FAILED',
+      status: 502,
+      details: { code: 'UPSTREAM_BROADCAST_ERROR', message: 'Jupiter Ultra execute failed: transaction simulation failed' },
+    });
 
     global.fetch = origFetch;
   });

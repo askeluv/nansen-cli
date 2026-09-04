@@ -1080,11 +1080,21 @@ export async function resolveEvmStepFees(chain, txData, overrides = {}) {
 // eth_sendRawTransaction JSON-RPC error messages that PROVE the tx never
 // entered the mempool: the node rejected it during validation, so nothing is in
 // flight and the quote stays reusable. Matched case-insensitively as substrings
-// of the node's error text. Everything NOT listed here fails closed — crucially
+// of the node's error text. Every entry here must be UNAMBIGUOUSLY pre-broadcast
+// across EVM node implementations. Everything NOT listed fails closed — crucially
 // the txpool states ("already known", "known transaction", "already imported",
 // "nonce too low", "replacement transaction underpriced") that mean a tx is
 // ALREADY in flight; treating those as safe rejections would let a re-execute
 // sign a fresh nonce and broadcast a second bridge tx.
+//
+// Deliberately EXCLUDED: the bare "transaction underpriced". On go-ethereum /
+// op-geth (which is what Base — today's only EVM bridge chain — runs) it means a
+// fresh too-low-fee tx that was never accepted, i.e. safe. But some other nodes
+// (certain Besu / Nethermind versions) reuse that same bare message for a failed
+// REPLACEMENT (a nonce collision with an in-flight tx). Since the allowlist is
+// not chain-scoped and processEvmStep runs for whatever CHAIN_RPCS resolves, we
+// fail closed on it rather than risk a future non-geth chain misclassifying an
+// in-flight tx as safe. Cost is at most a needless re-quote.
 const PRE_BROADCAST_SEND_ERRORS = [
   'insufficient funds',
   'intrinsic gas too low',
@@ -1094,7 +1104,6 @@ const PRE_BROADCAST_SEND_ERRORS = [
   'max fee per gas less than block base fee',
   'fee cap less than block base fee',
   'max priority fee per gas higher than max fee per gas',
-  'transaction underpriced', // NB: "replacement transaction underpriced" is excluded below
   'invalid sender',
   'invalid signature',
   'could not decode',
@@ -1107,14 +1116,13 @@ const PRE_BROADCAST_SEND_ERRORS = [
 // answer requires a JSON-RPC rejection (RPC_JSON_ERROR) whose message is on the
 // pre-broadcast allowlist, or a missing-RPC config error (the request never
 // left this process). A transport/HTTP failure, or ANY other JSON-RPC error
-// (including in-flight txpool states), is ambiguous and must fail closed — see
+// (including in-flight txpool states and the cross-node-ambiguous bare
+// "transaction underpriced"), is treated as unsafe and must fail closed — see
 // evmRpcCall (trading.js) for the error codes.
 function isPreBroadcastSendRejection(err) {
   if (err?.code === 'RPC_UNCONFIGURED') return true;
   if (err?.code !== 'RPC_JSON_ERROR') return false;
   const msg = (err.message || '').toLowerCase();
-  // A tx at this nonce is already pending — the EXISTING one is in flight.
-  if (msg.includes('replacement transaction underpriced')) return false;
   return PRE_BROADCAST_SEND_ERRORS.some(pattern => msg.includes(pattern));
 }
 

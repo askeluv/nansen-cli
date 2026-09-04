@@ -228,25 +228,63 @@ export async function executeTransaction(params, { retries = 2, retryDelayMs = 1
       throw lastError;
     }
 
-    const text = await res.text();
+    let text;
+    try {
+      text = await res.text();
+    } catch (bodyErr) {
+      // Headers arrived but the body read failed (a truncated/reset response).
+      // Like the network case above, the backend may already have broadcast, so
+      // fail closed as BROADCAST_FAILED rather than surface a codeless error the
+      // candidate loop would treat as nonfatal. A retry re-sends byte-identical
+      // bytes a node dedupes.
+      lastError = Object.assign(
+        new Error(`Execute response body read failed (status ${res.status}): ${bodyErr.message}`),
+        { code: 'BROADCAST_FAILED', status: res.status }
+      );
+      if ((res.status === 502 || res.status === 503) && attempt < retries) continue;
+      throw lastError;
+    }
+
+    // Parse up front so a JSON body can be preserved as structured details — but
+    // the classification below never lets a parseable body downgrade an
+    // ambiguous status to its own (nonfatal) code.
     let body;
+    let parsed = true;
     try {
       body = JSON.parse(text);
     } catch {
+      parsed = false;
+    }
+
+    // A 502/503 is ambiguous no matter the body SHAPE: the gateway may have
+    // forwarded the signed tx upstream before failing (a JSON 502 like
+    // { code: "UPSTREAM_TIMEOUT" } is exactly that case). Classify EVERY 502/503
+    // as BROADCAST_FAILED and keep the body only as details — never fall through
+    // to the !res.ok branch below, which would surface a nonfatal upstream code
+    // and let the candidate loop broadcast the next quote on top of a live tx.
+    if (res.status === 502 || res.status === 503) {
       const chainType = params.chain && CHAIN_MAP[params.chain]?.type;
-      const feeHint = res.status === 502
-        ? chainType === 'solana'
-          ? ' This often means the transaction failed simulation — check that you have enough SOL for fees (~0.005 SOL minimum).'
-          : chainType === 'evm'
-            ? ' This often means the transaction failed simulation — check that you have enough ETH for gas fees.'
-            : ''
-        : '';
+      const feeHint = chainType === 'solana'
+        ? ' This often means the transaction failed simulation — check that you have enough SOL for fees (~0.005 SOL minimum).'
+        : chainType === 'evm'
+          ? ' This often means the transaction failed simulation — check that you have enough ETH for gas fees.'
+          : '';
       lastError = Object.assign(
-        new Error(`Execute API returned non-JSON response (status ${res.status}).${feeHint || ' This may be a Cloudflare challenge or server error.'}`),
+        new Error(`Execute API returned ${res.status} — treating as an ambiguous broadcast failure; the transaction may already be live.${feeHint}`),
+        { code: 'BROADCAST_FAILED', status: res.status, details: parsed ? body : text.slice(0, 200) }
+      );
+      // Retry (re-POSTs byte-identical bytes) then fail closed at the caller.
+      if (attempt < retries) continue;
+      throw lastError;
+    }
+
+    if (!parsed) {
+      // Non-JSON on a non-502/503 status (a Cloudflare challenge or HTML error
+      // page). Still uninterpretable after the POST went out, so fail closed.
+      lastError = Object.assign(
+        new Error(`Execute API returned non-JSON response (status ${res.status}). This may be a Cloudflare challenge or server error.`),
         { code: 'BROADCAST_FAILED', status: res.status, details: text.slice(0, 200) }
       );
-      // Retry on 502/503 (likely transient Cloudflare issues)
-      if ((res.status === 502 || res.status === 503) && attempt < retries) continue;
       throw lastError;
     }
 

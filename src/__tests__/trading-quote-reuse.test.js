@@ -398,4 +398,115 @@ describe('swap quote reuse guard (mirrors bridge quotes)', () => {
       .rejects.toThrow(/already executed/i);
     expect(executeAttempts).toBe(attemptsAfterFirst);
   });
+
+  it('fails closed on a JSON 502/503 — a parseable error body does not make it definitive', async () => {
+    // A JSON 502 like { code: "UPSTREAM_TIMEOUT" } is exactly the "gateway
+    // forwarded the tx upstream, then timed out on the ack" case. It must be
+    // classified BROADCAST_FAILED regardless of body shape — NOT surfaced with
+    // its own (nonfatal) code, which would let the loop try the next candidate.
+    const SECOND_ROUTER = '0x1111111254eeb25477b68fb85ed929f73a960582';
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    const walletAddress = showWallet('default').evm;
+
+    const executeBodies = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const body = opts?.body ? JSON.parse(opts.body) : {};
+
+      if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
+        executeBodies.push(body);
+        // A well-formed JSON error body, but a 502 status.
+        return Promise.resolve({ ok: false, status: 502, text: () => Promise.resolve(JSON.stringify({ code: 'UPSTREAM_TIMEOUT', message: 'upstream timed out' })) });
+      }
+      if (body.method === 'eth_getCode') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      }
+      if (body.method === 'eth_getTransactionCount') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+      }
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [
+        { aggregator: 'lifi', inputMint: BASE_ETH, outputMint: BASE_USDC, inAmount: '1000000000000000000', outAmount: '3000000000',
+          transaction: { to: LIFI_ROUTER, data: '0x12345678', value: '1000000000000000000', gas: '210000', maxFeePerGas: '1000000', maxPriorityFeePerGas: '1000000' } },
+        { aggregator: 'odos', inputMint: BASE_ETH, outputMint: BASE_USDC, inAmount: '1000000000000000000', outAmount: '2999000000',
+          transaction: { to: SECOND_ROUTER, data: '0xabcdef01', value: '1000000000000000000', gas: '210000', maxFeePerGas: '1000000', maxPriorityFeePerGas: '1000000' } },
+      ],
+    }, 'base', 'local', null, null, {
+      swapMode: 'exactIn',
+      request: evmIntent({ walletAddress, fromToken: BASE_ETH, toToken: BASE_USDC, amount: '1000000000000000000' }),
+    });
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    const flags = { 'no-simulate': true, 'no-verify-outcome': true };
+
+    await expect(cmds.execute([], null, flags, { quote: quoteId }))
+      .rejects.toThrow(/502|broadcast/i);
+
+    // Only the first candidate was posted (its retries) — same signed tx every time.
+    expect(new Set(executeBodies.map(b => b.signedTransaction)).size).toBe(1);
+    const quoteFile = JSON.parse(fs.readFileSync(path.join(getQuotesDir(), `${quoteId}.json`), 'utf8'));
+    expect(quoteFile.executedAt).toBeTypeOf('number');
+    await expect(cmds.execute([], null, flags, { quote: quoteId }))
+      .rejects.toThrow(/already executed/i);
+  });
+
+  it('fails closed when reading the /execute response BODY fails (truncated/reset)', async () => {
+    // fetch() can resolve on headers and then reject while reading the body. That
+    // error has no code; executeTransaction must still classify it BROADCAST_FAILED
+    // so the quote is marked spent and the loop aborts instead of continuing.
+    const SECOND_ROUTER = '0x1111111254eeb25477b68fb85ed929f73a960582';
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    const walletAddress = showWallet('default').evm;
+
+    const executeBodies = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const body = opts?.body ? JSON.parse(opts.body) : {};
+
+      if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
+        executeBodies.push(body);
+        // Headers received (200), but the body stream errors mid-read.
+        return Promise.resolve({ ok: true, status: 200, text: () => Promise.reject(new Error('aborted: incomplete chunked read')) });
+      }
+      if (body.method === 'eth_getCode') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      }
+      if (body.method === 'eth_getTransactionCount') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+      }
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [
+        { aggregator: 'lifi', inputMint: BASE_ETH, outputMint: BASE_USDC, inAmount: '1000000000000000000', outAmount: '3000000000',
+          transaction: { to: LIFI_ROUTER, data: '0x12345678', value: '1000000000000000000', gas: '210000', maxFeePerGas: '1000000', maxPriorityFeePerGas: '1000000' } },
+        { aggregator: 'odos', inputMint: BASE_ETH, outputMint: BASE_USDC, inAmount: '1000000000000000000', outAmount: '2999000000',
+          transaction: { to: SECOND_ROUTER, data: '0xabcdef01', value: '1000000000000000000', gas: '210000', maxFeePerGas: '1000000', maxPriorityFeePerGas: '1000000' } },
+      ],
+    }, 'base', 'local', null, null, {
+      swapMode: 'exactIn',
+      request: evmIntent({ walletAddress, fromToken: BASE_ETH, toToken: BASE_USDC, amount: '1000000000000000000' }),
+    });
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    const flags = { 'no-simulate': true, 'no-verify-outcome': true };
+
+    await expect(cmds.execute([], null, flags, { quote: quoteId }))
+      .rejects.toThrow(/body read failed|aborted/i);
+
+    // Second candidate never signed/posted; quote marked spent; re-execute refused.
+    expect(new Set(executeBodies.map(b => b.signedTransaction)).size).toBe(1);
+    const quoteFile = JSON.parse(fs.readFileSync(path.join(getQuotesDir(), `${quoteId}.json`), 'utf8'));
+    expect(quoteFile.executedAt).toBeTypeOf('number');
+    await expect(cmds.execute([], null, flags, { quote: quoteId }))
+      .rejects.toThrow(/already executed/i);
+  });
 });

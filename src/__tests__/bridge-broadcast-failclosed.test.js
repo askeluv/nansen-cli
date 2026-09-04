@@ -184,14 +184,18 @@ describe('bridge EVM broadcast fail-closed', () => {
     expect(signEvmTransaction).toHaveBeenCalled();
   });
 
-  // In-flight txpool states come back as JSON-RPC errors too, but the tx is
-  // ALREADY broadcasting — these MUST fail closed, not stay reusable.
+  // In-flight (or not-provably-pre-broadcast) states come back as JSON-RPC
+  // errors too, but the tx may ALREADY be broadcasting — these MUST fail closed,
+  // not stay reusable. The bare "transaction underpriced" is here deliberately:
+  // some non-geth nodes reuse it for a failed replacement (a nonce collision),
+  // so it is NOT on the pre-broadcast allowlist.
   it.each([
     ['already known', 'already known'],
     ['known transaction', 'known transaction: 0xabc'],
     ['nonce too low', 'nonce too low'],
     ['replacement underpriced', 'replacement transaction underpriced'],
-  ])('marks the quote spent on an in-flight txpool JSON-RPC error (%s)', async (label, message) => {
+    ['bare underpriced', 'transaction underpriced'],
+  ])('marks the quote spent on a not-provably-pre-broadcast JSON-RPC error (%s)', async (label, message) => {
     stubSend(Object.assign(new Error(`RPC error (eth_sendRawTransaction): ${message}`), { code: 'RPC_JSON_ERROR' }));
     const cmds = buildBridgeCommands({ log: () => {} });
     const qid = `bridge-inflight-${label.replace(/\s+/g, '-')}`;
