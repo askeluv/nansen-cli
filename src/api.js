@@ -1684,6 +1684,29 @@ export class NansenAPI {
     });
   }
 
+  async researchHistoricalTokenOhlcv(params = {}) {
+    const { chain = 'solana', tokenAddress, fromDate, asOfDate, asOfTs, timeframe, applyBlacklistFilter } = params;
+    if (tokenAddress) requireValidToken(tokenAddress, chain);
+    if (!fromDate) {
+      throw new NansenError('fromDate is required', ErrorCode.MISSING_PARAM);
+    }
+    if (asOfDate && asOfTs) {
+      throw new NansenError('asOfDate and asOfTs are mutually exclusive', ErrorCode.INVALID_PARAMS);
+    }
+    if (!asOfDate && !asOfTs) {
+      throw new NansenError('One of asOfDate or asOfTs is required', ErrorCode.MISSING_PARAM);
+    }
+    return this.request('/api/v1beta1/tgm/historical-token-ohlcv', {
+      chain,
+      token_address: tokenAddress,
+      date_from: fromDate,
+      as_of_date: asOfDate,
+      as_of_ts: asOfTs,
+      timeframe,
+      apply_blacklist_filter: applyBlacklistFilter
+    });
+  }
+
   // ============= Smart Alert Endpoints =============
 
   async alertsList(params = {}) {

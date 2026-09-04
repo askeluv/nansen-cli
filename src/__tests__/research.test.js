@@ -126,6 +126,75 @@ describe('NansenAPI research (historical) methods', () => {
     });
   });
 
+  it('uses the historical token OHLCV endpoint and request shape', async () => {
+    setupMock();
+    await api.researchHistoricalTokenOhlcv({
+      tokenAddress: TOKENS.solana,
+      chain: 'solana',
+      fromDate: FROM,
+      asOfDate: TO,
+      timeframe: '1d',
+      applyBlacklistFilter: false,
+    });
+    const body = lastCall('/api/v1beta1/tgm/historical-token-ohlcv');
+    expect(body).toEqual({
+      token_address: TOKENS.solana,
+      chain: 'solana',
+      date_from: FROM,
+      as_of_date: TO,
+      timeframe: '1d',
+      apply_blacklist_filter: false,
+    });
+  });
+
+  it('sends as_of_ts and omits as_of_date when only asOfTs is supplied', async () => {
+    setupMock();
+    await api.researchHistoricalTokenOhlcv({
+      tokenAddress: TOKENS.solana,
+      chain: 'solana',
+      fromDate: FROM,
+      asOfTs: `${TO}T00:00:00Z`,
+      timeframe: '1h',
+    });
+    const body = lastCall('/api/v1beta1/tgm/historical-token-ohlcv');
+    expect(body).toEqual({
+      token_address: TOKENS.solana,
+      chain: 'solana',
+      date_from: FROM,
+      as_of_ts: `${TO}T00:00:00Z`,
+      timeframe: '1h',
+    });
+  });
+
+  it('rejects asOfDate and asOfTs together at the API layer', async () => {
+    await expect(api.researchHistoricalTokenOhlcv({
+      tokenAddress: TOKENS.solana,
+      chain: 'solana',
+      fromDate: FROM,
+      asOfDate: TO,
+      asOfTs: `${TO}T00:00:00Z`,
+      timeframe: '1d',
+    })).rejects.toThrow(/mutually exclusive/);
+  });
+
+  it('rejects a missing fromDate at the API layer', async () => {
+    await expect(api.researchHistoricalTokenOhlcv({
+      tokenAddress: TOKENS.solana,
+      chain: 'solana',
+      asOfDate: TO,
+      timeframe: '1d',
+    })).rejects.toThrow(/fromDate is required/);
+  });
+
+  it('rejects a missing snapshot anchor at the API layer', async () => {
+    await expect(api.researchHistoricalTokenOhlcv({
+      tokenAddress: TOKENS.solana,
+      chain: 'solana',
+      fromDate: FROM,
+      timeframe: '1d',
+    })).rejects.toThrow(/required/i);
+  });
+
   describe('researchDexTrades', () => {
     it('hits historical-dex-trades with token_address, chain, and date_range {from,to}', async () => {
       setupMock();
@@ -347,12 +416,13 @@ describe('buildResearchCommands handler', () => {
       smartMoneyPnlLeaderboard: vi.fn().mockResolvedValue({ data: [] }),
       tokenPositionIntelligence: vi.fn().mockResolvedValue({ data: [] }),
       addressPerpPnlSummary: vi.fn().mockResolvedValue({ data: [] }),
+      researchHistoricalTokenOhlcv: vi.fn().mockResolvedValue({ data: [] }),
     };
   }
 
   it('exports historical and direct subcommands', () => {
-    expect(RESEARCH_HISTORICAL_SUBCOMMANDS.size).toBe(11);
-    expect(RESEARCH_SUBCOMMANDS.size).toBe(17);
+    expect(RESEARCH_HISTORICAL_SUBCOMMANDS.size).toBe(12);
+    expect(RESEARCH_SUBCOMMANDS.size).toBe(18);
   });
 
   it('dispatches chain-rank', async () => {
@@ -533,6 +603,37 @@ describe('buildResearchCommands handler', () => {
       'from-date': FROM, 'to-date': TO,
     })).rejects.toThrow(/address/);
     expect(mockApi.addressPerpPnlSummary).not.toHaveBeenCalled();
+  });
+
+  it('dispatches historical-token-ohlcv', async () => {
+    mockApi = makeMockApi();
+    await cmds.research(['historical-token-ohlcv'], mockApi, {}, {
+      'token-address': TOKENS.solana,
+      chain: 'solana',
+      'from-date': FROM,
+      'as-of-date': TO,
+      timeframe: '1d',
+      'apply-blacklist-filter': 'false',
+    });
+    expect(mockApi.researchHistoricalTokenOhlcv).toHaveBeenCalledWith({
+      tokenAddress: TOKENS.solana,
+      chain: 'solana',
+      fromDate: FROM,
+      asOfDate: TO,
+      asOfTs: undefined,
+      timeframe: '1d',
+      applyBlacklistFilter: false,
+    });
+  });
+
+  it('requires exactly one historical OHLCV snapshot anchor', async () => {
+    mockApi = makeMockApi();
+    const options = { 'token-address': TOKENS.solana, 'from-date': FROM, timeframe: '1d' };
+    await expect(cmds.research(['historical-token-ohlcv'], mockApi, {}, options))
+      .rejects.toThrow(/one of --as-of-date or --as-of-ts/);
+    await expect(cmds.research(['historical-token-ohlcv'], mockApi, {}, {
+      ...options, 'as-of-date': TO, 'as-of-ts': `${TO}T00:00:00Z`,
+    })).rejects.toThrow(/mutually exclusive/);
   });
 
   it('rejects unknown subcommand', async () => {
