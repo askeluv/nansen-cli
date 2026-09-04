@@ -84,7 +84,11 @@ describe('keychain', () => {
       const credDir = path.join(tempDir, '.nansen', 'wallets');
       const credPath = path.join(credDir, '.credentials');
       fs.mkdirSync(credDir, { recursive: true });
-      fs.writeFileSync(credPath, 'old credentials\n', { mode: 0o644 });
+      fs.writeFileSync(credPath, 'old credentials\n');
+      // writeFileSync's mode is filtered by the process umask, so set and
+      // verify the insecure starting state explicitly.
+      fs.chmodSync(credPath, 0o644);
+      expect(fs.statSync(credPath).mode & 0o777).toBe(0o644);
 
       expect(storePassword('replacement-password')).toEqual({ stored: true, method: 'file' });
       expect(fs.statSync(credPath).mode & 0o777).toBe(0o600);
