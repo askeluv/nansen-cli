@@ -305,9 +305,10 @@ export function buildResearchCommands(deps = {}) {
       }
 
       if (sub === 'historical-token-ohlcv') {
+        const tokenAddress = options['token-address'] || options.token;
         const asOfTs = options['as-of-ts'];
         requireOptions(
-          { 'token-address': options['token-address'] || options.token, 'from-date': fromDate, timeframe: options.timeframe },
+          { 'token-address': tokenAddress, 'from-date': fromDate, timeframe: options.timeframe },
           ['token-address', 'from-date', 'timeframe'],
         );
         if (!asOfDate && !asOfTs) {
@@ -323,7 +324,7 @@ export function buildResearchCommands(deps = {}) {
           );
         }
         return apiInstance.researchHistoricalTokenOhlcv({
-          tokenAddress: options['token-address'] || options.token,
+          tokenAddress,
           chain: options.chain || 'solana',
           fromDate,
           asOfDate,

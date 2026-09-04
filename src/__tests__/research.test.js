@@ -177,6 +177,15 @@ describe('NansenAPI research (historical) methods', () => {
     })).rejects.toThrow(/mutually exclusive/);
   });
 
+  it('rejects a missing fromDate at the API layer', async () => {
+    await expect(api.researchHistoricalTokenOhlcv({
+      tokenAddress: TOKENS.solana,
+      chain: 'solana',
+      asOfDate: TO,
+      timeframe: '1d',
+    })).rejects.toThrow(/fromDate is required/);
+  });
+
   it('rejects a missing snapshot anchor at the API layer', async () => {
     await expect(api.researchHistoricalTokenOhlcv({
       tokenAddress: TOKENS.solana,

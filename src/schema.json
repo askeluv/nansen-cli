@@ -1276,10 +1276,10 @@
               "description": "Start of data window"
             },
             "as-of-date": {
-              "description": "End of data window; mutually exclusive with --as-of-ts"
+              "description": "End of data window; exactly one of --as-of-date or --as-of-ts is required"
             },
             "as-of-ts": {
-              "description": "Exact Hyperliquid cutoff; mutually exclusive with --as-of-date"
+              "description": "Exact Hyperliquid cutoff timestamp; exactly one of --as-of-date or --as-of-ts is required"
             },
             "timeframe": {
               "required": true,
