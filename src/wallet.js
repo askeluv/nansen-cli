@@ -720,19 +720,23 @@ export function buildWalletCommands(deps = {}) {
 
         'list': async () => {
           const result = listWallets();
+          // Human-readable summary goes to stderr so stdout carries only the
+          // structured JSON that agents parse; the return value drives runCLI's
+          // stdout path (matching how research commands emit their data).
           if (result.wallets.length === 0) {
-            log('No wallets found. Create one with: nansen wallet create');
-            return;
+            process.stderr.write('No wallets found. Create one with: nansen wallet create\n');
+            return { wallets: result.wallets };
           }
-          log('');
+          process.stderr.write('\n');
           for (const w of result.wallets) {
             const star = w.isDefault ? ' ★' : '';
             const providerTag = w.provider === 'privy' ? ' (privy)' : '';
-            log(`  ${w.name}${star}${providerTag}`);
-            log(`    EVM:    ${w.evm}`);
-            log(`    Solana: ${w.solana}`);
-            log('');
+            process.stderr.write(`  ${w.name}${star}${providerTag}\n`);
+            process.stderr.write(`    EVM:    ${w.evm}\n`);
+            process.stderr.write(`    Solana: ${w.solana}\n`);
+            process.stderr.write('\n');
           }
+          return { wallets: result.wallets };
         },
 
         'show': async () => {
