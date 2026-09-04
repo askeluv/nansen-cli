@@ -583,7 +583,7 @@ export async function deleteWallet(name, password) {
  * Build wallet command handlers for integration into CLI.
  */
 export function buildWalletCommands(deps = {}) {
-  const { log = console.log } = deps;
+  const { log = console.log, errorOutput = console.error } = deps;
 
   return {
     'wallet': async (args, apiInstance, flags, options) => {
@@ -720,19 +720,23 @@ export function buildWalletCommands(deps = {}) {
 
         'list': async () => {
           const result = listWallets();
+          // Human-readable summary goes to stderr only — stdout carries just the
+          // JSON envelope (returned below), consistent with every other command,
+          // so `nansen wallet list | jq .` and similar scripting doesn't break.
           if (result.wallets.length === 0) {
-            log('No wallets found. Create one with: nansen wallet create');
-            return;
+            errorOutput('No wallets found. Create one with: nansen wallet create');
+          } else {
+            errorOutput('');
+            for (const w of result.wallets) {
+              const star = w.isDefault ? ' ★' : '';
+              const providerTag = w.provider === 'privy' ? ' (privy)' : '';
+              errorOutput(`  ${w.name}${star}${providerTag}`);
+              errorOutput(`    EVM:    ${w.evm}`);
+              errorOutput(`    Solana: ${w.solana}`);
+              errorOutput('');
+            }
           }
-          log('');
-          for (const w of result.wallets) {
-            const star = w.isDefault ? ' ★' : '';
-            const providerTag = w.provider === 'privy' ? ' (privy)' : '';
-            log(`  ${w.name}${star}${providerTag}`);
-            log(`    EVM:    ${w.evm}`);
-            log(`    Solana: ${w.solana}`);
-            log('');
-          }
+          return result;
         },
 
         'show': async () => {
