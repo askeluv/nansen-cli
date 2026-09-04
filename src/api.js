@@ -1725,15 +1725,17 @@ export class NansenAPI {
   }
 
   async alertsCreate(params = {}) {
-    return this.request('/api/v1/smart-alert', params);
+    // Creating an alert is non-idempotent: a lost response after a committed
+    // create must not trigger another request through the generic retry loop.
+    return this.request('/api/v1/smart-alert', params, { cache: false, retry: false });
   }
 
   async alertsUpdate(params = {}) {
-    return this.request('/api/v1/smart-alert', params, { method: 'PATCH' });
+    return this.request('/api/v1/smart-alert', params, { method: 'PATCH', cache: false });
   }
 
   async alertsToggle(params = {}) {
-    return this.request('/api/v1/smart-alert/toggle', params, { method: 'PATCH' });
+    return this.request('/api/v1/smart-alert/toggle', params, { method: 'PATCH', cache: false });
   }
 
   async alertsGet(id) {
@@ -1745,7 +1747,7 @@ export class NansenAPI {
   }
 
   async alertsDelete(alertId) {
-    return this.request(`/api/v1/smart-alert/${encodeURIComponent(alertId)}`, {}, { method: 'DELETE' });
+    return this.request(`/api/v1/smart-alert/${encodeURIComponent(alertId)}`, {}, { method: 'DELETE', cache: false });
   }
 }
 
