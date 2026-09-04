@@ -87,22 +87,41 @@ export function resolveTokenAddress(symbolOrAddress, chainName) {
  * @returns {Promise<*>} Parsed result value
  * @throws {Error} If chain has no configured RPC or the RPC returns an error
  */
+// Error codes let a broadcasting caller (bridge.js) tell a DEFINITIVE rejection
+// (the node refused the tx — nothing is in flight, safe to retry) apart from an
+// AMBIGUOUS failure (a gateway/transport error that may have dropped the ack
+// AFTER the node accepted the tx), so it can fail closed only on the latter:
+//   - RPC_UNCONFIGURED — no URL; thrown before any request leaves the process
+//   - RPC_NETWORK_ERROR — request left but no response (reset/timeout): ambiguous
+//   - RPC_HTTP_ERROR    — non-JSON HTTP response (e.g. a 502 gateway page): ambiguous
+//   - RPC_JSON_ERROR    — a JSON-RPC { error }: the node definitively rejected it
 export async function evmRpcCall(chain, method, params = []) {
   const rpcUrl = CHAIN_RPCS[chain];
-  if (!rpcUrl) throw new Error(`No RPC URL configured for chain: ${chain}`);
-  const res = await fetch(rpcUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-  });
+  if (!rpcUrl) throw Object.assign(new Error(`No RPC URL configured for chain: ${chain}`), { code: 'RPC_UNCONFIGURED' });
+  let res;
+  try {
+    res = await fetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+    });
+  } catch (netErr) {
+    // The request left this process but no response came back. A reset or
+    // timeout can strike AFTER the node accepted the payload, so a caller that
+    // just broadcast a tx cannot assume it was never sent.
+    throw Object.assign(new Error(`RPC request to ${chain} failed for ${method}: ${netErr.message}`), { code: 'RPC_NETWORK_ERROR' });
+  }
   const text = await res.text();
   let body;
   try {
     body = JSON.parse(text);
   } catch {
-    throw new Error(`RPC endpoint returned non-JSON response (HTTP ${res.status}) for ${method}: ${text.slice(0, 100)}`);
+    throw Object.assign(
+      new Error(`RPC endpoint returned non-JSON response (HTTP ${res.status}) for ${method}: ${text.slice(0, 100)}`),
+      { code: 'RPC_HTTP_ERROR', status: res.status },
+    );
   }
-  if (body.error) throw new Error(`RPC error (${method}): ${body.error.message}`);
+  if (body.error) throw Object.assign(new Error(`RPC error (${method}): ${body.error.message}`), { code: 'RPC_JSON_ERROR' });
   return body.result;
 }
 
@@ -845,6 +864,12 @@ export async function waitForReceipt(chain, txHash, timeoutMs = 180000, pollMs =
  *   - RECEIPT_TIMEOUT  — receipt never landed; the tx may still be pending, so
  *                        retrying would race a second tx against the same nonce
  *                        (a confirmed on-chain revert is NOT this — it may retry)
+ *   - BROADCAST_FAILED — /execute returned an uninterpretable response (non-JSON,
+ *                        typically a 502/503 after all retries) AFTER we POSTed
+ *                        the signed tx. A dropped ack is indistinguishable from
+ *                        "never sent", so the backend may already have broadcast
+ *                        it; failing closed here trades a needless re-quote for
+ *                        never trying the next candidate on top of a live tx.
  *
  * @param {Error} err
  * @returns {boolean}
@@ -852,7 +877,8 @@ export async function waitForReceipt(chain, txHash, timeoutMs = 180000, pollMs =
 function isFatalBroadcastError(err) {
   return err?.code === 'TXHASH_MISMATCH'
     || err?.code === 'INVALID_SIGNED_TX'
-    || err?.code === 'RECEIPT_TIMEOUT';
+    || err?.code === 'RECEIPT_TIMEOUT'
+    || err?.code === 'BROADCAST_FAILED';
 }
 
 /**
@@ -3698,10 +3724,22 @@ EXAMPLES:
             }
 
           } catch (quoteErr) {
+            // A BROADCAST_FAILED throws out of executeTransaction — BEFORE the
+            // normal markQuoteExecuted runs — so nothing has recorded this quote
+            // as spent. The signed tx may already be live on the backend (a 502
+            // on the ack, not on the send), so fail closed: mark it here so a
+            // later "trade execute --quote <id>" (or an agent auto-retry) is
+            // refused before it re-signs under a fresh nonce. No broadcast hash
+            // is recorded — we don't have one — which yields loadQuote's generic
+            // "may still be pending, check the explorer" message.
+            if (quoteErr?.code === 'BROADCAST_FAILED') {
+              markQuoteExecuted(quoteId);
+            }
             // Post-broadcast failures abort the whole execute — never retry the
             // next quote once a transaction is already out and its outcome is
-            // unknown (mismatch, underivable local hash, or an unconfirmed
-            // receipt timeout). See isFatalBroadcastError.
+            // unknown (mismatch, underivable local hash, an unconfirmed receipt
+            // timeout, or an ambiguous broadcast failure). See
+            // isFatalBroadcastError.
             if (isFatalBroadcastError(quoteErr)) throw quoteErr;
             const msg = quoteErr.message || '';
             log(`  ❌ Quote ${quoteName} failed: ${msg}`);
