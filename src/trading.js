@@ -263,12 +263,18 @@ export async function executeTransaction(params, { retries = 2, retryDelayMs = 1
     // to the !res.ok branch below, which would surface a nonfatal upstream code
     // and let the candidate loop broadcast the next quote on top of a live tx.
     if (res.status === 502 || res.status === 503) {
+      // Only append the simulation fee hint for a NON-JSON body. A structured
+      // JSON error (e.g. { code: "UPSTREAM_TIMEOUT" }) already explains itself
+      // via `details`; tacking "you may be out of SOL" onto a gateway timeout
+      // would misdirect the user.
       const chainType = params.chain && CHAIN_MAP[params.chain]?.type;
-      const feeHint = chainType === 'solana'
-        ? ' This often means the transaction failed simulation — check that you have enough SOL for fees (~0.005 SOL minimum).'
-        : chainType === 'evm'
-          ? ' This often means the transaction failed simulation — check that you have enough ETH for gas fees.'
-          : '';
+      const feeHint = !parsed
+        ? chainType === 'solana'
+          ? ' This often means the transaction failed simulation — check that you have enough SOL for fees (~0.005 SOL minimum).'
+          : chainType === 'evm'
+            ? ' This often means the transaction failed simulation — check that you have enough ETH for gas fees.'
+            : ''
+        : '';
       lastError = Object.assign(
         new Error(`Execute API returned ${res.status} — treating as an ambiguous broadcast failure; the transaction may already be live.${feeHint}`),
         { code: 'BROADCAST_FAILED', status: res.status, details: parsed ? body : text.slice(0, 200) }

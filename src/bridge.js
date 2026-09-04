@@ -1107,7 +1107,8 @@ const PRE_BROADCAST_SEND_ERRORS = [
   'invalid sender',
   'invalid signature',
   'could not decode',
-  'rlp',
+  'rlp: ', // geth's RLP decode errors ("rlp: input string too long", …); the
+           // trailing space avoids matching "rlp" embedded in an unrelated message
   'negative value',
 ];
 
