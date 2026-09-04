@@ -434,7 +434,41 @@ export function loadQuote(quoteId) {
   if (data.type && data.type !== 'swap') {
     throw new Error(`Quote "${quoteId}" is a ${data.type} quote. Use the matching command (e.g. "nansen bridge execute" for a bridge quote).`);
   }
+  if (data.executedAt) {
+    // Quotes are single-use: re-signing and re-broadcasting would submit a
+    // second, independently valid swap — a fresh EVM nonce or Solana blockhash,
+    // not a byte-identical replay a node would reject. Refuse a quote that has
+    // already been broadcast, the way loadBridgeQuote does.
+    const when = new Date(data.executedAt).toISOString();
+    const hashes = (data.broadcasts || []).map(b => b.txHash).filter(Boolean);
+    const detail = hashes.length ? ` (${hashes.join(', ')})` : '';
+    throw new Error(
+      `Quote "${quoteId}" was already executed at ${when}${detail}. The transaction may still be pending — check the explorer before retrying. Request a new quote with "nansen trade quote" to trade again.`,
+    );
+  }
   return data;
+}
+
+// Records that a broadcast has happened. `executedAt` is set on the first call
+// and never moved, so the quote is consumed the instant the swap goes out — a
+// later receipt-wait timeout or a REVERTED/failed outcome must not leave the
+// quote reusable, since retrying would sign and broadcast a second,
+// independently valid swap. Mirrors markBridgeQuoteExecuted (bridge.js).
+export function markQuoteExecuted(quoteId, progress = {}) {
+  const filePath = safeQuotesPath(`${quoteId}.json`);
+  if (!filePath || !fs.existsSync(filePath)) return;
+  try {
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    data.executedAt = data.executedAt || Date.now();
+    if (progress.broadcast) {
+      data.broadcasts = [...(data.broadcasts || []), { ...progress.broadcast, at: Date.now() }];
+    }
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), { mode: 0o600 });
+  } catch {
+    // Best-effort: if the marker can't be written, the next execute attempt
+    // will still proceed, but that's preferable to crashing after a successful
+    // broadcast.
+  }
 }
 
 /**
@@ -3172,6 +3206,12 @@ EXAMPLES:
               }
 
               if (wcResult.txHash) {
+                // The wallet already broadcast — the quote is spent right here,
+                // before the receipt wait below can throw RECEIPT_TIMEOUT and
+                // abort this function without ever reaching the shared
+                // executeTransaction() marker further down.
+                markQuoteExecuted(quoteId, { broadcast: { txHash: wcResult.txHash } });
+
                 // Wallet broadcast — verify on-chain
                 log('  Verifying on-chain status...');
                 try {
@@ -3527,6 +3567,21 @@ EXAMPLES:
               let txId = result.signature || result.txHash;
               let explorerUrl = chainConfig.explorer + txId;
 
+              // The transaction is on-chain (or in flight) the instant the
+              // Trading API accepts it — the quote is spent here, before the
+              // on-chain verification below can throw RECEIPT_TIMEOUT (or
+              // anything else) and abort this function. Covers local EVM,
+              // Privy EVM, Privy Solana, local/WalletConnect Solana, the
+              // WalletConnect sign-only fallback, and --gasless Relay — every
+              // path that reaches this shared broadcast call.
+              //
+              // Deliberate: a broadcast that later reverts on-chain (the
+              // "Trying next quote" path below) still consumes the quote —
+              // the revert still burned the nonce, so re-signing this same
+              // quote for a retry would race the reverted tx's nonce. This is
+              // intentional, not an oversight.
+              markQuoteExecuted(quoteId, { broadcast: { txHash: txId } });
+
               // For EVM: verify the tx actually succeeded on-chain
               if (chainType === 'evm') {
                 log('  Verifying on-chain status...');
@@ -3629,6 +3684,15 @@ EXAMPLES:
             } else {
               log(`\n  ✗ Quote ${quoteName} failed: ${result.status}`);
               if (result.error) log(`    Error:  ${result.error}`);
+              // A non-Success result can still carry a hash — the same
+              // /execute response shape (status: 'Failed' + txHash) is
+              // observed for approval broadcasts in trading.test.js, so a
+              // "Failed" swap isn't provably unbroadcast either. We can't
+              // tell from here whether the hash means the tx actually went
+              // out, but the asymmetry favors marking: a needless re-quote
+              // is cheaper than a silent double broadcast.
+              const failedTxId = result.signature || result.txHash;
+              if (failedTxId) markQuoteExecuted(quoteId, { broadcast: { txHash: failedTxId } });
               lastQuoteError = `${quoteName}: ${result.error || result.status}`;
               if (qi + 1 < endIndex) log(`  Trying next quote...`);
             }

@@ -1527,7 +1527,7 @@ export function buildCommands(deps = {}) {
       };
 
       if (!handlers[subcommand]) {
-        return { error: `Unknown subcommand: ${subcommand}`, available: Object.keys(handlers) };
+        throw new NansenError(`Unknown perp analytics subcommand: ${subcommand}. Available: screener, leaderboard`, ErrorCode.UNKNOWN);
       }
 
       return handlers[subcommand]();
@@ -1649,11 +1649,11 @@ export function buildCommands(deps = {}) {
       throw new NansenError(`Unknown research category: ${rawCategory}. Available: ${[...RESEARCH_CATEGORIES, ...RESEARCH_HISTORICAL_SUBCOMMANDS].join(', ')}`, ErrorCode.UNKNOWN);
     }
     // `research perp` reaches only the analytics half (screener/leaderboard) —
-    // the trading subcommands live at the top level. Routing its help through
-    // cmds['perp'] printed the trading help, advertising order/close/leverage
-    // from a command that can't run them.
-    if (category === 'perp' && (!args[1] || args[1] === 'help')) {
-      return perpAnalytics(['help'], apiInstance, flags, options);
+    // the trading subcommands live at the top level. Use the captured handler
+    // for every subcommand because cmds['perp'] is replaced below by the
+    // combined top-level trading dispatcher.
+    if (category === 'perp') {
+      return perpAnalytics(args.slice(1), apiInstance, flags, options);
     }
     return cmds[category](args.slice(1), apiInstance, flags, options);
   };
