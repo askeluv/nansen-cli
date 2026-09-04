@@ -169,12 +169,6 @@ export function compactSchema(schema) {
   };
 }
 
-// compareSemver is imported above (from src/semver.js, shared with
-// update-check.js) and re-exported here so this module's tests can import it
-// from '../cli.js' alongside the other CLI internals they already pull from
-// this file.
-export { compareSemver };
-
 export function parseArgs(args) {
   const result = { _: [], flags: {}, options: {} };
   
