@@ -3497,6 +3497,7 @@ describe('NansenAPI', () => {
     });
 
     it('alertsCreate should not retry after an ambiguous network failure', async () => {
+      if (LIVE_TEST) return;
       vi.useFakeTimers();
       let createdAlerts = 0;
       mockFetch.mockImplementation(async () => {
