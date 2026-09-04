@@ -53,7 +53,7 @@ describe('Package Integrity', () => {
 
     // Cleanup tarball
     rmSync(tgzPath, { force: true });
-  });
+  }, 180000); // `npm install` of a local tarball is fully synchronous and can be slow on a cold CI runner
 
   it('should not include test files in package', () => {
     const packOutput = execSync('npm pack --dry-run --json', {
