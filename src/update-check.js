@@ -9,6 +9,7 @@ import fs from 'fs';
 import path from 'path';
 import childProcess from 'child_process';
 import { fileURLToPath } from 'url';
+import { compareSemver } from './semver.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const CONFIG_DIR = path.join(process.env.HOME || process.env.USERPROFILE || '', '.nansen');
@@ -19,14 +20,20 @@ const PACKAGE_NAME = 'nansen-cli';
 /**
  * Compare two semver strings. Returns true if latest > current.
  * Exported so `nansen doctor` reports upgrade state with identical semantics.
+ *
+ * Delegates to the shared compareSemver (src/semver.js, also used by `nansen
+ * changelog --since`) instead of hand-rolling its own parser. The previous
+ * inline parser here had the same bug compareSemver used to have: a version
+ * string with fewer than 3 components (e.g. a hand-edited or truncated cache
+ * file) parsed its missing component as `undefined`, and `>` is always
+ * `false` against `undefined` in both directions — so a partial version
+ * always read as "not newer", never "newer". In practice both `latest` (from
+ * the npm registry) and `current` (from this package's own version) are
+ * always full x.y.z today, so this couldn't misfire yet — but it's the same
+ * defect class, so it's fixed the same way rather than left as a landmine.
  */
 export function isNewer(latest, current) {
-  const parse = v => v.replace(/^v/, '').split('.').map(Number);
-  const [lM, lm, lp] = parse(latest);
-  const [cM, cm, cp] = parse(current);
-  if (lM !== cM) return lM > cM;
-  if (lm !== cm) return lm > cm;
-  return lp > cp;
+  return compareSemver(latest, current) > 0;
 }
 
 const LAST_VERSION_FILE = path.join(CONFIG_DIR, 'last-version.json');
