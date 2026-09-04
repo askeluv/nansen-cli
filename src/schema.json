@@ -1162,6 +1162,103 @@
             }
           }
         },
+        "chain-rank": {
+          "endpoint": "/api/v1/chains/chain-rank",
+          "description": "Rank chains by growth metrics",
+          "options": {
+            "timeframe-days": {
+              "type": "number",
+              "enum": [7, 30, 365],
+              "default": 7
+            },
+            "chain-type": {
+              "enum": ["all", "evm"],
+              "default": "all"
+            }
+          }
+        },
+        "token-sectors": {
+          "endpoint": "/api/v1/search/token-sectors",
+          "description": "List token sectors available for filtering"
+        },
+        "address-premium-labels": {
+          "endpoint": "/api/v1/profiler/address/premium-labels",
+          "description": "Get all labels for an address, including premium labels",
+          "options": {
+            "address": {
+              "required": true
+            },
+            "chain": {
+              "default": "all"
+            },
+            "page": {
+              "default": 1
+            },
+            "limit": {
+              "default": 100
+            }
+          }
+        },
+        "smart-money-pnl-leaderboard": {
+          "endpoint": "/api/v1/smart-money/pnl-leaderboard",
+          "description": "Rank smart money wallets by PnL",
+          "options": {
+            "chains": {
+              "default": "solana",
+              "description": "Comma-separated chains"
+            },
+            "timeframe-days": {
+              "type": "number",
+              "enum": [1, 7, 30, 90, 180],
+              "default": 7,
+              "description": "Timeframe in days"
+            },
+            "filters": {
+              "type": "string",
+              "description": "Filters as JSON object"
+            },
+            "sort": {
+              "type": "string",
+              "description": "Sort order (field[:asc|desc])"
+            },
+            "page": {
+              "type": "number",
+              "default": 1,
+              "description": "1-based page number; maps to pagination.page"
+            },
+            "limit": {
+              "type": "number",
+              "description": "Max results per page; maps to pagination.per_page"
+            }
+          }
+        },
+        "position-intelligence": {
+          "endpoint": "/api/v1/tgm/position-intelligence",
+          "description": "Aggregate Hyperliquid positions by trader cohort",
+          "options": {
+            "symbol": {
+              "required": true,
+              "description": "Hyperliquid asset symbol (--token-address is accepted as an alias)"
+            }
+          }
+        },
+        "perp-pnl-summary": {
+          "endpoint": "/api/v1/profiler/perp-pnl-summary",
+          "description": "Summarize realized Hyperliquid PnL for an address",
+          "options": {
+            "address": {
+              "required": true
+            },
+            "from-date": {
+              "required": true,
+              "description": "Start of date range"
+            },
+            "to-date": {
+              "required": true,
+              "description": "End of date range"
+            }
+          }
+        },
         "historical-token-ohlcv": {
           "endpoint": "/api/v1beta1/tgm/historical-token-ohlcv",
           "description": "Historical token OHLCV candles",

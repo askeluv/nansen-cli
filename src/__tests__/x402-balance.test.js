@@ -43,3 +43,56 @@ describe('EVM_X402_TOKENS registry', () => {
     }
   });
 });
+
+describe('checkX402Balance BigInt precision (18 decimals)', () => {
+  it('returns correct balance for wei values above MAX_SAFE_INTEGER', async () => {
+    const { vi } = await import('vitest');
+    vi.resetModules();
+    const mockHex = '0x00000000000000000000000000000000000000000000000572b7b98736c20000';
+    const mockWallets = {
+      defaultWallet: 'test',
+      wallets: [{ name: 'test', evm: '0x' + '11'.repeat(20) }],
+    };
+    vi.doMock('../wallet.js', () => ({
+      listWallets: () => mockWallets,
+      exportWallet: vi.fn(),
+    }));
+    global.fetch = vi.fn().mockResolvedValue({
+      json: () => Promise.resolve({ jsonrpc: '2.0', id: 1, result: mockHex }),
+    });
+
+    const { checkX402Balance } = await import('../x402.js');
+    const result = await checkX402Balance('eip155:56', '0x55d398326f99059fF775485246999027B3197955');
+
+    expect(result).not.toBeNull();
+    expect(result.symbol).toBe('USDT');
+    expect(result.balance).toBeCloseTo(100.5, 1);
+
+    vi.doUnmock('../wallet.js');
+    delete global.fetch;
+  });
+
+  it('returns zero balance when eth_call returns null', async () => {
+    const { vi } = await import('vitest');
+    vi.resetModules();
+    const mockWallets = {
+      defaultWallet: 'test',
+      wallets: [{ name: 'test', evm: '0x' + '11'.repeat(20) }],
+    };
+    vi.doMock('../wallet.js', () => ({
+      listWallets: () => mockWallets,
+      exportWallet: vi.fn(),
+    }));
+    global.fetch = vi.fn().mockResolvedValue({
+      json: () => Promise.resolve({ jsonrpc: '2.0', id: 1, result: null }),
+    });
+
+    const { checkX402Balance } = await import('../x402.js');
+    const result = await checkX402Balance('eip155:56');
+
+    expect(result).toEqual({ balance: 0, symbol: 'U' });
+
+    vi.doUnmock('../wallet.js');
+    delete global.fetch;
+  });
+});

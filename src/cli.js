@@ -12,8 +12,11 @@ import { buildLimitOrderCommands } from './limit-order.js';
 import { formatAlertsTable, buildAlertsCommands } from './commands/alerts.js';
 import { buildAgentCommands } from './commands/agent.js';
 import { buildMcpCommands } from './commands/mcp.js';
-import { buildResearchCommands, RESEARCH_HISTORICAL_SUBCOMMANDS } from './commands/research.js';
+import { buildResearchCommands, RESEARCH_HISTORICAL_SUBCOMMANDS, RESEARCH_SUBCOMMANDS } from './commands/research.js';
+import { buildPagination, parseSort } from './query-options.js';
+export { buildPagination, parseSort };
 import { resolveAddress, isEnsName } from './ens.js';
+import { compareSemver } from './semver.js';
 import fs from 'fs';
 import { getUpdateNotification, getUpgradeNotice, scheduleUpdateCheck } from './update-check.js';
 import { getAuthStatus, runDoctorChecks, runConnectivityChecks, formatDoctorReport } from './doctor.js';
@@ -52,14 +55,6 @@ export function resolveBooleanOption(options, flags, key) {
   }
   if (flags[key] !== undefined) return Boolean(flags[key]);
   return undefined;
-}
-
-export function buildPagination(options) {
-  if (!options.limit && !options.page) return undefined;
-  return {
-    page: Math.max(1, parseInt(options.page, 10) || 1),
-    per_page: options.limit,
-  };
 }
 
 // ============= Field Filtering =============
@@ -166,19 +161,6 @@ export function compactSchema(schema) {
     chains: schema.chains,
     smartMoneyLabels: schema.smartMoneyLabels
   };
-}
-
-/**
- * Compare two semver strings. Returns 1 if a > b, -1 if a < b, 0 if equal.
- */
-function compareSemver(a, b) {
-  const parse = v => v.replace(/^v/, '').split('.').map(Number);
-  const [aM, am, ap] = parse(a);
-  const [bM, bm, bp] = parse(b);
-  if (aM !== bM) return aM > bM ? 1 : -1;
-  if (am !== bm) return am > bm ? 1 : -1;
-  if (ap !== bp) return ap > bp ? 1 : -1;
-  return 0;
 }
 
 export function parseArgs(args) {
@@ -458,22 +440,6 @@ export function parseDateOption(dateOption, days = 30) {
   const to = new Date().toISOString().split('T')[0];
   const from = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
   return { from, to };
-}
-
-// Parse simple sort syntax: "field:direction" or "field" (defaults to DESC)
-export function parseSort(sortOption, orderByOption) {
-  // If --order-by is provided, use it (full JSON control)
-  if (orderByOption) return orderByOption;
-  
-  // If no --sort, return undefined
-  if (!sortOption) return undefined;
-  
-  // Parse --sort field:direction or --sort field
-  const parts = sortOption.split(':');
-  const field = parts[0];
-  const direction = (parts[1] || 'desc').toUpperCase();
-  
-  return [{ field, direction }];
 }
 
 // Enrich transfers with Nansen labels for from/to addresses
@@ -1132,6 +1098,15 @@ export function buildCommands(deps = {}) {
       }
       const since = _options.since;
       if (since) {
+        // compareSemver treats a missing trailing component as 0, so accept
+        // "1", "1.43", and "1.43.0" alike here — but anything that isn't
+        // digits-and-dots (e.g. "abc") needs a clear error instead of
+        // silently comparing as if it were version 0.0.0, which would show
+        // every entry rather than flag the typo.
+        if (!/^v?\d+(\.\d+){0,2}$/.test(String(since))) {
+          log(`Invalid --since value "${since}": expected a version like 1.43 or 1.43.0.`);
+          return;
+        }
         // Show only entries from the given version onwards
         const lines = content.split('\n');
         const filtered = [];
@@ -1530,7 +1505,7 @@ export function buildCommands(deps = {}) {
       };
 
       if (!handlers[subcommand]) {
-        return { error: `Unknown subcommand: ${subcommand}`, available: Object.keys(handlers) };
+        throw new NansenError(`Unknown perp analytics subcommand: ${subcommand}. Available: screener, leaderboard`, ErrorCode.UNKNOWN);
       }
 
       return handlers[subcommand]();
@@ -1631,32 +1606,33 @@ export function buildCommands(deps = {}) {
   // it, so it has to be taken exactly once, here.
   const perpAnalytics = cmds['perp'];
 
-  const researchHistorical = buildResearchCommands(deps).research;
+  const researchSub = buildResearchCommands(deps).research;
 
   cmds['research'] = async (args, apiInstance, flags, options) => {
     const rawCategory = args[0];
     if (!rawCategory || rawCategory === 'help') {
       return {
         categories: [...RESEARCH_CATEGORIES],
+        subcommands: [...RESEARCH_SUBCOMMANDS],
         historical: [...RESEARCH_HISTORICAL_SUBCOMMANDS],
         aliases: RESEARCH_CATEGORY_ALIASES,
         description: 'Research and analytics commands',
         example: 'nansen research smart-money netflow --chain solana'
       };
     }
-    if (RESEARCH_HISTORICAL_SUBCOMMANDS.has(rawCategory)) {
-      return researchHistorical(args, apiInstance, flags, options);
+    if (RESEARCH_SUBCOMMANDS.has(rawCategory)) {
+      return researchSub(args, apiInstance, flags, options);
     }
     const category = RESEARCH_CATEGORY_ALIASES[rawCategory] || rawCategory;
     if (!RESEARCH_CATEGORIES.has(category)) {
-      throw new NansenError(`Unknown research category: ${rawCategory}. Available: ${[...RESEARCH_CATEGORIES, ...RESEARCH_HISTORICAL_SUBCOMMANDS].join(', ')}`, ErrorCode.UNKNOWN);
+      throw new NansenError(`Unknown research category: ${rawCategory}. Available: ${[...RESEARCH_CATEGORIES, ...RESEARCH_SUBCOMMANDS].join(', ')}`, ErrorCode.UNKNOWN);
     }
     // `research perp` reaches only the analytics half (screener/leaderboard) —
-    // the trading subcommands live at the top level. Routing its help through
-    // cmds['perp'] printed the trading help, advertising order/close/leverage
-    // from a command that can't run them.
-    if (category === 'perp' && (!args[1] || args[1] === 'help')) {
-      return perpAnalytics(['help'], apiInstance, flags, options);
+    // the trading subcommands live at the top level. Use the captured handler
+    // for every subcommand because cmds['perp'] is replaced below by the
+    // combined top-level trading dispatcher.
+    if (category === 'perp') {
+      return perpAnalytics(args.slice(1), apiInstance, flags, options);
     }
     return cmds[category](args.slice(1), apiInstance, flags, options);
   };
