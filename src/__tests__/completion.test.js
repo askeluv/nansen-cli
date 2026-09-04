@@ -2,13 +2,14 @@
  * Tests for `nansen completion <bash|zsh|fish>` (src/commands/completion.js).
  *
  * The scripts are generated, so the tests that matter are the ones a human
- * would otherwise have to do by hand: does the shell parse it, does the tree
- * still match the commands the CLI actually dispatches, and does a quoted
- * description in schema.json survive into shell source intact.
+ * would otherwise have to do by hand: does the shell parse it, does each
+ * shell's walker resolve the command path, does the tree still match the
+ * commands the CLI actually dispatches, and does a quoted description in
+ * schema.json survive into shell source intact.
  */
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { execFileSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -238,6 +239,113 @@ describe('bash completion behaviour', () => {
     const out = complete(['nansen', 'research', '--fields', 'screener', '']);
     expect(out).toContain('token');
   });
+
+  it('treats any single-dash token as valueless, like parseArgs', () => {
+    expect(complete(['nansen', '-p', 'research', ''])).toContain('token');
+    expect(complete(['nansen', 'research', 'token', '-x', ''])).toContain('screener');
+  });
+});
+
+describe.skipIf(!hasBinary('zsh'))('zsh completion behaviour', () => {
+  // Drive _nansen outside compsys: stub _describe to print the values it was
+  // handed, and set words/CURRENT the way zle does. The stub also checks $PATH
+  // is intact inside the function — zsh ties the array `path` to PATH, so a
+  // local by that name would empty PATH for the duration of every completion.
+  function complete(words) {
+    const file = writeTemp('_nansen', scripts.zsh);
+    const driver = `
+      compdef() { :; }
+      _describe() {
+        [[ "$PATH" == "$NANSEN_TEST_PATH" ]] || print -r -- '__PATH_CLOBBERED__'
+        local -a items
+        items=( "\${(@P)\${@[-1]}}" )
+        print -rl -- "\${items[@]%%:*}"
+      }
+      source ${JSON.stringify(file)}
+      words=(${words.map(w => JSON.stringify(w)).join(' ')})
+      CURRENT=${words.length}
+      _nansen
+    `;
+    const out = execFileSync('zsh', ['-f', '-c', driver], {
+      encoding: 'utf8',
+      env: { ...process.env, NANSEN_TEST_PATH: process.env.PATH },
+    }).trim().split('\n').filter(Boolean);
+    expect(out).not.toContain('__PATH_CLOBBERED__');
+    return out;
+  }
+
+  it('completes top-level commands', () => {
+    const out = complete(['nansen', '']);
+    expect(out).toContain('research');
+    expect(out).toContain('completion');
+    expect(out).not.toContain('token');
+  });
+
+  it('completes nested subcommands', () => {
+    expect(complete(['nansen', 'trade', 'limit-order', ''])).toEqual(['create', 'list', 'cancel', 'update']);
+  });
+
+  it('completes options for the resolved command', () => {
+    const out = complete(['nansen', 'research', 'token', 'screener', '--']);
+    expect(out).toContain('--chain');
+    expect(out).toContain('--pretty');
+  });
+
+  it('completes enum values after an option', () => {
+    expect(complete(['nansen', 'perp', 'order', '--tif', ''])).toEqual(['Gtc', 'Ioc', 'Alo']);
+  });
+
+  it('walks the path across flags and option values', () => {
+    expect(complete(['nansen', '--pretty', 'trade', ''])).toContain('quote');
+    expect(complete(['nansen', '-p', 'research', ''])).toContain('token');
+    expect(complete(['nansen', 'research', '--fields', 'screener', ''])).toContain('token');
+    expect(complete(['nansen', 'research', 'token', '--pretty', ''])).toContain('screener');
+  });
+});
+
+describe.skipIf(!hasBinary('fish'))('fish completion behaviour', () => {
+  // `complete -C` runs the registered completion for a command line exactly as
+  // a tab press would. A completion that writes to stderr (an unknown option to
+  // string split, say) would print over the prompt, so stderr must stay empty.
+  function complete(line) {
+    const file = writeTemp('nansen.fish', scripts.fish);
+    const { status, stdout, stderr } = spawnSync(
+      'fish',
+      ['-c', `source ${JSON.stringify(file)}; complete -C${JSON.stringify(line)}`],
+      { encoding: 'utf8' }
+    );
+    expect(stderr).toBe('');
+    expect(status).toBe(0);
+    return stdout.trim().split('\n').filter(Boolean).map(l => l.split('\t')[0]);
+  }
+
+  it('completes top-level commands', () => {
+    const out = complete('nansen ');
+    expect(out).toContain('research');
+    expect(out).toContain('completion');
+    expect(out).not.toContain('token');
+  });
+
+  it('completes nested subcommands', () => {
+    expect(complete('nansen trade limit-order ').sort()).toEqual(['cancel', 'create', 'list', 'update']);
+  });
+
+  it('completes options for the resolved command', () => {
+    const out = complete('nansen research token screener --');
+    expect(out).toContain('--chain');
+    expect(out).toContain('--pretty');
+  });
+
+  it('completes enum values after an option', () => {
+    expect(complete('nansen perp order --tif ').sort()).toEqual(['Alo', 'Gtc', 'Ioc']);
+  });
+
+  it('walks the path across flags and option values', () => {
+    expect(complete('nansen --pretty trade ')).toContain('quote');
+    expect(complete('nansen -p research ')).toContain('token');
+    expect(complete('nansen research --fields screener ')).toContain('token');
+    expect(complete('nansen research token --pretty ')).toContain('screener');
+  });
 });
 
 describe('nansen completion command', () => {
@@ -247,13 +355,6 @@ describe('nansen completion command', () => {
     const lines = [];
     const cmds = buildCompletionCommands({ log: l => lines.push(l) });
     await cmds.completion([], null, {}, {});
-    expect(lines.join('\n')).toBe(COMPLETION_USAGE);
-  });
-
-  it('prints usage for --help', async () => {
-    const lines = [];
-    const cmds = buildCompletionCommands({ log: l => lines.push(l) });
-    await cmds.completion(['bash'], null, { help: true }, {});
     expect(lines.join('\n')).toBe(COMPLETION_USAGE);
   });
 

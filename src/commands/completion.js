@@ -62,13 +62,15 @@ export const EXCLUDED_COMMANDS = new Set([
 ]);
 
 /**
- * Flags parseArgs treats as valueless but schema.json does not type as boolean
- * (short aliases, and output flags that live only in the parser). The walker
- * needs a *superset* of the real valueless flags: an extra name here is
- * harmless (the following word is checked against the subcommand table anyway),
- * a missing one makes the walker swallow a real subcommand.
+ * Long flags parseArgs treats as valueless but schema.json does not type as
+ * boolean (output flags that live only in the parser). Single-dash tokens
+ * (-p, -h, -5) never take a value in parseArgs, so the walkers treat every one
+ * as valueless without a list. The walker needs a *superset* of the real
+ * valueless flags: an extra name here is harmless (the following word is
+ * checked against the subcommand table anyway), a missing one makes the walker
+ * swallow a real subcommand.
  */
-const EXTRA_VALUELESS = ['help', 'h', 'version', 'v', 'p', 't', 's', 'cache', 'no-cache', 'stream', 'enrich', 'full', 'human'];
+const EXTRA_VALUELESS = ['help', 'version', 'cache', 'no-cache', 'stream', 'enrich', 'full', 'human'];
 
 // Command, subcommand, option and enum tokens are interpolated straight into
 // shell source. Anything that is not a bare word is dropped rather than escaped
@@ -149,7 +151,7 @@ export function buildCompletionSpec({ schema = schemaDefinition, version = VERSI
     version,
     nodes,
     globalOptions,
-    valuelessFlags: [...valueless].sort().map(f => (f.length === 1 ? `-${f}` : `--${f}`)),
+    valuelessFlags: [...valueless].sort().map(f => `--${f}`),
   };
 }
 
@@ -205,8 +207,13 @@ export function generateBash(spec) {
   ])}
 
 # Options that never consume the following word. Used to tell an option's value
-# apart from a subcommand while walking the command line.
+# apart from a subcommand while walking the command line. A single-dash token
+# never takes a value; only --long options need the lookup.
 _nansen_is_flag() {
+  case "$1" in
+    --*) ;;
+    *) return 0 ;;
+  esac
   case " ${valuelessFlags.join(' ')} " in
     *" $1 "*) return 0 ;;
   esac
@@ -318,10 +325,15 @@ export function generateZsh(spec) {
   return `#compdef nansen
 ${header('zsh', version, [
     'Install:  nansen completion zsh > "${fpath[1]}/_nansen" && compinit',
-    '     or:  eval "$(nansen completion zsh)"              # add to ~/.zshrc',
+    '     or:  eval "$(nansen completion zsh)"              # in ~/.zshrc, after compinit',
   ])}
 
+# A single-dash token never takes a value; only --long options need the lookup.
 _nansen_is_flag() {
+  case "$1" in
+    --*) ;;
+    *) return 0 ;;
+  esac
   case " ${valuelessFlags.join(' ')} " in
     *" $1 "*) return 0 ;;
   esac
@@ -364,8 +376,10 @@ _nansen_has_sub() {
 }
 
 _nansen() {
+  # Not "path": zsh ties that array to PATH, and a local by that name would
+  # empty PATH for the duration of every completion.
   local -a _nansen_reply all
-  local path="" cur prev word
+  local cmdpath="" cur prev word
   local -i i
 
   cur="\${words[CURRENT]}"
@@ -380,13 +394,13 @@ _nansen() {
       _nansen_is_flag "$word" || (( i++ ))
       continue
     fi
-    if _nansen_has_sub "$path" "$word"; then
-      if [[ -z "$path" ]]; then path="$word"; else path="$path $word"; fi
+    if _nansen_has_sub "$cmdpath" "$word"; then
+      if [[ -z "$cmdpath" ]]; then cmdpath="$word"; else cmdpath="$cmdpath $word"; fi
     fi
   done
 
   if [[ "$cur" == -* ]]; then
-    _nansen_opts "$path"
+    _nansen_opts "$cmdpath"
     all=( "\${_nansen_reply[@]}" )
     _nansen_global_opts
     all+=( "\${_nansen_reply[@]}" )
@@ -396,12 +410,12 @@ _nansen() {
   fi
 
   if [[ "$prev" == -* ]] && ! _nansen_is_flag "$prev"; then
-    _nansen_values "$path" "$prev"
+    _nansen_values "$cmdpath" "$prev"
     (( \${#_nansen_reply[@]} )) && _describe -t values 'value' _nansen_reply
     return
   fi
 
-  _nansen_subs "$path"
+  _nansen_subs "$cmdpath"
   _describe -t commands 'command' _nansen_reply
 }
 
@@ -443,6 +457,14 @@ function __nansen_flags
     echo ${fq(valuelessFlags.join(' '))}
 end
 
+# A single-dash token never takes a value; only --long options need the lookup.
+# The "--" matters: the flag list itself starts with "--", and without it
+# string split reads the list as its own options.
+function __nansen_is_flag
+    string match -q -- '--*' $argv[1]; or return 0
+    contains -- $argv[1] (string split -- ' ' (__nansen_flags))
+end
+
 function __nansen_subs
     switch "$argv[1]"
 ${subArms.join('\n')}
@@ -471,7 +493,6 @@ function __nansen_path
     # -opc is deprecated in fish 4 in favour of -xpc, but is the only spelling
     # that also works on fish 3. Revisit once fish 3 support is dropped.
     set -l tokens (commandline -opc)
-    set -l flags (string split ' ' (__nansen_flags))
     set -l path ''
     set -l skip 0
     set -l count (count $tokens)
@@ -483,7 +504,7 @@ function __nansen_path
                 continue
             end
             if string match -q -- '-*' $word
-                if not contains -- $word $flags
+                if not __nansen_is_flag $word
                     set skip 1
                 end
                 continue
@@ -514,7 +535,7 @@ function __nansen_complete
     if test (count $tokens) -ge 2
         set -l prev $tokens[-1]
         if string match -q -- '-*' $prev
-            if not contains -- $prev (string split ' ' (__nansen_flags))
+            if not __nansen_is_flag $prev
                 __nansen_values "$path" "$prev"
                 return
             end
@@ -553,7 +574,7 @@ INSTALL:
   bash   echo 'eval "$(nansen completion bash)"' >> ~/.bashrc
          # or: nansen completion bash > /etc/bash_completion.d/nansen
   zsh    nansen completion zsh > "\${fpath[1]}/_nansen" && compinit
-         # or: echo 'eval "$(nansen completion zsh)"' >> ~/.zshrc
+         # or, in ~/.zshrc after the compinit line: eval "$(nansen completion zsh)"
   fish   nansen completion fish > ~/.config/fish/completions/nansen.fish
 
 Completions cover nested subcommands, per-command flags, global flags, and the
@@ -564,9 +585,10 @@ export function buildCompletionCommands(deps = {}) {
   const { log = console.log } = deps;
 
   return {
-    'completion': async (args, _apiInstance, flags, _options) => {
+    // --help never reaches here: runCLI answers it from schema.json first.
+    'completion': async (args) => {
       const shell = args[0];
-      if (!shell || flags.help || flags.h) {
+      if (!shell) {
         log(COMPLETION_USAGE);
         return undefined;
       }

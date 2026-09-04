@@ -276,7 +276,7 @@ echo 'eval "$(nansen completion bash)"' >> ~/.bashrc
 
 # zsh
 nansen completion zsh > "${fpath[1]}/_nansen" && compinit
-# or: echo 'eval "$(nansen completion zsh)"' >> ~/.zshrc
+# or, in ~/.zshrc after the compinit line: eval "$(nansen completion zsh)"
 
 # fish
 nansen completion fish > ~/.config/fish/completions/nansen.fish
