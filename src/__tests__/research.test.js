@@ -55,6 +55,56 @@ describe('NansenAPI research (historical) methods', () => {
     return JSON.parse(options.body);
   }
 
+  it('uses the chain-rank endpoint and request shape', async () => {
+    setupMock();
+    await api.chainRank({ timeFrame: 30, chainType: 'evm' });
+    const body = lastCall('/api/v1/chains/chain-rank');
+    expect(body).toEqual({ time_frame: 30, chain_type: 'evm' });
+  });
+
+  it('uses the token-sectors endpoint with GET', async () => {
+    setupMock();
+    await api.tokenSectors();
+    const [url, request] = mockFetch.mock.calls.at(-1);
+    expect(url).toBe('https://api.nansen.ai/api/v1/search/token-sectors');
+    expect(request.method).toBe('GET');
+    expect(request.body).toBeUndefined();
+  });
+
+  it('uses the premium-labels endpoint and request shape', async () => {
+    setupMock();
+    await api.addressPremiumLabels({
+      address: ADDRESSES.ethereum,
+      chain: 'ethereum',
+      pagination: { page: 2, per_page: 5 },
+    });
+    const body = lastCall('/api/v1/profiler/address/premium-labels');
+    expect(body).toEqual({
+      address: ADDRESSES.ethereum,
+      chain: 'ethereum',
+      pagination: { page: 2, per_page: 5 },
+    });
+  });
+
+  it('uses the smart money PnL leaderboard endpoint and request shape', async () => {
+    setupMock();
+    await api.smartMoneyPnlLeaderboard({
+      chains: ['ethereum'],
+      timeframe: 30,
+      filters: { include_smart_money_labels: ['Fund'] },
+      orderBy: [{ field: 'total_pnl_usd', direction: 'DESC' }],
+      pagination: { page: 1, per_page: 10 },
+    });
+    const body = lastCall('/api/v1/smart-money/pnl-leaderboard');
+    expect(body).toEqual({
+      chains: ['ethereum'],
+      timeframe: 30,
+      filters: { include_smart_money_labels: ['Fund'] },
+      order_by: [{ field: 'total_pnl_usd', direction: 'DESC' }],
+      pagination: { page: 1, per_page: 10 },
+    });
+  });
+
   it('uses the position-intelligence endpoint and request shape', async () => {
     setupMock();
     await api.tokenPositionIntelligence({ tokenAddress: 'BTC' });
@@ -277,13 +327,143 @@ describe('buildResearchCommands handler', () => {
       researchWalletBalances: vi.fn().mockResolvedValue({ data: [] }),
       researchTxLookup: vi.fn().mockResolvedValue({ data: [] }),
       researchWalletTransactions: vi.fn().mockResolvedValue({ data: [] }),
+      chainRank: vi.fn().mockResolvedValue({ data: [] }),
+      tokenSectors: vi.fn().mockResolvedValue({ data: [] }),
+      addressPremiumLabels: vi.fn().mockResolvedValue({ data: [] }),
+      smartMoneyPnlLeaderboard: vi.fn().mockResolvedValue({ data: [] }),
       tokenPositionIntelligence: vi.fn().mockResolvedValue({ data: [] }),
     };
   }
 
   it('exports historical and direct subcommands', () => {
     expect(RESEARCH_HISTORICAL_SUBCOMMANDS.size).toBe(11);
-    expect(RESEARCH_SUBCOMMANDS.size).toBe(12);
+    expect(RESEARCH_SUBCOMMANDS.size).toBe(16);
+  });
+
+  it('dispatches chain-rank', async () => {
+    mockApi = makeMockApi();
+    await cmds.research(['chain-rank'], mockApi, {}, {
+      'timeframe-days': '30', 'chain-type': 'evm',
+    });
+    expect(mockApi.chainRank).toHaveBeenCalledWith({ timeFrame: 30, chainType: 'evm' });
+  });
+
+  it('rejects chain-rank with a timeframe outside 7/30/365', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['chain-rank'], mockApi, {}, { 'timeframe-days': '99' }))
+      .rejects.toThrow('--timeframe-days must be one of: 7, 30, 365');
+    expect(mockApi.chainRank).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-integer --timeframe-days values', async () => {
+    mockApi = makeMockApi();
+    for (const value of ['30.5', '30abc', '-7', '0']) {
+      await expect(cmds.research(['chain-rank'], mockApi, {}, { 'timeframe-days': value }))
+        .rejects.toThrow('--timeframe-days must be a positive integer');
+    }
+    expect(mockApi.chainRank).not.toHaveBeenCalled();
+  });
+
+  it('rejects --timeframe-days 0 on historical-token-screener (API requires at least 1)', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['historical-token-screener'], mockApi, {}, {
+      'timeframe-days': '0', 'to-date': TO,
+    })).rejects.toThrow('--timeframe-days must be a positive integer');
+    expect(mockApi.researchTokenScreener).not.toHaveBeenCalled();
+  });
+
+  it('prints chain-rank help without calling the API', async () => {
+    mockApi = makeMockApi();
+    const logged = [];
+    const helpCmds = buildResearchCommands({ log: line => logged.push(line) });
+    await helpCmds.research(['chain-rank', 'help'], mockApi, {}, {});
+    expect(logged.join('\n')).toContain('nansen research chain-rank');
+    expect(mockApi.chainRank).not.toHaveBeenCalled();
+  });
+
+  it('rejects chain-rank with an unknown chain type', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['chain-rank'], mockApi, {}, { 'chain-type': 'solana' }))
+      .rejects.toThrow('--chain-type must be one of: all, evm');
+    expect(mockApi.chainRank).not.toHaveBeenCalled();
+  });
+
+  it('dispatches token-sectors', async () => {
+    mockApi = makeMockApi();
+    await cmds.research(['token-sectors'], mockApi, {}, {});
+    expect(mockApi.tokenSectors).toHaveBeenCalledWith();
+  });
+
+  it('dispatches address-premium-labels', async () => {
+    mockApi = makeMockApi();
+    await cmds.research(['address-premium-labels'], mockApi, {}, {
+      address: ADDRESSES.ethereum, chain: 'ethereum', page: '2', limit: '5',
+    });
+    expect(mockApi.addressPremiumLabels).toHaveBeenCalledWith({
+      address: ADDRESSES.ethereum,
+      chain: 'ethereum',
+      pagination: { page: 2, per_page: 5 },
+    });
+  });
+
+  it('omits per_page when only --page is supplied', async () => {
+    mockApi = makeMockApi();
+    await cmds.research(['address-premium-labels'], mockApi, {}, {
+      address: ADDRESSES.ethereum, page: '3',
+    });
+    expect(mockApi.addressPremiumLabels).toHaveBeenCalledWith({
+      address: ADDRESSES.ethereum,
+      chain: 'all',
+      pagination: { page: 3 },
+    });
+  });
+
+  it('rejects an invalid pagination limit', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['address-premium-labels'], mockApi, {}, {
+      address: ADDRESSES.ethereum, limit: '5x',
+    })).rejects.toThrow(/positive integer/);
+  });
+
+  it('rejects an invalid pagination page', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['address-premium-labels'], mockApi, {}, {
+      address: ADDRESSES.ethereum, page: '0',
+    })).rejects.toThrow(/--page must be a positive integer/);
+  });
+
+  it('rejects an invalid --page on historical subcommands', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['historical-dex-trades'], mockApi, {}, {
+      'token-address': TOKENS.solana, 'from-date': FROM, 'to-date': TO, page: '0',
+    })).rejects.toThrow(/--page must be a positive integer/);
+  });
+
+  it('dispatches smart-money-pnl-leaderboard', async () => {
+    mockApi = makeMockApi();
+    await cmds.research(['smart-money-pnl-leaderboard'], mockApi, {}, {
+      chains: 'ethereum,solana', 'timeframe-days': '30', page: '2', limit: '5',
+    });
+    expect(mockApi.smartMoneyPnlLeaderboard).toHaveBeenCalledWith(expect.objectContaining({
+      chains: ['ethereum', 'solana'],
+      timeframe: 30,
+      pagination: { page: 2, per_page: 5 },
+    }));
+  });
+
+  it('rejects an invalid smart money leaderboard limit', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['smart-money-pnl-leaderboard'], mockApi, {}, {
+      limit: '5x',
+    })).rejects.toThrow(/positive integer/);
+  });
+
+  it('rejects an unsupported smart money leaderboard timeframe', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['smart-money-pnl-leaderboard'], mockApi, {}, {
+      'timeframe-days': '14',
+    })).rejects.toThrow(/must be one of: 1, 7, 30, 90, 180/);
+    expect(mockApi.smartMoneyPnlLeaderboard).not.toHaveBeenCalled();
   });
 
   it('dispatches position-intelligence', async () => {

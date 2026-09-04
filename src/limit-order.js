@@ -396,21 +396,32 @@ export function parseExpiry(expiryStr) {
   const match = expiryStr.match(/^(\d+)(h|d)$/i);
   if (match) {
     const value = parseInt(match[1], 10);
+    if (!Number.isFinite(value)) {
+      throw new Error(`Invalid expiry "${expiryStr}". Duration must be finite.`);
+    }
     if (value <= 0) {
       throw new Error(`Invalid expiry "${expiryStr}". Duration must be greater than 0.`);
     }
     const unit = match[2].toLowerCase();
     const ms = unit === 'h' ? value * 3600 * 1000 : value * 24 * 3600 * 1000;
-    return Date.now() + ms;
+    const expiresAt = Date.now() + ms;
+    if (!Number.isFinite(expiresAt)) {
+      throw new Error(`Invalid expiry "${expiryStr}". Duration is too large.`);
+    }
+    return expiresAt;
   }
 
   // Try as raw epoch ms — must be in the future, or the order expires on arrival.
   const num = Number(expiryStr);
-  if (!isNaN(num)) {
+  if (Number.isFinite(num)) {
     if (num <= Date.now()) {
       throw new Error(`Expiry "${expiryStr}" is in the past. Provide a future time (e.g. "24h", "7d", or a future epoch in ms).`);
     }
     return num;
+  }
+
+  if (!Number.isNaN(num)) {
+    throw new Error(`Invalid expiry "${expiryStr}". Provide a finite future epoch in milliseconds or a duration such as "24h" or "7d".`);
   }
 
   throw new Error(`Invalid expiry format: "${expiryStr}". Use "24h", "7d", "30d", or epoch ms.`);
@@ -569,6 +580,22 @@ EXAMPLES:
         return;
       }
 
+      const price = Number(triggerPrice);
+      if (!Number.isFinite(price) || price <= 0) {
+        log('Error: --trigger-price must be a finite positive number.');
+        exit(1);
+        return;
+      }
+
+      let expiresAt;
+      try {
+        expiresAt = parseExpiry(expiresStr);
+      } catch (err) {
+        log(`Error: ${err.message}`);
+        exit(1);
+        return;
+      }
+
       // Amount is always in human-readable token units (e.g. 1.5 = 1.5 SOL)
       // Converted to base units (lamports) internally
       let amountBaseUnits;
@@ -594,13 +621,6 @@ EXAMPLES:
         return;
       }
 
-      const price = Number(triggerPrice);
-      if (isNaN(price) || price <= 0) {
-        log('Error: --trigger-price must be a positive number (USD price).');
-        exit(1);
-        return;
-      }
-
       if (triggerCondition !== 'above' && triggerCondition !== 'below') {
         log('Error: --trigger-condition must be "above" or "below".');
         exit(1);
@@ -617,15 +637,6 @@ EXAMPLES:
           exit(1);
           return;
         }
-      }
-
-      let expiresAt;
-      try {
-        expiresAt = parseExpiry(expiresStr);
-      } catch (err) {
-        log(`Error: ${err.message}`);
-        exit(1);
-        return;
       }
 
       const triggerMint = resolveTokenAddress(triggerMintRaw, 'solana');
@@ -899,8 +910,8 @@ EXAMPLES:
       const updateBody = { orderType: 'single' };
       if (triggerPrice != null) {
         const price = Number(triggerPrice);
-        if (isNaN(price) || price <= 0) {
-          log('Error: --trigger-price must be a positive number.');
+        if (!Number.isFinite(price) || price <= 0) {
+          log('Error: --trigger-price must be a finite positive number.');
           exit(1);
           return;
         }
