@@ -2276,7 +2276,7 @@
               "type": "string",
               "required": true,
               "enum": ["evm", "solana", "ethereum", "base"],
-              "description": "Chain to send on"
+              "description": "Chain to send on (evm is an alias for ethereum)"
             },
             "amount": {
               "type": "string",
