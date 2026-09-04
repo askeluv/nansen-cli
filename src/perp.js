@@ -336,20 +336,15 @@ async function buildScreenSignSubmit(apiInstance, prepared, ctx) {
     result = await submitExchange({ action, nonce, signature, vaultAddress: null });
   } catch (error) {
     if (telemetry && error.exchangeResult) {
-      // exchangeResult is either a structured HL action response or an opaque
-      // HTTP error body. summarizeOrderResult deliberately returns [] for the
-      // latter, which selects the single rejected-leg fallback below.
-      const rejected = summarizeOrderResult(error.exchangeResult, action);
-      const outcomes = rejected.length ? rejected : [{
-        index: 0,
-        leg: 'parent',
-        side: telemetry.side,
-        kind: 'rejected',
-      }];
-      try {
-        await emitPerpOrderCompleted(telemetry, outcomes, walletAddress, nonce, error.code);
-      } catch {
-        // Best-effort; preserve the original exchange error.
+      // Emit only authoritative per-leg outcomes. An opaque or malformed HTTP
+      // body has an indeterminate result and remains covered by cli_command_failed.
+      const outcomes = summarizeOrderResult(error.exchangeResult, action);
+      if (outcomes.length) {
+        try {
+          await emitPerpOrderCompleted(telemetry, outcomes, walletAddress, nonce, error.code);
+        } catch {
+          // Best-effort; preserve the original exchange error.
+        }
       }
     }
     throw error;

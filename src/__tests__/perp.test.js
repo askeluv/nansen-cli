@@ -771,6 +771,18 @@ describe('perp direct-to-HL flow (Chunk 3/4/5)', () => {
       expect(track.mock.calls[0][0]).not.toHaveProperty('error');
     });
 
+    it('leaves an unstructured HTTP error outcome indeterminate', async () => {
+      const { track, telCmds } = trackingCmds();
+      const api = mockApi({ screen: clean });
+      const error = new CommandError('Hyperliquid error (HTTP 503)', 'HL_HTTP_ERROR');
+      error.exchangeResult = { error: 'upstream unavailable' };
+      submitExchange.mockRejectedValueOnce(error);
+
+      await expect(telCmds.order([], api, {}, baseOrder)).rejects.toBe(error);
+
+      expect(track).not.toHaveBeenCalled();
+    });
+
     it('preserves successful and rejected legs from a partial bracket response', async () => {
       const { track, telCmds } = trackingCmds();
       const api = mockApi({ screen: clean });

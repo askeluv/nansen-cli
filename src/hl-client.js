@@ -32,10 +32,10 @@ import { hlApiUrl } from "./hl-env.js";
 
 function exchangeError(message, code, exchangeResult) {
   const error = new CommandError(message, code);
-  // Keep the parsed response available to the caller so it can emit the
-  // dedicated outcome event before rethrowing. CommandError serialization does
-  // not expose this field, and raw exchange text is never sent to telemetry.
-  error.exchangeResult = exchangeResult;
+  // Keep only a structured action response available to the caller so it can
+  // emit authoritative per-leg outcomes before rethrowing. Opaque HTTP bodies
+  // are not action results and must remain indeterminate.
+  if (exchangeResult !== undefined) error.exchangeResult = exchangeResult;
   return error;
 }
 
@@ -142,7 +142,6 @@ export async function submitExchange(
     throw exchangeError(
       `Hyperliquid error (HTTP ${response.status}): ${detail}`,
       "HL_HTTP_ERROR",
-      data,
     );
   }
 
