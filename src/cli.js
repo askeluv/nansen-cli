@@ -1573,7 +1573,7 @@ export function buildCommands(deps = {}) {
       const maxUniqueTraders24h = options['max-unique-traders-24h'] != null ? Number(options['max-unique-traders-24h']) : undefined;
       const minVolume24hr = options['min-volume-24hr'] != null ? Number(options['min-volume-24hr']) : undefined;
       const maxVolume24hr = options['max-volume-24hr'] != null ? Number(options['max-volume-24hr']) : undefined;
-      const negRisk = options['neg-risk'] != null ? String(options['neg-risk']) === 'true' : undefined;
+      const negRisk = resolveBooleanOption(options, flags, 'neg-risk');
       const minOpenInterest = options['min-open-interest'] != null ? Number(options['min-open-interest']) : undefined;
       const maxOpenInterest = options['max-open-interest'] != null ? Number(options['max-open-interest']) : undefined;
       const endDateBefore = options['end-date-before'];
