@@ -51,10 +51,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # zsh ships on ubuntu-latest; fish does not. Without it the fish
-      # completion tests skip and the fish script goes unexercised.
-      - name: Install fish for completion tests
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fish
+      # The zsh and fish completion tests skip when the shell is missing, so
+      # install both and fail here if either is absent rather than skip quietly.
+      - name: Install zsh and fish for completion tests
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends fish zsh
+          zsh --version && fish --version
 
       - name: Run tests
         run: npm test
