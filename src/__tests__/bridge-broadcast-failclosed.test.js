@@ -5,14 +5,17 @@
  * (or an agent auto-retry) re-signs the step at a fresh nonce and double-sends.
  *
  * The client cannot distinguish "502, tx never sent" from "502, tx sent, ack
- * lost", so it fails closed: any send failure EXCEPT a definitive JSON-RPC
- * rejection (RPC_JSON_ERROR — the node explicitly refused the tx, nothing is in
- * flight) marks the quote spent. A definitive rejection instead leaves the
- * quote reusable, so a genuine pre-broadcast error (nonce too low, insufficient
- * funds) doesn't needlessly burn it.
+ * lost", so it fails closed by default: a send failure marks the quote spent
+ * UNLESS the node's error proves the tx never entered the mempool. Only a
+ * pre-broadcast validation rejection (insufficient funds, intrinsic gas too
+ * low, underpriced, malformed, …) — or a missing-RPC config error — keeps the
+ * quote reusable. Crucially, in-flight txpool states ("already known", "known
+ * transaction", "nonce too low", "replacement transaction underpriced") also
+ * come back as JSON-RPC errors, but the tx is already broadcasting, so those
+ * fail closed too.
  *
- * See src/bridge.js processEvmStep + isDefinitiveRpcRejection, and evmRpcCall's
- * error codes in src/trading.js.
+ * See src/bridge.js processEvmStep + isPreBroadcastSendRejection, and
+ * evmRpcCall's error codes in src/trading.js.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
