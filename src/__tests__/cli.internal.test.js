@@ -3369,12 +3369,20 @@ describe('changelog command --since', () => {
     const explicitZeroForm = await runChangelog({ since: `${majorMinor}.0` });
     const partialForm = await runChangelog({ since: majorMinor });
 
-    // Before the fix this always fell through to "No changelog entries
-    // found", because compareSemver compared the real patch number against
-    // `undefined` and that is never >= 0 in either direction — so a
+    // Before the fix this always fell through to the "No changelog entries
+    // found" message, because compareSemver compared the real patch number
+    // against `undefined` and that is never >= 0 in either direction — so a
     // major.minor-only --since matched nothing, even entries for that exact
     // major.minor.
-    expect(partialForm).not.toContain('No changelog entries found');
+    //
+    // Assert on structure (the newest version's heading is present) rather
+    // than on the absence of the no-match sentinel string: a real changelog
+    // entry's prose can legitimately quote "No changelog entries found"
+    // (e.g. the entry that documents this very fix), so checking for that
+    // substring is a false positive waiting to happen. The heading only
+    // appears when entries were actually included, and the no-match message
+    // is a single line with no "## " heading.
+    expect(partialForm).toContain(`## ${majorMinor}.`);
     expect(partialForm).toBe(explicitZeroForm);
   });
 
