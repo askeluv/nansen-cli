@@ -195,6 +195,21 @@ describe('NansenAPI research (historical) methods', () => {
     })).rejects.toThrow(/required/i);
   });
 
+  it('uses the transaction transfer lookup endpoint and request shape', async () => {
+    setupMock();
+    await api.transactionWithTokenTransferLookup({
+      transactionHash: '0xabc123',
+      chain: 'ethereum',
+      blockTimestamp: '2025-01-01 00:00:00',
+    });
+    const body = lastCall('/api/v1/transaction-with-token-transfer-lookup');
+    expect(body).toEqual({
+      transaction_hash: '0xabc123',
+      chain: 'ethereum',
+      block_timestamp: '2025-01-01 00:00:00',
+    });
+  });
+
   describe('researchDexTrades', () => {
     it('hits historical-dex-trades with token_address, chain, and date_range {from,to}', async () => {
       setupMock();
@@ -417,12 +432,13 @@ describe('buildResearchCommands handler', () => {
       tokenPositionIntelligence: vi.fn().mockResolvedValue({ data: [] }),
       addressPerpPnlSummary: vi.fn().mockResolvedValue({ data: [] }),
       researchHistoricalTokenOhlcv: vi.fn().mockResolvedValue({ data: [] }),
+      transactionWithTokenTransferLookup: vi.fn().mockResolvedValue({ data: [] }),
     };
   }
 
   it('exports historical and direct subcommands', () => {
     expect(RESEARCH_HISTORICAL_SUBCOMMANDS.size).toBe(12);
-    expect(RESEARCH_SUBCOMMANDS.size).toBe(18);
+    expect(RESEARCH_SUBCOMMANDS.size).toBe(19);
   });
 
   it('dispatches chain-rank', async () => {
@@ -634,6 +650,33 @@ describe('buildResearchCommands handler', () => {
     await expect(cmds.research(['historical-token-ohlcv'], mockApi, {}, {
       ...options, 'as-of-date': TO, 'as-of-ts': `${TO}T00:00:00Z`,
     })).rejects.toThrow(/mutually exclusive/);
+  });
+
+  it('dispatches transaction-with-token-transfer-lookup', async () => {
+    mockApi = makeMockApi();
+    await cmds.research(['transaction-with-token-transfer-lookup'], mockApi, {}, {
+      'transaction-hash': '0xabc', chain: 'ethereum',
+    });
+    expect(mockApi.transactionWithTokenTransferLookup).toHaveBeenCalledWith({
+      transactionHash: '0xabc',
+      chain: 'ethereum',
+      blockTimestamp: undefined,
+    });
+  });
+
+  it('requires a block timestamp for non-EVM transaction lookup chains', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['transaction-with-token-transfer-lookup'], mockApi, {}, {
+      'transaction-hash': 'abc', chain: 'bitcoin',
+    })).rejects.toThrow(/block-timestamp/);
+  });
+
+  it('errors when required transaction-hash is missing', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['transaction-with-token-transfer-lookup'], mockApi, {}, {
+      chain: 'ethereum',
+    })).rejects.toThrow(/transaction-hash/);
+    expect(mockApi.transactionWithTokenTransferLookup).not.toHaveBeenCalled();
   });
 
   it('rejects unknown subcommand', async () => {

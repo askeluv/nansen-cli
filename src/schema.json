@@ -1291,6 +1291,22 @@
             }
           }
         },
+        "transaction-with-token-transfer-lookup": {
+          "endpoint": "/api/v1/transaction-with-token-transfer-lookup",
+          "description": "Look up a transaction and its token/NFT transfers",
+          "options": {
+            "transaction-hash": {
+              "required": true
+            },
+            "chain": {
+              "enum": ["all", "arbitrum", "avalanche", "base", "bitcoin", "bnb", "ethereum", "hyperevm", "injective", "iotaevm", "linea", "mantle", "mantra", "monad", "near", "optimism", "plasma", "robinhood", "sei", "sonic", "starknet", "sui", "ton", "tron"],
+              "default": "ethereum"
+            },
+            "block-timestamp": {
+              "description": "Block timestamp (required for bitcoin, tron, ton, starknet, and sui)"
+            }
+          }
+        },
         "historical-dex-trades": {
           "endpoint": "/api/v1beta1/tgm/historical-dex-trades",
           "description": "Historical DEX trades for a token at a point in time",

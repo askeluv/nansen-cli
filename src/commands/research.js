@@ -46,7 +46,7 @@ const SUBCOMMANDS = [
 ];
 
 export const RESEARCH_HISTORICAL_SUBCOMMANDS = new Set(SUBCOMMANDS);
-export const RESEARCH_SUBCOMMANDS = new Set(['chain-rank', 'token-sectors', 'address-premium-labels', 'smart-money-pnl-leaderboard', 'position-intelligence', 'perp-pnl-summary', ...SUBCOMMANDS]);
+export const RESEARCH_SUBCOMMANDS = new Set(['chain-rank', 'token-sectors', 'address-premium-labels', 'smart-money-pnl-leaderboard', 'position-intelligence', 'perp-pnl-summary', 'transaction-with-token-transfer-lookup', ...SUBCOMMANDS]);
 
 const CHAIN_RANK_TIMEFRAMES = new Set([7, 30, 365]);
 const CHAIN_RANK_CHAIN_TYPES = new Set(['all', 'evm']);
@@ -104,6 +104,8 @@ SUBCOMMANDS:
   smart-money-pnl-leaderboard       Rank smart money wallets by PnL
   position-intelligence             Aggregate Hyperliquid positions by trader cohort
   perp-pnl-summary                  Summarize realized Hyperliquid PnL for an address
+  transaction-with-token-transfer-lookup
+                                   Look up a transaction and its token/NFT transfers
   historical-dex-trades             Historical DEX trades for a token
   historical-pnl-leaderboard        Historical PnL leaderboard for a token
   historical-token-flow-summary     Historical token flow summary
@@ -155,6 +157,12 @@ NOTE: --token-address is accepted as an alias for --symbol (the API request fiel
 
 USAGE:
   nansen research perp-pnl-summary --address <addr> --from-date <date> --to-date <date>`,
+  'transaction-with-token-transfer-lookup': `nansen research transaction-with-token-transfer-lookup — Look up a transaction and its token/NFT transfers
+
+USAGE:
+  nansen research transaction-with-token-transfer-lookup --transaction-hash <hash> [--chain <chain>] [--block-timestamp "YYYY-MM-DD HH:MM:SS"]
+
+NOTE: --block-timestamp is required for bitcoin, tron, ton, starknet, and sui.`,
   'historical-dex-trades': `nansen research historical-dex-trades — Historical DEX trades for a token
 
 USAGE:
@@ -331,6 +339,22 @@ export function buildResearchCommands(deps = {}) {
           asOfTs,
           timeframe: options.timeframe,
           applyBlacklistFilter: parseBooleanOption(options, flags, 'apply-blacklist-filter'),
+        });
+      }
+
+      if (sub === 'transaction-with-token-transfer-lookup') {
+        const chain = options.chain || 'ethereum';
+        const blockTimestamp = options['block-timestamp'];
+        requireOptions({ 'transaction-hash': options['transaction-hash'] }, ['transaction-hash']);
+        // Chains the API rejects without block_timestamp. Every other enum value,
+        // including 'all', near, and injective, accepts a timestamp-less lookup.
+        if (['bitcoin', 'tron', 'ton', 'starknet', 'sui'].includes(chain)) {
+          requireOptions({ 'block-timestamp': blockTimestamp }, ['block-timestamp']);
+        }
+        return apiInstance.transactionWithTokenTransferLookup({
+          transactionHash: options['transaction-hash'],
+          chain,
+          blockTimestamp,
         });
       }
 
