@@ -28,6 +28,16 @@ const TELEMETRY_URL =
 
 const TIMEOUT_MS = 1000;
 
+// Every other module that writes under ~/.nansen (api.js, wallet.js, keychain.js,
+// trading.js, update-check.js, …) creates directories 0700 and files 0600, because
+// the same directory also holds the API key and the encrypted wallet keystores.
+// Telemetry writes there too, so it uses the same modes: mkdir with recursive:true
+// leaves an existing directory's mode alone, so whichever module creates ~/.nansen
+// first fixes its permissions for good — and on the documented NANSEN_API_KEY path
+// no config is ever saved, so that first writer is this file.
+const DIR_MODE = 0o700;
+const FILE_MODE = 0o600;
+
 // ─── opt-out ──────────────────────────────────────────────
 
 /**
@@ -80,8 +90,8 @@ export function getAnonymousId() {
     if (!_anonymousId) {
       _anonymousId = crypto.randomUUID();
       try {
-        fs.mkdirSync(path.dirname(TELEMETRY_ID_FILE), { recursive: true });
-        fs.writeFileSync(TELEMETRY_ID_FILE, _anonymousId, 'utf8');
+        fs.mkdirSync(path.dirname(TELEMETRY_ID_FILE), { mode: DIR_MODE, recursive: true });
+        fs.writeFileSync(TELEMETRY_ID_FILE, _anonymousId, { encoding: 'utf8', mode: FILE_MODE });
       } catch { /* best-effort persist */ }
     }
   }
@@ -118,7 +128,7 @@ export function getSessionId() {
       _sessionId = raw.id;
       // touch timestamp, but only if >1 min elapsed to reduce writes
       if (now - raw.ts > 60_000) {
-        try { fs.writeFileSync(SESSION_FILE, JSON.stringify({ id: _sessionId, ts: now }), 'utf8'); } catch { /* best-effort touch */ }
+        try { fs.writeFileSync(SESSION_FILE, JSON.stringify({ id: _sessionId, ts: now }), { encoding: 'utf8', mode: FILE_MODE }); } catch { /* best-effort touch */ }
       }
       return _sessionId;
     }
@@ -126,8 +136,8 @@ export function getSessionId() {
 
   _sessionId = crypto.randomUUID();
   try {
-    fs.mkdirSync(path.dirname(SESSION_FILE), { recursive: true });
-    fs.writeFileSync(SESSION_FILE, JSON.stringify({ id: _sessionId, ts: now }), 'utf8');
+    fs.mkdirSync(path.dirname(SESSION_FILE), { mode: DIR_MODE, recursive: true });
+    fs.writeFileSync(SESSION_FILE, JSON.stringify({ id: _sessionId, ts: now }), { encoding: 'utf8', mode: FILE_MODE });
   } catch { /* best-effort */ }
   return _sessionId;
 }

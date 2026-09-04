@@ -4,6 +4,8 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import fs from 'fs';
+import os from 'os';
+import path from 'path';
 
 // Mock fetch globally before importing the module
 const fetchMock = vi.fn().mockResolvedValue({ ok: true });
@@ -337,6 +339,70 @@ describe('telemetry', () => {
       trackPerpOrderCompleted(baseOutcome);
       expect(fetchMock).not.toHaveBeenCalled();
       delete process.env.DO_NOT_TRACK;
+    });
+  });
+
+  // ~/.nansen also holds the API key and the encrypted wallet keystores, so every
+  // module that writes there creates the directory 0700 and its files 0600. These
+  // two writes run on ordinary commands and can be the ones that create the
+  // directory, so they have to use the same modes — an existing directory keeps
+  // whatever mode its creator gave it.
+  describe('config dir permissions', () => {
+    it('creates the config dir 0700 and the id/session files 0600', async () => {
+      const mkdirCalls = [];
+      const writeCalls = [];
+      const origRead = fs.readFileSync;
+      vi.spyOn(fs, 'readFileSync').mockImplementation((p, ...args) => {
+        if (typeof p === 'string' && (p.includes('telemetry-id') || p.includes('session'))) {
+          throw new Error('ENOENT');
+        }
+        return origRead(p, ...args);
+      });
+      vi.spyOn(fs, 'mkdirSync').mockImplementation((p, opts) => { mkdirCalls.push({ path: p, opts }); });
+      vi.spyOn(fs, 'writeFileSync').mockImplementation((p, data, opts) => { writeCalls.push({ path: p, opts }); });
+
+      ({ getAnonymousId, getSessionId } = await freshImport());
+      getAnonymousId();
+      getSessionId();
+
+      expect(mkdirCalls.length).toBe(2);
+      for (const call of mkdirCalls) {
+        expect(call.opts).toMatchObject({ mode: 0o700, recursive: true });
+      }
+      for (const name of ['telemetry-id', 'session']) {
+        const write = writeCalls.find(c => c.path.includes(name));
+        expect(write, name).toBeTruthy();
+        expect(write.opts, name).toMatchObject({ mode: 0o600 });
+      }
+
+      vi.restoreAllMocks();
+    });
+
+    // POSIX modes are meaningless on Windows — fs.stat reports 0o666 for every file
+    // there, the same reason `nansen doctor` skips its permission checks on win32.
+    it.skipIf(process.platform === 'win32')('leaves nothing group- or world-accessible on disk', async () => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'nansen-telemetry-'));
+      const prevHome = process.env.HOME;
+      const prevUserProfile = process.env.USERPROFILE;
+      process.env.HOME = home;
+      process.env.USERPROFILE = home;
+
+      try {
+        ({ getAnonymousId, getSessionId } = await freshImport());
+        getAnonymousId();
+        getSessionId();
+
+        const dir = path.join(home, '.nansen');
+        // Same predicate doctor.js uses to flag insecure permissions.
+        const insecure = p => (fs.statSync(p).mode & 0o077) !== 0;
+        expect(insecure(dir)).toBe(false);
+        expect(insecure(path.join(dir, 'telemetry-id'))).toBe(false);
+        expect(insecure(path.join(dir, 'session'))).toBe(false);
+      } finally {
+        if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+        if (prevUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = prevUserProfile;
+        fs.rmSync(home, { recursive: true, force: true });
+      }
     });
   });
 });
