@@ -110,6 +110,20 @@ describe('buildCompletionSpec', () => {
     expect(quote.options.find(o => o.name === '--chain').values).toEqual([]);
   });
 
+  it('keeps a boolean option with an enum value-taking so its values are offered', () => {
+    const screener = spec.nodes.find(n => n.path === 'research prediction-market market-screener');
+    expect(screener.options.find(o => o.name === '--neg-risk').values).toEqual(['true', 'false']);
+    expect(spec.valuelessFlags).not.toContain('--neg-risk');
+    expect(spec.valuelessFlags).toContain('--premium-labels'); // plain boolean stays valueless
+  });
+
+  it('carries positional enum values without making them subcommands', () => {
+    const install = spec.nodes.find(n => n.path === 'mcp install');
+    expect(install.args).toEqual(['claude-code', 'claude-desktop', 'cursor']);
+    expect(install.subcommands).toEqual([]);
+    expect(spec.nodes.map(n => n.path)).not.toContain('mcp install claude-code');
+  });
+
   it('includes global options exactly once, plus --help', () => {
     const names = spec.globalOptions.map(o => o.name);
     expect(names).toContain('--pretty');
@@ -228,6 +242,7 @@ describe('bash completion behaviour', () => {
   it('completes enum values after an option', () => {
     expect(complete(['nansen', 'perp', 'order', '--tif', ''])).toEqual(['Gtc', 'Ioc', 'Alo']);
     expect(complete(['nansen', 'research', 'smart-money', 'netflow', '--chain', ''])).toEqual(SCHEMA.chains);
+    expect(complete(['nansen', 'research', 'prediction-market', 'market-screener', '--neg-risk', ''])).toEqual(['true', 'false']);
   });
 
   it('does not lose the command path across a global flag', () => {
@@ -243,6 +258,11 @@ describe('bash completion behaviour', () => {
   it('treats any single-dash token as valueless, like parseArgs', () => {
     expect(complete(['nansen', '-p', 'research', ''])).toContain('token');
     expect(complete(['nansen', 'research', 'token', '-x', ''])).toContain('screener');
+  });
+
+  it('completes positional argument values and keeps the path after one', () => {
+    expect(complete(['nansen', 'mcp', 'install', ''])).toEqual(['claude-code', 'claude-desktop', 'cursor']);
+    expect(complete(['nansen', 'mcp', 'install', 'cursor', '--'])).toContain('--dry-run');
   });
 });
 
@@ -301,6 +321,11 @@ describe.skipIf(!hasBinary('zsh'))('zsh completion behaviour', () => {
     expect(complete(['nansen', 'research', '--fields', 'screener', ''])).toContain('token');
     expect(complete(['nansen', 'research', 'token', '--pretty', ''])).toContain('screener');
   });
+
+  it('completes positional argument values and keeps the path after one', () => {
+    expect(complete(['nansen', 'mcp', 'install', ''])).toEqual(['claude-code', 'claude-desktop', 'cursor']);
+    expect(complete(['nansen', 'mcp', 'install', 'cursor', '--'])).toContain('--dry-run');
+  });
 });
 
 describe.skipIf(!hasBinary('fish'))('fish completion behaviour', () => {
@@ -345,6 +370,11 @@ describe.skipIf(!hasBinary('fish'))('fish completion behaviour', () => {
     expect(complete('nansen -p research ')).toContain('token');
     expect(complete('nansen research --fields screener ')).toContain('token');
     expect(complete('nansen research token --pretty ')).toContain('screener');
+  });
+
+  it('completes positional argument values and keeps the path after one', () => {
+    expect(complete('nansen mcp install ').sort()).toEqual(['claude-code', 'claude-desktop', 'cursor']);
+    expect(complete('nansen mcp install cursor --')).toContain('--dry-run');
   });
 });
 

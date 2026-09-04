@@ -92,6 +92,16 @@ function safeList(values) {
 }
 
 /**
+ * A boolean option never consumes the next word — unless it also declares an
+ * enum, which means it accepts an explicit value (`--neg-risk true`, resolved
+ * by resolveBooleanOption). Those stay value-taking so the enum is offered
+ * after them and the walker skips the value.
+ */
+function isValueless(opt) {
+  return opt.type === 'boolean' && !Array.isArray(opt.enum);
+}
+
+/**
  * Values to offer after an option. Explicit `enum` first; `--chain` under the
  * research tree falls back to schema.chains, which is exactly the list the
  * research endpoints accept. Trade/bridge chains are narrower and are left to
@@ -105,8 +115,11 @@ function optionValues(path, name, opt, schema) {
 
 /**
  * Flatten the schema into one node per command path:
- *   { path: 'research token', subcommands: [...], options: [...] }
+ *   { path: 'research token', subcommands: [...], options: [...], args: [...] }
  * The root node has path '' and every top-level command as its subcommands.
+ * `args` holds the enum values of a command's positional arguments (schema
+ * `args: [{ name, enum }]`); they are offered like subcommands but never
+ * extend the command path.
  */
 export function buildCompletionSpec({ schema = schemaDefinition, version = VERSION } = {}) {
   const nodes = [];
@@ -118,7 +131,7 @@ export function buildCompletionSpec({ schema = schemaDefinition, version = VERSI
     const options = [];
     for (const [name, opt] of Object.entries(node.options || {})) {
       if (!SAFE_TOKEN.test(name)) continue;
-      if (opt.type === 'boolean') valueless.add(name);
+      if (isValueless(opt)) valueless.add(name);
       options.push({
         name: `--${name}`,
         description: shortDesc(opt.description),
@@ -129,6 +142,7 @@ export function buildCompletionSpec({ schema = schemaDefinition, version = VERSI
       path,
       subcommands: subEntries.map(([name, sub]) => ({ name, description: shortDesc(sub.description) })),
       options,
+      args: safeList((node.args || []).flatMap(a => (Array.isArray(a.enum) ? a.enum : []))),
     });
     for (const [name, sub] of subEntries) visit(path ? `${path} ${name}` : name, sub);
   };
@@ -138,7 +152,7 @@ export function buildCompletionSpec({ schema = schemaDefinition, version = VERSI
   const globalOptions = Object.entries(schema.globalOptions || {})
     .filter(([name]) => SAFE_TOKEN.test(name))
     .map(([name, opt]) => {
-      if (opt.type === 'boolean') valueless.add(name);
+      if (isValueless(opt)) valueless.add(name);
       return {
         name: `--${name}`,
         description: shortDesc(opt.description),
@@ -201,6 +215,10 @@ export function generateBash(spec) {
   const valArms = [...valueGroups(nodes)].map(([values, keys]) =>
     `    ${keys.map(dq).join('|')}) echo ${dq(values)} ;;`);
 
+  const argArms = nodes
+    .filter(n => n.args.length)
+    .map(n => `    ${dq(n.path)}) echo ${dq(n.args.join(' '))} ;;`);
+
   return `${header('bash', version, [
     'Install:  eval "$(nansen completion bash)"        # add to ~/.bashrc',
     '     or:  nansen completion bash > /etc/bash_completion.d/nansen',
@@ -235,6 +253,13 @@ ${optArms.join('\n')}
 _nansen_values() {
   case "$1|$2" in
 ${valArms.join('\n')}
+  esac
+}
+
+# Positional argument values; offered alongside subcommands, never part of the path.
+_nansen_args() {
+  case "$1" in
+${argArms.join('\n')}
   esac
 }
 
@@ -291,7 +316,7 @@ _nansen_complete() {
       ;;
   esac
 
-  COMPREPLY=( $(compgen -W "$(_nansen_subs "$path")" -- "$cur") )
+  COMPREPLY=( $(compgen -W "$(_nansen_subs "$path") $(_nansen_args "$path")" -- "$cur") )
   return 0
 }
 
@@ -321,6 +346,10 @@ export function generateZsh(spec) {
 
   const valArms = [...valueGroups(nodes)].map(([values, keys]) =>
     `    ${keys.map(sq).join('|')}) _nansen_reply=( ${values.split(' ').map(sq).join(' ')} ) ;;`);
+
+  const argArms = nodes
+    .filter(n => n.args.length)
+    .map(n => `    ${sq(n.path)}) _nansen_reply=( ${n.args.map(sq).join(' ')} ) ;;`);
 
   return `#compdef nansen
 ${header('zsh', version, [
@@ -359,6 +388,14 @@ _nansen_values() {
   _nansen_reply=()
   case "$1|$2" in
 ${valArms.join('\n')}
+  esac
+}
+
+# Positional argument values; offered alongside subcommands, never part of the path.
+_nansen_args() {
+  _nansen_reply=()
+  case "$1" in
+${argArms.join('\n')}
   esac
 }
 
@@ -415,8 +452,12 @@ _nansen() {
     return
   fi
 
+  local ret=1
   _nansen_subs "$cmdpath"
-  _describe -t commands 'command' _nansen_reply
+  (( \${#_nansen_reply[@]} )) && _describe -t commands 'command' _nansen_reply && ret=0
+  _nansen_args "$cmdpath"
+  (( \${#_nansen_reply[@]} )) && _describe -t arguments 'argument' _nansen_reply && ret=0
+  return ret
 }
 
 if [[ "$funcstack[1]" == "_nansen" ]]; then
@@ -449,6 +490,10 @@ export function generateFish(spec) {
   const valArms = [...valueGroups(nodes)].map(([values, keys]) =>
     `        case ${keys.map(fq).join(' ')}\n            printf '%s\\n' ${values.split(' ').map(fq).join(' ')}`);
 
+  const argArms = nodes
+    .filter(n => n.args.length)
+    .map(n => `        case ${fq(n.path)}\n            printf '%s\\n' ${n.args.map(fq).join(' ')}`);
+
   return `${header('fish', version, [
     'Install:  nansen completion fish > ~/.config/fish/completions/nansen.fish',
   ])}
@@ -480,6 +525,13 @@ end
 function __nansen_values
     switch "$argv[1]|$argv[2]"
 ${valArms.join('\n')}
+    end
+end
+
+# Positional argument values; offered alongside subcommands, never part of the path.
+function __nansen_args
+    switch "$argv[1]"
+${argArms.join('\n')}
     end
 end
 
@@ -543,6 +595,7 @@ function __nansen_complete
     end
 
     __nansen_subs "$path"
+    __nansen_args "$path"
 end
 
 complete -c nansen -f -a '(__nansen_complete)'
