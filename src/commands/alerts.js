@@ -108,14 +108,31 @@ function parseChains(chainsOpt) {
 }
 
 /**
+ * Parse a CLI option value as a finite number, or throw a clear error.
+ *
+ * Plain `Number(val)` turns garbage input ("abc") into NaN, and
+ * `JSON.stringify` silently turns NaN into `null` — so a typo'd
+ * --usd-min/--market-cap-max/etc. would vanish from the request instead of
+ * failing loudly, and the alert would ship without the filter the user
+ * asked for.
+ */
+function parseFiniteNumber(raw, name) {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) {
+    throw new NansenError(`Invalid --${name} "${raw}": must be a number`, ErrorCode.INVALID_PARAMS);
+  }
+  return n;
+}
+
+/**
  * Build a { min, max } range object from two option values.
  * Returns undefined if neither is provided.
  */
-function buildRange(minVal, maxVal) {
+function buildRange(minVal, maxVal, name) {
   if (minVal === undefined && maxVal === undefined) return undefined;
   const r = {};
-  if (minVal !== undefined) r.min = Number(minVal);
-  if (maxVal !== undefined) r.max = Number(maxVal);
+  if (minVal !== undefined) r.min = parseFiniteNumber(minVal, `${name}-min`);
+  if (maxVal !== undefined) r.max = parseFiniteNumber(maxVal, `${name}-max`);
   return r;
 }
 
@@ -138,7 +155,7 @@ export function buildSmTokenFlowsData(options) {
 
   const flowFields = ['inflow-1h', 'inflow-1d', 'inflow-7d', 'outflow-1h', 'outflow-1d', 'outflow-7d', 'netflow-1h', 'netflow-1d', 'netflow-7d'];
   for (const field of flowFields) {
-    const range = buildRange(options[`${field}-min`], options[`${field}-max`]);
+    const range = buildRange(options[`${field}-min`], options[`${field}-max`], field);
     if (range) {
       // Convert CLI key "inflow-1h" → data key "inflow_1h"
       data[field.replace(/-/g, '_')] = range;
@@ -156,13 +173,13 @@ export function buildSmTokenFlowsData(options) {
   if (excludeSectors) data.exclusion = { ...data.exclusion, tokenSectors: excludeSectors };
 
   if (options['token-age-max'] !== undefined) {
-    data.inclusion = { ...data.inclusion, tokenAge: { max: Number(options['token-age-max']) } };
+    data.inclusion = { ...data.inclusion, tokenAge: { max: parseFiniteNumber(options['token-age-max'], 'token-age-max') } };
   }
 
-  const marketCapRange = buildRange(options['market-cap-min'], options['market-cap-max']);
+  const marketCapRange = buildRange(options['market-cap-min'], options['market-cap-max'], 'market-cap');
   if (marketCapRange) data.inclusion = { ...data.inclusion, marketCap: marketCapRange };
 
-  const fdvRange = buildRange(options['fdv-min'], options['fdv-max']);
+  const fdvRange = buildRange(options['fdv-min'], options['fdv-max'], 'fdv');
   if (fdvRange) data.inclusion = { ...data.inclusion, fdvUsd: fdvRange };
 
   return data;
@@ -181,10 +198,10 @@ export function buildCommonTokenTransferData(options) {
     data.events = typeof options.events === 'string' ? options.events.split(',') : options.events;
   }
 
-  const usdRange = buildRange(options['usd-min'], options['usd-max']);
+  const usdRange = buildRange(options['usd-min'], options['usd-max'], 'usd');
   if (usdRange) data.usdValue = usdRange;
 
-  const amountRange = buildRange(options['token-amount-min'], options['token-amount-max']);
+  const amountRange = buildRange(options['token-amount-min'], options['token-amount-max'], 'token-amount');
   if (amountRange) data.tokenAmount = amountRange;
 
   const subjects = parseSubjects(options.subject);
@@ -207,12 +224,12 @@ export function buildCommonTokenTransferData(options) {
   const tokenAgeMax = options['token-age-max'];
   if (tokenAgeMin !== undefined || tokenAgeMax !== undefined) {
     const tokenAge = {};
-    if (tokenAgeMin !== undefined) tokenAge.min = Number(tokenAgeMin);
-    if (tokenAgeMax !== undefined) tokenAge.max = Number(tokenAgeMax);
+    if (tokenAgeMin !== undefined) tokenAge.min = parseFiniteNumber(tokenAgeMin, 'token-age-min');
+    if (tokenAgeMax !== undefined) tokenAge.max = parseFiniteNumber(tokenAgeMax, 'token-age-max');
     data.inclusion = { ...data.inclusion, tokenAge };
   }
 
-  const marketCapRange = buildRange(options['market-cap-min'], options['market-cap-max']);
+  const marketCapRange = buildRange(options['market-cap-min'], options['market-cap-max'], 'market-cap');
   if (marketCapRange) data.inclusion = { ...data.inclusion, marketCap: marketCapRange };
 
   const excludeFrom = parseSubjects(options['exclude-from']);
@@ -232,7 +249,7 @@ export function buildSmartContractCallData(options) {
   const chains = parseChains(options.chains);
   if (chains) data.chains = chains;
 
-  const usdRange = buildRange(options['usd-min'], options['usd-max']);
+  const usdRange = buildRange(options['usd-min'], options['usd-max'], 'usd');
   if (usdRange) data.usdValue = usdRange;
 
   if (options['signature-hash']) {
