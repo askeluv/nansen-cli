@@ -45,7 +45,7 @@ const SUBCOMMANDS = [
 ];
 
 export const RESEARCH_HISTORICAL_SUBCOMMANDS = new Set(SUBCOMMANDS);
-export const RESEARCH_SUBCOMMANDS = new Set(['chain-rank', 'token-sectors', 'address-premium-labels', 'smart-money-pnl-leaderboard', 'position-intelligence', ...SUBCOMMANDS]);
+export const RESEARCH_SUBCOMMANDS = new Set(['chain-rank', 'token-sectors', 'address-premium-labels', 'smart-money-pnl-leaderboard', 'position-intelligence', 'perp-pnl-summary', ...SUBCOMMANDS]);
 
 const CHAIN_RANK_TIMEFRAMES = new Set([7, 30, 365]);
 const CHAIN_RANK_CHAIN_TYPES = new Set(['all', 'evm']);
@@ -93,6 +93,7 @@ SUBCOMMANDS:
   address-premium-labels            Get all labels for an address, including premium labels
   smart-money-pnl-leaderboard       Rank smart money wallets by PnL
   position-intelligence             Aggregate Hyperliquid positions by trader cohort
+  perp-pnl-summary                  Summarize realized Hyperliquid PnL for an address
   historical-dex-trades             Historical DEX trades for a token
   historical-pnl-leaderboard        Historical PnL leaderboard for a token
   historical-token-flow-summary     Historical token flow summary
@@ -139,6 +140,10 @@ USAGE:
   nansen research position-intelligence --symbol <symbol>
 
 NOTE: --token-address is accepted as an alias for --symbol (the API request field is token_address).`,
+  'perp-pnl-summary': `nansen research perp-pnl-summary — Summarize realized Hyperliquid PnL for an address
+
+USAGE:
+  nansen research perp-pnl-summary --address <addr> --from-date <date> --to-date <date>`,
   'historical-dex-trades': `nansen research historical-dex-trades — Historical DEX trades for a token
 
 USAGE:
@@ -274,6 +279,14 @@ export function buildResearchCommands(deps = {}) {
           );
         }
         return apiInstance.tokenPositionIntelligence({ tokenAddress: symbol });
+      }
+
+      if (sub === 'perp-pnl-summary') {
+        requireOptions(
+          { address: options.address, 'from-date': fromDate, 'to-date': toDate },
+          ['address', 'from-date', 'to-date'],
+        );
+        return apiInstance.addressPerpPnlSummary({ address: options.address, fromDate, toDate });
       }
 
       // Range-based token endpoints (require --from-date + --to-date)

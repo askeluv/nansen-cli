@@ -112,6 +112,20 @@ describe('NansenAPI research (historical) methods', () => {
     expect(body).toEqual({ token_address: 'BTC' });
   });
 
+  it('uses the perp PnL summary endpoint and request shape', async () => {
+    setupMock();
+    await api.addressPerpPnlSummary({
+      address: ADDRESSES.ethereum,
+      fromDate: FROM,
+      toDate: TO,
+    });
+    const body = lastCall('/api/v1/profiler/perp-pnl-summary');
+    expect(body).toEqual({
+      address: ADDRESSES.ethereum,
+      date: { from: FROM, to: TO },
+    });
+  });
+
   describe('researchDexTrades', () => {
     it('hits historical-dex-trades with token_address, chain, and date_range {from,to}', async () => {
       setupMock();
@@ -332,12 +346,13 @@ describe('buildResearchCommands handler', () => {
       addressPremiumLabels: vi.fn().mockResolvedValue({ data: [] }),
       smartMoneyPnlLeaderboard: vi.fn().mockResolvedValue({ data: [] }),
       tokenPositionIntelligence: vi.fn().mockResolvedValue({ data: [] }),
+      addressPerpPnlSummary: vi.fn().mockResolvedValue({ data: [] }),
     };
   }
 
   it('exports historical and direct subcommands', () => {
     expect(RESEARCH_HISTORICAL_SUBCOMMANDS.size).toBe(11);
-    expect(RESEARCH_SUBCOMMANDS.size).toBe(16);
+    expect(RESEARCH_SUBCOMMANDS.size).toBe(17);
   });
 
   it('dispatches chain-rank', async () => {
@@ -491,6 +506,33 @@ describe('buildResearchCommands handler', () => {
     await expect(cmds.research(['position-intelligence'], mockApi, {}, { symbol: '   ' }))
       .rejects.toThrow(/--symbol/);
     expect(mockApi.tokenPositionIntelligence).not.toHaveBeenCalled();
+  });
+
+  it('dispatches perp-pnl-summary', async () => {
+    mockApi = makeMockApi();
+    await cmds.research(['perp-pnl-summary'], mockApi, {}, {
+      address: ADDRESSES.ethereum, 'from-date': FROM, 'to-date': TO,
+    });
+    expect(mockApi.addressPerpPnlSummary).toHaveBeenCalledWith({
+      address: ADDRESSES.ethereum,
+      fromDate: FROM,
+      toDate: TO,
+    });
+  });
+
+  it('requires a complete perp PnL date range', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['perp-pnl-summary'], mockApi, {}, {
+      address: ADDRESSES.ethereum, 'from-date': FROM,
+    })).rejects.toThrow(/to-date/);
+  });
+
+  it('requires an address for perp PnL summary', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['perp-pnl-summary'], mockApi, {}, {
+      'from-date': FROM, 'to-date': TO,
+    })).rejects.toThrow(/address/);
+    expect(mockApi.addressPerpPnlSummary).not.toHaveBeenCalled();
   });
 
   it('rejects unknown subcommand', async () => {

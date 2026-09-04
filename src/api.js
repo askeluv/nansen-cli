@@ -1127,6 +1127,16 @@ export class NansenAPI {
     });
   }
 
+  async addressPerpPnlSummary(params = {}) {
+    const { address, fromDate, toDate } = params;
+    // HL addresses are EVM-format, so ethereum validation accepts every valid HL address
+    if (address) requireValidAddress(address, 'ethereum');
+    return this.request('/api/v1/profiler/perp-pnl-summary', {
+      address,
+      date: { from: fromDate, to: toDate }
+    });
+  }
+
   // ============= Token God Mode Endpoints =============
 
   async tokenScreener(params = {}) {
