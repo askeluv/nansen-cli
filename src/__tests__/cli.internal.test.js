@@ -3333,6 +3333,57 @@ describe('Response Caching', () => {
   });
 });
 
+// compareSemver's own unit tests live in src/__tests__/semver.test.js
+// (its canonical home, src/semver.js). What belongs here is the CLI
+// command's behavior — that --since is validated and filters correctly —
+// not a re-test of the comparison function's arithmetic.
+describe('changelog command --since', () => {
+  function runChangelog(options) {
+    const logs = [];
+    const commands = buildCommands({ log: (m) => logs.push(m), exit: vi.fn() });
+    return commands.changelog([], null, {}, options).then(() => logs.join('\n'));
+  }
+
+  it('rejects a non-numeric --since value with a clear error instead of silently matching nothing', async () => {
+    const out = await runChangelog({ since: 'abc' });
+    expect(out).toBe('Invalid --since value "abc": expected a version like 1.43 or 1.43.0.');
+  });
+
+  it('rejects a malformed --since value like "1.2.3.4"', async () => {
+    const out = await runChangelog({ since: '1.2.3.4' });
+    expect(out).toContain('Invalid --since value "1.2.3.4"');
+  });
+
+  it('a --since value missing the patch component reads as .0, not as always-less-than-everything (regression for the "1.43 vs 1.43.1" bug)', async () => {
+    // Read the real CHANGELOG.md the command itself reads, and use whatever
+    // its current newest version's major.minor happens to be, so this
+    // doesn't hardcode a version number that goes stale as new releases
+    // land. The exact patch number doesn't matter here — only that a
+    // major.minor-only --since behaves like its explicit ".0" form.
+    const changelogPath = new URL('../../CHANGELOG.md', import.meta.url).pathname;
+    const content = fs.readFileSync(changelogPath, 'utf8');
+    const headingMatch = content.match(/^## \[?(\d+\.\d+)\.\d+\]?/m);
+    expect(headingMatch).not.toBeNull();
+    const [, majorMinor] = headingMatch;
+
+    const explicitZeroForm = await runChangelog({ since: `${majorMinor}.0` });
+    const partialForm = await runChangelog({ since: majorMinor });
+
+    // Before the fix this always fell through to "No changelog entries
+    // found", because compareSemver compared the real patch number against
+    // `undefined` and that is never >= 0 in either direction — so a
+    // major.minor-only --since matched nothing, even entries for that exact
+    // major.minor.
+    expect(partialForm).not.toContain('No changelog entries found');
+    expect(partialForm).toBe(explicitZeroForm);
+  });
+
+  it('a --since value far in the future still reports the no-match message clearly (not an error)', async () => {
+    const out = await runChangelog({ since: '9999.0.0' });
+    expect(out).toBe('No changelog entries found for versions >= 9999.0.0');
+  });
+});
+
 describe('cache command', () => {
   it('should clear cache with clear subcommand', async () => {
     const logs = [];
@@ -4380,6 +4431,48 @@ describe('research command routing', () => {
     const result = await commands.research(['tgm', 'help'], null, {}, {});
     expect(result.commands).toContain('screener');
   });
+
+  it('should keep research perp help analytics-only', async () => {
+    const commands = buildCommands({});
+    const result = await commands.research(['perp', 'help'], null, {}, {});
+    expect(result.commands).toEqual(['screener', 'leaderboard']);
+  });
+
+  it.each([
+    ['screener', 'perpScreener'],
+    ['leaderboard', 'perpLeaderboard'],
+  ])('should delegate research perp %s to the analytics handler', async (subcommand, method) => {
+    const mockApi = { [method]: vi.fn().mockResolvedValue({ data: [] }) };
+    const commands = buildCommands({});
+
+    await commands.research(['perp', subcommand], mockApi, {}, {});
+
+    expect(mockApi[method]).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    'order',
+    'cancel',
+    'close',
+    'leverage',
+    'transfer',
+    'approve-builder-fee',
+    'positions',
+    'orders',
+    'account',
+    'meta',
+  ])(
+    'should not route research perp %s to the top-level perp handler',
+    async (subcommand) => {
+      const commands = buildCommands({});
+
+      await expect(commands.research(['perp', subcommand], null, {}, {}))
+        .rejects.toMatchObject({
+          code: 'UNKNOWN',
+          message: `Unknown perp analytics subcommand: ${subcommand}. Available: screener, leaderboard`,
+        });
+    },
+  );
 
   it('should error on unknown category', async () => {
     const commands = buildCommands({});

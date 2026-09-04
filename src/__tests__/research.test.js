@@ -55,6 +55,22 @@ describe('NansenAPI research (historical) methods', () => {
     return JSON.parse(options.body);
   }
 
+  it('uses the chain-rank endpoint and request shape', async () => {
+    setupMock();
+    await api.chainRank({ timeFrame: 30, chainType: 'evm' });
+    const body = lastCall('/api/v1/chains/chain-rank');
+    expect(body).toEqual({ time_frame: 30, chain_type: 'evm' });
+  });
+
+  it('uses the token-sectors endpoint with GET', async () => {
+    setupMock();
+    await api.tokenSectors();
+    const [url, request] = mockFetch.mock.calls.at(-1);
+    expect(url).toBe('https://api.nansen.ai/api/v1/search/token-sectors');
+    expect(request.method).toBe('GET');
+    expect(request.body).toBeUndefined();
+  });
+
   it('uses the premium-labels endpoint and request shape', async () => {
     setupMock();
     await api.addressPremiumLabels({
@@ -285,13 +301,69 @@ describe('buildResearchCommands handler', () => {
       researchWalletBalances: vi.fn().mockResolvedValue({ data: [] }),
       researchTxLookup: vi.fn().mockResolvedValue({ data: [] }),
       researchWalletTransactions: vi.fn().mockResolvedValue({ data: [] }),
+      chainRank: vi.fn().mockResolvedValue({ data: [] }),
+      tokenSectors: vi.fn().mockResolvedValue({ data: [] }),
       addressPremiumLabels: vi.fn().mockResolvedValue({ data: [] }),
     };
   }
 
   it('exports historical and direct subcommands', () => {
     expect(RESEARCH_HISTORICAL_SUBCOMMANDS.size).toBe(11);
-    expect(RESEARCH_SUBCOMMANDS.size).toBe(12);
+    expect(RESEARCH_SUBCOMMANDS.size).toBe(14);
+  });
+
+  it('dispatches chain-rank', async () => {
+    mockApi = makeMockApi();
+    await cmds.research(['chain-rank'], mockApi, {}, {
+      'timeframe-days': '30', 'chain-type': 'evm',
+    });
+    expect(mockApi.chainRank).toHaveBeenCalledWith({ timeFrame: 30, chainType: 'evm' });
+  });
+
+  it('rejects chain-rank with a timeframe outside 7/30/365', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['chain-rank'], mockApi, {}, { 'timeframe-days': '99' }))
+      .rejects.toThrow('--timeframe-days must be one of: 7, 30, 365');
+    expect(mockApi.chainRank).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-integer --timeframe-days values', async () => {
+    mockApi = makeMockApi();
+    for (const value of ['30.5', '30abc', '-7', '0']) {
+      await expect(cmds.research(['chain-rank'], mockApi, {}, { 'timeframe-days': value }))
+        .rejects.toThrow('--timeframe-days must be a positive integer');
+    }
+    expect(mockApi.chainRank).not.toHaveBeenCalled();
+  });
+
+  it('rejects --timeframe-days 0 on historical-token-screener (API requires at least 1)', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['historical-token-screener'], mockApi, {}, {
+      'timeframe-days': '0', 'to-date': TO,
+    })).rejects.toThrow('--timeframe-days must be a positive integer');
+    expect(mockApi.researchTokenScreener).not.toHaveBeenCalled();
+  });
+
+  it('prints chain-rank help without calling the API', async () => {
+    mockApi = makeMockApi();
+    const logged = [];
+    const helpCmds = buildResearchCommands({ log: line => logged.push(line) });
+    await helpCmds.research(['chain-rank', 'help'], mockApi, {}, {});
+    expect(logged.join('\n')).toContain('nansen research chain-rank');
+    expect(mockApi.chainRank).not.toHaveBeenCalled();
+  });
+
+  it('rejects chain-rank with an unknown chain type', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['chain-rank'], mockApi, {}, { 'chain-type': 'solana' }))
+      .rejects.toThrow('--chain-type must be one of: all, evm');
+    expect(mockApi.chainRank).not.toHaveBeenCalled();
+  });
+
+  it('dispatches token-sectors', async () => {
+    mockApi = makeMockApi();
+    await cmds.research(['token-sectors'], mockApi, {}, {});
+    expect(mockApi.tokenSectors).toHaveBeenCalledWith();
   });
 
   it('dispatches address-premium-labels', async () => {

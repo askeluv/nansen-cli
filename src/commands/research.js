@@ -51,7 +51,10 @@ const SUBCOMMANDS = [
 ];
 
 export const RESEARCH_HISTORICAL_SUBCOMMANDS = new Set(SUBCOMMANDS);
-export const RESEARCH_SUBCOMMANDS = new Set(['address-premium-labels', ...SUBCOMMANDS]);
+export const RESEARCH_SUBCOMMANDS = new Set(['chain-rank', 'token-sectors', 'address-premium-labels', ...SUBCOMMANDS]);
+
+const CHAIN_RANK_TIMEFRAMES = new Set([7, 30, 365]);
+const CHAIN_RANK_CHAIN_TYPES = new Set(['all', 'evm']);
 
 function requireOptions(options, required) {
   const missing = required.filter(name => !options[name]);
@@ -69,11 +72,11 @@ function resolveDateRange(options) {
 
 function parseTimeframeDays(value) {
   if (value === undefined || value === null || value === '') return undefined;
-  const n = parseInt(value, 10);
-  if (Number.isNaN(n)) {
-    throw new NansenError('--timeframe-days must be an integer', ErrorCode.INVALID_PARAMS);
+  const trimmed = String(value).trim();
+  if (!/^[1-9]\d*$/.test(trimmed)) {
+    throw new NansenError('--timeframe-days must be a positive integer', ErrorCode.INVALID_PARAMS);
   }
-  return n;
+  return parseInt(trimmed, 10);
 }
 
 function parseChains(options) {
@@ -89,6 +92,8 @@ function parseChains(options) {
 const HELP_TOP = `nansen research — Direct API analytics
 
 SUBCOMMANDS:
+  chain-rank                       Rank chains by growth metrics
+  token-sectors                     List token sectors available for filtering
   address-premium-labels            Get all labels for an address, including premium labels
   historical-dex-trades             Historical DEX trades for a token
   historical-pnl-leaderboard        Historical PnL leaderboard for a token
@@ -114,6 +119,14 @@ COMMON OPTIONS:
 Run: nansen research <subcommand> --help`;
 
 const SUB_HELP = {
+  'chain-rank': `nansen research chain-rank — Rank chains by growth metrics
+
+USAGE:
+  nansen research chain-rank [--timeframe-days 7|30|365] [--chain-type all|evm]`,
+  'token-sectors': `nansen research token-sectors — List token sectors available for filtering
+
+USAGE:
+  nansen research token-sectors`,
   'address-premium-labels': `nansen research address-premium-labels — Get all labels for an address, including premium labels
 
 USAGE:
@@ -194,11 +207,31 @@ export function buildResearchCommands(deps = {}) {
         return;
       }
 
+      if (sub === 'token-sectors') return apiInstance.tokenSectors();
+
       const orderBy = parseSort(options.sort, options['order-by']);
       const pagination = buildPagination(options);
       const filters = options.filters || {};
       const { fromDate, toDate } = resolveDateRange(options);
       const asOfDate = options['as-of-date'];
+
+      if (sub === 'chain-rank') {
+        const timeFrame = parseTimeframeDays(options['timeframe-days']) ?? 7;
+        if (!CHAIN_RANK_TIMEFRAMES.has(timeFrame)) {
+          throw new NansenError(
+            `--timeframe-days must be one of: ${[...CHAIN_RANK_TIMEFRAMES].join(', ')}`,
+            ErrorCode.INVALID_PARAMS,
+          );
+        }
+        const chainType = options['chain-type'] || 'all';
+        if (!CHAIN_RANK_CHAIN_TYPES.has(chainType)) {
+          throw new NansenError(
+            `--chain-type must be one of: ${[...CHAIN_RANK_CHAIN_TYPES].join(', ')}`,
+            ErrorCode.INVALID_PARAMS,
+          );
+        }
+        return apiInstance.chainRank({ timeFrame, chainType });
+      }
 
       if (sub === 'address-premium-labels') {
         requireOptions({ address: options.address }, ['address']);

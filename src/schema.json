@@ -1162,6 +1162,25 @@
             }
           }
         },
+        "chain-rank": {
+          "endpoint": "/api/v1/chains/chain-rank",
+          "description": "Rank chains by growth metrics",
+          "options": {
+            "timeframe-days": {
+              "type": "number",
+              "enum": [7, 30, 365],
+              "default": 7
+            },
+            "chain-type": {
+              "enum": ["all", "evm"],
+              "default": "all"
+            }
+          }
+        },
+        "token-sectors": {
+          "endpoint": "/api/v1/search/token-sectors",
+          "description": "List token sectors available for filtering"
+        },
         "address-premium-labels": {
           "endpoint": "/api/v1/profiler/address/premium-labels",
           "description": "Get all labels for an address, including premium labels",
