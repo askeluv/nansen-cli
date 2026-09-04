@@ -834,6 +834,16 @@ export class NansenAPI {
     return this.request('/api/v1/account', {}, { method: 'GET', cache: false });
   }
 
+  // ============= Chain Endpoints =============
+
+  async chainRank(params = {}) {
+    const { timeFrame = 7, chainType = 'all' } = params;
+    return this.request('/api/v1/chains/chain-rank', {
+      time_frame: timeFrame,
+      chain_type: chainType
+    });
+  }
+
   // ============= Smart Money Endpoints =============
   
   async smartMoneyNetflow(params = {}) {
@@ -896,6 +906,17 @@ export class NansenAPI {
     });
   }
 
+  async smartMoneyPnlLeaderboard(params = {}) {
+    const { chains = ['solana'], timeframe = 7, filters = {}, orderBy, pagination } = params;
+    return this.request('/api/v1/smart-money/pnl-leaderboard', {
+      chains,
+      timeframe,
+      filters,
+      order_by: orderBy,
+      pagination
+    });
+  }
+
   // ============= Profiler Endpoints =============
 
   async addressBalance(params = {}) {
@@ -915,6 +936,16 @@ export class NansenAPI {
     const { address, chain = 'ethereum', pagination = { page: 1, per_page: 100 } } = params;
     if (address) requireValidAddress(address, chain);
     return this.request('/api/v1/profiler/address/labels', {
+      address,
+      chain,
+      pagination
+    });
+  }
+
+  async addressPremiumLabels(params = {}) {
+    const { address, chain = 'all', pagination = { page: 1, per_page: 100 } } = params;
+    if (address) requireValidAddress(address, chain);
+    return this.request('/api/v1/profiler/address/premium-labels', {
       address,
       chain,
       pagination
@@ -968,6 +999,10 @@ export class NansenAPI {
     };
     if (chain) body.chain = chain;
     return this.request('/api/v1/search/general', body);
+  }
+
+  async tokenSectors() {
+    return this.request('/api/v1/search/token-sectors', {}, { method: 'GET' });
   }
 
   async webSearch(params = {}) {
@@ -1089,6 +1124,16 @@ export class NansenAPI {
       filters,
       order_by: orderBy,
       pagination
+    });
+  }
+
+  async addressPerpPnlSummary(params = {}) {
+    const { address, fromDate, toDate } = params;
+    // HL addresses are EVM-format, so ethereum validation accepts every valid HL address
+    if (address) requireValidAddress(address, 'ethereum');
+    return this.request('/api/v1/profiler/perp-pnl-summary', {
+      address,
+      date: { from: fromDate, to: toDate }
     });
   }
 
@@ -1246,6 +1291,13 @@ export class NansenAPI {
       filters,
       order_by: orderBy,
       pagination
+    });
+  }
+
+  async tokenPositionIntelligence(params = {}) {
+    const { tokenAddress } = params;
+    return this.request('/api/v1/tgm/position-intelligence', {
+      token_address: tokenAddress
     });
   }
 
@@ -1638,6 +1690,29 @@ export class NansenAPI {
       filters,
       order_by: orderBy,
       pagination,
+    });
+  }
+
+  async researchHistoricalTokenOhlcv(params = {}) {
+    const { chain = 'solana', tokenAddress, fromDate, asOfDate, asOfTs, timeframe, applyBlacklistFilter } = params;
+    if (tokenAddress) requireValidToken(tokenAddress, chain);
+    if (!fromDate) {
+      throw new NansenError('fromDate is required', ErrorCode.MISSING_PARAM);
+    }
+    if (asOfDate && asOfTs) {
+      throw new NansenError('asOfDate and asOfTs are mutually exclusive', ErrorCode.INVALID_PARAMS);
+    }
+    if (!asOfDate && !asOfTs) {
+      throw new NansenError('One of asOfDate or asOfTs is required', ErrorCode.MISSING_PARAM);
+    }
+    return this.request('/api/v1beta1/tgm/historical-token-ohlcv', {
+      chain,
+      token_address: tokenAddress,
+      date_from: fromDate,
+      as_of_date: asOfDate,
+      as_of_ts: asOfTs,
+      timeframe,
+      apply_blacklist_filter: applyBlacklistFilter
     });
   }
 

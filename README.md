@@ -56,7 +56,16 @@ nansen schema [command] [--pretty]    # full command reference (no API key neede
 
 **Research categories:** `smart-money` (`sm`), `token` (`tgm`), `profiler` (`prof`), `portfolio` (`port`), `prediction-market` (`pm`), `search`, `perp`, `points`
 
-**Direct research subcommands:** `transaction-with-token-transfer-lookup`
+**Direct research subcommands:**
+- `nansen research chain-rank [--timeframe-days 7|30|365] [--chain-type all|evm]` — rank chains by growth metrics
+- `nansen research token-sectors` — list token sectors available for filtering
+- `nansen research address-premium-labels --address <addr> [--chain <chain>] [--page <n>] [--limit <n>]` — get all labels for an address, including premium labels
+- `nansen research smart-money-pnl-leaderboard [--chains c1,c2] [--timeframe-days 1|7|30|90|180] [--filters '<json>'] [--sort <field[:asc|desc]>] [--page <n>] [--limit <n>]` — rank smart money wallets by PnL
+- `nansen research position-intelligence --symbol <symbol>` — aggregate Hyperliquid positions by trader cohort
+- `nansen research perp-pnl-summary --address <addr> --from-date <date> --to-date <date>` — summarize realized Hyperliquid PnL for an address
+- `nansen research transaction-with-token-transfer-lookup --transaction-hash <hash> [--chain <chain>] [--block-timestamp "YYYY-MM-DD HH:MM:SS"]` — look up a transaction and its token/NFT transfers
+
+Plus the `historical-*` point-in-time commands — run `nansen research help` for the full list.
 
 **Trade:** `quote`, `execute`, `bridge-status`, `limit-order` — DEX swaps on Solana and Base, cross-chain bridges, and Solana limit orders.
 
