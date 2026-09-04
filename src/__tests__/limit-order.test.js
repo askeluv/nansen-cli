@@ -189,6 +189,18 @@ describe('parseExpiry', () => {
     const past = Date.now() - 3600000;
     expect(() => parseExpiry(String(past))).toThrow(/in the past/);
   });
+
+  it.each([
+    'Infinity',
+    '-Infinity',
+    '1e309',
+  ])('rejects non-finite raw expiry value %s', (value) => {
+    expect(() => parseExpiry(value)).toThrow(/Invalid expiry/);
+  });
+
+  it('rejects an expiry duration that overflows to Infinity', () => {
+    expect(() => parseExpiry(`${'9'.repeat(400)}h`)).toThrow(/Invalid expiry/);
+  });
 });
 
 // ============= API Client Functions =============
@@ -498,6 +510,46 @@ describe('buildLimitOrderCommands', () => {
       expect(exit).toHaveBeenCalledWith(1);
       expect(logs.some(l => l.includes('positive number'))).toBe(true);
     });
+
+    it.each(['Infinity', '-Infinity', '1e309'])(
+      'rejects non-finite trigger price %s before wallet or API activity',
+      async (triggerPrice) => {
+        const wallet = `lo-create-price-${triggerPrice.replace('-', 'negative-')}`;
+        createTestWallet(wallet);
+        const logs = [];
+        const exit = vi.fn();
+        const cmds = buildLimitOrderCommands({ log: (m) => logs.push(m), exit });
+
+        await cmds.create([], null, {}, {
+          from: '11111111111111111111111111111111', to: 'USDC', amount: '1', 'trigger-mint': 'SOL',
+          'trigger-condition': 'below', 'trigger-price': triggerPrice, wallet,
+        });
+
+        expect(exit).toHaveBeenCalledWith(1);
+        expect(logs).toContain('Error: --trigger-price must be a finite positive number.');
+        expect(global.fetch).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(['Infinity', '-Infinity', '1e309'])(
+      'rejects non-finite expiry %s before wallet or API activity',
+      async (expires) => {
+        const wallet = `lo-create-expiry-${expires.replace('-', 'negative-')}`;
+        createTestWallet(wallet);
+        const logs = [];
+        const exit = vi.fn();
+        const cmds = buildLimitOrderCommands({ log: (m) => logs.push(m), exit });
+
+        await cmds.create([], null, {}, {
+          from: '11111111111111111111111111111111', to: 'USDC', amount: '1', 'trigger-mint': 'SOL',
+          'trigger-condition': 'below', 'trigger-price': '80', expires, wallet,
+        });
+
+        expect(exit).toHaveBeenCalledWith(1);
+        expect(logs.some(l => l.includes(`Invalid expiry "${expires}"`))).toBe(true);
+        expect(global.fetch).not.toHaveBeenCalled();
+      },
+    );
 
     it('validates trigger-condition', async () => {
       const logs = [];
@@ -1009,6 +1061,25 @@ describe('buildLimitOrderCommands', () => {
       expect(patchBody.triggerPriceUsd).toBe(85);
       expect(patchBody.orderType).toBe('single');
     });
+
+    it.each(['Infinity', '-Infinity', '1e309'])(
+      'rejects non-finite trigger price %s before wallet or API activity',
+      async (triggerPrice) => {
+        const wallet = `lo-update-price-${triggerPrice.replace('-', 'negative-')}`;
+        createTestWallet(wallet);
+        const logs = [];
+        const exit = vi.fn();
+        const cmds = buildLimitOrderCommands({ log: (m) => logs.push(m), exit });
+
+        await cmds.update([], null, {}, {
+          order: 'order-1', 'trigger-price': triggerPrice, wallet,
+        });
+
+        expect(exit).toHaveBeenCalledWith(1);
+        expect(logs).toContain('Error: --trigger-price must be a finite positive number.');
+        expect(global.fetch).not.toHaveBeenCalled();
+      },
+    );
 
     it('updates slippage', async () => {
       createTestWallet('lo-update-slip');

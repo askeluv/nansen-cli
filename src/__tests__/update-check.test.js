@@ -15,6 +15,7 @@ import path from 'path';
 import os from 'os';
 import http from 'http';
 import childProcess from 'child_process';
+import { isNewer } from '../update-check.js';
 
 // We need to test with a controlled cache file, so we'll write to
 // the real ~/.nansen/update-check.json and clean up after.
@@ -52,6 +53,32 @@ function writeCache(data) {
 function removeCache() {
   try { fs.unlinkSync(CACHE_FILE); } catch { /* ignore */ }
 }
+
+// =================== isNewer ===================
+
+describe('isNewer', () => {
+  it('detects a newer full x.y.z version', () => {
+    expect(isNewer('1.44.0', '1.43.9')).toBe(true);
+    expect(isNewer('1.43.9', '1.44.0')).toBe(false);
+    expect(isNewer('1.43.0', '1.43.0')).toBe(false);
+  });
+
+  it('treats a version missing a component as reading .0 for it, not as unreachable (regression)', () => {
+    // Before delegating to the shared compareSemver, isNewer had its own
+    // parser with the identical undefined-vs-number bug that
+    // `nansen changelog --since` had: a version string with fewer than 3
+    // components parsed its missing part as `undefined`, and `>` is always
+    // `false` against `undefined` in both directions — so a partial "latest"
+    // could never register as newer, no matter how new it actually was.
+    expect(isNewer('1.44', '1.43.9')).toBe(true);
+    expect(isNewer('2', '1.99.99')).toBe(true);
+    expect(isNewer('1.43', '1.43.0')).toBe(false);
+  });
+
+  it('ignores a leading "v"', () => {
+    expect(isNewer('v1.44.0', 'v1.43.0')).toBe(true);
+  });
+});
 
 // =================== getUpdateNotification ===================
 

@@ -834,6 +834,16 @@ export class NansenAPI {
     return this.request('/api/v1/account', {}, { method: 'GET', cache: false });
   }
 
+  // ============= Chain Endpoints =============
+
+  async chainRank(params = {}) {
+    const { timeFrame = 7, chainType = 'all' } = params;
+    return this.request('/api/v1/chains/chain-rank', {
+      time_frame: timeFrame,
+      chain_type: chainType
+    });
+  }
+
   // ============= Smart Money Endpoints =============
   
   async smartMoneyNetflow(params = {}) {
@@ -932,6 +942,16 @@ export class NansenAPI {
     });
   }
 
+  async addressPremiumLabels(params = {}) {
+    const { address, chain = 'all', pagination = { page: 1, per_page: 100 } } = params;
+    if (address) requireValidAddress(address, chain);
+    return this.request('/api/v1/profiler/address/premium-labels', {
+      address,
+      chain,
+      pagination
+    });
+  }
+
   async addressTransactions(params = {}) {
     const { address, chain = 'ethereum', filters = {}, orderBy, pagination, days = 30, date } = params;
     if (address) requireValidAddress(address, chain);
@@ -979,6 +999,10 @@ export class NansenAPI {
     };
     if (chain) body.chain = chain;
     return this.request('/api/v1/search/general', body);
+  }
+
+  async tokenSectors() {
+    return this.request('/api/v1/search/token-sectors', {}, { method: 'GET' });
   }
 
   async webSearch(params = {}) {

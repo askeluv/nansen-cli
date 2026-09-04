@@ -5,7 +5,30 @@
  */
 
 import { NansenError, ErrorCode } from '../api.js';
-import { buildPagination, parseSort } from '../query-options.js';
+import { parseSort } from '../query-options.js';
+
+// Research subcommands validate --page strictly. The shared helper in
+// src/query-options.js clamps an invalid page to 1 for the category commands,
+// so keep a local variant here that rejects it instead.
+function buildPagination(options) {
+  if (options.limit === undefined && options.page === undefined) return undefined;
+  const pagination = { page: 1 };
+  if (options.page !== undefined) {
+    const page = Number(options.page);
+    if (!Number.isInteger(page) || page < 1) {
+      throw new NansenError('--page must be a positive integer', ErrorCode.INVALID_PARAMS);
+    }
+    pagination.page = page;
+  }
+  if (options.limit !== undefined) {
+    const perPage = Number(options.limit);
+    if (!Number.isInteger(perPage) || perPage < 1) {
+      throw new NansenError('--limit must be a positive integer', ErrorCode.INVALID_PARAMS);
+    }
+    pagination.per_page = perPage;
+  }
+  return pagination;
+}
 
 const SUBCOMMANDS = [
   'historical-dex-trades',
@@ -22,7 +45,10 @@ const SUBCOMMANDS = [
 ];
 
 export const RESEARCH_HISTORICAL_SUBCOMMANDS = new Set(SUBCOMMANDS);
-export const RESEARCH_SUBCOMMANDS = new Set(['smart-money-pnl-leaderboard', ...SUBCOMMANDS]);
+export const RESEARCH_SUBCOMMANDS = new Set(['chain-rank', 'token-sectors', 'address-premium-labels', 'smart-money-pnl-leaderboard', ...SUBCOMMANDS]);
+
+const CHAIN_RANK_TIMEFRAMES = new Set([7, 30, 365]);
+const CHAIN_RANK_CHAIN_TYPES = new Set(['all', 'evm']);
 
 const SM_PNL_TIMEFRAME_DAYS = [1, 7, 30, 90, 180];
 
@@ -42,11 +68,11 @@ function resolveDateRange(options) {
 
 function parseTimeframeDays(value) {
   if (value === undefined || value === null || value === '') return undefined;
-  const n = parseInt(value, 10);
-  if (Number.isNaN(n)) {
-    throw new NansenError('--timeframe-days must be an integer', ErrorCode.INVALID_PARAMS);
+  const trimmed = String(value).trim();
+  if (!/^[1-9]\d*$/.test(trimmed)) {
+    throw new NansenError('--timeframe-days must be a positive integer', ErrorCode.INVALID_PARAMS);
   }
-  return n;
+  return parseInt(trimmed, 10);
 }
 
 function parseChains(options) {
@@ -62,6 +88,9 @@ function parseChains(options) {
 const HELP_TOP = `nansen research — Direct API analytics
 
 SUBCOMMANDS:
+  chain-rank                       Rank chains by growth metrics
+  token-sectors                     List token sectors available for filtering
+  address-premium-labels            Get all labels for an address, including premium labels
   smart-money-pnl-leaderboard       Rank smart money wallets by PnL
   historical-dex-trades             Historical DEX trades for a token
   historical-pnl-leaderboard        Historical PnL leaderboard for a token
@@ -87,6 +116,18 @@ COMMON OPTIONS:
 Run: nansen research <subcommand> --help`;
 
 const SUB_HELP = {
+  'chain-rank': `nansen research chain-rank — Rank chains by growth metrics
+
+USAGE:
+  nansen research chain-rank [--timeframe-days 7|30|365] [--chain-type all|evm]`,
+  'token-sectors': `nansen research token-sectors — List token sectors available for filtering
+
+USAGE:
+  nansen research token-sectors`,
+  'address-premium-labels': `nansen research address-premium-labels — Get all labels for an address, including premium labels
+
+USAGE:
+  nansen research address-premium-labels --address <addr> [--chain <chain>] [--page <n>] [--limit <n>]`,
   'smart-money-pnl-leaderboard': `nansen research smart-money-pnl-leaderboard — Rank smart money wallets by PnL
 
 USAGE:
@@ -167,11 +208,40 @@ export function buildResearchCommands(deps = {}) {
         return;
       }
 
+      if (sub === 'token-sectors') return apiInstance.tokenSectors();
+
       const orderBy = parseSort(options.sort, options['order-by']);
       const pagination = buildPagination(options);
       const filters = options.filters || {};
       const { fromDate, toDate } = resolveDateRange(options);
       const asOfDate = options['as-of-date'];
+
+      if (sub === 'chain-rank') {
+        const timeFrame = parseTimeframeDays(options['timeframe-days']) ?? 7;
+        if (!CHAIN_RANK_TIMEFRAMES.has(timeFrame)) {
+          throw new NansenError(
+            `--timeframe-days must be one of: ${[...CHAIN_RANK_TIMEFRAMES].join(', ')}`,
+            ErrorCode.INVALID_PARAMS,
+          );
+        }
+        const chainType = options['chain-type'] || 'all';
+        if (!CHAIN_RANK_CHAIN_TYPES.has(chainType)) {
+          throw new NansenError(
+            `--chain-type must be one of: ${[...CHAIN_RANK_CHAIN_TYPES].join(', ')}`,
+            ErrorCode.INVALID_PARAMS,
+          );
+        }
+        return apiInstance.chainRank({ timeFrame, chainType });
+      }
+
+      if (sub === 'address-premium-labels') {
+        requireOptions({ address: options.address }, ['address']);
+        return apiInstance.addressPremiumLabels({
+          address: options.address,
+          chain: options.chain || 'all',
+          pagination,
+        });
+      }
 
       if (sub === 'smart-money-pnl-leaderboard') {
         const timeframe = parseTimeframeDays(options['timeframe-days']) ?? 7;
