@@ -105,6 +105,13 @@ describe('NansenAPI research (historical) methods', () => {
     });
   });
 
+  it('uses the position-intelligence endpoint and request shape', async () => {
+    setupMock();
+    await api.tokenPositionIntelligence({ tokenAddress: 'BTC' });
+    const body = lastCall('/api/v1/tgm/position-intelligence');
+    expect(body).toEqual({ token_address: 'BTC' });
+  });
+
   describe('researchDexTrades', () => {
     it('hits historical-dex-trades with token_address, chain, and date_range {from,to}', async () => {
       setupMock();
@@ -324,12 +331,13 @@ describe('buildResearchCommands handler', () => {
       tokenSectors: vi.fn().mockResolvedValue({ data: [] }),
       addressPremiumLabels: vi.fn().mockResolvedValue({ data: [] }),
       smartMoneyPnlLeaderboard: vi.fn().mockResolvedValue({ data: [] }),
+      tokenPositionIntelligence: vi.fn().mockResolvedValue({ data: [] }),
     };
   }
 
   it('exports historical and direct subcommands', () => {
     expect(RESEARCH_HISTORICAL_SUBCOMMANDS.size).toBe(11);
-    expect(RESEARCH_SUBCOMMANDS.size).toBe(15);
+    expect(RESEARCH_SUBCOMMANDS.size).toBe(16);
   });
 
   it('dispatches chain-rank', async () => {
@@ -456,6 +464,33 @@ describe('buildResearchCommands handler', () => {
       'timeframe-days': '14',
     })).rejects.toThrow(/must be one of: 1, 7, 30, 90, 180/);
     expect(mockApi.smartMoneyPnlLeaderboard).not.toHaveBeenCalled();
+  });
+
+  it('dispatches position-intelligence', async () => {
+    mockApi = makeMockApi();
+    await cmds.research(['position-intelligence'], mockApi, {}, { symbol: 'BTC' });
+    expect(mockApi.tokenPositionIntelligence).toHaveBeenCalledWith({ tokenAddress: 'BTC' });
+  });
+
+  it('dispatches position-intelligence via the --token-address alias', async () => {
+    mockApi = makeMockApi();
+    await cmds.research(['position-intelligence'], mockApi, {}, { 'token-address': 'BTC' });
+    expect(mockApi.tokenPositionIntelligence).toHaveBeenCalledWith({ tokenAddress: 'BTC' });
+  });
+
+  it('requires a position-intelligence symbol', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['position-intelligence'], mockApi, {}, {}))
+      .rejects.toThrow(/--symbol \(or --token-address\)/);
+  });
+
+  it('rejects an empty or whitespace-only position-intelligence symbol', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['position-intelligence'], mockApi, {}, { symbol: '' }))
+      .rejects.toThrow(/--symbol/);
+    await expect(cmds.research(['position-intelligence'], mockApi, {}, { symbol: '   ' }))
+      .rejects.toThrow(/--symbol/);
+    expect(mockApi.tokenPositionIntelligence).not.toHaveBeenCalled();
   });
 
   it('rejects unknown subcommand', async () => {

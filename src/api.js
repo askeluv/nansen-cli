@@ -1275,6 +1275,13 @@ export class NansenAPI {
     });
   }
 
+  async tokenPositionIntelligence(params = {}) {
+    const { tokenAddress } = params;
+    return this.request('/api/v1/tgm/position-intelligence', {
+      token_address: tokenAddress
+    });
+  }
+
   async tokenPerpPnlLeaderboard(params = {}) {
     const { tokenSymbol, filters = {}, orderBy, pagination, days = 30, withLabels } = params;
     const body = {

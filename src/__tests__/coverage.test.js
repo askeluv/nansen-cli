@@ -51,6 +51,7 @@ const DOCUMENTED_ENDPOINTS = {
     { name: 'jup-dca', method: 'tokenJupDca', endpoint: '/api/v1/tgm/jup-dca' },
     { name: 'perp-trades', method: 'tokenPerpTrades', endpoint: '/api/v1/tgm/perp-trades' },
     { name: 'perp-positions', method: 'tokenPerpPositions', endpoint: '/api/v1/tgm/perp-positions' },
+    { name: 'position-intelligence', method: 'tokenPositionIntelligence', endpoint: '/api/v1/tgm/position-intelligence' },
     { name: 'perp-pnl-leaderboard', method: 'tokenPerpPnlLeaderboard', endpoint: '/api/v1/tgm/perp-pnl-leaderboard' },
     { name: 'top-tokens', method: 'topTokens', endpoint: '/api/v1/nansen-score/top-tokens' },
   ],

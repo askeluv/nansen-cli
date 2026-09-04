@@ -45,7 +45,7 @@ const SUBCOMMANDS = [
 ];
 
 export const RESEARCH_HISTORICAL_SUBCOMMANDS = new Set(SUBCOMMANDS);
-export const RESEARCH_SUBCOMMANDS = new Set(['chain-rank', 'token-sectors', 'address-premium-labels', 'smart-money-pnl-leaderboard', ...SUBCOMMANDS]);
+export const RESEARCH_SUBCOMMANDS = new Set(['chain-rank', 'token-sectors', 'address-premium-labels', 'smart-money-pnl-leaderboard', 'position-intelligence', ...SUBCOMMANDS]);
 
 const CHAIN_RANK_TIMEFRAMES = new Set([7, 30, 365]);
 const CHAIN_RANK_CHAIN_TYPES = new Set(['all', 'evm']);
@@ -92,6 +92,7 @@ SUBCOMMANDS:
   token-sectors                     List token sectors available for filtering
   address-premium-labels            Get all labels for an address, including premium labels
   smart-money-pnl-leaderboard       Rank smart money wallets by PnL
+  position-intelligence             Aggregate Hyperliquid positions by trader cohort
   historical-dex-trades             Historical DEX trades for a token
   historical-pnl-leaderboard        Historical PnL leaderboard for a token
   historical-token-flow-summary     Historical token flow summary
@@ -132,6 +133,12 @@ USAGE:
 
 USAGE:
   nansen research smart-money-pnl-leaderboard [--chains c1,c2] [--timeframe-days 1|7|30|90|180] [--filters '<json>'] [--sort <field[:asc|desc]>] [--page <n>] [--limit <n>]`,
+  'position-intelligence': `nansen research position-intelligence — Aggregate Hyperliquid positions by trader cohort
+
+USAGE:
+  nansen research position-intelligence --symbol <symbol>
+
+NOTE: --token-address is accepted as an alias for --symbol (the API request field is token_address).`,
   'historical-dex-trades': `nansen research historical-dex-trades — Historical DEX trades for a token
 
 USAGE:
@@ -256,6 +263,17 @@ export function buildResearchCommands(deps = {}) {
           timeframe,
           filters, orderBy, pagination,
         });
+      }
+
+      if (sub === 'position-intelligence') {
+        const symbol = String(options.symbol || options['token-address'] || options.token || '').trim();
+        if (!symbol) {
+          throw new NansenError(
+            'Required: --symbol (or --token-address)',
+            ErrorCode.MISSING_PARAM,
+          );
+        }
+        return apiInstance.tokenPositionIntelligence({ tokenAddress: symbol });
       }
 
       // Range-based token endpoints (require --from-date + --to-date)

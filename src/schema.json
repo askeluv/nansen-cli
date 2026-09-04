@@ -1232,6 +1232,16 @@
             }
           }
         },
+        "position-intelligence": {
+          "endpoint": "/api/v1/tgm/position-intelligence",
+          "description": "Aggregate Hyperliquid positions by trader cohort",
+          "options": {
+            "symbol": {
+              "required": true,
+              "description": "Hyperliquid asset symbol (--token-address is accepted as an alias)"
+            }
+          }
+        },
         "historical-dex-trades": {
           "endpoint": "/api/v1beta1/tgm/historical-dex-trades",
           "description": "Historical DEX trades for a token at a point in time",
