@@ -110,6 +110,13 @@ describe('buildCompletionSpec', () => {
     expect(quote.options.find(o => o.name === '--chain').values).toEqual([]);
   });
 
+  it('carries positional enum values without making them subcommands', () => {
+    const install = spec.nodes.find(n => n.path === 'mcp install');
+    expect(install.args).toEqual(['claude-code', 'claude-desktop', 'cursor']);
+    expect(install.subcommands).toEqual([]);
+    expect(spec.nodes.map(n => n.path)).not.toContain('mcp install claude-code');
+  });
+
   it('includes global options exactly once, plus --help', () => {
     const names = spec.globalOptions.map(o => o.name);
     expect(names).toContain('--pretty');
@@ -244,6 +251,11 @@ describe('bash completion behaviour', () => {
     expect(complete(['nansen', '-p', 'research', ''])).toContain('token');
     expect(complete(['nansen', 'research', 'token', '-x', ''])).toContain('screener');
   });
+
+  it('completes positional argument values and keeps the path after one', () => {
+    expect(complete(['nansen', 'mcp', 'install', ''])).toEqual(['claude-code', 'claude-desktop', 'cursor']);
+    expect(complete(['nansen', 'mcp', 'install', 'cursor', '--'])).toContain('--dry-run');
+  });
 });
 
 describe.skipIf(!hasBinary('zsh'))('zsh completion behaviour', () => {
@@ -301,6 +313,11 @@ describe.skipIf(!hasBinary('zsh'))('zsh completion behaviour', () => {
     expect(complete(['nansen', 'research', '--fields', 'screener', ''])).toContain('token');
     expect(complete(['nansen', 'research', 'token', '--pretty', ''])).toContain('screener');
   });
+
+  it('completes positional argument values and keeps the path after one', () => {
+    expect(complete(['nansen', 'mcp', 'install', ''])).toEqual(['claude-code', 'claude-desktop', 'cursor']);
+    expect(complete(['nansen', 'mcp', 'install', 'cursor', '--'])).toContain('--dry-run');
+  });
 });
 
 describe.skipIf(!hasBinary('fish'))('fish completion behaviour', () => {
@@ -345,6 +362,11 @@ describe.skipIf(!hasBinary('fish'))('fish completion behaviour', () => {
     expect(complete('nansen -p research ')).toContain('token');
     expect(complete('nansen research --fields screener ')).toContain('token');
     expect(complete('nansen research token --pretty ')).toContain('screener');
+  });
+
+  it('completes positional argument values and keeps the path after one', () => {
+    expect(complete('nansen mcp install ').sort()).toEqual(['claude-code', 'claude-desktop', 'cursor']);
+    expect(complete('nansen mcp install cursor --')).toContain('--dry-run');
   });
 });
 
