@@ -1,9 +1,7 @@
 /**
  * Nansen CLI - Research command
  *
- * Historical/point-in-time analytics. Each subcommand resolves labels and
- * metrics at the requested date rather than current state — useful for
- * backtesting and historical research.
+ * Direct API analytics, including historical/point-in-time research.
  */
 
 import { NansenError, ErrorCode } from '../api.js';
@@ -41,6 +39,10 @@ const SUBCOMMANDS = [
 ];
 
 export const RESEARCH_HISTORICAL_SUBCOMMANDS = new Set(SUBCOMMANDS);
+export const RESEARCH_SUBCOMMANDS = new Set(['chain-rank', ...SUBCOMMANDS]);
+
+const CHAIN_RANK_TIMEFRAMES = new Set([7, 30, 365]);
+const CHAIN_RANK_CHAIN_TYPES = new Set(['all', 'evm']);
 
 function requireOptions(options, required) {
   const missing = required.filter(name => !options[name]);
@@ -58,11 +60,11 @@ function resolveDateRange(options) {
 
 function parseTimeframeDays(value) {
   if (value === undefined || value === null || value === '') return undefined;
-  const n = parseInt(value, 10);
-  if (Number.isNaN(n)) {
-    throw new NansenError('--timeframe-days must be an integer', ErrorCode.INVALID_PARAMS);
+  const trimmed = String(value).trim();
+  if (!/^[1-9]\d*$/.test(trimmed)) {
+    throw new NansenError('--timeframe-days must be a positive integer', ErrorCode.INVALID_PARAMS);
   }
-  return n;
+  return parseInt(trimmed, 10);
 }
 
 function parseChains(options) {
@@ -75,9 +77,10 @@ function parseChains(options) {
   return undefined;
 }
 
-const HELP_TOP = `nansen research — Historical/point-in-time analytics
+const HELP_TOP = `nansen research — Direct API analytics
 
 SUBCOMMANDS:
+  chain-rank                       Rank chains by growth metrics
   historical-dex-trades             Historical DEX trades for a token
   historical-pnl-leaderboard        Historical PnL leaderboard for a token
   historical-token-flow-summary     Historical token flow summary
@@ -102,6 +105,10 @@ COMMON OPTIONS:
 Run: nansen research <subcommand> --help`;
 
 const SUB_HELP = {
+  'chain-rank': `nansen research chain-rank — Rank chains by growth metrics
+
+USAGE:
+  nansen research chain-rank [--timeframe-days 7|30|365] [--chain-type all|evm]`,
   'historical-dex-trades': `nansen research historical-dex-trades — Historical DEX trades for a token
 
 USAGE:
@@ -166,9 +173,9 @@ export function buildResearchCommands(deps = {}) {
         return;
       }
 
-      if (!RESEARCH_HISTORICAL_SUBCOMMANDS.has(sub)) {
+      if (!RESEARCH_SUBCOMMANDS.has(sub)) {
         throw new NansenError(
-          `Unknown research subcommand: ${sub}. Available: ${SUBCOMMANDS.join(', ')}`,
+          `Unknown research subcommand: ${sub}. Available: ${[...RESEARCH_SUBCOMMANDS].join(', ')}`,
           ErrorCode.UNKNOWN,
         );
       }
@@ -183,6 +190,24 @@ export function buildResearchCommands(deps = {}) {
       const filters = options.filters || {};
       const { fromDate, toDate } = resolveDateRange(options);
       const asOfDate = options['as-of-date'];
+
+      if (sub === 'chain-rank') {
+        const timeFrame = parseTimeframeDays(options['timeframe-days']) ?? 7;
+        if (!CHAIN_RANK_TIMEFRAMES.has(timeFrame)) {
+          throw new NansenError(
+            `--timeframe-days must be one of: ${[...CHAIN_RANK_TIMEFRAMES].join(', ')}`,
+            ErrorCode.INVALID_PARAMS,
+          );
+        }
+        const chainType = options['chain-type'] || 'all';
+        if (!CHAIN_RANK_CHAIN_TYPES.has(chainType)) {
+          throw new NansenError(
+            `--chain-type must be one of: ${[...CHAIN_RANK_CHAIN_TYPES].join(', ')}`,
+            ErrorCode.INVALID_PARAMS,
+          );
+        }
+        return apiInstance.chainRank({ timeFrame, chainType });
+      }
 
       // Range-based token endpoints (require --from-date + --to-date)
       const rangeTokenHandlers = {

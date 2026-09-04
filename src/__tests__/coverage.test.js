@@ -10,6 +10,9 @@ import { batchProfile, traceCounterparties, compareWallets } from '../cli.js';
 
 // All documented endpoints from Nansen API
 const DOCUMENTED_ENDPOINTS = {
+  chains: [
+    { name: 'chain-rank', method: 'chainRank', endpoint: '/api/v1/chains/chain-rank' },
+  ],
   smartMoney: [
     { name: 'netflow', method: 'smartMoneyNetflow', endpoint: '/api/v1/smart-money/netflow' },
     { name: 'holdings', method: 'smartMoneyHoldings', endpoint: '/api/v1/smart-money/holdings' },
@@ -85,6 +88,14 @@ const NOT_IMPLEMENTED = [
 describe('API Endpoint Coverage', () => {
   const api = new NansenAPI('test-key');
 
+  describe('Chain Endpoints', () => {
+    for (const ep of DOCUMENTED_ENDPOINTS.chains) {
+      it(`should have ${ep.name} method`, () => {
+        expect(typeof api[ep.method]).toBe('function');
+      });
+    }
+  });
+
   describe('Smart Money Endpoints', () => {
     for (const ep of DOCUMENTED_ENDPOINTS.smartMoney) {
       it(`should have ${ep.name} method`, () => {
@@ -144,6 +155,7 @@ describe('API Endpoint Coverage', () => {
   describe('Coverage Summary', () => {
     it('should report implemented endpoints', () => {
       const implemented = [
+        ...DOCUMENTED_ENDPOINTS.chains,
         ...DOCUMENTED_ENDPOINTS.smartMoney,
         ...DOCUMENTED_ENDPOINTS.profiler,
         ...DOCUMENTED_ENDPOINTS.tokenGodMode,

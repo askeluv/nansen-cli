@@ -12,7 +12,7 @@ import { buildLimitOrderCommands } from './limit-order.js';
 import { formatAlertsTable, buildAlertsCommands } from './commands/alerts.js';
 import { buildAgentCommands } from './commands/agent.js';
 import { buildMcpCommands } from './commands/mcp.js';
-import { buildResearchCommands, RESEARCH_HISTORICAL_SUBCOMMANDS } from './commands/research.js';
+import { buildResearchCommands, RESEARCH_HISTORICAL_SUBCOMMANDS, RESEARCH_SUBCOMMANDS } from './commands/research.js';
 import { resolveAddress, isEnsName } from './ens.js';
 import { compareSemver } from './semver.js';
 import fs from 'fs';
@@ -1635,18 +1635,19 @@ export function buildCommands(deps = {}) {
     if (!rawCategory || rawCategory === 'help') {
       return {
         categories: [...RESEARCH_CATEGORIES],
+        subcommands: [...RESEARCH_SUBCOMMANDS],
         historical: [...RESEARCH_HISTORICAL_SUBCOMMANDS],
         aliases: RESEARCH_CATEGORY_ALIASES,
         description: 'Research and analytics commands',
         example: 'nansen research smart-money netflow --chain solana'
       };
     }
-    if (RESEARCH_HISTORICAL_SUBCOMMANDS.has(rawCategory)) {
+    if (RESEARCH_SUBCOMMANDS.has(rawCategory)) {
       return researchHistorical(args, apiInstance, flags, options);
     }
     const category = RESEARCH_CATEGORY_ALIASES[rawCategory] || rawCategory;
     if (!RESEARCH_CATEGORIES.has(category)) {
-      throw new NansenError(`Unknown research category: ${rawCategory}. Available: ${[...RESEARCH_CATEGORIES, ...RESEARCH_HISTORICAL_SUBCOMMANDS].join(', ')}`, ErrorCode.UNKNOWN);
+      throw new NansenError(`Unknown research category: ${rawCategory}. Available: ${[...RESEARCH_CATEGORIES, ...RESEARCH_SUBCOMMANDS].join(', ')}`, ErrorCode.UNKNOWN);
     }
     // `research perp` reaches only the analytics half (screener/leaderboard) —
     // the trading subcommands live at the top level. Use the captured handler
