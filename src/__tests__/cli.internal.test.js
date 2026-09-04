@@ -4381,6 +4381,48 @@ describe('research command routing', () => {
     expect(result.commands).toContain('screener');
   });
 
+  it('should keep research perp help analytics-only', async () => {
+    const commands = buildCommands({});
+    const result = await commands.research(['perp', 'help'], null, {}, {});
+    expect(result.commands).toEqual(['screener', 'leaderboard']);
+  });
+
+  it.each([
+    ['screener', 'perpScreener'],
+    ['leaderboard', 'perpLeaderboard'],
+  ])('should delegate research perp %s to the analytics handler', async (subcommand, method) => {
+    const mockApi = { [method]: vi.fn().mockResolvedValue({ data: [] }) };
+    const commands = buildCommands({});
+
+    await commands.research(['perp', subcommand], mockApi, {}, {});
+
+    expect(mockApi[method]).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    'order',
+    'cancel',
+    'close',
+    'leverage',
+    'transfer',
+    'approve-builder-fee',
+    'positions',
+    'orders',
+    'account',
+    'meta',
+  ])(
+    'should not route research perp %s to the top-level perp handler',
+    async (subcommand) => {
+      const commands = buildCommands({});
+
+      await expect(commands.research(['perp', subcommand], null, {}, {}))
+        .rejects.toMatchObject({
+          code: 'UNKNOWN',
+          message: `Unknown perp analytics subcommand: ${subcommand}. Available: screener, leaderboard`,
+        });
+    },
+  );
+
   it('should error on unknown category', async () => {
     const commands = buildCommands({});
     await expect(commands.research(['unknown'], null, {}, {}))
