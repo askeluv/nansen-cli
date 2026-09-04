@@ -2161,6 +2161,30 @@
           ]
         }
       }
+    },
+    "completion": {
+      "description": "Generate a shell completion script from this schema (prints to stdout; nothing is written or fetched)",
+      "subcommands": {
+        "bash": {
+          "description": "Print the bash completion script",
+          "examples": [
+            "nansen completion bash > /etc/bash_completion.d/nansen",
+            "eval \"$(nansen completion bash)\""
+          ]
+        },
+        "zsh": {
+          "description": "Print the zsh completion script",
+          "examples": [
+            "nansen completion zsh > \"${fpath[1]}/_nansen\""
+          ]
+        },
+        "fish": {
+          "description": "Print the fish completion script",
+          "examples": [
+            "nansen completion fish > ~/.config/fish/completions/nansen.fish"
+          ]
+        }
+      }
     }
   },
   "globalOptions": {
