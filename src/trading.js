@@ -205,11 +205,28 @@ export async function executeTransaction(params, { retries = 2, retryDelayMs = 1
       await new Promise(r => setTimeout(r, retryDelayMs));
     }
 
-    const res = await fetch(`${TRADING_API_URL}/execute`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(params),
-    });
+    let res;
+    try {
+      res = await fetch(`${TRADING_API_URL}/execute`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(params),
+      });
+    } catch (netErr) {
+      // The POST left this process but no response came back (a reset/timeout).
+      // That may have struck AFTER the backend received the signed tx and
+      // broadcast it — indistinguishable from "never sent" — so treat it as
+      // BROADCAST_FAILED, the same fail-closed class as a 502. Retrying re-sends
+      // the SAME signed bytes (a byte-identical replay a node dedupes), so a
+      // retry here can't itself double-broadcast; only exhausting them fails
+      // closed at the caller (isFatalBroadcastError → mark the quote spent).
+      lastError = Object.assign(
+        new Error(`Execute POST to /execute failed: ${netErr.message}`),
+        { code: 'BROADCAST_FAILED' }
+      );
+      if (attempt < retries) continue;
+      throw lastError;
+    }
 
     const text = await res.text();
     let body;

@@ -339,4 +339,63 @@ describe('swap quote reuse guard (mirrors bridge quotes)', () => {
       .rejects.toThrow(/already executed/i);
     expect(executeBodies.length).toBe(postCount);
   });
+
+  it('fails closed when the /execute POST throws a raw network error (dropped ack)', async () => {
+    // A TCP drop after the request body flushes but before a response is every
+    // bit as ambiguous as a 502 — the backend may already have broadcast. The
+    // fetch rejects with a plain Error (no .code); executeTransaction must still
+    // classify it BROADCAST_FAILED so the quote is marked spent and the loop
+    // aborts, rather than falling through to the next candidate.
+    const SECOND_ROUTER = '0x1111111254eeb25477b68fb85ed929f73a960582';
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+    const walletAddress = showWallet('default').evm;
+
+    let executeAttempts = 0;
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, opts) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const body = opts?.body ? JSON.parse(opts.body) : {};
+
+      if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
+        executeAttempts += 1;
+        // fetch itself rejects — no HTTP response object at all.
+        return Promise.reject(new Error('socket hang up'));
+      }
+      if (body.method === 'eth_getCode') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x6080604052' })) });
+      }
+      if (body.method === 'eth_getTransactionCount') {
+        return Promise.resolve({ text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: '0x5' })) });
+      }
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: body.id || 1, result: null })) });
+    }));
+
+    // Two candidates, so a regression would fall through and broadcast the 2nd.
+    const quoteId = saveQuote({
+      success: true,
+      quotes: [
+        { aggregator: 'lifi', inputMint: BASE_ETH, outputMint: BASE_USDC, inAmount: '1000000000000000000', outAmount: '3000000000',
+          transaction: { to: LIFI_ROUTER, data: '0x12345678', value: '1000000000000000000', gas: '210000', maxFeePerGas: '1000000', maxPriorityFeePerGas: '1000000' } },
+        { aggregator: 'odos', inputMint: BASE_ETH, outputMint: BASE_USDC, inAmount: '1000000000000000000', outAmount: '2999000000',
+          transaction: { to: SECOND_ROUTER, data: '0xabcdef01', value: '1000000000000000000', gas: '210000', maxFeePerGas: '1000000', maxPriorityFeePerGas: '1000000' } },
+      ],
+    }, 'base', 'local', null, null, {
+      swapMode: 'exactIn',
+      request: evmIntent({ walletAddress, fromToken: BASE_ETH, toToken: BASE_USDC, amount: '1000000000000000000' }),
+    });
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    const flags = { 'no-simulate': true, 'no-verify-outcome': true };
+
+    await expect(cmds.execute([], null, flags, { quote: quoteId }))
+      .rejects.toThrow(/socket hang up|failed/i);
+
+    // The quote is marked spent, and a re-execute is refused.
+    const quoteFile = JSON.parse(fs.readFileSync(path.join(getQuotesDir(), `${quoteId}.json`), 'utf8'));
+    expect(quoteFile.executedAt).toBeTypeOf('number');
+    const attemptsAfterFirst = executeAttempts;
+    await expect(cmds.execute([], null, flags, { quote: quoteId }))
+      .rejects.toThrow(/already executed/i);
+    expect(executeAttempts).toBe(attemptsAfterFirst);
+  });
 });
