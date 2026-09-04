@@ -12,6 +12,7 @@ import { buildLimitOrderCommands } from './limit-order.js';
 import { formatAlertsTable, buildAlertsCommands } from './commands/alerts.js';
 import { buildAgentCommands } from './commands/agent.js';
 import { buildMcpCommands } from './commands/mcp.js';
+import { buildCompletionCommands } from './commands/completion.js';
 import { buildResearchCommands, RESEARCH_HISTORICAL_SUBCOMMANDS, RESEARCH_SUBCOMMANDS } from './commands/research.js';
 import { buildPagination, parseSort } from './query-options.js';
 export { buildPagination, parseSort };
@@ -163,6 +164,15 @@ export function compactSchema(schema) {
   };
 }
 
+// Long options that never consume the next argument. The shell-completion
+// generator needs the same list to tell an option's value apart from a
+// subcommand, so it lives here rather than inline in parseArgs.
+export const VALUELESS_FLAGS = new Set([
+  'pretty', 'help', 'version', 'table', 'no-retry', 'cache', 'no-cache', 'stream',
+  'enrich', 'full', 'human', 'enabled', 'disabled', 'expert', 'json', 'offline',
+  'no-simulate', 'no-verify-outcome', 'no-revoke-excessive-allowance', 'dry-run',
+]);
+
 export function parseArgs(args) {
   const result = { _: [], flags: {}, options: {} };
   
@@ -173,7 +183,7 @@ export function parseArgs(args) {
       const key = arg.slice(2);
       const next = args[i + 1];
       
-      if (key === 'pretty' || key === 'help' || key === 'version' || key === 'table' || key === 'no-retry' || key === 'cache' || key === 'no-cache' || key === 'stream' || key === 'enrich' || key === 'full' || key === 'human' || key === 'enabled' || key === 'disabled' || key === 'expert' || key === 'json' || key === 'offline' || key === 'no-simulate' || key === 'no-verify-outcome' || key === 'no-revoke-excessive-allowance' || key === 'dry-run') {
+      if (VALUELESS_FLAGS.has(key)) {
         result.flags[key] = true;
       } else if (next && (!next.startsWith('-') || /^-\d/.test(next))) {
         // Try to parse as JSON first (for objects/arrays/booleans),
@@ -712,6 +722,7 @@ COMMANDS:
   logout      Remove saved API key
   doctor      Diagnostics: auth, wallets, caches, connectivity (--offline --json)
   schema      JSON schema for all commands (use "nansen schema <cmd>" for one)
+  completion  Shell completions: bash, zsh, fish
   cache       clear
   changelog   --since <version> to filter
 
@@ -1853,7 +1864,9 @@ export async function runCLI(rawArgs, deps = {}) {
   // contract covers the background update-check fetch and telemetry too,
   // not just the command's own requests.
   const isMcpUsage = command === 'mcp' && (subcommand !== 'verify' || flags.help || flags.h);
-  const isOfflineCommand = command === 'auth' || (command === 'doctor' && flags.offline) || isMcpUsage;
+  // `completion` renders from the checked-in schema — no network, and its
+  // stdout is piped straight into a shell, so keep the update check out of it.
+  const isOfflineCommand = command === 'auth' || (command === 'doctor' && flags.offline) || isMcpUsage || command === 'completion';
   const trackSucceeded = isOfflineCommand ? async () => {} : trackCommandSucceeded;
   const trackFailed = isOfflineCommand ? async () => {} : trackCommandFailed;
 
@@ -1875,7 +1888,7 @@ export async function runCLI(rawArgs, deps = {}) {
 
   // mcp prints its own output via `log`; runCLI callers inject their stdout
   // sink as `output`, so map it across (an explicit `log` dep still wins).
-  const commands = { ...buildCommands(deps), ...buildWalletCommands(deps), ...buildTradingCommands(deps), ...buildAlertsCommands(deps), ...buildAgentCommands(deps), ...buildMcpCommands({ ...deps, log: deps.log ?? output }), ...commandOverrides };
+  const commands = { ...buildCommands(deps), ...buildWalletCommands(deps), ...buildTradingCommands(deps), ...buildAlertsCommands(deps), ...buildAgentCommands(deps), ...buildMcpCommands({ ...deps, log: deps.log ?? output }), ...buildCompletionCommands({ ...deps, log: deps.log ?? output }), ...commandOverrides };
 
   if (flags.version || flags.v) {
     output(VERSION);

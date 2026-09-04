@@ -51,6 +51,7 @@ nansen trade quote --chain solana --from SOL --to USDC --amount 1000000000
 nansen trade execute --quote <quoteId>
 nansen wallet <subcommand> [options]
 nansen mcp install <client>           # add the Nansen MCP server to Claude Code/Desktop or Cursor
+nansen completion <bash|zsh|fish>     # shell completions (no API key needed)
 nansen schema [command] [--pretty]    # full command reference (no API key needed)
 ```
 
@@ -263,6 +264,28 @@ tempo request POST https://api.nansen.ai/api/v1/smart-money/netflow \
 | You already use tempo for other paid APIs, or want micropayments without managing your own wallet keys | MPP (`tempo request`) |
 
 > Note: MPP is server-side opt-in (`MPP_ENABLED=true` on the API). It's available on dev today and rolling out to prod — if `tempo request` returns a non-MPP 402, fall back to x402 or an API key.
+
+## Shell Completions
+
+Tab-completion for commands, subcommands, flags, and the values a flag accepts:
+
+```bash
+# bash
+echo 'eval "$(nansen completion bash)"' >> ~/.bashrc
+# or system-wide: nansen completion bash > /etc/bash_completion.d/nansen
+
+# zsh
+nansen completion zsh > "${fpath[1]}/_nansen" && compinit
+# or, in ~/.zshrc after the compinit line: eval "$(nansen completion zsh)"
+
+# fish
+nansen completion fish > ~/.config/fish/completions/nansen.fish
+```
+
+The scripts are generated from the same schema as `nansen schema`, so they cover
+every nested subcommand and stay in step with the CLI. Nothing is written to
+disk and no network call is made — the script goes to stdout. Re-run the command
+after upgrading the CLI to pick up new commands.
 
 ## Key Options
 
