@@ -86,6 +86,25 @@ describe('NansenAPI research (historical) methods', () => {
     });
   });
 
+  it('uses the smart money PnL leaderboard endpoint and request shape', async () => {
+    setupMock();
+    await api.smartMoneyPnlLeaderboard({
+      chains: ['ethereum'],
+      timeframe: 30,
+      filters: { include_smart_money_labels: ['Fund'] },
+      orderBy: [{ field: 'total_pnl_usd', direction: 'DESC' }],
+      pagination: { page: 1, per_page: 10 },
+    });
+    const body = lastCall('/api/v1/smart-money/pnl-leaderboard');
+    expect(body).toEqual({
+      chains: ['ethereum'],
+      timeframe: 30,
+      filters: { include_smart_money_labels: ['Fund'] },
+      order_by: [{ field: 'total_pnl_usd', direction: 'DESC' }],
+      pagination: { page: 1, per_page: 10 },
+    });
+  });
+
   describe('researchDexTrades', () => {
     it('hits historical-dex-trades with token_address, chain, and date_range {from,to}', async () => {
       setupMock();
@@ -304,12 +323,13 @@ describe('buildResearchCommands handler', () => {
       chainRank: vi.fn().mockResolvedValue({ data: [] }),
       tokenSectors: vi.fn().mockResolvedValue({ data: [] }),
       addressPremiumLabels: vi.fn().mockResolvedValue({ data: [] }),
+      smartMoneyPnlLeaderboard: vi.fn().mockResolvedValue({ data: [] }),
     };
   }
 
   it('exports historical and direct subcommands', () => {
     expect(RESEARCH_HISTORICAL_SUBCOMMANDS.size).toBe(11);
-    expect(RESEARCH_SUBCOMMANDS.size).toBe(14);
+    expect(RESEARCH_SUBCOMMANDS.size).toBe(15);
   });
 
   it('dispatches chain-rank', async () => {
@@ -409,6 +429,33 @@ describe('buildResearchCommands handler', () => {
     await expect(cmds.research(['historical-dex-trades'], mockApi, {}, {
       'token-address': TOKENS.solana, 'from-date': FROM, 'to-date': TO, page: '0',
     })).rejects.toThrow(/--page must be a positive integer/);
+  });
+
+  it('dispatches smart-money-pnl-leaderboard', async () => {
+    mockApi = makeMockApi();
+    await cmds.research(['smart-money-pnl-leaderboard'], mockApi, {}, {
+      chains: 'ethereum,solana', 'timeframe-days': '30', page: '2', limit: '5',
+    });
+    expect(mockApi.smartMoneyPnlLeaderboard).toHaveBeenCalledWith(expect.objectContaining({
+      chains: ['ethereum', 'solana'],
+      timeframe: 30,
+      pagination: { page: 2, per_page: 5 },
+    }));
+  });
+
+  it('rejects an invalid smart money leaderboard limit', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['smart-money-pnl-leaderboard'], mockApi, {}, {
+      limit: '5x',
+    })).rejects.toThrow(/positive integer/);
+  });
+
+  it('rejects an unsupported smart money leaderboard timeframe', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['smart-money-pnl-leaderboard'], mockApi, {}, {
+      'timeframe-days': '14',
+    })).rejects.toThrow(/must be one of: 1, 7, 30, 90, 180/);
+    expect(mockApi.smartMoneyPnlLeaderboard).not.toHaveBeenCalled();
   });
 
   it('rejects unknown subcommand', async () => {

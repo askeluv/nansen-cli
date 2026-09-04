@@ -5,8 +5,11 @@
  */
 
 import { NansenError, ErrorCode } from '../api.js';
+import { parseSort } from '../query-options.js';
 
-// Local copies of CLI helpers to avoid a circular import with src/cli.js.
+// Research subcommands validate --page strictly. The shared helper in
+// src/query-options.js clamps an invalid page to 1 for the category commands,
+// so keep a local variant here that rejects it instead.
 function buildPagination(options) {
   if (options.limit === undefined && options.page === undefined) return undefined;
   const pagination = { page: 1 };
@@ -27,15 +30,6 @@ function buildPagination(options) {
   return pagination;
 }
 
-function parseSort(sortOption, orderByOption) {
-  if (orderByOption) return orderByOption;
-  if (!sortOption) return undefined;
-  const parts = String(sortOption).split(':');
-  const field = parts[0];
-  const direction = (parts[1] || 'desc').toUpperCase();
-  return [{ field, direction }];
-}
-
 const SUBCOMMANDS = [
   'historical-dex-trades',
   'historical-pnl-leaderboard',
@@ -51,10 +45,12 @@ const SUBCOMMANDS = [
 ];
 
 export const RESEARCH_HISTORICAL_SUBCOMMANDS = new Set(SUBCOMMANDS);
-export const RESEARCH_SUBCOMMANDS = new Set(['chain-rank', 'token-sectors', 'address-premium-labels', ...SUBCOMMANDS]);
+export const RESEARCH_SUBCOMMANDS = new Set(['chain-rank', 'token-sectors', 'address-premium-labels', 'smart-money-pnl-leaderboard', ...SUBCOMMANDS]);
 
 const CHAIN_RANK_TIMEFRAMES = new Set([7, 30, 365]);
 const CHAIN_RANK_CHAIN_TYPES = new Set(['all', 'evm']);
+
+const SM_PNL_TIMEFRAME_DAYS = [1, 7, 30, 90, 180];
 
 function requireOptions(options, required) {
   const missing = required.filter(name => !options[name]);
@@ -95,6 +91,7 @@ SUBCOMMANDS:
   chain-rank                       Rank chains by growth metrics
   token-sectors                     List token sectors available for filtering
   address-premium-labels            Get all labels for an address, including premium labels
+  smart-money-pnl-leaderboard       Rank smart money wallets by PnL
   historical-dex-trades             Historical DEX trades for a token
   historical-pnl-leaderboard        Historical PnL leaderboard for a token
   historical-token-flow-summary     Historical token flow summary
@@ -131,6 +128,10 @@ USAGE:
 
 USAGE:
   nansen research address-premium-labels --address <addr> [--chain <chain>] [--page <n>] [--limit <n>]`,
+  'smart-money-pnl-leaderboard': `nansen research smart-money-pnl-leaderboard — Rank smart money wallets by PnL
+
+USAGE:
+  nansen research smart-money-pnl-leaderboard [--chains c1,c2] [--timeframe-days 1|7|30|90|180] [--filters '<json>'] [--sort <field[:asc|desc]>] [--page <n>] [--limit <n>]`,
   'historical-dex-trades': `nansen research historical-dex-trades — Historical DEX trades for a token
 
 USAGE:
@@ -239,6 +240,21 @@ export function buildResearchCommands(deps = {}) {
           address: options.address,
           chain: options.chain || 'all',
           pagination,
+        });
+      }
+
+      if (sub === 'smart-money-pnl-leaderboard') {
+        const timeframe = parseTimeframeDays(options['timeframe-days']) ?? 7;
+        if (!SM_PNL_TIMEFRAME_DAYS.includes(timeframe)) {
+          throw new NansenError(
+            `--timeframe-days must be one of: ${SM_PNL_TIMEFRAME_DAYS.join(', ')}`,
+            ErrorCode.INVALID_PARAMS,
+          );
+        }
+        return apiInstance.smartMoneyPnlLeaderboard({
+          chains: parseChains(options) || ['solana'],
+          timeframe,
+          filters, orderBy, pagination,
         });
       }
 

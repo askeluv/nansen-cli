@@ -906,6 +906,17 @@ export class NansenAPI {
     });
   }
 
+  async smartMoneyPnlLeaderboard(params = {}) {
+    const { chains = ['solana'], timeframe = 7, filters = {}, orderBy, pagination } = params;
+    return this.request('/api/v1/smart-money/pnl-leaderboard', {
+      chains,
+      timeframe,
+      filters,
+      order_by: orderBy,
+      pagination
+    });
+  }
+
   // ============= Profiler Endpoints =============
 
   async addressBalance(params = {}) {
