@@ -5,11 +5,12 @@
  * how long they take, and where errors occur.  Events are fire-and-forget —
  * failures are silently ignored and never block the CLI.
  *
- * Perp `order`/`close` additionally emit one `perp_order_completed` event per
- * Hyperliquid response leg. Each event carries the leg's side, outcome and
- * order id plus a shared submission id and SHA-256 wallet identifier. Raw
- * wallet addresses, prices, sizes and exchange error text are never sent. The
- * standard anonymous_id lets BI resolve a Nansen user when one is available.
+ * Perp `order`/`close` additionally emit one canonical `trade_perps_*` outcome
+ * event per Hyperliquid response leg. Each event carries the leg's side,
+ * outcome and order id plus a shared submission id and SHA-256 wallet
+ * identifier. Raw wallet addresses, prices, sizes and exchange error text are
+ * never sent. The standard anonymous_id lets BI resolve a Nansen user when
+ * one is available.
  * All telemetry is opt-out via DO_NOT_TRACK=1 or NANSEN_NO_TELEMETRY=1.
  */
 
