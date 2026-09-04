@@ -8,11 +8,23 @@ import { NansenError, ErrorCode } from '../api.js';
 
 // Local copies of CLI helpers to avoid a circular import with src/cli.js.
 function buildPagination(options) {
-  if (!options.limit && !options.page) return undefined;
-  return {
-    page: Math.max(1, parseInt(options.page, 10) || 1),
-    per_page: options.limit,
-  };
+  if (options.limit === undefined && options.page === undefined) return undefined;
+  const pagination = { page: 1 };
+  if (options.page !== undefined) {
+    const page = Number(options.page);
+    if (!Number.isInteger(page) || page < 1) {
+      throw new NansenError('--page must be a positive integer', ErrorCode.INVALID_PARAMS);
+    }
+    pagination.page = page;
+  }
+  if (options.limit !== undefined) {
+    const perPage = Number(options.limit);
+    if (!Number.isInteger(perPage) || perPage < 1) {
+      throw new NansenError('--limit must be a positive integer', ErrorCode.INVALID_PARAMS);
+    }
+    pagination.per_page = perPage;
+  }
+  return pagination;
 }
 
 function parseSort(sortOption, orderByOption) {
@@ -39,7 +51,7 @@ const SUBCOMMANDS = [
 ];
 
 export const RESEARCH_HISTORICAL_SUBCOMMANDS = new Set(SUBCOMMANDS);
-export const RESEARCH_SUBCOMMANDS = new Set(['chain-rank', 'token-sectors', ...SUBCOMMANDS]);
+export const RESEARCH_SUBCOMMANDS = new Set(['chain-rank', 'token-sectors', 'address-premium-labels', ...SUBCOMMANDS]);
 
 const CHAIN_RANK_TIMEFRAMES = new Set([7, 30, 365]);
 const CHAIN_RANK_CHAIN_TYPES = new Set(['all', 'evm']);
@@ -82,6 +94,7 @@ const HELP_TOP = `nansen research — Direct API analytics
 SUBCOMMANDS:
   chain-rank                       Rank chains by growth metrics
   token-sectors                     List token sectors available for filtering
+  address-premium-labels            Get all labels for an address, including premium labels
   historical-dex-trades             Historical DEX trades for a token
   historical-pnl-leaderboard        Historical PnL leaderboard for a token
   historical-token-flow-summary     Historical token flow summary
@@ -114,6 +127,10 @@ USAGE:
 
 USAGE:
   nansen research token-sectors`,
+  'address-premium-labels': `nansen research address-premium-labels — Get all labels for an address, including premium labels
+
+USAGE:
+  nansen research address-premium-labels --address <addr> [--chain <chain>] [--page <n>] [--limit <n>]`,
   'historical-dex-trades': `nansen research historical-dex-trades — Historical DEX trades for a token
 
 USAGE:
@@ -214,6 +231,15 @@ export function buildResearchCommands(deps = {}) {
           );
         }
         return apiInstance.chainRank({ timeFrame, chainType });
+      }
+
+      if (sub === 'address-premium-labels') {
+        requireOptions({ address: options.address }, ['address']);
+        return apiInstance.addressPremiumLabels({
+          address: options.address,
+          chain: options.chain || 'all',
+          pagination,
+        });
       }
 
       // Range-based token endpoints (require --from-date + --to-date)

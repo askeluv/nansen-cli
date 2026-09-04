@@ -71,6 +71,21 @@ describe('NansenAPI research (historical) methods', () => {
     expect(request.body).toBeUndefined();
   });
 
+  it('uses the premium-labels endpoint and request shape', async () => {
+    setupMock();
+    await api.addressPremiumLabels({
+      address: ADDRESSES.ethereum,
+      chain: 'ethereum',
+      pagination: { page: 2, per_page: 5 },
+    });
+    const body = lastCall('/api/v1/profiler/address/premium-labels');
+    expect(body).toEqual({
+      address: ADDRESSES.ethereum,
+      chain: 'ethereum',
+      pagination: { page: 2, per_page: 5 },
+    });
+  });
+
   describe('researchDexTrades', () => {
     it('hits historical-dex-trades with token_address, chain, and date_range {from,to}', async () => {
       setupMock();
@@ -288,12 +303,13 @@ describe('buildResearchCommands handler', () => {
       researchWalletTransactions: vi.fn().mockResolvedValue({ data: [] }),
       chainRank: vi.fn().mockResolvedValue({ data: [] }),
       tokenSectors: vi.fn().mockResolvedValue({ data: [] }),
+      addressPremiumLabels: vi.fn().mockResolvedValue({ data: [] }),
     };
   }
 
   it('exports historical and direct subcommands', () => {
     expect(RESEARCH_HISTORICAL_SUBCOMMANDS.size).toBe(11);
-    expect(RESEARCH_SUBCOMMANDS.size).toBe(13);
+    expect(RESEARCH_SUBCOMMANDS.size).toBe(14);
   });
 
   it('dispatches chain-rank', async () => {
@@ -348,6 +364,51 @@ describe('buildResearchCommands handler', () => {
     mockApi = makeMockApi();
     await cmds.research(['token-sectors'], mockApi, {}, {});
     expect(mockApi.tokenSectors).toHaveBeenCalledWith();
+  });
+
+  it('dispatches address-premium-labels', async () => {
+    mockApi = makeMockApi();
+    await cmds.research(['address-premium-labels'], mockApi, {}, {
+      address: ADDRESSES.ethereum, chain: 'ethereum', page: '2', limit: '5',
+    });
+    expect(mockApi.addressPremiumLabels).toHaveBeenCalledWith({
+      address: ADDRESSES.ethereum,
+      chain: 'ethereum',
+      pagination: { page: 2, per_page: 5 },
+    });
+  });
+
+  it('omits per_page when only --page is supplied', async () => {
+    mockApi = makeMockApi();
+    await cmds.research(['address-premium-labels'], mockApi, {}, {
+      address: ADDRESSES.ethereum, page: '3',
+    });
+    expect(mockApi.addressPremiumLabels).toHaveBeenCalledWith({
+      address: ADDRESSES.ethereum,
+      chain: 'all',
+      pagination: { page: 3 },
+    });
+  });
+
+  it('rejects an invalid pagination limit', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['address-premium-labels'], mockApi, {}, {
+      address: ADDRESSES.ethereum, limit: '5x',
+    })).rejects.toThrow(/positive integer/);
+  });
+
+  it('rejects an invalid pagination page', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['address-premium-labels'], mockApi, {}, {
+      address: ADDRESSES.ethereum, page: '0',
+    })).rejects.toThrow(/--page must be a positive integer/);
+  });
+
+  it('rejects an invalid --page on historical subcommands', async () => {
+    mockApi = makeMockApi();
+    await expect(cmds.research(['historical-dex-trades'], mockApi, {}, {
+      'token-address': TOKENS.solana, 'from-date': FROM, 'to-date': TO, page: '0',
+    })).rejects.toThrow(/--page must be a positive integer/);
   });
 
   it('rejects unknown subcommand', async () => {
