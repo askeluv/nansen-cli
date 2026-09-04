@@ -56,7 +56,9 @@ nansen schema [command] [--pretty]    # full command reference (no API key neede
 
 **Research categories:** `smart-money` (`sm`), `token` (`tgm`), `profiler` (`prof`), `portfolio` (`port`), `prediction-market` (`pm`), `search`, `perp`, `points`
 
-**Direct research subcommand:** `token-sectors` — list token sectors available for filtering
+**Direct research subcommands:**
+- `nansen research chain-rank [--timeframe-days 7|30|365] [--chain-type all|evm]` — rank chains by growth metrics
+- `nansen research token-sectors` — list token sectors available for filtering
 
 **Trade:** `quote`, `execute`, `bridge-status`, `limit-order` — DEX swaps on Solana and Base, cross-chain bridges, and Solana limit orders.
 
