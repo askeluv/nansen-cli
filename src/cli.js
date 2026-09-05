@@ -219,6 +219,30 @@ export function parseArgs(args) {
   return result;
 }
 
+function parseNonNegativeSafeIntegerOption(name, options, flags, defaultValue) {
+  if (options[name] === undefined) {
+    if (flags[name]) {
+      throw new NansenError(
+        `--${name} requires a non-negative safe integer value`,
+        ErrorCode.INVALID_PARAMS,
+      );
+    }
+    return defaultValue;
+  }
+
+  const rawValue = options[name];
+  const value = typeof rawValue === 'string' || typeof rawValue === 'number'
+    ? Number(rawValue)
+    : NaN;
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new NansenError(
+      `--${name} must be a non-negative safe integer; received: ${String(rawValue)}`,
+      ErrorCode.INVALID_PARAMS,
+    );
+  }
+  return value;
+}
+
 // Format a single value for table display
 export function formatValue(val) {
   if (val === null || val === undefined) return '';
@@ -2038,9 +2062,10 @@ export async function runCLI(rawArgs, deps = {}) {
 
   try {
     // Configure retry options
+    const maxRetries = parseNonNegativeSafeIntegerOption('retries', options, flags, 3);
     const retryOptions = flags['no-retry']
       ? { maxRetries: 0 }
-      : { maxRetries: options.retries !== undefined ? (Number.isNaN(parseInt(options.retries, 10)) ? 3 : parseInt(options.retries, 10)) : 3 };
+      : { maxRetries };
 
     // Configure cache options
     const cacheTtl = options['cache-ttl'] !== undefined ? parseInt(options['cache-ttl'], 10) : 300;
