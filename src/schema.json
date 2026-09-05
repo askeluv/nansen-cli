@@ -2544,6 +2544,13 @@
       "default": 3,
       "description": "Max retry attempts"
     },
+    "cache-ttl": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "default": 300,
+      "description": "Cache TTL in seconds (non-negative safe integer; 0 disables cache reads)"
+    },
     "format": {
       "type": "string",
       "enum": [

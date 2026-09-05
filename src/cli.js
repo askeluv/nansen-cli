@@ -219,6 +219,30 @@ export function parseArgs(args) {
   return result;
 }
 
+function parseNonNegativeSafeIntegerOption(name, options, flags, defaultValue) {
+  if (options[name] === undefined) {
+    if (flags[name]) {
+      throw new NansenError(
+        `--${name} requires a non-negative safe integer value`,
+        ErrorCode.INVALID_PARAMS,
+      );
+    }
+    return defaultValue;
+  }
+
+  const rawValue = options[name];
+  const value = typeof rawValue === 'string' || typeof rawValue === 'number'
+    ? Number(rawValue)
+    : NaN;
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new NansenError(
+      `--${name} must be a non-negative safe integer; received: ${String(rawValue)}`,
+      ErrorCode.INVALID_PARAMS,
+    );
+  }
+  return value;
+}
+
 // Format a single value for table display
 export function formatValue(val) {
   if (val === null || val === undefined) return '';
@@ -1179,7 +1203,7 @@ export function buildCommands(deps = {}) {
           log('CACHE OPTIONS (for any command):');
           log('  --cache               Enable caching for this session');
           log('  --no-cache            Bypass cache for this request');
-          log('  --cache-ttl <seconds> Set cache TTL (default: 300)');
+          log('  --cache-ttl <seconds> Set non-negative safe integer cache TTL (default: 300)');
         }
       };
       
@@ -2043,10 +2067,10 @@ export async function runCLI(rawArgs, deps = {}) {
       : { maxRetries: options.retries !== undefined ? (Number.isNaN(parseInt(options.retries, 10)) ? 3 : parseInt(options.retries, 10)) : 3 };
 
     // Configure cache options
-    const cacheTtl = options['cache-ttl'] !== undefined ? parseInt(options['cache-ttl'], 10) : 300;
+    const cacheTtl = parseNonNegativeSafeIntegerOption('cache-ttl', options, flags, 300);
     const cacheOptions = {
       enabled: flags['cache'] && !flags['no-cache'],
-      ttl: Number.isNaN(cacheTtl) ? 300 : cacheTtl
+      ttl: cacheTtl
     };
 
     const defaultHeaders = {};

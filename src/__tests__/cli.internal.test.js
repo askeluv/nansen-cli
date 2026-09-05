@@ -3474,6 +3474,81 @@ describe('--cache flag integration', () => {
     expect(capturedOptions.cache.ttl).toBe(60);
   });
 
+  it.each(['-1', '1.5', 'NaN', 'Infinity', '9007199254740992'])(
+    'should reject invalid --cache-ttl value %s before constructing the API client',
+    async (value) => {
+      const NansenAPIClass = vi.fn();
+
+      const result = await runCLI(
+        ['smart-money', 'netflow', '--cache', '--cache-ttl', value],
+        { ...mockDeps(), NansenAPIClass },
+      );
+
+      expect(result).toMatchObject({
+        type: 'error',
+        data: {
+          error: `--cache-ttl must be a non-negative safe integer; received: ${value}`,
+          code: ErrorCode.INVALID_PARAMS,
+        },
+      });
+      expect(NansenAPIClass).not.toHaveBeenCalled();
+      expect(_exitCode).toBe(1);
+    },
+  );
+
+  it('should reject --cache-ttl without a value before constructing the API client', async () => {
+    const NansenAPIClass = vi.fn();
+
+    const result = await runCLI(
+      ['smart-money', 'netflow', '--cache', '--cache-ttl'],
+      { ...mockDeps(), NansenAPIClass },
+    );
+
+    expect(result.data.error).toBe('--cache-ttl requires a non-negative safe integer value');
+    expect(result.data.code).toBe(ErrorCode.INVALID_PARAMS);
+    expect(NansenAPIClass).not.toHaveBeenCalled();
+    expect(_exitCode).toBe(1);
+  });
+
+  it('should validate --cache-ttl even when --no-cache overrides it', async () => {
+    const NansenAPIClass = vi.fn();
+
+    const result = await runCLI(
+      ['smart-money', 'netflow', '--no-cache', '--cache-ttl', '-1'],
+      { ...mockDeps(), NansenAPIClass },
+    );
+
+    expect(result.data.error).toBe('--cache-ttl must be a non-negative safe integer; received: -1');
+    expect(result.data.code).toBe(ErrorCode.INVALID_PARAMS);
+    expect(NansenAPIClass).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['0', 0],
+    ['9007199254740991', Number.MAX_SAFE_INTEGER],
+  ])('should allow --cache-ttl boundary value %s', async (value, expected) => {
+    let capturedOptions;
+    const deps = {
+      ...mockDeps(),
+      NansenAPIClass: function MockAPI(key, url, opts) {
+        capturedOptions = opts;
+        this.smartMoneyNetflow = vi.fn().mockResolvedValue({ data: [] });
+      },
+    };
+
+    await runCLI(['smart-money', 'netflow', '--cache', '--cache-ttl', value], deps);
+
+    expect(capturedOptions.cache.ttl).toBe(expected);
+  });
+
+  it('should describe cache TTL numeric boundaries in the schema', () => {
+    expect(SCHEMA.globalOptions['cache-ttl']).toMatchObject({
+      type: 'integer',
+      minimum: 0,
+      maximum: Number.MAX_SAFE_INTEGER,
+    });
+  });
+
   it('should not enable cache by default', async () => {
     let capturedOptions;
     const deps = {
