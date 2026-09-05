@@ -3510,6 +3510,47 @@ describe('--cache flag integration', () => {
     expect(_exitCode).toBe(1);
   });
 
+  it.each([
+    ['--cache-ttl', '60', '--cache-ttl'],
+    ['--cache-ttl', '--cache-ttl', '60'],
+  ])('should reject a valueless repeated --cache-ttl occurrence: %s %s %s', async (...ttlArgs) => {
+    const NansenAPIClass = vi.fn();
+
+    const result = await runCLI(
+      ['smart-money', 'netflow', '--cache', ...ttlArgs],
+      { ...mockDeps(), NansenAPIClass },
+    );
+
+    expect(result.data.error).toBe('--cache-ttl requires a non-negative safe integer value');
+    expect(result.data.code).toBe(ErrorCode.INVALID_PARAMS);
+    expect(NansenAPIClass).not.toHaveBeenCalled();
+  });
+
+  it.each(['', '   '])('should reject empty --cache-ttl value %#', async (value) => {
+    const NansenAPIClass = vi.fn();
+
+    const result = await runCLI(
+      ['smart-money', 'netflow', '--cache', '--cache-ttl', value],
+      { ...mockDeps(), NansenAPIClass },
+    );
+
+    expect(result.data.error).toBe('--cache-ttl requires a non-negative safe integer value');
+    expect(result.data.code).toBe(ErrorCode.INVALID_PARAMS);
+    expect(NansenAPIClass).not.toHaveBeenCalled();
+  });
+
+  it('should validate --cache-ttl even when cache is not enabled', async () => {
+    const NansenAPIClass = vi.fn();
+
+    const result = await runCLI(
+      ['smart-money', 'netflow', '--cache-ttl', 'Infinity'],
+      { ...mockDeps(), NansenAPIClass },
+    );
+
+    expect(result.data.code).toBe(ErrorCode.INVALID_PARAMS);
+    expect(NansenAPIClass).not.toHaveBeenCalled();
+  });
+
   it('should validate --cache-ttl even when --no-cache overrides it', async () => {
     const NansenAPIClass = vi.fn();
 

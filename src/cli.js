@@ -220,17 +220,21 @@ export function parseArgs(args) {
 }
 
 function parseNonNegativeSafeIntegerOption(name, options, flags, defaultValue) {
-  if (options[name] === undefined) {
-    if (flags[name]) {
-      throw new NansenError(
-        `--${name} requires a non-negative safe integer value`,
-        ErrorCode.INVALID_PARAMS,
-      );
-    }
-    return defaultValue;
+  if (flags[name]) {
+    throw new NansenError(
+      `--${name} requires a non-negative safe integer value`,
+      ErrorCode.INVALID_PARAMS,
+    );
   }
+  if (options[name] === undefined) return defaultValue;
 
   const rawValue = options[name];
+  if (typeof rawValue === 'string' && rawValue.trim() === '') {
+    throw new NansenError(
+      `--${name} requires a non-negative safe integer value`,
+      ErrorCode.INVALID_PARAMS,
+    );
+  }
   const value = typeof rawValue === 'string' || typeof rawValue === 'number'
     ? Number(rawValue)
     : NaN;
