@@ -366,6 +366,13 @@ describe('telemetry', () => {
       expect(body.properties).not.toHaveProperty('oid');
     });
 
+    it('omits position_side when the leg side is unknown instead of fabricating one', () => {
+      trackPerpOrderCompleted({ ...baseOutcome, side: undefined });
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body.properties).not.toHaveProperty('position_side');
+      expect(body.properties).not.toHaveProperty('order_side');
+    });
+
     it('uses a deterministic event id for duplicate delivery of the same leg', () => {
       trackPerpOrderCompleted(baseOutcome);
       trackPerpOrderCompleted(baseOutcome);

@@ -774,8 +774,10 @@ describe('perp direct-to-HL flow (Chunk 3/4/5)', () => {
     it('leaves an unstructured HTTP error outcome indeterminate', async () => {
       const { track, telCmds } = trackingCmds();
       const api = mockApi({ screen: clean });
+      // A real HL_HTTP_ERROR (hl-client.js) throws without an exchangeResult —
+      // opaque HTTP bodies are not action results — so the perp error path sees
+      // no exchangeResult and leaves the outcome to cli_command_failed.
       const error = new CommandError('Hyperliquid error (HTTP 503)', 'HL_HTTP_ERROR');
-      error.exchangeResult = { error: 'upstream unavailable' };
       submitExchange.mockRejectedValueOnce(error);
 
       await expect(telCmds.order([], api, {}, baseOrder)).rejects.toBe(error);

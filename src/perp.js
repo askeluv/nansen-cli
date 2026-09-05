@@ -300,10 +300,16 @@ export function summarizeOrderResult(result, action) {
 function emitPerpOrderCompleted(telemetry, summary, walletAddress, submissionId, errorCode) {
   return Promise.all(summary.map((order) => telemetry.track({
     command: telemetry.command,
-    side: order.side ?? telemetry.side,
+    // Pass the leg's own side (not the command-level side) so telemetry can
+    // distinguish a leg whose side is unknown and omit position_side rather
+    // than fabricate one. order.side is always set for real HL legs.
+    side: order.side,
     position_side: order.positionSide,
     outcome: order.kind,
-    submission_id: String(submissionId),
+    // Guard submission_id so a future refactor that drops the nonce can never
+    // stringify undefined into the BI dedup key (perpOutcomeEventId derives
+    // the event id from it).
+    ...(submissionId !== undefined && { submission_id: String(submissionId) }),
     leg_index: order.index,
     leg: order.leg,
     wallet_address: walletAddress,

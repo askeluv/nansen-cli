@@ -349,9 +349,16 @@ export function trackPerpOrderCompleted({
   const attemptId = perpLegAttemptId({ wallet_address, submission_id, leg_index });
   const eventId = perpOutcomeEventId({ wallet_address, submission_id, leg_index, outcome });
   const event = `trade_perps_${command === 'close' ? 'close' : 'order'}_${outcome === 'rejected' ? 'failed' : 'succeeded'}`;
-  const positionSide = position_side ?? (command === 'close'
-    ? (side === 'buy' ? 'short' : 'long')
-    : (side === 'buy' ? 'long' : 'short'));
+  // position_side is supplied per leg by summarizeOrderResult (reduceOnly-aware,
+  // undefined when the leg's own side is unknown). Only derive a fallback when a
+  // real leg side is present; never fabricate a position_side from the
+  // command-level side when the leg's side is unknown — that would corrupt the
+  // wallet-scoped joins in the companion dbt change.
+  const positionSide = position_side ?? (side === undefined
+    ? undefined
+    : command === 'close'
+      ? (side === 'buy' ? 'short' : 'long')
+      : (side === 'buy' ? 'long' : 'short'));
   return sendEvent({
     event,
     event_source: getEventSource(),
