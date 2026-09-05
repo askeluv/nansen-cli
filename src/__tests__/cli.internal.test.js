@@ -2715,6 +2715,19 @@ describe('--no-retry and --retries flags', () => {
     expect(NansenAPIClass).not.toHaveBeenCalled();
   });
 
+  it('should reject repeated valued --retries options clearly', async () => {
+    const NansenAPIClass = vi.fn();
+
+    const result = await runCLI(
+      ['smart-money', 'netflow', '--retries', '2', '--retries', '3'],
+      { ...mockDeps(), NansenAPIClass },
+    );
+
+    expect(result.data.error).toBe('--retries may only be specified once');
+    expect(result.data.code).toBe(ErrorCode.INVALID_PARAMS);
+    expect(NansenAPIClass).not.toHaveBeenCalled();
+  });
+
   it.each(['', '   '])('should reject empty --retries value %#', async (value) => {
     const NansenAPIClass = vi.fn();
 
