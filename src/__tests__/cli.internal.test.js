@@ -2699,6 +2699,35 @@ describe('--no-retry and --retries flags', () => {
     expect(_exitCode).toBe(1);
   });
 
+  it.each([
+    ['--retries', '2', '--retries'],
+    ['--retries', '--retries', '2'],
+  ])('should reject a valueless repeated --retries occurrence: %s %s %s', async (...retryArgs) => {
+    const NansenAPIClass = vi.fn();
+
+    const result = await runCLI(
+      ['smart-money', 'netflow', ...retryArgs],
+      { ...mockDeps(), NansenAPIClass },
+    );
+
+    expect(result.data.error).toBe('--retries requires a non-negative safe integer value');
+    expect(result.data.code).toBe(ErrorCode.INVALID_PARAMS);
+    expect(NansenAPIClass).not.toHaveBeenCalled();
+  });
+
+  it.each(['', '   '])('should reject empty --retries value %#', async (value) => {
+    const NansenAPIClass = vi.fn();
+
+    const result = await runCLI(
+      ['smart-money', 'netflow', '--retries', value],
+      { ...mockDeps(), NansenAPIClass },
+    );
+
+    expect(result.data.error).toBe('--retries requires a non-negative safe integer value');
+    expect(result.data.code).toBe(ErrorCode.INVALID_PARAMS);
+    expect(NansenAPIClass).not.toHaveBeenCalled();
+  });
+
   it('should validate --retries even when --no-retry overrides it', async () => {
     const NansenAPIClass = vi.fn();
 
