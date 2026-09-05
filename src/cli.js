@@ -229,6 +229,12 @@ function parseNonNegativeSafeIntegerOption(name, options, flags, defaultValue) {
   if (options[name] === undefined) return defaultValue;
 
   const rawValue = options[name];
+  if (Array.isArray(rawValue)) {
+    throw new NansenError(
+      `--${name} may only be specified once`,
+      ErrorCode.INVALID_PARAMS,
+    );
+  }
   if (typeof rawValue === 'string' && rawValue.trim() === '') {
     throw new NansenError(
       `--${name} requires a non-negative safe integer value`,

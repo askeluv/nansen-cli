@@ -3526,6 +3526,19 @@ describe('--cache flag integration', () => {
     expect(NansenAPIClass).not.toHaveBeenCalled();
   });
 
+  it('should reject repeated valued --cache-ttl options clearly', async () => {
+    const NansenAPIClass = vi.fn();
+
+    const result = await runCLI(
+      ['smart-money', 'netflow', '--cache', '--cache-ttl', '60', '--cache-ttl', '120'],
+      { ...mockDeps(), NansenAPIClass },
+    );
+
+    expect(result.data.error).toBe('--cache-ttl may only be specified once');
+    expect(result.data.code).toBe(ErrorCode.INVALID_PARAMS);
+    expect(NansenAPIClass).not.toHaveBeenCalled();
+  });
+
   it.each(['', '   '])('should reject empty --cache-ttl value %#', async (value) => {
     const NansenAPIClass = vi.fn();
 
