@@ -1,0 +1,7 @@
+---
+"nansen-cli": patch
+---
+
+Fix the x402 auto-payment fallback in `src/api.js` generating multiple payment authorizations for the same request after an ambiguous outcome (issue #583). After a signed `Payment-Signature` was transmitted, `_x402Retry` previously collapsed every non-ok response — a clean rejection, a 5xx, an unreadable body — and every transport failure into a single `null`, and callers treated any `null` as "safe to try the next payment option/provider". That meant a 5xx, a timeout, or an unparseable response (any of which could mean the server already received and settled the payment) triggered signing and transmitting a *second* independent payment for the same logical request. Separately, a genuine successful response whose JSON body happened to be `null` was indistinguishable from a rejection, risking a second payment for an already-settled call.
+
+`_x402Retry` now returns a dedicated `X402_PAYMENT_REJECTED` sentinel only for a provably clean rejection (a non-5xx status with a readable body), and throws `NansenError` with the new `PAYMENT_AMBIGUOUS` code for anything else — a transport failure, a 5xx, or an unreadable body on either a rejection or a success. All three fallback call sites (Privy, local wallet, WalletConnect) now check against the sentinel instead of `null`, and re-throw a `PAYMENT_AMBIGUOUS` error immediately instead of silently moving on to the next provider.

@@ -3469,6 +3469,131 @@ describe('NansenAPI', () => {
 
       vi.doUnmock('../walletconnect-x402.js');
     });
+
+    // Issue #583: an ambiguous outcome after a signed payment was already
+    // transmitted (a 5xx, a transport failure, or an unreadable body) must
+    // not be treated as an ordinary rejection — the server may have already
+    // settled it, so signing and sending another payment would risk paying
+    // twice for the same logical request.
+    describe('ambiguous outcomes after transmission (issue #583)', () => {
+      it('does not fall back to WalletConnect after an ambiguous local-wallet outcome', async () => {
+        if (LIVE_TEST) return;
+
+        const paymentReqs = {
+          accepts: [{
+            scheme: 'exact',
+            asset: '0xUSDC',
+            payTo: '0xR',
+            amount: '1',
+            network: 'base',
+            extra: { name: 'X', version: '1', chainId: 1 },
+          }],
+        };
+        const paymentHeader = btoa(JSON.stringify(paymentReqs));
+
+        const errorResponse = {
+          ok: false,
+          status: 402,
+          json: async () => ({ message: 'Payment required' }),
+          headers: { get: (h) => h === 'payment-required' ? paymentHeader : null },
+        };
+        // The paid retry fails with a 5xx — ambiguous, not a clean rejection.
+        const ambiguousRetryResponse = {
+          ok: false,
+          status: 503,
+          json: async () => ({ error: 'internal error' }),
+        };
+        mockFetch
+          .mockResolvedValueOnce(errorResponse)
+          .mockResolvedValueOnce(ambiguousRetryResponse);
+
+        const mockHandleX402Payment = vi.fn().mockResolvedValue('walletconnect-sig');
+        vi.resetModules();
+        // Skip real wallet/crypto setup: yield one already-built local signature.
+        vi.doMock('../x402.js', () => ({
+          createPaymentSignatures: async function* () {
+            yield { signature: 'local-sig', network: 'eip155:8453', asset: '0xUSDC' };
+          },
+          checkX402Balance: vi.fn().mockResolvedValue(null),
+        }));
+        vi.doMock('../walletconnect-x402.js', () => ({ handleX402Payment: mockHandleX402Payment }));
+
+        const autoPayApi = new NansenAPI('test-key', 'https://api.nansen.ai');
+
+        let thrownError;
+        try {
+          await autoPayApi.smartMoneyNetflow({});
+        } catch (err) {
+          thrownError = err;
+        }
+
+        expect(thrownError).toBeDefined();
+        expect(thrownError.code).toBe(ErrorCode.PAYMENT_AMBIGUOUS);
+        // Exactly the initial 402 + the one ambiguous paid retry — no second
+        // payment attempt via WalletConnect.
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+        expect(mockHandleX402Payment).not.toHaveBeenCalled();
+
+        vi.doUnmock('../x402.js');
+        vi.doUnmock('../walletconnect-x402.js');
+      });
+
+      it('propagates PAYMENT_AMBIGUOUS instead of a generic failure message when the WalletConnect paid retry is ambiguous', async () => {
+        if (LIVE_TEST) return;
+
+        const paymentReqs = {
+          accepts: [{
+            scheme: 'exact',
+            asset: '0xUSDC',
+            payTo: '0xR',
+            amount: '1',
+            network: 'base',
+            extra: { name: 'X', version: '1', chainId: 1 },
+          }],
+        };
+        const paymentHeader = btoa(JSON.stringify(paymentReqs));
+
+        const errorResponse = {
+          ok: false,
+          status: 402,
+          json: async () => ({ message: 'Payment required' }),
+          headers: { get: (h) => h === 'payment-required' ? paymentHeader : null },
+        };
+        const ambiguousRetryResponse = {
+          ok: false,
+          status: 503,
+          json: async () => ({ error: 'internal error' }),
+        };
+        mockFetch
+          .mockResolvedValueOnce(errorResponse)
+          .mockResolvedValueOnce(ambiguousRetryResponse);
+
+        // No local wallet configured (empty temp HOME) — falls straight
+        // through to WalletConnect, which signs successfully.
+        const mockHandleX402Payment = vi.fn().mockResolvedValue('walletconnect-sig');
+        vi.resetModules();
+        vi.doMock('../walletconnect-x402.js', () => ({ handleX402Payment: mockHandleX402Payment }));
+
+        const autoPayApi = new NansenAPI('test-key', 'https://api.nansen.ai');
+
+        let thrownError;
+        try {
+          await autoPayApi.smartMoneyNetflow({});
+        } catch (err) {
+          thrownError = err;
+        }
+
+        expect(thrownError).toBeDefined();
+        expect(thrownError.code).toBe(ErrorCode.PAYMENT_AMBIGUOUS);
+        expect(thrownError.message).toMatch(/not attempting another payment/i);
+        // Only the one paid attempt via WalletConnect — no retry loop, no
+        // second signature.
+        expect(mockHandleX402Payment).toHaveBeenCalledTimes(1);
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+
+        vi.doUnmock('../walletconnect-x402.js');
+      });
+    });
   });
 
   // =================== Smart Alert Endpoints ===================
