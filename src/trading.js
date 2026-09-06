@@ -241,7 +241,7 @@ export async function executeTransaction(params, { retries = 2, retryDelayMs = 1
         new Error(`Execute response body read failed (status ${res.status}): ${bodyErr.message}`),
         { code: 'BROADCAST_FAILED', status: res.status }
       );
-      if ((res.status === 502 || res.status === 503) && attempt < retries) continue;
+      if (res.status >= 500 && attempt < retries) continue;
       throw lastError;
     }
 
@@ -256,13 +256,15 @@ export async function executeTransaction(params, { retries = 2, retryDelayMs = 1
       parsed = false;
     }
 
-    // A 502/503 is ambiguous no matter the body SHAPE: the gateway may have
-    // forwarded the signed tx upstream before failing (a JSON 502 like
-    // { code: "UPSTREAM_TIMEOUT" } is exactly that case). Classify EVERY 502/503
-    // as BROADCAST_FAILED and keep the body only as details — never fall through
-    // to the !res.ok branch below, which would surface a nonfatal upstream code
-    // and let the candidate loop broadcast the next quote on top of a live tx.
-    if (res.status === 502 || res.status === 503) {
+    // ANY 5xx is ambiguous no matter the body SHAPE: the gateway may have
+    // forwarded the signed tx upstream before failing (a JSON 502/504 like
+    // { code: "UPSTREAM_TIMEOUT" } is exactly that case, and a 500/504 carries
+    // the same "forwarded then lost the ack" risk as a 502/503). Classify EVERY
+    // 5xx as BROADCAST_FAILED and keep the body only as details — never fall
+    // through to the !res.ok branch below, which would surface a nonfatal
+    // upstream code and let the candidate loop broadcast the next quote on top
+    // of a live tx.
+    if (res.status >= 500) {
       // Only append the simulation fee hint for a NON-JSON body. A structured
       // JSON error (e.g. { code: "UPSTREAM_TIMEOUT" }) already explains itself
       // via `details`; tacking "you may be out of SOL" onto a gateway timeout
@@ -285,7 +287,7 @@ export async function executeTransaction(params, { retries = 2, retryDelayMs = 1
     }
 
     if (!parsed) {
-      // Non-JSON on a non-502/503 status (a Cloudflare challenge or HTML error
+      // Non-JSON on a sub-500 status (a Cloudflare challenge or HTML error
       // page). Still uninterpretable after the POST went out, so fail closed.
       lastError = Object.assign(
         new Error(`Execute API returned non-JSON response (status ${res.status}). This may be a Cloudflare challenge or server error.`),
@@ -3648,7 +3650,16 @@ EXAMPLES:
               execParams.requestId = requestId; // Solana Jupiter Ultra
             }
 
-            const result = await executeTransaction(execParams);
+            // A retry re-POSTs the signed payload. For a normal swap that's a
+            // byte-identical replay the node dedupes, so retrying an ambiguous
+            // 5xx/network failure can't itself double-broadcast. But a --gasless
+            // Relay swap sends a signed AUTHORIZATION, and Relay's solver
+            // broadcasts its OWN wrapping tx from it (the returned txHash is not
+            // our bytes) — so a re-POST after the solver already picked it up
+            // can't be deduped at the node level and risks a second solve. For
+            // gasless we therefore don't retry: a single POST either succeeds or
+            // fails closed (BROADCAST_FAILED marks the quote spent and aborts).
+            const result = await executeTransaction(execParams, { retries: gasless ? 0 : undefined });
 
             if (result.status === 'Success') {
               let txId = result.signature || result.txHash;
