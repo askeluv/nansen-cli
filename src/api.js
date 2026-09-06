@@ -264,7 +264,22 @@ export function getCachedResponse(endpoint, body, ttlSeconds = DEFAULT_CACHE_TTL
       return null;
     }
     
-    return { ...cached.data, _meta: { ...cached.data._meta, fromCache: true, cacheAge: Math.round(age) } };
+    // Re-attach the cache marker without reshaping the payload. Object-spreading
+    // a top-level array turns it into { 0: …, 1: … }, so a cached array came back
+    // as an object and every Array.isArray() branch downstream (the table/CSV/
+    // markdown formatters in cli.js, alertsGet) stopped recognising it — the first
+    // call rendered rows and the second rendered nothing. Arrays therefore get
+    // _meta hung off the array itself, exactly as the live request path does when
+    // it records retriedAttempts, and primitives are handed back untouched
+    // because a non-object cannot carry the marker at all.
+    const meta = { ...cached.data?._meta, fromCache: true, cacheAge: Math.round(age) };
+    if (Array.isArray(cached.data)) {
+      const rows = cached.data.slice();
+      rows._meta = meta;
+      return rows;
+    }
+    if (cached.data === null || typeof cached.data !== 'object') return cached.data;
+    return { ...cached.data, _meta: meta };
   } catch (_e) {
     // Invalid cache file, delete it
     try { fs.unlinkSync(cacheFile); } catch { /* ignore */ }
