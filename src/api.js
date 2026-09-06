@@ -517,6 +517,17 @@ export class NansenAPI {
     this.lastResponseMeta = null;
     /** API path of the most recent request(), for pairing lastResponseMeta with a cost estimate. */
     this.lastEndpoint = null;
+    /**
+     * Whether the most recent request() was answered from the local response
+     * cache instead of the network.
+     *
+     * Lives on the instance for the same reason lastResponseMeta does: a cache
+     * hit returns early, so nothing downstream can tell from the payload alone,
+     * and a handler that rebuilds its result (alerts list, for one) drops any
+     * marker carried on the body. Last write wins when a handler makes several
+     * calls.
+     */
+    this.servedFromCache = false;
   }
 
   static cleanBody(body) {
@@ -597,9 +608,11 @@ export class NansenAPI {
     if (useCache) {
       const cached = getCachedResponse(endpoint, body, cacheTtl);
       if (cached) {
+        this.servedFromCache = true;
         return cached;
       }
     }
+    this.servedFromCache = false;
 
     let lastError;
     
