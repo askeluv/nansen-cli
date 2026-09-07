@@ -2435,7 +2435,7 @@
             },
             "send-api-key": {
               "type": "boolean",
-              "description": "Authorize sending your saved API key to a custom --url (must be https:// or a loopback host). Not needed when you pass --api-key explicitly."
+              "description": "Presence-only flag — pass it bare, never with a value (`--send-api-key false` is rejected). Authorizes sending your saved API key to a custom --url (must be https:// or a loopback host). Not needed when you pass --api-key explicitly."
             },
             "json": {
               "type": "boolean",
