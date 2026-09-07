@@ -1596,7 +1596,11 @@ export function assertLimitOrderDepositOutcome(sim, { inputMint, amount }) {
  *   (no walletAddress in ctx — the sim already keyed its deltas relative to the wallet)
  * @param {{inputMint: string, amount?: bigint|string|number}} ctx - the order's own deposited
  *   asset (the refund must land here) and its expected remaining refund in base units. When
- *   `amount` is omitted/unparseable the check falls back to requiring a positive inflow only.
+ *   `amount` is omitted/unparseable the check falls back to requiring a positive inflow only —
+ *   this fallback is DELIBERATELY WEAKER than the magnitude bind and is not a safe default: a
+ *   caller that can know the expected refund MUST pass it and fail closed when it is absent
+ *   (as the cancel command does — see remainingRefundAmount in limit-order.js), rather than
+ *   relying on this bare-inflow path, which admits a dust-refund/redirect it cannot catch.
  * @throws {Error} with `code = 'LIMIT_ORDER_OUTCOME_MISMATCH'` on any failed assertion.
  */
 export function assertLimitOrderCancelOutcome(sim, { inputMint, amount } = {}) {

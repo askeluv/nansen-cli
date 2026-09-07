@@ -711,6 +711,12 @@ EXAMPLES:
       // magnitude (see assertLimitOrderDepositOutcome's NATIVE_FEE_RENT_SLACK_LAMPORTS
       // floor) — otherwise this would only surface as a LIMIT_ORDER_OUTCOME_MISMATCH
       // after crafting and simulating the deposit transaction, well into the flow.
+      // Gated on hasSolanaSimulationRpc deliberately: the floor is a pre-empt of the
+      // magnitude check, so it only applies when that check would actually run. In a
+      // degraded (no-sim-RPC) environment there is no magnitude bound to pre-empt — the
+      // deposit falls back to the static gate alone (verifyLimitOrderOutcome already warns
+      // that outcome verification is unavailable), so blocking a small amount here would
+      // add a floor that the rest of that path doesn't enforce.
       if (from === WSOL_MINT && hasSolanaSimulationRpc('solana') && BigInt(amountBaseUnits) <= NATIVE_FEE_RENT_SLACK_LAMPORTS) {
         log(`Error: SOL deposit amount (${amountBaseUnits} lamports) is too small to verify against network fee/rent noise (${NATIVE_FEE_RENT_SLACK_LAMPORTS} lamports). Use a larger amount.`);
         exit(1);
