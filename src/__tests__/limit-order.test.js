@@ -1263,6 +1263,32 @@ describe('outcome verification (fail-closed)', () => {
     expect(logs.some(l => /could not run.*proceeding without/i.test(l))).toBe(true);
     expect(logs.some(l => l.includes('Limit order created'))).toBe(true);
   });
+
+  it('cancel: proceeds (graceful degrade) when the simulation RPC errors out mid-flight', async () => {
+    SIMULATION_RPCS.solana = 'http://sol-sim.test';
+    const wallet = createTestWallet('lo-outcome-cancel-degrade');
+    const cancelTx = buildLimitOrderTx({ walletPubkey: wallet.solana });
+
+    mockFetchSequence([
+      { body: { challenge: 'sign' } },
+      { body: { token: 'jwt' } },
+      { body: { id: 'order-1', transaction: cancelTx, requestId: 'cancel-req-1' } },
+      // sim: getMultipleAccounts fails outright (transport/RPC error) — must
+      // degrade (warn + proceed), not block a legitimate cancellation.
+      { body: { error: { message: 'rate limited' } }, status: 200 },
+      { body: { id: 'order-1', txSignature: 'cancel-sig-abc' } },
+    ]);
+
+    const logs = [];
+    const exit = vi.fn();
+    const cmds = buildLimitOrderCommands({ log: (m) => logs.push(m), exit });
+
+    await cmds.cancel([], null, {}, { order: 'order-1', wallet: 'lo-outcome-cancel-degrade' });
+
+    expect(exit).not.toHaveBeenCalled();
+    expect(logs.some(l => /could not run.*proceeding without/i.test(l))).toBe(true);
+    expect(logs.some(l => l.includes('Order cancelled'))).toBe(true);
+  });
 });
 
 // ============= Helpers =============
