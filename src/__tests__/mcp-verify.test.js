@@ -372,6 +372,18 @@ describe('mcp verify', () => {
       expect(fetchFn.mock.calls[1][1].headers['NANSEN-API-KEY']).toBe(API_KEY);
     });
 
+    it('withholds the key from an unparseable or non-https custom URL (fail-safe)', async () => {
+      const fetchFn = vi.fn().mockResolvedValueOnce(listResponse());
+
+      // An invalid IPv4 octet is rejected by URL parsing, so this exercises the
+      // fail-safe path rather than being (wrongly) classified as loopback.
+      const checks = await runChecks(fetchFn, { url: 'http://127.999.999.999:8787/ra/mcp', sendApiKey: true });
+
+      expect(findCheck(checks, 'mcp-url')).toMatchObject({ status: 'error' });
+      expect(findCheck(checks, 'mcp-url').message).toMatch(/unsupported MCP URL/i);
+      expect(fetchFn.mock.calls.every(([, opts]) => !opts.headers['NANSEN-API-KEY'])).toBe(true);
+    });
+
     it('threads --send-api-key through the CLI to authorize a saved key', async () => {
       env.NANSEN_API_KEY = SAVED_KEY;
       const output = [];

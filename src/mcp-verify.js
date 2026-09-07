@@ -12,11 +12,14 @@ class McpRequestError extends Error {
   }
 }
 
+const IPV4_OCTET = '(?:25[0-5]|2[0-4]\\d|1?\\d{1,2})';
+const LOOPBACK_IPV4 = new RegExp(`^127\\.${IPV4_OCTET}\\.${IPV4_OCTET}\\.${IPV4_OCTET}$`);
+
 function isLoopbackHostname(hostname) {
   if (!hostname) return false;
   const host = hostname.toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
   if (host === 'localhost' || host === '::1') return true;
-  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
+  return LOOPBACK_IPV4.test(host);
 }
 
 /**
@@ -240,6 +243,15 @@ export async function runMcpVerifyChecks({
         'error',
         `Refusing to send the API key over plain HTTP to a non-loopback host (${dest.origin})`,
         'Use an https:// URL. Plain HTTP is only permitted for localhost/loopback development.',
+      );
+    } else if (dest.protocol !== 'https:' && !(dest.protocol === 'http:' && dest.loopback)) {
+      // Anything not provably secure — an unparseable URL or a non-http(s)
+      // scheme — is refused rather than relied on to fail later in fetch.
+      keyWithheld = check(
+        'mcp-url',
+        'error',
+        `Refusing to send the API key to an unsupported MCP URL (${dest.origin})`,
+        'Use an https:// URL, or a loopback http:// URL for local development.',
       );
     } else if (!explicitKey && !sendApiKey) {
       keyWithheld = check(
