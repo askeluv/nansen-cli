@@ -1,5 +1,71 @@
 # Changelog
 
+## 1.44.0
+
+### Minor Changes
+
+- [#563](https://github.com/nansen-ai/nansen-cli/pull/563) [`3b3e11b`](https://github.com/nansen-ai/nansen-cli/commit/3b3e11b5d346662bf352cbe2e3f66e54b22213b0) Thanks [@hulk-linus](https://github.com/apps/hulk-linus)! - Emit privacy-preserving per-leg Hyperliquid attribution through the canonical trade-perps outcome events.
+
+- [#580](https://github.com/nansen-ai/nansen-cli/pull/580) [`c5085c5`](https://github.com/nansen-ai/nansen-cli/commit/c5085c5d062d848604402949a3e03c87d8b013bd) Thanks [@gulshngill](https://github.com/gulshngill)! - Add `nansen completion <bash|zsh|fish>`, which prints a shell completion script generated from the CLI's own command schema. Completions cover nested subcommands, per-command flags, global flags, and the enum values a flag accepts.
+
+- [#597](https://github.com/nansen-ai/nansen-cli/pull/597) [`8453355`](https://github.com/nansen-ai/nansen-cli/commit/845335501837956db2f7a899bf251048bbd706d9) Thanks [@kome12](https://github.com/kome12)! - Security: `nansen mcp verify` no longer sends a saved API key (from `nansen login` / `NANSEN_API_KEY` / config) to a custom `--url` without explicit consent. Forwarding a saved key to a non-default URL now requires `--send-api-key`, and no key is ever sent over plain HTTP to a non-loopback host. An inline `--api-key` is unaffected.
+
+  Note: verifying a custom `--url` with a saved key now errors unless `--send-api-key` is passed (previously it warned and proceeded).
+
+- [#557](https://github.com/nansen-ai/nansen-cli/pull/557) [`5a73b43`](https://github.com/nansen-ai/nansen-cli/commit/5a73b43e4f2fc753c435babcea648b156f7a99a9) Thanks [@gulshngill](https://github.com/gulshngill)! - Add the `nansen research address-premium-labels` command.
+
+- [#555](https://github.com/nansen-ai/nansen-cli/pull/555) [`4285d7f`](https://github.com/nansen-ai/nansen-cli/commit/4285d7fc22fde5bacb5b67eb3bcb6e94bb6a680e) Thanks [@gulshngill](https://github.com/gulshngill)! - Add the `nansen research chain-rank` command.
+
+- [#561](https://github.com/nansen-ai/nansen-cli/pull/561) [`dd8035c`](https://github.com/nansen-ai/nansen-cli/commit/dd8035c09f5c99c08247686c621c5c14c30607cc) Thanks [@gulshngill](https://github.com/gulshngill)! - Add the `nansen research historical-token-ohlcv` command.
+
+- [#560](https://github.com/nansen-ai/nansen-cli/pull/560) [`52f2f09`](https://github.com/nansen-ai/nansen-cli/commit/52f2f095baeaa48c43d5b0f3b1a3b036166266b5) Thanks [@gulshngill](https://github.com/gulshngill)! - Add the `nansen research perp-pnl-summary` command.
+
+- [#559](https://github.com/nansen-ai/nansen-cli/pull/559) [`ed2d7a5`](https://github.com/nansen-ai/nansen-cli/commit/ed2d7a5ac00b51240f5a2d0fb7828131dc5074c8) Thanks [@gulshngill](https://github.com/gulshngill)! - Add the `nansen research position-intelligence` command.
+
+- [#558](https://github.com/nansen-ai/nansen-cli/pull/558) [`e273152`](https://github.com/nansen-ai/nansen-cli/commit/e273152358792203435191a0f30dd307699721aa) Thanks [@gulshngill](https://github.com/gulshngill)! - Add the `nansen research smart-money-pnl-leaderboard` command.
+
+- [#556](https://github.com/nansen-ai/nansen-cli/pull/556) [`3c14359`](https://github.com/nansen-ai/nansen-cli/commit/3c143596b6d7e624338f8d9b1a0972bcbe4d7ad7) Thanks [@gulshngill](https://github.com/gulshngill)! - Add the `nansen research token-sectors` command.
+
+- [#562](https://github.com/nansen-ai/nansen-cli/pull/562) [`0d0f5e6`](https://github.com/nansen-ai/nansen-cli/commit/0d0f5e6b83ae91f0215eac3ad2e9216897e6666c) Thanks [@gulshngill](https://github.com/gulshngill)! - Add the `nansen research transaction-with-token-transfer-lookup` command.
+
+- [#581](https://github.com/nansen-ai/nansen-cli/pull/581) [`8726a23`](https://github.com/nansen-ai/nansen-cli/commit/8726a23c0e6028c98f941ee9a638dffa50e01ab1) Thanks [@gulshngill](https://github.com/gulshngill)! - Every command option in `nansen schema` now carries a type and a description (140 research and `wallet send` options had neither), and the `research points` group is described. `research token ohlcv --timeframe` documents its real default (`1d`), and `wallet send --chain`, `research search --type`, and the prediction-market `--neg-risk` filters declare the values they accept, so `--help` and shell completion offer them. Fixed `--neg-risk true` on the prediction-market screeners, which was sent to the API as `neg_risk: false` because the parsed boolean was compared against the string `'true'`. `nansen mcp install` and `nansen mcp uninstall` declare their positional client in the schema, and `nansen completion` scripts now complete it (`claude-code`, `claude-desktop`, `cursor`) in bash, zsh, and fish.
+
+### Patch Changes
+
+- [#575](https://github.com/nansen-ai/nansen-cli/pull/575) [`927ffea`](https://github.com/nansen-ai/nansen-cli/commit/927ffea1762e7de78160a209aa3cc72298b42c24) Thanks [@kome12](https://github.com/kome12)! - Fail closed on an ambiguous broadcast failure in swap and bridge execute. When
+  `/execute` (swap) returns any 5xx (regardless of body shape — a structured 504
+  `UPSTREAM_TIMEOUT` is treated the same as a bare 502) or any other
+  uninterpretable response — or the POST, or reading its body, throws a network
+  error — after the signed tx was sent, or a bridge broadcast fails ambiguously,
+  the tx may already be live. The quote is now marked spent and the
+  run aborts — rather than trying the next candidate quote or leaving the quote
+  reusable — so a re-execute (or agent auto-retry) can't double-broadcast. Gasless
+  (Relay solver-paid) swaps additionally do not retry the `/execute` POST: the
+  signed authorization is broadcast by Relay's own wrapping tx, so a re-POST can't
+  be node-deduped and could trigger a second solve — a single attempt fails closed
+  instead. A bridge send is kept reusable only when the node's error proves the tx never
+  entered the mempool (a pre-broadcast validation rejection such as insufficient
+  funds); in-flight txpool states like "already known" or "nonce too low" fail
+  closed.
+
+- [#572](https://github.com/nansen-ai/nansen-cli/pull/572) [`2ba5c15`](https://github.com/nansen-ai/nansen-cli/commit/2ba5c15a68f6cc2045dcfb928d65eecdb4083292) Thanks [@teyrebaz33](https://github.com/teyrebaz33)! - Fix `nansen changelog --since <version>` silently returning "No changelog entries found" for a version missing its patch number (e.g. `--since 1.43` instead of `--since 1.43.0`), even when matching entries exist. The comparison compared the missing component against `undefined`, and `>` is always `false` against `undefined` in both directions, so a version that matched on major.minor always came out "less than" the since-value. A missing component is now treated as `0`, and a `--since` value that isn't a valid version (e.g. `--since abc`) now prints a clear error instead of silently matching nothing.
+
+  The version-comparison logic is now shared (`src/semver.js`) between `nansen changelog --since` and the update-notifier's `isNewer` check, which had the identical bug in its own separate parser. `isNewer` couldn't misfire in practice (both versions it compares are always fully-qualified x.y.z today), but it's the same defect class, so it's fixed the same way rather than left in place.
+
+- [#569](https://github.com/nansen-ai/nansen-cli/pull/569) [`04932c7`](https://github.com/nansen-ai/nansen-cli/commit/04932c7fb26fb2c4c4f9b14eddcd43a8e3060aa4) Thanks [@memosr](https://github.com/memosr)! - Refuse to re-execute a swap quote that has already been broadcast, mirroring the single-use guard `nansen bridge execute` already had. `nansen trade execute` now marks the quote as spent (`executedAt`) the instant a transaction is broadcast — before waiting for its receipt — so a `RECEIPT_TIMEOUT` (the tx is on-chain but the command exits non-zero) no longer leaves the quote replayable. Retrying the same `--quote <id>` after such a failure previously re-signed and re-broadcast the swap under a fresh nonce instead of being refused.
+
+- [#592](https://github.com/nansen-ai/nansen-cli/pull/592) [`60bd2ef`](https://github.com/nansen-ai/nansen-cli/commit/60bd2ef64f5eebe89112bfa3366c013981f365aa) Thanks [@ygd58](https://github.com/ygd58)! - Fix the x402 auto-payment fallback in `src/api.js` generating multiple payment authorizations for the same request after an ambiguous outcome (issue #583). After a signed `Payment-Signature` was transmitted, `_x402Retry` previously collapsed every non-ok response — a clean rejection, a 5xx, an unreadable body — and every transport failure into a single `null`, and callers treated any `null` as "safe to try the next payment option/provider". That meant a 5xx, a timeout, or an unparseable response (any of which could mean the server already received and settled the payment) triggered signing and transmitting a _second_ independent payment for the same logical request. Separately, a genuine successful response whose JSON body happened to be `null` was indistinguishable from a rejection, risking a second payment for an already-settled call.
+
+  `_x402Retry` now returns a dedicated `X402_PAYMENT_REJECTED` sentinel only for a provably clean rejection (a non-5xx status with a readable body), and throws `NansenError` with the new `PAYMENT_AMBIGUOUS` code for anything else — a transport failure, a 5xx, or an unreadable body on either a rejection or a success. All three fallback call sites (Privy, local wallet, WalletConnect) now check against the sentinel instead of `null`, and re-throw a `PAYMENT_AMBIGUOUS` error immediately instead of silently moving on to the next provider.
+
+- [#524](https://github.com/nansen-ai/nansen-cli/pull/524) [`3e8dcc2`](https://github.com/nansen-ai/nansen-cli/commit/3e8dcc233598383556004da7aaa0a64275beee3f) Thanks [@dolmaciabdullah-byte](https://github.com/dolmaciabdullah-byte)! - Use BigInt for EVM balance in `checkX402Balance` to avoid precision loss on 18-decimal tokens (BSC stablecoins): `parseInt(hex, 16)` loses integer precision once the raw wei value exceeds `Number.MAX_SAFE_INTEGER` (~9.0e15 wei, i.e. ~0.009 tokens at 18 decimals), skewing the low-balance warning.
+
+- [#568](https://github.com/nansen-ai/nansen-cli/pull/568) [`9a45fc4`](https://github.com/nansen-ai/nansen-cli/commit/9a45fc494b3bcc0ebeb37f867902aecc075ee92f) Thanks [@Kewe63](https://github.com/Kewe63)! - Reject non-finite limit-order trigger prices and expiry values before wallet or API activity.
+
+- [#567](https://github.com/nansen-ai/nansen-cli/pull/567) [`c0fe57b`](https://github.com/nansen-ai/nansen-cli/commit/c0fe57b6f881aa7338a16f6aa2fd33d5e6d42757) Thanks [@Kewe63](https://github.com/Kewe63)! - Keep `research perp` analytics-only instead of routing trading subcommands through the top-level perp dispatcher.
+
+- [#558](https://github.com/nansen-ai/nansen-cli/pull/558) [`002921e`](https://github.com/nansen-ai/nansen-cli/commit/002921e5d72e7e54de26f241cb4b409e408b8bf9) Thanks [@gulshngill](https://github.com/gulshngill)! - Reject non-integer or non-positive `--limit` values with an actionable error instead of forwarding them to the API.
+
 ## 1.43.1
 
 ### Patch Changes
