@@ -1214,7 +1214,7 @@ describe('outcome verification (fail-closed)', () => {
       { body: { challenge: 'sign' } },
       { body: { token: 'jwt' } },
       // order lookup — needed to bind the refund check to the order's own input asset.
-      { body: { orders: [{ id: 'order-1', inputMint: USDC }] } },
+      { body: { orders: [{ id: 'order-1', inputMint: USDC, inputAmount: '1000000', fills: [] }] } },
       { body: { id: 'order-1', transaction: cancelTx, requestId: 'cancel-req-1' } },
       // sim: getMultipleAccounts — pre-state: wallet native + a token account
       // the wallet owns, holding 1,000,000 base units.
@@ -1288,6 +1288,32 @@ describe('outcome verification (fail-closed)', () => {
     expect(global.fetch).toHaveBeenCalledTimes(3);
   });
 
+  it('cancel: refuses to sign when the order is found but its remaining refund amount cannot be computed', async () => {
+    SIMULATION_RPCS.solana = 'http://sol-sim.test';
+    createTestWallet('lo-outcome-cancel-badmeta');
+    const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
+    mockFetchSequence([
+      { body: { challenge: 'sign' } },
+      { body: { token: 'jwt' } },
+      // order found, but inputAmount is unparseable — remainingRefundAmount can't bind a
+      // magnitude, so the verifier would silently downgrade to a bare positive-inflow check.
+      // Fail closed instead of signing a withdrawal whose refund size we can't verify.
+      { body: { orders: [{ id: 'order-1', inputMint: USDC, inputAmount: 'not-a-number', fills: [] }] } },
+    ]);
+
+    const logs = [];
+    const exit = vi.fn();
+    const cmds = buildLimitOrderCommands({ log: (m) => logs.push(m), exit });
+
+    await cmds.cancel([], null, {}, { order: 'order-1', wallet: 'lo-outcome-cancel-badmeta' });
+
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(logs.some(l => /could not determine its remaining refund amount/i.test(l))).toBe(true);
+    // 3 calls: challenge, verify, order lookup — cancelOrderRequest (the 4th) must never fire.
+    expect(global.fetch).toHaveBeenCalledTimes(3);
+  });
+
   it('create: proceeds (graceful degrade) when the simulation RPC errors out mid-flight', async () => {
     SIMULATION_RPCS.solana = 'http://sol-sim.test';
     const wallet = createTestWallet('lo-outcome-degrade');
@@ -1329,7 +1355,7 @@ describe('outcome verification (fail-closed)', () => {
       { body: { challenge: 'sign' } },
       { body: { token: 'jwt' } },
       // order lookup — needed to bind the refund check to the order's own input asset.
-      { body: { orders: [{ id: 'order-1', inputMint: USDC }] } },
+      { body: { orders: [{ id: 'order-1', inputMint: USDC, inputAmount: '1000000', fills: [] }] } },
       { body: { id: 'order-1', transaction: cancelTx, requestId: 'cancel-req-1' } },
       // sim: getMultipleAccounts fails outright (transport/RPC error) — must
       // degrade (warn + proceed), not block a legitimate cancellation.

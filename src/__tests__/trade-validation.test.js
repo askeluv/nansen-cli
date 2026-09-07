@@ -2362,6 +2362,27 @@ describe('assertLimitOrderCancelOutcome', () => {
       .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*outside the expected remaining refund/i);
   });
 
+  it('fails closed for a native-SOL expected refund at or below the fee/rent slack (band would degenerate to dust)', () => {
+    // At expected <= SLACK the lower bound (expected - slack) is <= 0, so a two-sided band
+    // can no longer distinguish a genuine small refund from a 1-lamport dust inflow that
+    // reroutes the rest of the escrow. Must refuse rather than admit the bare-positive floor.
+    const dust = { deltas: { [SOL_SENTINEL]: 1n } };
+    expect(() => assertLimitOrderCancelOutcome(dust, { inputMint: SOL_SENTINEL, amount: SLACK }))
+      .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*too small relative to the fee\/rent slack/i);
+    expect(() => assertLimitOrderCancelOutcome(dust, { inputMint: SOL_SENTINEL, amount: 10_000_000n }))
+      .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*too small relative to the fee\/rent slack/i);
+    // Even a full-magnitude refund just under the slack is refused — unverifiable, not signed.
+    const full = { deltas: { [SOL_SENTINEL]: 10_000_000n } };
+    expect(() => assertLimitOrderCancelOutcome(full, { inputMint: SOL_SENTINEL, amount: 10_000_000n }))
+      .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*too small relative to the fee\/rent slack/i);
+  });
+
+  it('verifies a native-SOL refund once the expected amount clears the slack', () => {
+    const sim = { deltas: { [SOL_SENTINEL]: SLACK + 1n } };
+    expect(assertLimitOrderCancelOutcome(sim, { inputMint: SOL_SENTINEL, amount: SLACK + 1n }))
+      .toEqual({ verified: true });
+  });
+
   it('falls back to a bare positive-inflow check when the expected amount is absent or unparseable', () => {
     const sim = { deltas: { [USDC]: 1n } };
     expect(assertLimitOrderCancelOutcome(sim, { inputMint: USDC })).toEqual({ verified: true });

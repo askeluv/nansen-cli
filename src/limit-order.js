@@ -454,8 +454,9 @@ async function findActiveOrder(token, userPubkey, orderId) {
 /**
  * The base-unit amount a cancel should refund: the order's input less whatever has
  * already been filled (partial fills consume escrow). Returns undefined if the order's
- * amounts can't be parsed as integers, so the cancel verifier falls back to a bare
- * positive-inflow check rather than binding to a bogus figure.
+ * amounts can't be parsed as integers or nothing is left to refund. The cancel command
+ * treats an undefined result as fatal (fail closed) rather than signing a withdrawal
+ * whose refund magnitude it can't bind.
  */
 function remainingRefundAmount(order) {
   try {
@@ -965,6 +966,14 @@ EXAMPLES:
           }
           cancelInputMint = order.inputMint;
           cancelRefundAmount = remainingRefundAmount(order);
+          // The whole point of the outcome check is to bind the refund's MAGNITUDE. If the
+          // order was found but its remaining refund can't be computed (unparseable amounts,
+          // or nothing left to refund), passing amount: undefined would silently downgrade
+          // the verifier to a bare positive-inflow check — reopening the dust-refund gap for
+          // exactly the malformed metadata we can least trust. Fail closed instead.
+          if (cancelRefundAmount == null) {
+            throw new Error(`Found order ${orderId} but could not determine its remaining refund amount from the order metadata; refusing to sign a cancel whose refund magnitude can't be verified. Check the order with "nansen trade limit-order list --state active".`);
+          }
         }
 
         // 3. Request cancellation — get unsigned withdrawal tx

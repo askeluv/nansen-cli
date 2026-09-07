@@ -1655,7 +1655,16 @@ export function assertLimitOrderCancelOutcome(sim, { inputMint, amount } = {}) {
   if (expected != null && expected > 0n) {
     if (inputAsset === SOL_SENTINEL) {
       // Net native inflow is the refund minus this tx's fee, plus any temp-WSOL rent
-      // returned, so it sits within ± fee/rent slack of the expected refund. Two-sided.
+      // returned, so it sits within ± fee/rent slack of the expected refund. Two-sided —
+      // BUT when the expected refund is itself <= that slack, the lower bound
+      // (expected - slack) collapses to <= 0 and the band degenerates to the bare
+      // inflow > 0 floor above: a single dust lamport would verify while the rest of the
+      // escrow is rerouted elsewhere. Fail closed instead, exactly as the deposit asserter
+      // does for an amount the slack makes unverifiable, rather than admit a floor below a
+      // meaningful bound.
+      if (expected <= NATIVE_FEE_RENT_SLACK_LAMPORTS) {
+        throw fail(`the expected remaining refund (${expected}) is too small relative to the fee/rent slack (${NATIVE_FEE_RENT_SLACK_LAMPORTS}) to verify by native-SOL inflow magnitude.`);
+      }
       const lo = expected - NATIVE_FEE_RENT_SLACK_LAMPORTS;
       const hi = expected + NATIVE_FEE_RENT_SLACK_LAMPORTS;
       if (inflow < lo || inflow > hi) {
