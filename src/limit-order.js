@@ -11,7 +11,16 @@ import path from 'path';
 import { base58Encode, exportWallet, getWalletConfig, showWallet } from './wallet.js';
 import { signEd25519, base58Decode, parseAmount, getTokenInfo } from './transfer.js';
 import { signSolanaTransaction, resolveTokenAddress } from './trading.js';
-import { assertSolanaInstructionsSafe } from './trade-validation.js';
+import {
+  assertSolanaInstructionsSafe,
+  assertLimitOrderDepositOutcome,
+  assertLimitOrderCancelOutcome,
+} from './trade-validation.js';
+import {
+  simulateSolanaAssetChanges,
+  SolanaSimulationError,
+  hasSolanaSimulationRpc,
+} from './solana-simulation.js';
 import { validateTokenAddress, telemetryHeaders, packageVersion } from './api.js';
 import { getWalletConnectAddress, sendSolanaTransactionViaWalletConnect, signSolanaMessageViaWalletConnect } from './walletconnect-trading.js';
 import { retrievePassword } from './keychain.js';
@@ -383,6 +392,36 @@ export async function signTransaction(txBase64, walletType, walletInfo) {
   throw new Error(`Unsupported wallet type: ${walletType}`);
 }
 
+/**
+ * The limit-order sibling of verifySolanaSwapOutcome: simulates the deposit/
+ * cancel transaction and checks the resulting balance deltas against the
+ * requested operation, degrading (warn + proceed) on any RPC/sim outage so an
+ * outage never blocks an order — only a real outcome mismatch or an
+ * in-simulation revert refuses to sign.
+ */
+async function verifyLimitOrderOutcome({ kind, walletAddress, txBase64, inputMint, amount, log = () => {} }) {
+  if (!hasSolanaSimulationRpc('solana')) {
+    log('  ⚠ Outcome verification unavailable (no Solana simulation endpoint); proceeding without it.');
+    return { proceed: true };
+  }
+  try {
+    const sim = await simulateSolanaAssetChanges('solana', txBase64, { walletAddress });
+    if (kind === 'deposit') {
+      assertLimitOrderDepositOutcome(sim, { inputMint, amount });
+    } else {
+      assertLimitOrderCancelOutcome(sim);
+    }
+    log(`  ✓ ${kind === 'deposit' ? 'Deposit' : 'Cancellation'} outcome verified (via ${sim.method}).`);
+    return { proceed: true };
+  } catch (e) {
+    if (e instanceof SolanaSimulationError && ['NO_SIM_RPC', 'SIM_RPC_ERROR'].includes(e.code)) {
+      log(`  ⚠ Outcome verification could not run (${e.message}); proceeding without it.`);
+      return { proceed: true };
+    }
+    return { proceed: false, reason: e.message };
+  }
+}
+
 // ============= Expiry Parsing =============
 
 /**
@@ -699,17 +738,26 @@ EXAMPLES:
         });
 
         // 5. Sign deposit transaction
-        // Same pre-signing drain gate the swap path uses. The legitimate deposit
-        // moves the input token into the already-registered vault (step 3) with an
-        // SPL Transfer/TransferChecked — which this gate does not classify — plus,
-        // when selling native SOL, a temp-WSOL CloseAccount whose rent returns to
-        // the wallet (permitted). Neither trips the delegate/authority/
-        // close-to-stranger checks, so this does not reject a well-formed deposit;
-        // it only fires if the crafted tx additionally grants a delegate, reassigns
-        // authority, or closes to a stranger. Verified live: a real SOL→USDC create
-        // round-trip clears this gate (the API-crafted deposit is a SOL-wrap
-        // transfer into the vault plus a temp-WSOL close-to-self).
+        // Two layers of pre-signing defense, same as the swap path. First, the
+        // static gate: the legitimate deposit moves the input token into the
+        // already-registered vault (step 3) with an SPL Transfer/TransferChecked —
+        // which this gate does not classify — plus, when selling native SOL, a
+        // temp-WSOL CloseAccount whose rent returns to the wallet (permitted).
+        // Neither trips the delegate/authority/close-to-stranger checks, so this
+        // does not reject a well-formed deposit; it only fires if the crafted tx
+        // additionally grants a delegate, reassigns authority, or closes to a
+        // stranger. Second, balance-delta outcome verification below binds the
+        // deposit's magnitude: the input token must leave the wallet by exactly
+        // `amount` (± fee/rent slack for native SOL) and no other token may leave.
+        // Verified live: a real SOL→USDC create round-trip clears both gates (the
+        // API-crafted deposit is a SOL-wrap transfer into the vault plus a
+        // temp-WSOL close-to-self).
         assertSolanaInstructionsSafe(deposit.transaction, { walletAddress: pubkey });
+        const depositOutcome = await verifyLimitOrderOutcome({
+          kind: 'deposit', walletAddress: pubkey, txBase64: deposit.transaction,
+          inputMint: from, amount: amountBaseUnits, log,
+        });
+        if (!depositOutcome.proceed) throw new Error(`Refusing to sign deposit — ${depositOutcome.reason}`);
         log('  Signing deposit transaction...');
         const signedDepositTx = await signTransaction(deposit.transaction, walletType, walletInfo);
 
@@ -847,11 +895,18 @@ EXAMPLES:
         // Withdrawal moves the deposited token back out of the vault; that transfer
         // is authorized by the vault program's PDA, not our wallet, so it isn't a
         // wallet-authorized drain even if it were classified. Any temp-WSOL close
-        // returns rent to the wallet. This gate is defense-in-depth against a
-        // crafted withdrawal that instead grants a delegate, reassigns authority, or
-        // closes to a stranger. Verified live alongside the deposit path via a real
+        // returns rent to the wallet. The static gate below is defense-in-depth
+        // against a crafted withdrawal that instead grants a delegate, reassigns
+        // authority, or closes to a stranger. Balance-delta outcome verification
+        // then binds the withdrawal's effect: since a cancel should only return
+        // funds to the wallet, no token may leave it at all (native-SOL fee/rent
+        // dust tolerated). Verified live alongside the deposit path via a real
         // cancel round-trip.
         assertSolanaInstructionsSafe(cancelResult.transaction, { walletAddress: pubkey });
+        const cancelOutcome = await verifyLimitOrderOutcome({
+          kind: 'cancel', walletAddress: pubkey, txBase64: cancelResult.transaction, log,
+        });
+        if (!cancelOutcome.proceed) throw new Error(`Refusing to sign withdrawal — ${cancelOutcome.reason}`);
         log('  Signing withdrawal transaction...');
         const signedTx = await signTransaction(cancelResult.transaction, walletType, walletInfo);
 

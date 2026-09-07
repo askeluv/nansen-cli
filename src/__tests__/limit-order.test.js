@@ -31,11 +31,13 @@ import {
   cancelOrderRequest,
   confirmCancelOrder,
 } from '../limit-order.js';
-import { createWallet } from '../wallet.js';
+import { createWallet, base58Decode, generateSolanaWallet } from '../wallet.js';
+import { SIMULATION_RPCS } from '../rpc-urls.js';
 
 let originalHome;
 let tempDir;
 let originalFetch;
+let originalSolanaSimRpc;
 
 beforeEach(() => {
   originalHome = process.env.HOME;
@@ -43,12 +45,19 @@ beforeEach(() => {
   process.env.HOME = tempDir;
   originalFetch = global.fetch;
   global.fetch = vi.fn();
+  // Force limit-order outcome verification to gracefully degrade by default so
+  // existing happy-path tests (which don't mock the sim RPC's own fetch calls)
+  // stay green. Tests that exercise the outcome layer itself set this back to
+  // a truthy value locally.
+  originalSolanaSimRpc = SIMULATION_RPCS.solana;
+  SIMULATION_RPCS.solana = null;
 });
 
 afterEach(() => {
   process.env.HOME = originalHome;
   fs.rmSync(tempDir, { recursive: true, force: true });
   global.fetch = originalFetch;
+  SIMULATION_RPCS.solana = originalSolanaSimRpc;
   vi.restoreAllMocks();
 });
 
@@ -1123,7 +1132,175 @@ describe('buildLimitOrderCommands', () => {
   });
 });
 
+// ============= Outcome verification (fail-closed) =============
+//
+// These exercise the create/cancel handlers with a real (non-null) simulation
+// RPC configured, proving a simulated drain refuses to sign rather than
+// proceeding. The handlers never throw (each wraps its body in try/catch and
+// calls exit(1)), so the observable signal is: exit(1), a "Refusing to sign"
+// log line, and the fact that the downstream submit endpoint (createOrder /
+// confirmCancelOrder) was never reached — asserted via the mocked fetch call
+// count, since a module-local signTransaction spy can't intercept the
+// handler's internal call.
+describe('outcome verification (fail-closed)', () => {
+  it('create: refuses to sign a deposit whose simulated outflow exceeds the requested amount (repro)', async () => {
+    SIMULATION_RPCS.solana = 'http://sol-sim.test';
+    const wallet = createTestWallet('lo-outcome-deposit-drain');
+    const depositTx = buildLimitOrderTx({ walletPubkey: wallet.solana });
+
+    mockFetchSequence([
+      { body: { challenge: 'sign this' } },
+      { body: { token: 'jwt-123' } },
+      { body: { vaultPubkey: 'vault123', userPubkey: 'pub1' } },
+      { body: { transaction: depositTx, requestId: 'dep-req-1' } },
+      // sim: getMultipleAccounts — pre-state for the wallet's native account.
+      { body: { result: { value: [solanaNativeAccountInfo(2_000_000_000)] } } },
+      // sim: simulateTransaction — post-state shows a 1.123456789 SOL outflow,
+      // not the requested 1 SOL (the reproduced SystemProgram-transfer drain).
+      { body: { result: { value: { err: null, accounts: [solanaNativeAccountInfo(2_000_000_000 - 1_123_456_789)] } } } },
+    ]);
+
+    const logs = [];
+    const exit = vi.fn();
+    const cmds = buildLimitOrderCommands({ log: (m) => logs.push(m), exit });
+
+    await cmds.create([], null, {}, {
+      from: 'SOL', to: 'USDC', amount: '1',
+      'trigger-mint': 'SOL', 'trigger-condition': 'below', 'trigger-price': '80',
+      wallet: 'lo-outcome-deposit-drain',
+    });
+
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(logs.some(l => /Refusing to sign deposit/i.test(l))).toBe(true);
+    expect(logs.some(l => /LIMIT_ORDER_OUTCOME_MISMATCH/i.test(l))).toBe(true);
+    // 6 calls: challenge, verify, getVault, craftDeposit, getMultipleAccounts,
+    // simulateTransaction — createOrder (the 7th) must never fire.
+    expect(global.fetch).toHaveBeenCalledTimes(6);
+  });
+
+  it('cancel: refuses to sign a withdrawal that drains an SPL token from the wallet', async () => {
+    SIMULATION_RPCS.solana = 'http://sol-sim.test';
+    const wallet = createTestWallet('lo-outcome-cancel-drain');
+    const siblingMint = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
+    const siblingTokenAccount = generateSolanaWallet().address;
+    const cancelTx = buildLimitOrderTx({ walletPubkey: wallet.solana, extraWritableKey: siblingTokenAccount });
+
+    mockFetchSequence([
+      { body: { challenge: 'sign' } },
+      { body: { token: 'jwt' } },
+      { body: { id: 'order-1', transaction: cancelTx, requestId: 'cancel-req-1' } },
+      // sim: getMultipleAccounts — pre-state: wallet native + a token account
+      // the wallet owns, holding 1,000,000 base units.
+      {
+        body: {
+          result: {
+            value: [
+              solanaNativeAccountInfo(2_000_000_000),
+              solanaTokenAccountInfo({ mint: siblingMint, owner: wallet.solana, amount: 1_000_000 }),
+            ],
+          },
+        },
+      },
+      // sim: simulateTransaction — wallet's native balance only drops by a
+      // fee (well within dust), but the token account is fully drained: a
+      // cancel should only ever return funds TO the wallet.
+      {
+        body: {
+          result: {
+            value: {
+              err: null,
+              accounts: [
+                solanaNativeAccountInfo(2_000_000_000 - 5000),
+                solanaTokenAccountInfo({ mint: siblingMint, owner: wallet.solana, amount: 0 }),
+              ],
+            },
+          },
+        },
+      },
+    ]);
+
+    const logs = [];
+    const exit = vi.fn();
+    const cmds = buildLimitOrderCommands({ log: (m) => logs.push(m), exit });
+
+    await cmds.cancel([], null, {}, { order: 'order-1', wallet: 'lo-outcome-cancel-drain' });
+
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(logs.some(l => /Refusing to sign withdrawal/i.test(l))).toBe(true);
+    expect(logs.some(l => /LIMIT_ORDER_OUTCOME_MISMATCH/i.test(l))).toBe(true);
+    // 5 calls: challenge, verify, cancelRequest, getMultipleAccounts,
+    // simulateTransaction — confirmCancelOrder (the 6th) must never fire.
+    expect(global.fetch).toHaveBeenCalledTimes(5);
+  });
+
+  it('create: proceeds (graceful degrade) when the simulation RPC errors out mid-flight', async () => {
+    SIMULATION_RPCS.solana = 'http://sol-sim.test';
+    const wallet = createTestWallet('lo-outcome-degrade');
+    const depositTx = buildLimitOrderTx({ walletPubkey: wallet.solana });
+
+    mockFetchSequence([
+      { body: { challenge: 'sign this' } },
+      { body: { token: 'jwt-123' } },
+      { body: { vaultPubkey: 'vault123', userPubkey: 'pub1' } },
+      { body: { transaction: depositTx, requestId: 'dep-req-1' } },
+      // sim: getMultipleAccounts fails outright (transport/RPC error) — must
+      // degrade (warn + proceed), not block a legitimate deposit.
+      { body: { error: { message: 'rate limited' } }, status: 200 },
+      { body: { id: 'order-1', txSignature: 'sig-1' }, status: 201 },
+    ]);
+
+    const logs = [];
+    const exit = vi.fn();
+    const cmds = buildLimitOrderCommands({ log: (m) => logs.push(m), exit });
+
+    await cmds.create([], null, {}, {
+      from: 'SOL', to: 'USDC', amount: '1',
+      'trigger-mint': 'SOL', 'trigger-condition': 'below', 'trigger-price': '80',
+      wallet: 'lo-outcome-degrade',
+    });
+
+    expect(exit).not.toHaveBeenCalled();
+    expect(logs.some(l => /could not run.*proceeding without/i.test(l))).toBe(true);
+    expect(logs.some(l => l.includes('Limit order created'))).toBe(true);
+  });
+});
+
 // ============= Helpers =============
+
+/**
+ * Build a minimal parseable legacy Solana transaction whose first account key
+ * is the real wallet pubkey (writable, the only required signer) so
+ * simulateSolanaAssetChanges can locate and track it. `extraWritableKey`, when
+ * given, is a second writable non-signer account (used to simulate a token
+ * account the wallet owns). Zero instructions — the outcome tests only care
+ * about the mocked pre/post account snapshots, not the instruction contents.
+ */
+function buildLimitOrderTx({ walletPubkey, extraWritableKey } = {}) {
+  const keys = extraWritableKey ? [walletPubkey, extraWritableKey] : [walletPubkey];
+  const header = Buffer.from([1, 0, 0]); // 1 required signer (wallet), 0 readonly signed, 0 readonly unsigned
+  const numKeys = Buffer.from([keys.length]);
+  const keyBytes = Buffer.concat(keys.map((k) => base58Decode(k)));
+  const blockhash = Buffer.alloc(32, 0x03);
+  const numInstructions = Buffer.from([0x00]);
+  const message = Buffer.concat([header, numKeys, keyBytes, blockhash, numInstructions]);
+  return Buffer.concat([Buffer.from([1]), Buffer.alloc(64), message]).toString('base64');
+}
+
+/** Native-SOL account info shape expected from a getMultipleAccounts/simulateTransaction response. */
+function solanaNativeAccountInfo(lamports) {
+  return { lamports, owner: '11111111111111111111111111111111', data: ['', 'base64'], executable: false, rentEpoch: 0 };
+}
+
+/** jsonParsed SPL-token account info shape. */
+function solanaTokenAccountInfo({ mint, owner, amount }) {
+  return {
+    lamports: 2039280,
+    owner: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+    data: { program: 'spl-token', parsed: { type: 'account', info: { mint, owner, tokenAmount: { amount: String(amount), decimals: 6 } } } },
+    executable: false,
+    rentEpoch: 0,
+  };
+}
 
 /**
  * Build a minimal valid base64-encoded Solana VersionedTransaction.

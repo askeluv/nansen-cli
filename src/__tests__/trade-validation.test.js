@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { validateQuoteInput, fetchNativeBalance, fetchTokenBalance, validateBalance, resolvePercentAmount, validateGasBalance, GASLESS_MIN_TRADE_USD, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertInputWithinMax, assertSwapCalldataNotBareTransfer, assertSwapOutcome, assertSolanaInstructionsSafe, assertSolanaSwapOutcome, MAX_UINT256, needsAllowanceRevoke } from '../trade-validation.js';
+import { validateQuoteInput, fetchNativeBalance, fetchTokenBalance, validateBalance, resolvePercentAmount, validateGasBalance, GASLESS_MIN_TRADE_USD, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertInputWithinMax, assertSwapCalldataNotBareTransfer, assertSwapOutcome, assertSolanaInstructionsSafe, assertSolanaSwapOutcome, assertLimitOrderDepositOutcome, assertLimitOrderCancelOutcome, MAX_UINT256, needsAllowanceRevoke } from '../trade-validation.js';
 import { SOL_SENTINEL } from '../solana-simulation.js';
 import { base58Decode, generateSolanaWallet } from '../wallet.js';
 
@@ -2140,6 +2140,107 @@ describe('assertSolanaSwapOutcome', () => {
     const sim = { deltas: { [SOL_USDC]: -1000000n } }; // no output at all
     expect(() => assertSolanaSwapOutcome(splInRequest, splInQuote, sim, { slippage: 0.03 }))
       .toThrow(/SWAP_OUTCOME_MISMATCH[\s\S]*minimum acceptable output/i);
+  });
+});
+
+describe('assertLimitOrderDepositOutcome', () => {
+  const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+  // MAX_PRIORITY_FEE_LAMPORTS (10M) + NATIVE_SIBLING_DUST_LAMPORTS (3M).
+  const SLACK = 13_000_000n;
+
+  it('passes an SPL input leaving the wallet by exactly amount', () => {
+    const sim = { deltas: { [USDC]: -1_000_000n } };
+    expect(assertLimitOrderDepositOutcome(sim, { inputMint: USDC, amount: 1_000_000n }))
+      .toEqual({ verified: true });
+  });
+
+  it('rejects an SPL input outflow exceeding amount (upper bound)', () => {
+    const sim = { deltas: { [USDC]: -1_000_001n } };
+    expect(() => assertLimitOrderDepositOutcome(sim, { inputMint: USDC, amount: 1_000_000n }))
+      .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*exceeding the deposit amount/i);
+  });
+
+  it('passes a native-SOL input within amount + fee/rent slack', () => {
+    const sim = { deltas: { [SOL_SENTINEL]: -(1_000_000_000n + SLACK) } };
+    expect(assertLimitOrderDepositOutcome(sim, { inputMint: SOL_SENTINEL, amount: 1_000_000_000n }))
+      .toEqual({ verified: true });
+  });
+
+  it('rejects a native-SOL input beyond amount + fee/rent slack', () => {
+    const sim = { deltas: { [SOL_SENTINEL]: -(1_000_000_000n + SLACK + 1n) } };
+    expect(() => assertLimitOrderDepositOutcome(sim, { inputMint: SOL_SENTINEL, amount: 1_000_000_000n }))
+      .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*exceeding the deposit amount/i);
+  });
+
+  it('rejects a sibling native-SOL drain alongside a benign SPL deposit (repro shape)', () => {
+    // The reproduced bug: a SystemProgram.transfer of 0.123 SOL to an attacker
+    // address, alongside a legitimate USDC deposit.
+    const sim = { deltas: { [USDC]: -1_000_000n, [SOL_SENTINEL]: -123_456_789n } };
+    expect(() => assertLimitOrderDepositOutcome(sim, { inputMint: USDC, amount: 1_000_000n }))
+      .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*other than the one you are depositing/i);
+  });
+
+  it('tolerates native-SOL fee/rent dust as a sibling on an SPL deposit', () => {
+    const sim = { deltas: { [USDC]: -1_000_000n, [SOL_SENTINEL]: -2_000_000n } };
+    expect(assertLimitOrderDepositOutcome(sim, { inputMint: USDC, amount: 1_000_000n }))
+      .toEqual({ verified: true });
+  });
+
+  it('rejects a partial reroute of the SPL input (lower bound)', () => {
+    const sim = { deltas: { [USDC]: -500_000n } }; // half of `amount`
+    expect(() => assertLimitOrderDepositOutcome(sim, { inputMint: USDC, amount: 1_000_000n }))
+      .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*not the exact deposit amount/i);
+  });
+
+  it('rejects any SPL outflow shortfall, however small', () => {
+    const sim = { deltas: { [USDC]: -999_999n } };
+    expect(() => assertLimitOrderDepositOutcome(sim, { inputMint: USDC, amount: 1_000_000n }))
+      .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*not the exact deposit amount/i);
+  });
+
+  it('rejects a native-SOL input below amount minus fee/rent slack (floor)', () => {
+    const sim = { deltas: { [SOL_SENTINEL]: -(1_000_000_000n - SLACK - 1n) } };
+    expect(() => assertLimitOrderDepositOutcome(sim, { inputMint: SOL_SENTINEL, amount: 1_000_000_000n }))
+      .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*below the deposit amount/i);
+  });
+
+  it('rejects a zero-outflow deposit (subsumed by the floor)', () => {
+    const sim = { deltas: {} };
+    expect(() => assertLimitOrderDepositOutcome(sim, { inputMint: USDC, amount: 1_000_000n }))
+      .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH/);
+  });
+
+  it('fails closed on a non-integer simulated delta', () => {
+    const sim = { deltas: { [USDC]: 'not-a-number' } };
+    expect(() => assertLimitOrderDepositOutcome(sim, { inputMint: USDC, amount: 1_000_000n }))
+      .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*not an integer/i);
+  });
+});
+
+describe('assertLimitOrderCancelOutcome', () => {
+  const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
+  it('passes a pure inflow (withdrawal returning funds to the wallet)', () => {
+    const sim = { deltas: { [USDC]: 1_000_000n } };
+    expect(assertLimitOrderCancelOutcome(sim)).toEqual({ verified: true });
+  });
+
+  it('tolerates native-SOL fee/rent dust', () => {
+    const sim = { deltas: { [USDC]: 1_000_000n, [SOL_SENTINEL]: -2_000_000n } };
+    expect(assertLimitOrderCancelOutcome(sim)).toEqual({ verified: true });
+  });
+
+  it('rejects any SPL outflow during cancellation', () => {
+    const otherMint = 'Other11111111111111111111111111111111111';
+    const sim = { deltas: { [USDC]: 1_000_000n, [otherMint]: -1n } };
+    expect(() => assertLimitOrderCancelOutcome(sim))
+      .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*left your wallet during cancellation/i);
+  });
+
+  it('rejects a native-SOL outflow beyond fee/rent dust', () => {
+    const sim = { deltas: { [USDC]: 1_000_000n, [SOL_SENTINEL]: -14_000_000n } };
+    expect(() => assertLimitOrderCancelOutcome(sim))
+      .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*left your wallet during cancellation/i);
   });
 });
 
