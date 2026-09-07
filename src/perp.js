@@ -245,17 +245,28 @@ async function signHlAction(eip712, { privateKeyHex, privyClient, privyWalletId,
 // Parse the per-order statuses HL returns for an `order` action so the oid and
 // fill are surfaced — the perp analogue of spot printing its quote id. HL replies:
 //   response.data.statuses[] = { resting:{oid} } | { filled:{oid,totalSz,avgPx} } | { error }
-// A rejected leg ({error}) has already thrown in submitExchange, so only
-// resting/filled legs reach here. A TP/SL bracket returns multiple legs; label
-// them the same way extractActionErrors does (parent / take-profit / stop-loss).
+// Successful responses and structured rejection responses both pass through
+// here. A TP/SL bracket returns multiple legs; label them the same way
+// extractActionErrors does (parent / take-profit / stop-loss).
 // Gated on the SUBMITTED action being an order: leverage/transfer/builder-fee
 // actions (type "default") and cancels return no oids, so [] falls back to the
 // concise raw response line in buildScreenSignSubmit.
 export function summarizeOrderResult(result, action) {
   if (action?.type !== 'order') return [];
-  const statuses = result?.response?.data?.statuses;
-  if (!Array.isArray(statuses)) return [];
-  const multiLeg = (action.orders?.length ?? 0) > 1;
+  const responseStatuses = result?.response?.data?.statuses;
+  if (!Array.isArray(responseStatuses)) return [];
+  const orderCount = action.orders?.length ?? 0;
+  const multiLeg = orderCount > 1;
+  // Hyperliquid may return one pre-validation error for an entire batch rather
+  // than one status per order. Treat that single error as the outcome of every
+  // submitted leg so bracket attribution remains one-to-one with action.orders.
+  const statuses = multiLeg
+    && responseStatuses.length === 1
+    && responseStatuses[0]
+    && typeof responseStatuses[0] === 'object'
+    && 'error' in responseStatuses[0]
+    ? Array.from({ length: orderCount }, () => responseStatuses[0])
+    : responseStatuses;
   const out = [];
   for (const [index, entry] of statuses.entries()) {
     if (!entry || typeof entry !== 'object') continue;
@@ -273,31 +284,51 @@ export function summarizeOrderResult(result, action) {
     // above 2^53 arrived rounded. Flag precision (oidSafe) so the caller can
     // withhold a copy-paste cancel — and BI can drop the id — rather than act on
     // a wrong oid presented as authoritative.
+    const orderSide = action.orders?.[index]?.b;
+    const side = orderSide === true ? 'buy' : orderSide === false ? 'sell' : undefined;
+    const reduceOnly = action.orders?.[index]?.r === true;
+    const positionSide = side === undefined
+      ? undefined
+      : reduceOnly
+        ? (side === 'buy' ? 'short' : 'long')
+        : (side === 'buy' ? 'long' : 'short');
     if (entry.filled && entry.filled.oid !== undefined) {
       const { oid, totalSz, avgPx } = entry.filled;
-      out.push({ leg, kind: 'filled', oid, oidSafe: Number.isSafeInteger(oid), totalSz, avgPx });
+      out.push({ index, leg, side, positionSide, kind: 'filled', oid, oidSafe: Number.isSafeInteger(oid), totalSz, avgPx });
     } else if (entry.resting && entry.resting.oid !== undefined) {
       const { oid } = entry.resting;
-      out.push({ leg, kind: 'resting', oid, oidSafe: Number.isSafeInteger(oid) });
+      out.push({ index, leg, side, positionSide, kind: 'resting', oid, oidSafe: Number.isSafeInteger(oid) });
+    } else if ('error' in entry) {
+      out.push({ index, leg, side, positionSide, kind: 'rejected' });
     }
   }
   return out;
 }
 
-// Fire the perp_order_completed event via the injected tracker. Deliberately
-// minimal (privacy): only the trade side and the parent Hyperliquid order id —
-// no asset, price, size, or fill detail. The order-placement response carries no
-// trade/fill id (that exists only once the order fills, via the fills feed), so
-// side + oid is the reliable maximum here. The oid is omitted when it arrived
-// rounded past 2^53 (oidSafe false) so BI never records a wrong id. `summary` is
-// summarizeOrderResult's output; its parent leg carries the order id.
-function emitPerpOrderCompleted(telemetry, summary) {
-  const parent = summary.find((o) => o.leg === 'parent') ?? summary[0];
-  return telemetry.track({
+// Fire one privacy-minimal event per response leg. Each oid is joined to fills
+// in BI; the shared nonce reconstructs the submitted batch. Raw wallet, prices,
+// sizes and error text never leave the CLI. Unsafe uint64 ids are omitted.
+function emitPerpOrderCompleted(telemetry, summary, walletAddress, submissionId, errorCode) {
+  return Promise.all(summary.map((order) => telemetry.track({
     command: telemetry.command,
-    side: telemetry.side,
-    oid: parent && parent.oidSafe ? parent.oid : undefined,
-  });
+    // Pass the leg's own side (not the command-level side) so telemetry can
+    // distinguish a leg whose side is unknown and omit position_side rather
+    // than fabricate one. order.side is always set for real HL legs.
+    side: order.side,
+    position_side: order.positionSide,
+    outcome: order.kind,
+    // Guard submission_id so a future refactor that drops the nonce can never
+    // stringify undefined into the BI dedup key (perpOutcomeEventId derives
+    // the event id from it).
+    ...(submissionId !== undefined && { submission_id: String(submissionId) }),
+    leg_index: order.index,
+    leg: order.leg,
+    wallet_address: walletAddress,
+    oid: order.oidSafe ? order.oid : undefined,
+    // A mixed response is a command-level PARTIAL_FILL, but successful legs
+    // remain successful. Attach the stable code only to rejected legs.
+    ...(order.kind === 'rejected' && errorCode ? { error_code: errorCode } : {}),
+  })));
 }
 
 async function buildScreenSignSubmit(apiInstance, prepared, ctx) {
@@ -317,7 +348,24 @@ async function buildScreenSignSubmit(apiInstance, prepared, ctx) {
   const signature = await signHlAction(eip712, ctx);
 
   log('  Submitting to Hyperliquid...');
-  const result = await submitExchange({ action, nonce, signature, vaultAddress: null });
+  let result;
+  try {
+    result = await submitExchange({ action, nonce, signature, vaultAddress: null });
+  } catch (error) {
+    if (telemetry && error.exchangeResult) {
+      // Emit only authoritative per-leg outcomes. An opaque or malformed HTTP
+      // body has an indeterminate result and remains covered by cli_command_failed.
+      const outcomes = summarizeOrderResult(error.exchangeResult, action);
+      if (outcomes.length) {
+        try {
+          await emitPerpOrderCompleted(telemetry, outcomes, walletAddress, nonce, error.code);
+        } catch {
+          // Best-effort; preserve the original exchange error.
+        }
+      }
+    }
+    throw error;
+  }
 
   const status = result.status ?? 'ok';
   log(`  Status: ${status}`);
@@ -345,7 +393,7 @@ async function buildScreenSignSubmit(apiInstance, prepared, ctx) {
     log(`  Response: ${resp}`);
   }
 
-  // Emit the order OUTCOME to BI (oid, fill status/price/size, TP/SL legs) — the
+  // Emit the order outcome to BI (one privacy-minimal event per response leg) — the
   // perp analogue of the command-level telemetry, which fires too early (before
   // this HL response) to observe any of it. Order/close only: cancel / leverage
   // / transfer / builder-fee actions carry no `telemetry` and also summarize to
@@ -353,7 +401,7 @@ async function buildScreenSignSubmit(apiInstance, prepared, ctx) {
   // completed order into a cli_command_failed.
   if (telemetry && orders.length) {
     try {
-      await emitPerpOrderCompleted(telemetry, orders);
+      await emitPerpOrderCompleted(telemetry, orders, walletAddress, nonce);
     } catch {
       // Best-effort; never surface a tracking error after a real fill.
     }

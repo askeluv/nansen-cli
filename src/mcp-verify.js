@@ -12,6 +12,37 @@ class McpRequestError extends Error {
   }
 }
 
+const IPV4_OCTET = '(?:25[0-5]|2[0-4]\\d|1?\\d{1,2})';
+const LOOPBACK_IPV4 = new RegExp(`^127\\.${IPV4_OCTET}\\.${IPV4_OCTET}\\.${IPV4_OCTET}$`);
+
+// IPv4-mapped IPv6 loopback (127.0.0.0/8). Node's URL canonicalizes
+// ::ffff:127.x.x.x to ::ffff:7fNN:NNNN (the 127 becomes the 7f high byte), so
+// match that form; non-loopback mapped addresses fall outside the 7f prefix.
+const LOOPBACK_IPV4_MAPPED = /^::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}$/i;
+
+function isLoopbackHostname(hostname) {
+  if (!hostname) return false;
+  const host = hostname.toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
+  if (host === 'localhost' || host === '::1') return true;
+  if (LOOPBACK_IPV4_MAPPED.test(host)) return true;
+  return LOOPBACK_IPV4.test(host);
+}
+
+/**
+ * Classify a destination URL for the credential-disclosure guard: its origin
+ * (for messaging), protocol, and whether the host is loopback.
+ */
+function classifyDestination(url) {
+  try {
+    const parsed = new URL(url);
+    return { origin: parsed.origin, protocol: parsed.protocol, loopback: isLoopbackHostname(parsed.hostname) };
+  } catch {
+    // An unparseable URL never reaches an authenticated fetch (tools/list fails
+    // first), so this is only for messaging; treat it as an unsafe destination.
+    return { origin: url, protocol: null, loopback: false };
+  }
+}
+
 function responseContentType(response) {
   return (
     response.headers?.get?.('content-type')
@@ -185,6 +216,7 @@ export async function runMcpVerifyChecks({
   fetchFn = fetch,
   timeoutMs = 30_000,
   devConfigPath,
+  sendApiKey = false,
 } = {}) {
   const checks = [];
   const auth = resolveAuthConfig(env, devConfigPath);
@@ -205,8 +237,39 @@ export async function runMcpVerifyChecks({
     ));
   }
 
+  // A saved key is trusted for the default Nansen endpoint only. Forwarding it
+  // to a caller-supplied URL requires explicit per-invocation consent, and no
+  // key may travel in cleartext to a public host.
+  let keyWithheld = null;
   if (key && url !== DEFAULT_MCP_URL) {
-    checks.push(check('mcp-url', 'warn', `Non-default MCP URL: ${url} — the API key will be sent to this host`));
+    const dest = classifyDestination(url);
+    if (dest.protocol === 'http:' && !dest.loopback) {
+      keyWithheld = check(
+        'mcp-url',
+        'error',
+        `Refusing to send the API key over plain HTTP to a non-loopback host (${dest.origin})`,
+        'Use an https:// URL. Plain HTTP is only permitted for localhost/loopback development.',
+      );
+    } else if (dest.protocol !== 'https:' && !(dest.protocol === 'http:' && dest.loopback)) {
+      // Anything not provably secure — an unparseable URL or a non-http(s)
+      // scheme — is refused rather than relied on to fail later in fetch.
+      keyWithheld = check(
+        'mcp-url',
+        'error',
+        `Refusing to send the API key to an unsupported MCP URL (${dest.origin})`,
+        'Use an https:// URL, or a loopback http:// URL for local development.',
+      );
+    } else if (!explicitKey && !sendApiKey) {
+      keyWithheld = check(
+        'mcp-url',
+        'error',
+        `Saved API key withheld from custom MCP URL (${dest.origin})`,
+        `Re-run with --send-api-key to authorize sending your saved key to ${dest.origin}, or pass --api-key <key> to supply one explicitly.`,
+      );
+    } else {
+      checks.push(check('mcp-url', 'warn', `Sending the API key to custom MCP host: ${dest.origin}`));
+    }
+    if (keyWithheld) checks.push(keyWithheld);
   }
 
   let serverReady = false;
@@ -239,6 +302,8 @@ export async function runMcpVerifyChecks({
 
   if (!key) {
     checks.push(skippedAuth('no API key was provided'));
+  } else if (keyWithheld) {
+    checks.push(skippedAuth('the API key was withheld from this custom URL (see above)'));
   } else if (!serverReady) {
     checks.push(skippedAuth('tools/list did not establish server reachability'));
   } else {

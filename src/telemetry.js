@@ -5,10 +5,13 @@
  * how long they take, and where errors occur.  Events are fire-and-forget —
  * failures are silently ignored and never block the CLI.
  *
- * Perp `order`/`close` additionally emit a `perp_order_completed` event that
- * carries only the trade side and the Hyperliquid order id, tied to the same
- * random anonymous_id. All telemetry is opt-out via DO_NOT_TRACK=1 or
- * NANSEN_NO_TELEMETRY=1.
+ * Perp `order`/`close` additionally emit one canonical `trade_perps_*` outcome
+ * event per Hyperliquid response leg. Each event carries the leg's side,
+ * outcome and order id plus a shared submission id and SHA-256 wallet
+ * identifier. Raw wallet addresses, prices, sizes and exchange error text are
+ * never sent. The standard anonymous_id lets BI resolve a Nansen user when
+ * one is available.
+ * All telemetry is opt-out via DO_NOT_TRACK=1 or NANSEN_NO_TELEMETRY=1.
  */
 
 import fs from 'fs';
@@ -167,6 +170,54 @@ function buildContext() {
   };
 }
 
+function hashWalletAddress(walletAddress) {
+  if (!walletAddress) return undefined;
+  return crypto
+    .createHash('sha256')
+    .update(String(walletAddress).toLowerCase())
+    .digest('base64');
+}
+
+function contentDerivedUuid(value) {
+  const bytes = crypto.createHash('sha256').update(value).digest().subarray(0, 16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function perpLegAttemptId({ wallet_address, submission_id, leg_index }) {
+  if (
+    wallet_address === undefined
+    || wallet_address === null
+    || submission_id === undefined
+    || submission_id === null
+    || leg_index === undefined
+    || leg_index === null
+  ) {
+    return crypto.randomUUID();
+  }
+  return contentDerivedUuid(`${String(wallet_address).toLowerCase()}:${submission_id}:${leg_index}`);
+}
+
+function perpOutcomeEventId({ wallet_address, submission_id, leg_index, outcome }) {
+  if (
+    wallet_address === undefined
+    || wallet_address === null
+    || submission_id === undefined
+    || submission_id === null
+    || leg_index === undefined
+    || leg_index === null
+    || outcome === undefined
+    || outcome === null
+  ) {
+    return crypto.randomUUID();
+  }
+  return contentDerivedUuid(
+    `${String(wallet_address).toLowerCase()}:${submission_id}:${leg_index}:${outcome}`,
+  );
+}
+
 // ─── public API ────────────────────────────────────────────
 
 /**
@@ -258,7 +309,7 @@ export function trackCommandFailed({
 }
 
 /**
- * Track a completed Hyperliquid perp order (`nansen perp order` / `perp close`).
+ * Track one Hyperliquid perp response leg (`nansen perp order` / `perp close`).
  *
  * Fired from `buildScreenSignSubmit` in perp.js AFTER the HL /exchange response
  * is parsed (`summarizeOrderResult`). This is the only event that sees the order
@@ -268,25 +319,61 @@ export function trackCommandFailed({
  * Hyperliquid — Decision D4), so the backend never sees the response either;
  * this client-side event is the only way order outcomes reach BI.
  *
- * Fires on success only: a HL rejection throws in `submitExchange` and is
- * captured by `cli_command_failed`, so no failed event is emitted here.
+ * Reuse the canonical trade_perps order/close succeeded/failed event names so
+ * CLI, web, mobile, and backend share one BI vocabulary. Exchange rejections
+ * with a parsed response emit the matching `*_failed` event before
+ * the original command error is rethrown. Network and indeterminate timeout
+ * failures remain covered only by `cli_command_failed` because no authoritative
+ * exchange response exists.
  *
- * Deliberately minimal: only the trade side and the Hyperliquid order id — no
- * asset, price, size, or fill detail. A trade (fill) id is not carried by the
- * order-placement response (it exists only once the order fills, via the fills
- * feed), so it is not available here. `oid` is omitted when it exceeded JS
- * safe-integer precision at parse time (see summarizeOrderResult).
+ * One event is emitted for each response leg. This preserves bracket and batch
+ * order identity without putting a nested array contract into the BI pipeline.
+ * A trade/fill id is not carried by the placement response; BI joins each safe
+ * `oid` to Hyperliquid fills to obtain it. The wallet is SHA-256 hashed using
+ * the same lower-case convention as BI's `hash_address` macro.
  *
  * @param {object} opts
  * @param {'order'|'close'} opts.command  - Which perp command placed the order (routes `path`)
- * @param {'buy'|'sell'} opts.side        - Normalized trade side
- * @param {number} [opts.oid]             - Parent leg's Hyperliquid order id (omitted if imprecise)
+ * @param {'buy'|'sell'} opts.side        - This leg's normalized trade side
+ * @param {'long'|'short'} [opts.position_side] - Position side after accounting for reduce-only
+ * @param {'filled'|'resting'|'rejected'} opts.outcome - Exchange outcome
+ * @param {string} opts.submission_id     - Shared id for all legs in one action
+ * @param {number} opts.leg_index         - Zero-based response-leg index
+ * @param {string} opts.leg               - parent/take-profit/stop-loss/leg N
+ * @param {string} opts.wallet_address    - Raw signer address; hashed before send
+ * @param {number} [opts.oid]             - Hyperliquid order id (omitted if imprecise/unavailable)
+ * @param {string} [opts.error_code]      - Stable local code; never raw exchange text
  */
-export function trackPerpOrderCompleted({ command, side, oid }) {
+export function trackPerpOrderCompleted({
+  command,
+  side,
+  position_side,
+  outcome,
+  submission_id,
+  leg_index,
+  leg,
+  wallet_address,
+  oid,
+  error_code,
+}) {
+  const walletAddressHash = hashWalletAddress(wallet_address);
+  const attemptId = perpLegAttemptId({ wallet_address, submission_id, leg_index });
+  const eventId = perpOutcomeEventId({ wallet_address, submission_id, leg_index, outcome });
+  const event = `trade_perps_${command === 'close' ? 'close' : 'order'}_${outcome === 'rejected' ? 'failed' : 'succeeded'}`;
+  // position_side is supplied per leg by summarizeOrderResult (reduceOnly-aware,
+  // undefined when the leg's own side is unknown). Only derive a fallback when a
+  // real leg side is present; never fabricate a position_side from the
+  // command-level side when the leg's side is unknown — that would corrupt the
+  // wallet-scoped joins in the companion dbt change.
+  const positionSide = position_side ?? (side === undefined
+    ? undefined
+    : command === 'close'
+      ? (side === 'buy' ? 'short' : 'long')
+      : (side === 'buy' ? 'long' : 'short'));
   return sendEvent({
-    event: 'perp_order_completed',
+    event,
     event_source: getEventSource(),
-    event_id: crypto.randomUUID(),
+    event_id: eventId,
     user_id: null,
     anonymous_id: getAnonymousId(),
     session_id: getSessionId(),
@@ -295,9 +382,21 @@ export function trackPerpOrderCompleted({ command, side, oid }) {
     // "/perp/close"), so BI can line the two events up per command.
     path: commandToPath(`perp ${command}`),
     properties: {
-      source: `nansen-cli/${cliVersion}`,
-      side,
+      // Canonical trade events use a stable product source. The CLI release is
+      // already preserved in context.client_version by buildContext().
+      source: 'cli',
+      chain: 'hyperliquid',
+      attempt_id: attemptId,
+      action: command === 'close' ? 'close' : 'open',
+      position_side: positionSide,
+      order_side: side,
+      execution_status: outcome,
+      ...(submission_id !== undefined && { submission_id: String(submission_id) }),
+      leg_index,
+      leg,
+      ...(walletAddressHash && { wallet_address_hash: walletAddressHash }),
       ...(oid !== undefined && { oid }),
+      ...(error_code && { error_code }),
     },
     context: buildContext(),
   });

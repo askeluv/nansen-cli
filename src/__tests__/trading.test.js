@@ -3489,7 +3489,13 @@ describe('API error handling', () => {
     global.fetch = origFetch;
   });
 
-  it('should surface UPSTREAM_BROADCAST_ERROR from execute API', async () => {
+  it('fails closed on a 502 from execute API, preserving the upstream body as details', async () => {
+    // A 502 is ambiguous no matter the body: the gateway may have forwarded the
+    // signed tx upstream before failing, so we can't trust a JSON error code
+    // (even "simulation failed") to prove the tx never went out. executeTransaction
+    // classifies it BROADCAST_FAILED — the fail-closed class that marks the quote
+    // spent and aborts — rather than surfacing the upstream code as nonfatal. The
+    // original code/message is preserved as `details` so nothing is lost.
     const origFetch = global.fetch;
     const errorBody = JSON.stringify({
       code: 'UPSTREAM_BROADCAST_ERROR',
@@ -3502,10 +3508,46 @@ describe('API error handling', () => {
     });
 
     const { executeTransaction } = await import('../trading.js');
+    // retries default to 2 with a 1.5s delay; drop both so the test doesn't wait.
     await expect(executeTransaction({
       signedTransaction: 'test',
       chain: 'solana',
-    })).rejects.toThrow('simulation failed');
+    }, { retries: 0 })).rejects.toMatchObject({
+      code: 'BROADCAST_FAILED',
+      status: 502,
+      details: { code: 'UPSTREAM_BROADCAST_ERROR', message: 'Jupiter Ultra execute failed: transaction simulation failed' },
+    });
+
+    global.fetch = origFetch;
+  });
+
+  it('fails closed on a parseable 504 from execute API (every 5xx is ambiguous)', async () => {
+    // A 504 with a structured body — { code: "UPSTREAM_TIMEOUT" } — is NOT a
+    // definitive "never sent": the gateway may have forwarded the signed tx
+    // upstream and then lost the ack on the timeout. Classifying it by its own
+    // (nonfatal) code would let the candidate loop broadcast the next quote on
+    // top of a live tx, so executeTransaction folds it into BROADCAST_FAILED
+    // like a 502/503, preserving the upstream body as `details`.
+    const origFetch = global.fetch;
+    const errorBody = JSON.stringify({
+      code: 'UPSTREAM_TIMEOUT',
+      message: 'Upstream request timed out',
+    });
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 504,
+      text: async () => errorBody,
+    });
+
+    const { executeTransaction } = await import('../trading.js');
+    await expect(executeTransaction({
+      signedTransaction: 'test',
+      chain: 'base',
+    }, { retries: 0 })).rejects.toMatchObject({
+      code: 'BROADCAST_FAILED',
+      status: 504,
+      details: { code: 'UPSTREAM_TIMEOUT', message: 'Upstream request timed out' },
+    });
 
     global.fetch = origFetch;
   });
@@ -5409,6 +5451,75 @@ describe('Relay aggregator: --gasless flag dispatch', () => {
     expect(body.steps).toEqual([{ kind: 'transaction', items: [{ data: 'opaque-step-blob' }] }]);
     expect(body.simulate).toBe(false); // gasless skips simulation
     expect(body.quoteId).toBe('backend-relay-quote-id');
+
+    delete process.env.NANSEN_WALLET_PASSWORD;
+    vi.unstubAllGlobals();
+  });
+
+  it('does NOT retry the /execute POST on an ambiguous 5xx for a gasless swap (no double-solve)', async () => {
+    // A --gasless Relay swap POSTs a signed authorization; Relay's solver
+    // broadcasts its own wrapping tx from it, so a re-POST after the solver
+    // already picked it up can't be deduped at the node level and risks a second
+    // solve. executeTransaction must therefore be called with retries:0 for
+    // gasless — a single POST that fails closed — unlike a normal swap where the
+    // byte-identical replay is safe to retry. Regression guard: exactly ONE POST
+    // to /execute even though the response is a retryable-looking 502.
+    createWallet('default', 'testpass');
+    process.env.NANSEN_WALLET_PASSWORD = 'testpass';
+
+    let executePosts = 0;
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      if (urlStr.includes('trading-api') && urlStr.endsWith('/execute')) {
+        executePosts += 1;
+        return Promise.resolve({
+          ok: false,
+          status: 502,
+          text: () => Promise.resolve('<!DOCTYPE html><html>502 Bad Gateway</html>'),
+        });
+      }
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ jsonrpc: '2.0', id: 1, result: null })) });
+    }));
+
+    const sigCount = Buffer.from([0x01]);
+    const emptySig = Buffer.alloc(64);
+    const message = Buffer.from([0x01, 0x00, 0x01, 0x02, ...Buffer.alloc(32), ...Buffer.alloc(32), ...Buffer.alloc(32), 0x01, 0x01, 0x01, 0x00, 0x04, 0x02, 0x00, 0x00, 0x00]);
+    const txBase64 = Buffer.concat([sigCount, emptySig, message]).toString('base64');
+
+    const quoteId = saveQuote({
+      success: true,
+      metadata: { quoteId: 'backend-relay-quote-id' },
+      quotes: [{
+        aggregator: 'relay',
+        inputMint: '11111111111111111111111111111111',
+        outputMint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+        inAmount: '1000000000',
+        outAmount: '180000000',
+        approvalAddress: '',
+        transaction: txBase64,
+        metadata: {
+          requestId: 'relay-req-gas',
+          isCrossChain: true,
+          bridgeTool: 'relay',
+          steps: [{ kind: 'transaction', items: [{ data: 'opaque-step-blob' }] }],
+        },
+      }],
+    }, 'solana', 'local', null, 'base', {
+      swapMode: 'exactIn',
+      request: solanaIntent({
+        walletAddress: showWallet('default').solana,
+        fromToken: '11111111111111111111111111111111',
+        toToken: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+        toChain: 'base',
+        amount: '1000000000',
+        maxInputAmount: '1000000000',
+      }),
+    });
+
+    const cmds = buildTradingCommands({ log: () => {}, exit: () => {} });
+    await expect(cmds.execute([], null, { gasless: true }, { quote: quoteId })).rejects.toThrow();
+
+    expect(executePosts).toBe(1); // no retry — the gasless authorization is not re-POSTed
 
     delete process.env.NANSEN_WALLET_PASSWORD;
     vi.unstubAllGlobals();

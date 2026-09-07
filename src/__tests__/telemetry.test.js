@@ -291,44 +291,117 @@ describe('telemetry', () => {
   });
 
   describe('trackPerpOrderCompleted', () => {
-    const baseOutcome = { command: 'order', side: 'buy', oid: 55 };
+    const baseOutcome = {
+      command: 'order',
+      side: 'buy',
+      outcome: 'filled',
+      submission_id: '1234567890',
+      leg_index: 0,
+      leg: 'parent',
+      wallet_address: '0x1111111111111111111111111111111111111111',
+      oid: 55,
+    };
 
-    it('sends a perp_order_completed event with only side and order id', () => {
+    it('sends a privacy-minimal canonical per-leg outcome', () => {
       trackPerpOrderCompleted(baseOutcome);
 
       expect(fetchMock).toHaveBeenCalledOnce();
       const [url, opts] = fetchMock.mock.calls[0];
       expect(url).toContain('bi-data-sources.nansen.ai');
       const body = JSON.parse(opts.body);
-      expect(body.event).toBe('perp_order_completed');
+      expect(body.event).toBe('trade_perps_order_succeeded');
       expect(body.event_source).toBe('cli_prod');
       expect(body.path).toBe('/perp/order');
       expect(body.anonymous_id).toBeTruthy();
       expect(body.session_id).toBeTruthy();
       expect(body.event_id).toBeTruthy();
       expect(body.timestamp).toBeTruthy();
-      // Only side + oid (plus the standard version tag). No asset, price, size,
-      // fill status, or TP/SL detail — and `command` must not leak into properties.
       expect(body.properties).toEqual({
-        source: expect.stringContaining('nansen-cli/'),
-        side: 'buy',
+        source: 'cli',
+        chain: 'hyperliquid',
+        attempt_id: expect.any(String),
+        action: 'open',
+        position_side: 'long',
+        order_side: 'buy',
+        execution_status: 'filled',
+        submission_id: '1234567890',
+        leg_index: 0,
+        leg: 'parent',
+        wallet_address_hash: expect.any(String),
         oid: 55,
       });
+      expect(body.properties).not.toHaveProperty('wallet_address');
+      expect(body.properties).not.toHaveProperty('price');
+      expect(body.properties).not.toHaveProperty('size');
+      expect(body.properties.attempt_id).not.toBe(body.event_id);
       expect(body.context.client_type).toBe('nansen-cli');
     });
 
     it('maps the close command to path /perp/close without leaking command', () => {
       trackPerpOrderCompleted({ ...baseOutcome, command: 'close' });
       const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body.event).toBe('trade_perps_close_succeeded');
       expect(body.path).toBe('/perp/close');
+      expect(body.properties.action).toBe('close');
+      expect(body.properties.position_side).toBe('short');
       expect(body.properties).not.toHaveProperty('command');
+    });
+
+    it('uses the canonical failed event names for rejected outcomes', () => {
+      trackPerpOrderCompleted({ ...baseOutcome, outcome: 'rejected', error_code: 'HL_ACTION_REJECTED' });
+      const order = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(order.event).toBe('trade_perps_order_failed');
+      expect(order.properties.execution_status).toBe('rejected');
+      expect(order.properties.error_code).toBe('HL_ACTION_REJECTED');
+
+      trackPerpOrderCompleted({ ...baseOutcome, command: 'close', outcome: 'rejected' });
+      const close = JSON.parse(fetchMock.mock.calls[1][1].body);
+      expect(close.event).toBe('trade_perps_close_failed');
     });
 
     it('omits oid when it is not provided (imprecise / unknown)', () => {
       trackPerpOrderCompleted({ command: 'order', side: 'sell' });
       const body = JSON.parse(fetchMock.mock.calls[0][1].body);
-      expect(body.properties.side).toBe('sell');
+      expect(body.properties.order_side).toBe('sell');
       expect(body.properties).not.toHaveProperty('oid');
+    });
+
+    it('omits position_side when the leg side is unknown instead of fabricating one', () => {
+      trackPerpOrderCompleted({ ...baseOutcome, side: undefined });
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body.properties).not.toHaveProperty('position_side');
+      expect(body.properties).not.toHaveProperty('order_side');
+    });
+
+    it('uses a deterministic event id for duplicate delivery of the same leg', () => {
+      trackPerpOrderCompleted(baseOutcome);
+      trackPerpOrderCompleted(baseOutcome);
+      const first = JSON.parse(fetchMock.mock.calls[0][1].body);
+      const second = JSON.parse(fetchMock.mock.calls[1][1].body);
+      expect(first.event_id).toBe(second.event_id);
+      expect(first.event_id).toMatch(/^[0-9a-f-]{36}$/);
+      expect(first.event_id.split('-')[2][0]).toBe('5');
+      expect(first.event_id.split('-')[3][0]).toMatch(/[89ab]/);
+      expect(first.properties.attempt_id).toBe(second.properties.attempt_id);
+    });
+
+    it('keeps the leg attempt id stable when its terminal outcome changes', () => {
+      trackPerpOrderCompleted(baseOutcome);
+      trackPerpOrderCompleted({ ...baseOutcome, outcome: 'rejected' });
+      const first = JSON.parse(fetchMock.mock.calls[0][1].body);
+      const second = JSON.parse(fetchMock.mock.calls[1][1].body);
+      expect(first.properties.attempt_id).toBe(second.properties.attempt_id);
+      expect(first.event_id).not.toBe(second.event_id);
+    });
+
+    it('does not derive deterministic ids from null identity fields', () => {
+      trackPerpOrderCompleted({ ...baseOutcome, wallet_address: null });
+      trackPerpOrderCompleted({ ...baseOutcome, wallet_address: null });
+      const first = JSON.parse(fetchMock.mock.calls[0][1].body);
+      const second = JSON.parse(fetchMock.mock.calls[1][1].body);
+      expect(first.event_id).not.toBe(second.event_id);
+      expect(first.properties.attempt_id).not.toBe(second.properties.attempt_id);
+      expect(first.properties).not.toHaveProperty('wallet_address_hash');
     });
 
     it('respects the DO_NOT_TRACK opt-out', async () => {
