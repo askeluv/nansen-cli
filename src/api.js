@@ -1606,16 +1606,6 @@ export class NansenAPI {
     });
   }
 
-  // ============= Points Endpoints =============
-
-  async pointsLeaderboard(params = {}) {
-    const { tier, pagination } = params;
-    return this.request('/api/v1/points/leaderboard', {
-      tier,
-      pagination
-    });
-  }
-
   // ============= Portfolio Endpoints =============
 
   async portfolioDefiHoldings(params = {}) {

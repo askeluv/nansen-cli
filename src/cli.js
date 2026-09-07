@@ -1532,26 +1532,9 @@ export function buildCommands(deps = {}) {
       });
     },
 
-    'points': async (args, apiInstance, flags, options) => {
-      const subcommand = args[0] || 'help';
-      const tier = options.tier;
-      const pagination = buildPagination(options);
-
-      const handlers = {
-        'leaderboard': () => apiInstance.pointsLeaderboard({ tier, pagination }),
-        'help': () => ({
-          commands: ['leaderboard'],
-          description: 'Nansen Points analytics endpoints',
-          example: 'nansen points leaderboard --limit 100'
-        })
-      };
-
-      if (!handlers[subcommand]) {
-        return { error: `Unknown subcommand: ${subcommand}`, available: Object.keys(handlers) };
-      }
-
-      return handlers[subcommand]();
-    },
+    'points': async () => ({
+      error: 'The points leaderboard endpoint is no longer available.'
+    }),
 
     'prediction-market': async (args, apiInstance, flags, options) => {
       if (Date.now() < new Date('2026-03-16T00:00:00Z').getTime()) {
