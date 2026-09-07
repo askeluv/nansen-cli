@@ -427,10 +427,12 @@ describe("createPrivyPaymentSignatures", () => {
     }));
 
     // Use X Layer USDT0 as the second requirement (also in the known-asset allowlist).
+    // extra.chainId must match the network's chain id (196 for X Layer, not 8453 for Base).
     const req2 = {
       ...evmRequirement,
       network: "eip155:196",
       asset: "0x779Ded0c9e1022225f8E0630b35a9b54bE713736",
+      extra: { ...evmRequirement.extra, chainId: 196 },
     };
     const response = make402Response([evmRequirement, req2]);
     const results = [];

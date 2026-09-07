@@ -8,7 +8,6 @@
 import crypto from 'crypto';
 import { NansenError, ErrorCode } from './api.js';
 import { wcExec } from './walletconnect-exec.js';
-import { EVM_CHAIN_IDS } from './chain-ids.js';
 import { evaluatePaymentRequirement, resolvePaymentAmount, resolvePayTo } from './x402-policy.js';
 
 /**
@@ -54,11 +53,32 @@ function parseChainId(network) {
  */
 export function buildEIP712TypedData({ fromAddress, requirement }) {
   const payTo = resolvePayTo(requirement);
-  const { asset, extra, maxTimeoutSeconds } = requirement;
+  const { asset, maxTimeoutSeconds } = requirement;
+  const extra = requirement.extra || {};
   const amount = resolvePaymentAmount(requirement);
 
-  // Determine chain ID: extra.chainId > parsed from network > fallback map > base
-  const chainId = extra.chainId || parseChainId(requirement.network) || EVM_CHAIN_IDS[requirement.chain] || EVM_CHAIN_IDS.base;
+  if (!extra.name || !extra.version) {
+    throw new Error(
+      'Refusing to sign x402 payment: EIP-712 domain name/version missing from requirement.extra.',
+    );
+  }
+
+  // Chain id comes only from the CAIP-2 network the policy validated — not from
+  // a remote extra.chainId override, which could change the signing domain.
+  const chainId = parseChainId(requirement.network);
+  if (chainId === null) {
+    throw new Error(
+      `Refusing to sign x402 payment: unsupported or missing EVM network ${requirement.network}.`,
+    );
+  }
+  // A remote extra.chainId that disagrees with the network is a domain-binding
+  // mismatch — refuse rather than sign under either interpretation.
+  if (extra.chainId !== undefined && Number(extra.chainId) !== chainId) {
+    throw new Error(
+      `Refusing to sign x402 payment: extra.chainId ${extra.chainId} conflicts with ` +
+      `network ${requirement.network} (chain id ${chainId}).`,
+    );
+  }
 
   const now = Math.floor(Date.now() / 1000);
   const nonce = '0x' + crypto.randomBytes(32).toString('hex');

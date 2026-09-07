@@ -94,12 +94,21 @@ describe('isSvmNetwork', () => {
 });
 
 describe('getSolanaRpcUrl', () => {
-  it('should return mainnet URL by default', () => {
+  it('should return mainnet URL for the canonical mainnet CAIP-2 id', () => {
     expect(getSolanaRpcUrl('solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp')).toContain('mainnet');
   });
 
-  it('should return devnet URL', () => {
+  it('should return devnet URL for the canonical devnet CAIP-2 id', () => {
     expect(getSolanaRpcUrl('solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1')).toContain('devnet');
+  });
+
+  it('should return testnet URL for the canonical testnet CAIP-2 id', () => {
+    expect(getSolanaRpcUrl('solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z')).toContain('testnet');
+  });
+
+  it('throws for an unknown solana:* network instead of falling back to mainnet', () => {
+    expect(() => getSolanaRpcUrl('solana:bogus')).toThrow(/Unsupported Solana network/);
+    expect(() => getSolanaRpcUrl('solana:not-a-real-network-id')).toThrow(/Unsupported Solana network/);
   });
 });
 

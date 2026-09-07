@@ -5,6 +5,11 @@
  */
 
 import { EVM_X402_TOKENS, SVM_X402_TOKENS } from './x402-tokens.js';
+
+// The only x402 scheme this client can honour. "exact" = a fixed-amount transfer
+// authorization (EIP-3009 / Permit2 on EVM, SPL TransferChecked on SVM). Any other
+// scheme must be refused before signing, not silently accepted.
+export const SUPPORTED_X402_SCHEMES = new Set(['exact']);
 import { getWalletConfig } from './wallet.js';
 
 /**
@@ -36,7 +41,7 @@ export function resolveKnownToken(network, asset) {
     return table.find(t => t.token.toLowerCase() === asset.toLowerCase()) || null;
   }
   if (isSvmNetworkString(network)) {
-    const table = SVM_X402_TOKENS['solana'];
+    const table = SVM_X402_TOKENS[network];        // exact CAIP-2 key, not the bare 'solana' prefix
     if (!table) return null;
     return table.find(t => t.token === asset) || null;
   }
@@ -130,6 +135,16 @@ export function resolvePayTo(requirement) {
  * allowlist, per-payment USD cap. Never signs; pure decision.
  */
 export function evaluatePaymentRequirement(requirement) {
+  const scheme = requirement.scheme;
+  if (!SUPPORTED_X402_SCHEMES.has(scheme)) {
+    return {
+      ok: false,
+      reason:
+        `Refusing to auto-pay: unsupported payment scheme ${scheme == null ? '(missing)' : `"${scheme}"`}. ` +
+        `Only "exact" is supported. No signature was produced.`,
+    };
+  }
+
   const network = requirement.network;
   const asset = requirement.asset;
   const payTo = resolvePayTo(requirement);

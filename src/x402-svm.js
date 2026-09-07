@@ -329,13 +329,10 @@ export async function fetchRecentBlockhash(rpcUrl = 'https://api.mainnet-beta.so
  * Get RPC URL for a Solana network identifier.
  */
 export function getSolanaRpcUrl(network) {
-  if (network.includes('devnet') || network === 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1') {
-    return 'https://api.devnet.solana.com';
-  }
-  if (network.includes('testnet') || network === 'solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z') {
-    return 'https://api.testnet.solana.com';
-  }
-  return 'https://api.mainnet-beta.solana.com';
+  if (network === 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp') return 'https://api.mainnet-beta.solana.com';
+  if (network === 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1') return 'https://api.devnet.solana.com';
+  if (network === 'solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z') return 'https://api.testnet.solana.com';
+  throw new Error(`Unsupported Solana network for x402: ${network}`);
 }
 
 /**
