@@ -1543,14 +1543,17 @@ export function assertLimitOrderDepositOutcome(sim, { inputMint, amount }) {
   // rerouted or under-funded the deposit. Two cases, because native SOL carries fee/rent noise:
   if (inputIsNative) {
     // A native deposit's outflow is amount + base/priority fee + net ATA rent, so it is
-    // normally ABOVE cap; the floor mainly catches a grossly under-funded deposit. For a
-    // tiny `amount` (<= the slack itself) the (cap - slack) formula alone would clamp to
-    // 0, which would admit a completely no-op "deposit" (outflow 0) as well as any drain
-    // hidden inside the slack window — a real signed transaction always pays a network
-    // fee, so a genuine deposit's outflow is never 0; require it to be strictly positive
-    // regardless of how small `amount` is.
-    const floor = cap > NATIVE_FEE_RENT_SLACK_LAMPORTS ? cap - NATIVE_FEE_RENT_SLACK_LAMPORTS : 0n;
-    if (outflow <= 0n || outflow < floor) {
+    // normally ABOVE cap; the floor mainly catches a grossly under-funded deposit. But for
+    // a tiny `amount` (<= the slack itself) the (cap - slack) window swallows the entire
+    // requested amount, so outflow magnitude alone can no longer distinguish a genuine
+    // (if undersized) deposit from an unrelated fee-only outflow that never escrowed
+    // anything — admitting any nonzero outflow there would reopen exactly that gap.
+    // Fail closed instead of trying to verify an amount the slack makes unverifiable.
+    if (cap <= NATIVE_FEE_RENT_SLACK_LAMPORTS) {
+      throw fail(`the deposit amount (${cap}) is too small relative to the fee/rent slack (${NATIVE_FEE_RENT_SLACK_LAMPORTS}) to verify by outflow magnitude.`);
+    }
+    const floor = cap - NATIVE_FEE_RENT_SLACK_LAMPORTS;
+    if (outflow < floor) {
       throw fail(`the input token (${inputAsset}) left the wallet by only ${outflow}, below the deposit amount (${cap} minus fee/rent slack).`);
     }
   } else {
@@ -1577,25 +1580,32 @@ export function assertLimitOrderDepositOutcome(sim, { inputMint, amount }) {
 /**
  * Verify a limit-order CANCEL's simulated wallet effect. A withdrawal is authorised by the
  * vault PDA and only returns funds TO the wallet, so NO token may leave the wallet except
- * native-SOL fee/rent dust, AND at least one tracked asset must show a genuine inflow —
- * otherwise a crafted "cancel" transaction that quietly redirects the escrowed funds
- * elsewhere (never touching the wallet's own accounts at all) would show an all-dust or
- * empty delta set and pass unnoticed. Fails closed otherwise.
+ * native-SOL fee/rent dust, AND the order's own input asset must show a genuine inflow —
+ * otherwise a crafted "cancel" transaction that redirects the escrowed funds elsewhere,
+ * then produces an unrelated wallet inflow (e.g. closing an empty, unrelated token account
+ * back to the wallet for its rent), would show a real positive delta on SOME asset and pass
+ * without ever actually returning the deposited funds. Fails closed otherwise.
  *
- * NOTE: like the deposit asserter, this bounds that SOME inflow happened, not that it is
- * the RIGHT mint/amount for this order — binding the expected refund to the order's own
- * input mint/amount is tracked alongside the vault-destination fast-follow.
+ * NOTE: like the deposit asserter, this bounds MAGNITUDE (some inflow of the right asset),
+ * not destination — a redirect of the correct asset+amount to a non-wallet address first,
+ * followed by a genuine top-up of that same asset back to the wallet from elsewhere, would
+ * still pass. That is closed by the vault-destination binding fast-follow, not here.
  *
  * @param {{deltas: Record<string, bigint|string|number>}} sim
- *   (no ctx — the sim already keyed its deltas relative to the wallet)
+ *   (no walletAddress in ctx — the sim already keyed its deltas relative to the wallet)
+ * @param {{inputMint: string}} ctx - the order's own deposited asset; the refund must land here.
  * @throws {Error} with `code = 'LIMIT_ORDER_OUTCOME_MISMATCH'` on any failed assertion.
  */
-export function assertLimitOrderCancelOutcome(sim) {
+export function assertLimitOrderCancelOutcome(sim, { inputMint } = {}) {
   const fail = (detail) => {
     const e = new Error(`Limit-order cancel outcome mismatch (LIMIT_ORDER_OUTCOME_MISMATCH): ${detail} Refusing to sign.`);
     e.code = 'LIMIT_ORDER_OUTCOME_MISMATCH';
     return e;
   };
+
+  if (!inputMint) {
+    throw fail('the order\'s input mint is missing; cannot verify which asset the withdrawal must refund.');
+  }
 
   if (!sim || typeof sim !== 'object' || sim.deltas == null) {
     throw fail('simulation returned no asset changes to verify.');
@@ -1612,21 +1622,20 @@ export function assertLimitOrderCancelOutcome(sim) {
     deltas[k] = amt;
   }
 
-  let sawInflow = false;
+  const foldNative = (mint) => (mint && SOLANA_NATIVE_SOL_ALIASES.has(mint) ? SOL_SENTINEL : mint);
+  const inputAsset = foldNative(inputMint);
+
   for (const [token, delta] of Object.entries(deltas)) {
-    if (delta > 0n) {
-      sawInflow = true;
-      continue;
-    }
-    if (delta === 0n) continue;
+    if (delta >= 0n) continue;
     const dust = token === SOL_SENTINEL ? NATIVE_FEE_RENT_SLACK_LAMPORTS : 0n;
     if (-delta > dust) {
       throw fail(`a token (${token}) left your wallet during cancellation (delta ${delta}); a withdrawal should only return funds to you.`);
     }
   }
 
-  if (!sawInflow) {
-    throw fail('the withdrawal produced no inflow to your wallet; a cancel must return your deposited funds.');
+  const inflow = deltas[inputAsset] || 0n;
+  if (inflow <= 0n) {
+    throw fail(`the withdrawal produced no inflow of the deposited asset (${inputAsset}) to your wallet; a cancel must return your deposited funds.`);
   }
 
   return { verified: true };

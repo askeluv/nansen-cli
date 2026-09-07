@@ -409,7 +409,7 @@ async function verifyLimitOrderOutcome({ kind, walletAddress, txBase64, inputMin
     if (kind === 'deposit') {
       assertLimitOrderDepositOutcome(sim, { inputMint, amount });
     } else {
-      assertLimitOrderCancelOutcome(sim);
+      assertLimitOrderCancelOutcome(sim, { inputMint });
     }
     log(`  ✓ ${kind === 'deposit' ? 'Deposit' : 'Cancellation'} outcome verified (via ${sim.method}).`);
     return { proceed: true };
@@ -887,11 +887,29 @@ EXAMPLES:
         // 1. Authenticate
         const token = await authenticate(pubkey, walletType, walletInfo, log);
 
-        // 2. Request cancellation — get unsigned withdrawal tx
+        // 2. Look up the order's own input mint, but only when outcome verification will
+        // actually run — cancel only receives an orderId, not order details, from the
+        // caller, and the asset-binding check below (see assertLimitOrderCancelOutcome)
+        // needs to know which asset the refund must land in. Skip the extra lookup
+        // entirely when there's no simulation RPC to verify against, so a degraded
+        // environment doesn't gain a new API dependency for a check it isn't going to
+        // run anyway. Done before requesting cancellation so a lookup failure fails
+        // closed without first consuming a one-time withdrawal request server-side.
+        let cancelInputMint;
+        if (hasSolanaSimulationRpc('solana')) {
+          const orderList = await listOrders(token, pubkey, { limit: 100 });
+          const order = (orderList.orders || []).find((o) => o.id === orderId);
+          if (!order) {
+            throw new Error(`Could not find order ${orderId} among your orders; refusing to verify the cancel's refund asset. Check the order ID with "nansen trade limit-order list".`);
+          }
+          cancelInputMint = order.inputMint;
+        }
+
+        // 3. Request cancellation — get unsigned withdrawal tx
         log('  Requesting cancellation...');
         const cancelResult = await cancelOrderRequest(token, orderId);
 
-        // 3. Sign the withdrawal transaction
+        // 4. Sign the withdrawal transaction
         // Withdrawal moves the deposited token back out of the vault; that transfer
         // is authorized by the vault program's PDA, not our wallet, so it isn't a
         // wallet-authorized drain even if it were classified. Any temp-WSOL close
@@ -900,17 +918,20 @@ EXAMPLES:
         // authority, or closes to a stranger. Balance-delta outcome verification
         // then binds the withdrawal's effect: since a cancel should only return
         // funds to the wallet, no token may leave it at all (native-SOL fee/rent
-        // dust tolerated). Verified live alongside the deposit path via a real
-        // cancel round-trip.
+        // dust tolerated), and the order's own input asset (looked up in step 2)
+        // must show a genuine inflow — an unrelated wallet inflow (e.g. closing an
+        // empty, unrelated token account for its rent) no longer counts. Verified
+        // live alongside the deposit path via a real cancel round-trip.
         assertSolanaInstructionsSafe(cancelResult.transaction, { walletAddress: pubkey });
         const cancelOutcome = await verifyLimitOrderOutcome({
-          kind: 'cancel', walletAddress: pubkey, txBase64: cancelResult.transaction, log,
+          kind: 'cancel', walletAddress: pubkey, txBase64: cancelResult.transaction,
+          inputMint: cancelInputMint, log,
         });
         if (!cancelOutcome.proceed) throw new Error(`Refusing to sign withdrawal — ${cancelOutcome.reason}`);
         log('  Signing withdrawal transaction...');
         const signedTx = await signTransaction(cancelResult.transaction, walletType, walletInfo);
 
-        // 4. Confirm cancellation
+        // 5. Confirm cancellation
         log('  Confirming cancellation...');
         const confirmed = await confirmCancelOrder(token, orderId, {
           signedTransaction: signedTx,

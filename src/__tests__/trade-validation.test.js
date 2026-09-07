@@ -2210,19 +2210,33 @@ describe('assertLimitOrderDepositOutcome', () => {
       .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH/);
   });
 
-  it('rejects a zero-outflow native-SOL deposit even for a tiny amount (floor must not clamp to 0)', () => {
-    // Regression: for amount <= NATIVE_FEE_RENT_SLACK_LAMPORTS the (cap - slack)
-    // floor formula alone clamps to 0n, which would admit a completely no-op
-    // "deposit" — a real signed transaction always pays a network fee, so a
-    // genuine deposit's outflow is never exactly 0.
+  it('rejects a native-SOL deposit whose amount is too small to verify against slack, even with zero outflow', () => {
+    // For amount <= NATIVE_FEE_RENT_SLACK_LAMPORTS the ±slack window swallows the entire
+    // requested amount, so outflow magnitude alone can't tell a genuine (if undersized)
+    // deposit from a no-op. Fail closed rather than admit any outflow, zero included.
     const sim = { deltas: {} };
     expect(() => assertLimitOrderDepositOutcome(sim, { inputMint: SOL_SENTINEL, amount: 1n }))
-      .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*below the deposit amount/i);
+      .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*too small[\s\S]*slack/i);
   });
 
-  it('passes a tiny native-SOL deposit whose outflow is fee-only but nonzero', () => {
+  it('rejects a native-SOL deposit whose amount is too small to verify against slack, even with a nonzero fee-only outflow (regression: used to pass)', () => {
+    // The gap this closes: previously, requiring only a nonzero outflow below this
+    // threshold let an unrelated fee-only outflow "prove" the requested SOL was escrowed.
     const sim = { deltas: { [SOL_SENTINEL]: -5000n } };
-    expect(assertLimitOrderDepositOutcome(sim, { inputMint: SOL_SENTINEL, amount: 1n }))
+    expect(() => assertLimitOrderDepositOutcome(sim, { inputMint: SOL_SENTINEL, amount: 1n }))
+      .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*too small[\s\S]*slack/i);
+  });
+
+  it('rejects a native-SOL deposit at the slack threshold (amount == slack, still unverifiable)', () => {
+    const sim = { deltas: { [SOL_SENTINEL]: -(SLACK + 5000n) } };
+    expect(() => assertLimitOrderDepositOutcome(sim, { inputMint: SOL_SENTINEL, amount: SLACK }))
+      .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*too small[\s\S]*slack/i);
+  });
+
+  it('verifies a native-SOL deposit just above the slack threshold', () => {
+    const cap = SLACK + 1n; // smallest amount for which the floor is meaningfully > 0
+    const sim = { deltas: { [SOL_SENTINEL]: -cap } };
+    expect(assertLimitOrderDepositOutcome(sim, { inputMint: SOL_SENTINEL, amount: cap }))
       .toEqual({ verified: true });
   });
 
@@ -2236,26 +2250,32 @@ describe('assertLimitOrderDepositOutcome', () => {
 describe('assertLimitOrderCancelOutcome', () => {
   const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
-  it('passes a pure inflow (withdrawal returning funds to the wallet)', () => {
+  it('passes a pure inflow of the order\'s own input asset (withdrawal returning funds to the wallet)', () => {
     const sim = { deltas: { [USDC]: 1_000_000n } };
-    expect(assertLimitOrderCancelOutcome(sim)).toEqual({ verified: true });
+    expect(assertLimitOrderCancelOutcome(sim, { inputMint: USDC })).toEqual({ verified: true });
   });
 
   it('tolerates native-SOL fee/rent dust', () => {
     const sim = { deltas: { [USDC]: 1_000_000n, [SOL_SENTINEL]: -2_000_000n } };
-    expect(assertLimitOrderCancelOutcome(sim)).toEqual({ verified: true });
+    expect(assertLimitOrderCancelOutcome(sim, { inputMint: USDC })).toEqual({ verified: true });
+  });
+
+  it('folds a WSOL-mint order input to the native sentinel so a native refund matches', () => {
+    const WSOL = 'So11111111111111111111111111111111111111112';
+    const sim = { deltas: { [SOL_SENTINEL]: 1_000_000_000n } };
+    expect(assertLimitOrderCancelOutcome(sim, { inputMint: WSOL })).toEqual({ verified: true });
   });
 
   it('rejects any SPL outflow during cancellation', () => {
     const otherMint = 'Other11111111111111111111111111111111111';
     const sim = { deltas: { [USDC]: 1_000_000n, [otherMint]: -1n } };
-    expect(() => assertLimitOrderCancelOutcome(sim))
+    expect(() => assertLimitOrderCancelOutcome(sim, { inputMint: USDC }))
       .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*left your wallet during cancellation/i);
   });
 
   it('rejects a native-SOL outflow beyond fee/rent dust', () => {
     const sim = { deltas: { [USDC]: 1_000_000n, [SOL_SENTINEL]: -14_000_000n } };
-    expect(() => assertLimitOrderCancelOutcome(sim))
+    expect(() => assertLimitOrderCancelOutcome(sim, { inputMint: USDC }))
       .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*left your wallet during cancellation/i);
   });
 
@@ -2265,14 +2285,43 @@ describe('assertLimitOrderCancelOutcome', () => {
     // from the wallet's own tracked accounts, showing an empty (or dust-only)
     // delta set that used to verify successfully.
     const sim = { deltas: {} };
-    expect(() => assertLimitOrderCancelOutcome(sim))
+    expect(() => assertLimitOrderCancelOutcome(sim, { inputMint: USDC }))
       .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*produced no inflow/i);
   });
 
   it('rejects a fee-only outflow with no offsetting inflow (same gap, non-empty dust)', () => {
     const sim = { deltas: { [SOL_SENTINEL]: -3000n } }; // network fee only, nothing returned
-    expect(() => assertLimitOrderCancelOutcome(sim))
+    expect(() => assertLimitOrderCancelOutcome(sim, { inputMint: USDC }))
       .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*produced no inflow/i);
+  });
+
+  it('rejects an inflow of an unrelated asset when the order\'s own input asset never returns (redirect-then-decoy)', () => {
+    // The gap this closes: the old check accepted ANY positive delta as proof of a
+    // refund. A crafted cancel could redirect the escrowed USDC elsewhere, then close
+    // an unrelated, empty token account back to the wallet for its rent — a real,
+    // unrelated inflow that used to satisfy "some inflow happened" without the actual
+    // escrowed asset (USDC) ever coming back.
+    const decoyMint = 'Decoy111111111111111111111111111111111111';
+    const sim = { deltas: { [decoyMint]: 2_039_280n } }; // rent reclaimed from closing an empty ATA
+    expect(() => assertLimitOrderCancelOutcome(sim, { inputMint: USDC }))
+      .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*produced no inflow of the deposited asset/i);
+  });
+
+  it('rejects a decoy inflow even alongside a partial/short outflow of the real input asset', () => {
+    // Same gap, but the redirect leaves a small residual balance behind — still not a
+    // genuine inflow of the deposited asset, so this must not pass on the decoy alone.
+    const decoyMint = 'Decoy111111111111111111111111111111111111';
+    const sim = { deltas: { [USDC]: 0n, [decoyMint]: 2_039_280n } };
+    expect(() => assertLimitOrderCancelOutcome(sim, { inputMint: USDC }))
+      .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*produced no inflow of the deposited asset/i);
+  });
+
+  it('fails closed when the order\'s input mint is missing from context', () => {
+    const sim = { deltas: { [USDC]: 1_000_000n } };
+    expect(() => assertLimitOrderCancelOutcome(sim, {}))
+      .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*input mint is missing/i);
+    expect(() => assertLimitOrderCancelOutcome(sim))
+      .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*input mint is missing/i);
   });
 });
 

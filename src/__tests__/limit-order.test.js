@@ -1185,9 +1185,12 @@ describe('outcome verification (fail-closed)', () => {
     const siblingTokenAccount = generateSolanaWallet().address;
     const cancelTx = buildLimitOrderTx({ walletPubkey: wallet.solana, extraWritableKey: siblingTokenAccount });
 
+    const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
     mockFetchSequence([
       { body: { challenge: 'sign' } },
       { body: { token: 'jwt' } },
+      // order lookup — needed to bind the refund check to the order's own input asset.
+      { body: { orders: [{ id: 'order-1', inputMint: USDC }] } },
       { body: { id: 'order-1', transaction: cancelTx, requestId: 'cancel-req-1' } },
       // sim: getMultipleAccounts — pre-state: wallet native + a token account
       // the wallet owns, holding 1,000,000 base units.
@@ -1228,9 +1231,33 @@ describe('outcome verification (fail-closed)', () => {
     expect(exit).toHaveBeenCalledWith(1);
     expect(logs.some(l => /Refusing to sign withdrawal/i.test(l))).toBe(true);
     expect(logs.some(l => /LIMIT_ORDER_OUTCOME_MISMATCH/i.test(l))).toBe(true);
-    // 5 calls: challenge, verify, cancelRequest, getMultipleAccounts,
-    // simulateTransaction — confirmCancelOrder (the 6th) must never fire.
-    expect(global.fetch).toHaveBeenCalledTimes(5);
+    // 6 calls: challenge, verify, order lookup, cancelRequest, getMultipleAccounts,
+    // simulateTransaction — confirmCancelOrder (the 7th) must never fire.
+    expect(global.fetch).toHaveBeenCalledTimes(6);
+  });
+
+  it('cancel: refuses to sign when the order cannot be found in the lookup, rather than skipping the asset-binding check', async () => {
+    SIMULATION_RPCS.solana = 'http://sol-sim.test';
+    createTestWallet('lo-outcome-cancel-notfound');
+
+    mockFetchSequence([
+      { body: { challenge: 'sign' } },
+      { body: { token: 'jwt' } },
+      // order lookup finds no matching order — fail closed, don't proceed as if
+      // verification were simply unavailable.
+      { body: { orders: [{ id: 'some-other-order', inputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' }] } },
+    ]);
+
+    const logs = [];
+    const exit = vi.fn();
+    const cmds = buildLimitOrderCommands({ log: (m) => logs.push(m), exit });
+
+    await cmds.cancel([], null, {}, { order: 'order-1', wallet: 'lo-outcome-cancel-notfound' });
+
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(logs.some(l => /Could not find order order-1/i.test(l))).toBe(true);
+    // 3 calls: challenge, verify, order lookup — cancelOrderRequest (the 4th) must never fire.
+    expect(global.fetch).toHaveBeenCalledTimes(3);
   });
 
   it('create: proceeds (graceful degrade) when the simulation RPC errors out mid-flight', async () => {
@@ -1269,9 +1296,12 @@ describe('outcome verification (fail-closed)', () => {
     const wallet = createTestWallet('lo-outcome-cancel-degrade');
     const cancelTx = buildLimitOrderTx({ walletPubkey: wallet.solana });
 
+    const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
     mockFetchSequence([
       { body: { challenge: 'sign' } },
       { body: { token: 'jwt' } },
+      // order lookup — needed to bind the refund check to the order's own input asset.
+      { body: { orders: [{ id: 'order-1', inputMint: USDC }] } },
       { body: { id: 'order-1', transaction: cancelTx, requestId: 'cancel-req-1' } },
       // sim: getMultipleAccounts fails outright (transport/RPC error) — must
       // degrade (warn + proceed), not block a legitimate cancellation.
