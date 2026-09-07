@@ -36,7 +36,7 @@ const MCP_USAGE = `nansen mcp — Install the Nansen MCP server into a local MCP
 USAGE:
   nansen mcp install <client>     Add the Nansen MCP server to the client's config
   nansen mcp uninstall <client>   Remove the Nansen MCP server from the client's config
-  nansen mcp verify [--api-key <key>] [--url <url>] [--json]
+  nansen mcp verify [--api-key <key>] [--url <url>] [--send-api-key] [--json]
                                   Verify the hosted MCP server and API key
 
 CLIENTS:
@@ -46,6 +46,8 @@ CLIENTS:
 
 OPTIONS:
   --dry-run        Preview the change (key redacted) without writing
+  --send-api-key   Authorize sending your saved API key to a custom --url
+                   (an https:// or loopback host). Not needed for --api-key.
 
 The API key is taken from \`nansen login\` / NANSEN_API_KEY. Re-run install after
 rotating your key to update the entry. Other clients: https://docs.nansen.ai/mcp/connecting`;
@@ -212,7 +214,20 @@ export function buildMcpCommands(deps = {}) {
     }
   };
 
-  const verify = async (flags, options) => {
+  const verify = async (flags, options, extraArgs = []) => {
+    // --send-api-key is a valueless flag: `--send-api-key false` parses the
+    // `false` as a positional arg while the flag still reads as present, which
+    // would authorize the very disclosure the caller meant to decline. Reject
+    // any positional args so that footgun fails loudly instead of leaking.
+    // Never echo the argument: a plausible misuse is `--send-api-key "$KEY"`,
+    // which lands the real key in extraArgs[0]; interpolating it would leak the
+    // credential to stdout (and to logs under --json).
+    if (extraArgs.length > 0) {
+      throw new CommandError(
+        '`nansen mcp verify` takes no positional arguments — --send-api-key is a valueless flag, do not pass it a value. Usage: nansen mcp verify [--api-key <key>] [--url <url>] [--send-api-key] [--json]',
+        'INVALID_PARAMS',
+      );
+    }
     // A valueless --api-key parses as a flag and would silently fall back to
     // the saved key - the exact false positive this command exists to catch.
     if (flags['api-key']) {
@@ -239,6 +254,7 @@ export function buildMcpCommands(deps = {}) {
       env,
       fetchFn,
       devConfigPath,
+      sendApiKey: Boolean(flags['send-api-key']),
     });
     const verified = checks.some(checkItem => checkItem.id === 'mcp-auth' && checkItem.status === 'ok');
     const result = {
@@ -279,7 +295,7 @@ export function buildMcpCommands(deps = {}) {
       }
 
       if (sub === 'verify') {
-        return verify(flags, options);
+        return verify(flags, options, args.slice(1));
       }
 
       if (sub !== 'install' && sub !== 'uninstall') {

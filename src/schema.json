@@ -2431,7 +2431,11 @@
             "url": {
               "type": "string",
               "default": "https://mcp.nansen.ai/ra/mcp",
-              "description": "Hosted MCP server URL"
+              "description": "Hosted MCP server URL. A saved API key is not sent to a non-default URL unless you pass --send-api-key, and never over plain HTTP to a non-loopback host."
+            },
+            "send-api-key": {
+              "type": "boolean",
+              "description": "Presence-only flag — pass it bare, never with a value (`--send-api-key false` is rejected). Authorizes sending your saved API key to a custom --url (must be https:// or a loopback host). Not needed when you pass --api-key explicitly."
             },
             "json": {
               "type": "boolean",
@@ -2441,7 +2445,8 @@
           "examples": [
             "npx -y nansen-cli mcp verify",
             "nansen mcp verify --json",
-            "nansen mcp verify --url https://mcp.example.dev/ra/mcp --api-key <key>"
+            "nansen mcp verify --url https://mcp.example.dev/ra/mcp --api-key <key>",
+            "nansen mcp verify --url https://mcp.example.dev/ra/mcp --send-api-key"
           ]
         },
         "install": {
