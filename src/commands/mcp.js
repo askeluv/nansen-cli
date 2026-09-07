@@ -36,7 +36,7 @@ const MCP_USAGE = `nansen mcp — Install the Nansen MCP server into a local MCP
 USAGE:
   nansen mcp install <client>     Add the Nansen MCP server to the client's config
   nansen mcp uninstall <client>   Remove the Nansen MCP server from the client's config
-  nansen mcp verify [--api-key <key>] [--url <url>] [--json]
+  nansen mcp verify [--api-key <key>] [--url <url>] [--send-api-key] [--json]
                                   Verify the hosted MCP server and API key
 
 CLIENTS:
@@ -46,6 +46,8 @@ CLIENTS:
 
 OPTIONS:
   --dry-run        Preview the change (key redacted) without writing
+  --send-api-key   Authorize sending your saved API key to a custom --url
+                   (an https:// or loopback host). Not needed for --api-key.
 
 The API key is taken from \`nansen login\` / NANSEN_API_KEY. Re-run install after
 rotating your key to update the entry. Other clients: https://docs.nansen.ai/mcp/connecting`;
@@ -239,6 +241,7 @@ export function buildMcpCommands(deps = {}) {
       env,
       fetchFn,
       devConfigPath,
+      sendApiKey: Boolean(flags['send-api-key']),
     });
     const verified = checks.some(checkItem => checkItem.id === 'mcp-auth' && checkItem.status === 'ok');
     const result = {

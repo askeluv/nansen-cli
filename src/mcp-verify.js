@@ -12,6 +12,28 @@ class McpRequestError extends Error {
   }
 }
 
+function isLoopbackHostname(hostname) {
+  if (!hostname) return false;
+  const host = hostname.toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
+  if (host === 'localhost' || host === '::1') return true;
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
+}
+
+/**
+ * Classify a destination URL for the credential-disclosure guard: its origin
+ * (for messaging), protocol, and whether the host is loopback.
+ */
+function classifyDestination(url) {
+  try {
+    const parsed = new URL(url);
+    return { origin: parsed.origin, protocol: parsed.protocol, loopback: isLoopbackHostname(parsed.hostname) };
+  } catch {
+    // An unparseable URL never reaches an authenticated fetch (tools/list fails
+    // first), so this is only for messaging; treat it as an unsafe destination.
+    return { origin: url, protocol: null, loopback: false };
+  }
+}
+
 function responseContentType(response) {
   return (
     response.headers?.get?.('content-type')
@@ -185,6 +207,7 @@ export async function runMcpVerifyChecks({
   fetchFn = fetch,
   timeoutMs = 30_000,
   devConfigPath,
+  sendApiKey = false,
 } = {}) {
   const checks = [];
   const auth = resolveAuthConfig(env, devConfigPath);
@@ -205,8 +228,30 @@ export async function runMcpVerifyChecks({
     ));
   }
 
+  // A saved key is trusted for the default Nansen endpoint only. Forwarding it
+  // to a caller-supplied URL requires explicit per-invocation consent, and no
+  // key may travel in cleartext to a public host.
+  let keyWithheld = null;
   if (key && url !== DEFAULT_MCP_URL) {
-    checks.push(check('mcp-url', 'warn', `Non-default MCP URL: ${url} — the API key will be sent to this host`));
+    const dest = classifyDestination(url);
+    if (dest.protocol === 'http:' && !dest.loopback) {
+      keyWithheld = check(
+        'mcp-url',
+        'error',
+        `Refusing to send the API key over plain HTTP to a non-loopback host (${dest.origin})`,
+        'Use an https:// URL. Plain HTTP is only permitted for localhost/loopback development.',
+      );
+    } else if (!explicitKey && !sendApiKey) {
+      keyWithheld = check(
+        'mcp-url',
+        'error',
+        `Saved API key withheld from custom MCP URL (${dest.origin})`,
+        `Re-run with --send-api-key to authorize sending your saved key to ${dest.origin}, or pass --api-key <key> to supply one explicitly.`,
+      );
+    } else {
+      checks.push(check('mcp-url', 'warn', `Sending the API key to custom MCP host: ${dest.origin}`));
+    }
+    if (keyWithheld) checks.push(keyWithheld);
   }
 
   let serverReady = false;
@@ -239,6 +284,8 @@ export async function runMcpVerifyChecks({
 
   if (!key) {
     checks.push(skippedAuth('no API key was provided'));
+  } else if (keyWithheld) {
+    checks.push(skippedAuth('the API key was withheld from this custom URL (see above)'));
   } else if (!serverReady) {
     checks.push(skippedAuth('tools/list did not establish server reachability'));
   } else {

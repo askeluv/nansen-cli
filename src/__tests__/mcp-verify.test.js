@@ -285,6 +285,119 @@ describe('mcp verify', () => {
     expect(fetchFn.mock.calls[1][1].headers['NANSEN-API-KEY']).toBe(API_KEY);
   });
 
+  describe('saved-key disclosure guard', () => {
+    const SAVED_KEY = 'nk_saved_1234567890abcdef';
+
+    it('withholds a saved key from a custom https URL without --send-api-key', async () => {
+      env.NANSEN_API_KEY = SAVED_KEY;
+      const fetchFn = vi.fn().mockResolvedValueOnce(listResponse());
+
+      const checks = await runChecks(fetchFn, { apiKey: undefined, url: 'https://mcp.evil.example/ra/mcp' });
+
+      expect(findCheck(checks, 'mcp-url')).toMatchObject({ status: 'error' });
+      expect(findCheck(checks, 'mcp-url').message).toContain('withheld');
+      expect(findCheck(checks, 'mcp-auth').status).toBe('info');
+      // Only the unauthenticated tools/list ran; no authenticated tools/call.
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+      expect(fetchFn.mock.calls.every(([, opts]) => !opts.headers['NANSEN-API-KEY'])).toBe(true);
+    });
+
+    it('withholds a saved key even from a loopback URL without --send-api-key', async () => {
+      env.NANSEN_API_KEY = SAVED_KEY;
+      const fetchFn = vi.fn().mockResolvedValueOnce(listResponse());
+
+      const checks = await runChecks(fetchFn, { apiKey: undefined, url: 'http://127.0.0.1:8787/ra/mcp' });
+
+      expect(findCheck(checks, 'mcp-url')).toMatchObject({ status: 'error' });
+      expect(findCheck(checks, 'mcp-url').message).toContain('withheld');
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('sends a saved key to a custom https URL when --send-api-key is given', async () => {
+      env.NANSEN_API_KEY = SAVED_KEY;
+      const fetchFn = vi.fn()
+        .mockResolvedValueOnce(listResponse())
+        .mockResolvedValueOnce(authSuccessResponse());
+
+      const checks = await runChecks(fetchFn, {
+        apiKey: undefined,
+        url: 'https://mcp.example.dev/ra/mcp',
+        sendApiKey: true,
+      });
+
+      expect(findCheck(checks, 'mcp-url').status).toBe('warn');
+      expect(findCheck(checks, 'mcp-auth').status).toBe('ok');
+      expect(fetchFn.mock.calls[1][1].headers['NANSEN-API-KEY']).toBe(SAVED_KEY);
+    });
+
+    it('allows a saved key over http to a loopback host with --send-api-key', async () => {
+      env.NANSEN_API_KEY = SAVED_KEY;
+      const fetchFn = vi.fn()
+        .mockResolvedValueOnce(listResponse())
+        .mockResolvedValueOnce(authSuccessResponse());
+
+      const checks = await runChecks(fetchFn, {
+        apiKey: undefined,
+        url: 'http://localhost:8787/ra/mcp',
+        sendApiKey: true,
+      });
+
+      expect(findCheck(checks, 'mcp-auth').status).toBe('ok');
+      expect(fetchFn.mock.calls[1][1].headers['NANSEN-API-KEY']).toBe(SAVED_KEY);
+    });
+
+    it('refuses to send any key over plain HTTP to a non-loopback host, even with --send-api-key', async () => {
+      // Uses the explicit API_KEY (runChecks default): the HTTPS hard block
+      // applies to every key, not just saved ones.
+      const fetchFn = vi.fn().mockResolvedValueOnce(listResponse());
+
+      const checks = await runChecks(fetchFn, { url: 'http://mcp.example.dev/ra/mcp', sendApiKey: true });
+
+      expect(findCheck(checks, 'mcp-url')).toMatchObject({ status: 'error' });
+      expect(findCheck(checks, 'mcp-url').message).toMatch(/plain HTTP/i);
+      expect(findCheck(checks, 'mcp-auth').status).toBe('info');
+      expect(fetchFn.mock.calls.every(([, opts]) => !opts.headers['NANSEN-API-KEY'])).toBe(true);
+    });
+
+    it('still sends an explicit --api-key to a custom https URL without --send-api-key', async () => {
+      env.NANSEN_API_KEY = SAVED_KEY;
+      const fetchFn = vi.fn()
+        .mockResolvedValueOnce(listResponse())
+        .mockResolvedValueOnce(authSuccessResponse());
+
+      // apiKey defaults to the explicit API_KEY in runChecks.
+      const checks = await runChecks(fetchFn, { url: 'https://mcp.example.dev/ra/mcp' });
+
+      expect(findCheck(checks, 'mcp-auth').status).toBe('ok');
+      expect(fetchFn.mock.calls[1][1].headers['NANSEN-API-KEY']).toBe(API_KEY);
+    });
+
+    it('threads --send-api-key through the CLI to authorize a saved key', async () => {
+      env.NANSEN_API_KEY = SAVED_KEY;
+      const output = [];
+      const fetchFn = vi.fn()
+        .mockResolvedValueOnce(listResponse())
+        .mockResolvedValueOnce(authSuccessResponse());
+
+      const result = await runCLI(
+        ['mcp', 'verify', '--json', '--url', 'https://mcp.example.dev/ra/mcp', '--send-api-key'],
+        {
+          output: value => output.push(value),
+          errorOutput: () => {},
+          exit: vi.fn(),
+          NansenAPIClass: class {},
+          fetchFn,
+          env,
+          devConfigPath,
+          isTTY: false,
+        },
+      );
+
+      expect(result.type).not.toBe('error');
+      expect(fetchFn.mock.calls[1][1].headers['NANSEN-API-KEY']).toBe(SAVED_KEY);
+    });
+  });
+
   it('formats a report with check lines, fixes, and the verification summary', () => {
     const report = formatMcpVerifyReport([
       { id: 'mcp-api-key', status: 'ok', message: 'API key found (nk_t…cdef)' },
