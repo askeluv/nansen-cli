@@ -214,7 +214,17 @@ export function buildMcpCommands(deps = {}) {
     }
   };
 
-  const verify = async (flags, options) => {
+  const verify = async (flags, options, extraArgs = []) => {
+    // --send-api-key is a valueless flag: `--send-api-key false` parses the
+    // `false` as a positional arg while the flag still reads as present, which
+    // would authorize the very disclosure the caller meant to decline. Reject
+    // any positional args so that footgun fails loudly instead of leaking.
+    if (extraArgs.length > 0) {
+      throw new CommandError(
+        `Unexpected argument: ${extraArgs[0]}. \`nansen mcp verify\` takes no positional arguments — --send-api-key is a valueless flag, do not pass it a value. Usage: nansen mcp verify [--api-key <key>] [--url <url>] [--send-api-key] [--json]`,
+        'INVALID_PARAMS',
+      );
+    }
     // A valueless --api-key parses as a flag and would silently fall back to
     // the saved key - the exact false positive this command exists to catch.
     if (flags['api-key']) {
@@ -282,7 +292,7 @@ export function buildMcpCommands(deps = {}) {
       }
 
       if (sub === 'verify') {
-        return verify(flags, options);
+        return verify(flags, options, args.slice(1));
       }
 
       if (sub !== 'install' && sub !== 'uninstall') {

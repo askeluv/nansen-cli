@@ -384,6 +384,30 @@ describe('mcp verify', () => {
       expect(fetchFn.mock.calls.every(([, opts]) => !opts.headers['NANSEN-API-KEY'])).toBe(true);
     });
 
+    it('rejects `--send-api-key false` instead of authorizing on flag presence', async () => {
+      env.NANSEN_API_KEY = SAVED_KEY;
+      const output = [];
+      const fetchFn = vi.fn();
+
+      const result = await runCLI(
+        ['mcp', 'verify', '--json', '--url', 'https://mcp.example.dev/ra/mcp', '--send-api-key', 'false'],
+        {
+          output: value => output.push(value),
+          errorOutput: () => {},
+          exit: vi.fn(),
+          NansenAPIClass: class {},
+          fetchFn,
+          env,
+          devConfigPath,
+          isTTY: false,
+        },
+      );
+
+      expect(result.type).toBe('error');
+      // The command must fail before any network call, so the key is never sent.
+      expect(fetchFn).not.toHaveBeenCalled();
+    });
+
     it('threads --send-api-key through the CLI to authorize a saved key', async () => {
       env.NANSEN_API_KEY = SAVED_KEY;
       const output = [];
