@@ -3621,6 +3621,26 @@ describe('NansenAPI', () => {
       expect(result).toHaveProperty('id', 'alert-2');
     });
 
+    it('alertsCreate should not retry after an ambiguous network failure', async () => {
+      if (LIVE_TEST) return;
+      vi.useFakeTimers();
+      let createdAlerts = 0;
+      mockFetch.mockImplementation(async () => {
+        createdAlerts += 1;
+        throw new Error('response lost after create');
+      });
+
+      const params = { name: 'Test', type: 'sm-token-flows', timeWindow: '1h', channels: [], data: {} };
+      let thrownError;
+      const promise = api.alertsCreate(params).catch(error => { thrownError = error; });
+      await vi.runAllTimersAsync();
+      await promise;
+
+      expect(thrownError?.message).toContain('response lost after create');
+      expect(createdAlerts).toBe(1);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
     it('alertsUpdate should PATCH /api/v1/smart-alert', async () => {
       setupMock(MOCK_RESPONSES.alertsUpdate);
       const result = await api.alertsUpdate({ id: 'alert-1', name: 'Updated Alert' });
