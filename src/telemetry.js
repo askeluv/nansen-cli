@@ -187,7 +187,14 @@ function contentDerivedUuid(value) {
 }
 
 function perpLegAttemptId({ wallet_address, submission_id, leg_index }) {
-  if (wallet_address === undefined || submission_id === undefined || leg_index === undefined) {
+  if (
+    wallet_address === undefined
+    || wallet_address === null
+    || submission_id === undefined
+    || submission_id === null
+    || leg_index === undefined
+    || leg_index === null
+  ) {
     return crypto.randomUUID();
   }
   return contentDerivedUuid(`${String(wallet_address).toLowerCase()}:${submission_id}:${leg_index}`);
@@ -196,9 +203,13 @@ function perpLegAttemptId({ wallet_address, submission_id, leg_index }) {
 function perpOutcomeEventId({ wallet_address, submission_id, leg_index, outcome }) {
   if (
     wallet_address === undefined
+    || wallet_address === null
     || submission_id === undefined
+    || submission_id === null
     || leg_index === undefined
+    || leg_index === null
     || outcome === undefined
+    || outcome === null
   ) {
     return crypto.randomUUID();
   }
@@ -371,6 +382,8 @@ export function trackPerpOrderCompleted({
     // "/perp/close"), so BI can line the two events up per command.
     path: commandToPath(`perp ${command}`),
     properties: {
+      // Canonical trade events use a stable product source. The CLI release is
+      // already preserved in context.client_version by buildContext().
       source: 'cli',
       chain: 'hyperliquid',
       attempt_id: attemptId,

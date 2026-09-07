@@ -394,6 +394,16 @@ describe('telemetry', () => {
       expect(first.event_id).not.toBe(second.event_id);
     });
 
+    it('does not derive deterministic ids from null identity fields', () => {
+      trackPerpOrderCompleted({ ...baseOutcome, wallet_address: null });
+      trackPerpOrderCompleted({ ...baseOutcome, wallet_address: null });
+      const first = JSON.parse(fetchMock.mock.calls[0][1].body);
+      const second = JSON.parse(fetchMock.mock.calls[1][1].body);
+      expect(first.event_id).not.toBe(second.event_id);
+      expect(first.properties.attempt_id).not.toBe(second.properties.attempt_id);
+      expect(first.properties).not.toHaveProperty('wallet_address_hash');
+    });
+
     it('respects the DO_NOT_TRACK opt-out', async () => {
       process.env.DO_NOT_TRACK = '1';
       ({ trackPerpOrderCompleted } = await freshImport());

@@ -817,6 +817,40 @@ describe('perp direct-to-HL flow (Chunk 3/4/5)', () => {
         { side: 'sell', outcome: 'rejected', leg: 'take-profit', oid: undefined, error_code: 'PARTIAL_FILL' },
       ]);
     });
+
+    it('expands one batch-wide rejection to every submitted bracket leg', async () => {
+      const { track, telCmds } = trackingCmds();
+      const api = mockApi({ screen: clean });
+      const error = new CommandError('batch rejected', 'HL_ACTION_REJECTED');
+      error.exchangeResult = {
+        status: 'ok',
+        response: {
+          type: 'order',
+          data: { statuses: [{ error: 'private batch validation detail' }] },
+        },
+      };
+      submitExchange.mockRejectedValueOnce(error);
+
+      await expect(telCmds.order([], api, {}, {
+        ...baseOrder,
+        'take-profit': '2500',
+        'stop-loss': '1500',
+      })).rejects.toBe(error);
+
+      expect(track).toHaveBeenCalledTimes(3);
+      expect(track.mock.calls.map(([event]) => ({
+        side: event.side,
+        position_side: event.position_side,
+        outcome: event.outcome,
+        leg: event.leg,
+        error_code: event.error_code,
+      }))).toEqual([
+        { side: 'buy', position_side: 'long', outcome: 'rejected', leg: 'parent', error_code: 'HL_ACTION_REJECTED' },
+        { side: 'sell', position_side: 'long', outcome: 'rejected', leg: 'take-profit', error_code: 'HL_ACTION_REJECTED' },
+        { side: 'sell', position_side: 'long', outcome: 'rejected', leg: 'stop-loss', error_code: 'HL_ACTION_REJECTED' },
+      ]);
+      expect(new Set(track.mock.calls.map(([event]) => event.submission_id)).size).toBe(1);
+    });
   });
 });
 

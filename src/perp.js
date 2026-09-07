@@ -245,17 +245,28 @@ async function signHlAction(eip712, { privateKeyHex, privyClient, privyWalletId,
 // Parse the per-order statuses HL returns for an `order` action so the oid and
 // fill are surfaced — the perp analogue of spot printing its quote id. HL replies:
 //   response.data.statuses[] = { resting:{oid} } | { filled:{oid,totalSz,avgPx} } | { error }
-// A rejected leg ({error}) has already thrown in submitExchange, so only
-// resting/filled legs reach here. A TP/SL bracket returns multiple legs; label
-// them the same way extractActionErrors does (parent / take-profit / stop-loss).
+// Successful responses and structured rejection responses both pass through
+// here. A TP/SL bracket returns multiple legs; label them the same way
+// extractActionErrors does (parent / take-profit / stop-loss).
 // Gated on the SUBMITTED action being an order: leverage/transfer/builder-fee
 // actions (type "default") and cancels return no oids, so [] falls back to the
 // concise raw response line in buildScreenSignSubmit.
 export function summarizeOrderResult(result, action) {
   if (action?.type !== 'order') return [];
-  const statuses = result?.response?.data?.statuses;
-  if (!Array.isArray(statuses)) return [];
-  const multiLeg = (action.orders?.length ?? 0) > 1;
+  const responseStatuses = result?.response?.data?.statuses;
+  if (!Array.isArray(responseStatuses)) return [];
+  const orderCount = action.orders?.length ?? 0;
+  const multiLeg = orderCount > 1;
+  // Hyperliquid may return one pre-validation error for an entire batch rather
+  // than one status per order. Treat that single error as the outcome of every
+  // submitted leg so bracket attribution remains one-to-one with action.orders.
+  const statuses = multiLeg
+    && responseStatuses.length === 1
+    && responseStatuses[0]
+    && typeof responseStatuses[0] === 'object'
+    && 'error' in responseStatuses[0]
+    ? Array.from({ length: orderCount }, () => responseStatuses[0])
+    : responseStatuses;
   const out = [];
   for (const [index, entry] of statuses.entries()) {
     if (!entry || typeof entry !== 'object') continue;
