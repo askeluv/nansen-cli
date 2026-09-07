@@ -30,6 +30,15 @@ export {
 
 import { hlApiUrl } from "./hl-env.js";
 
+function exchangeError(message, code, exchangeResult) {
+  const error = new CommandError(message, code);
+  // Keep only a structured action response available to the caller so it can
+  // emit authoritative per-leg outcomes before rethrowing. Opaque HTTP bodies
+  // are not action results and must remain indeterminate.
+  if (exchangeResult !== undefined) error.exchangeResult = exchangeResult;
+  return error;
+}
+
 // Port of perp_execute.py::extract_action_errors. HL returns top-level
 // status "ok" even when individual actions are rejected:
 //   {"status":"ok","response":{"data":{"statuses":[{"error":"..."}]}}}
@@ -130,9 +139,9 @@ export async function submitExchange(
       typeof data === "string"
         ? data
         : data.response || data.error || JSON.stringify(data);
-    throw new CommandError(
+    throw exchangeError(
       `Hyperliquid error (HTTP ${response.status}): ${detail}`,
-      "HL_HTTP_ERROR"
+      "HL_HTTP_ERROR",
     );
   }
 
@@ -144,23 +153,26 @@ export async function submitExchange(
       typeof responseBody === "string"
         ? responseBody
         : "Hyperliquid rejected the action";
-    throw new CommandError(
+    throw exchangeError(
       `Hyperliquid rejected the action: ${reason}`,
-      "HL_ACTION_REJECTED"
+      "HL_ACTION_REJECTED",
+      data,
     );
   }
 
   const actionResults = extractActionErrors(responseBody, action);
   if (actionResults.failed.length > 0 && actionResults.succeeded.length > 0) {
-    throw new CommandError(
+    throw exchangeError(
       `Hyperliquid partially filled the action: succeeded ${actionResults.succeeded.join(", ")}; failed ${actionResults.failed.map(({ leg, error }) => `${leg}: ${error}`).join("; ")}`,
-      "PARTIAL_FILL"
+      "PARTIAL_FILL",
+      data,
     );
   }
   if (actionResults.failed.length > 0) {
-    throw new CommandError(
+    throw exchangeError(
       `Hyperliquid rejected the action: ${actionResults.failed.map(({ error }) => error).join("; ")}`,
-      "HL_ACTION_REJECTED"
+      "HL_ACTION_REJECTED",
+      data,
     );
   }
 

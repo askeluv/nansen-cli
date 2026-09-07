@@ -115,12 +115,15 @@ describe("submitExchange", () => {
       { error: "rate limited" },
       { ok: false, status: 429 }
     );
-    await expect(
-      submitExchange(SIGNED, { fetchImpl, baseUrl: "https://hl.test" })
-    ).rejects.toMatchObject({
+    const error = await submitExchange(SIGNED, {
+      fetchImpl,
+      baseUrl: "https://hl.test",
+    }).catch((caught) => caught);
+    expect(error).toMatchObject({
       code: "HL_HTTP_ERROR",
       message: expect.stringContaining("429"),
     });
+    expect(error).not.toHaveProperty("exchangeResult");
   });
 
   it("throws HL_BAD_RESPONSE on a non-JSON body", async () => {

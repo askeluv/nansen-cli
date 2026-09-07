@@ -28,6 +28,7 @@ vi.mock('../telemetry.js', async (importActual) => ({
 
 import { showWallet, getWalletConfig, exportWallet } from '../wallet.js';
 import { submitExchange } from '../hl-client.js';
+import { CommandError } from '../api.js';
 import { buildPerpCommands, summarizeOrderResult } from '../perp.js';
 
 // These tests exercise client-side input validation only. Validation runs
@@ -648,13 +649,13 @@ describe('perp direct-to-HL flow (Chunk 3/4/5)', () => {
     expect(out).not.toMatch(/9007199254740992/); // never present the rounded id
   });
 
-  describe('perp_order_completed telemetry', () => {
+  describe('canonical perps outcome telemetry', () => {
     function trackingCmds() {
       const track = vi.fn();
       return { track, telCmds: buildPerpCommands({ log: () => {}, warn: () => {}, track }) };
     }
 
-    it('fires perp_order_completed with only side + parent oid after a market order', async () => {
+    it('fires a canonical filled outcome after a market order', async () => {
       const { track, telCmds } = trackingCmds();
       const api = mockApi({ screen: clean });
       submitExchange.mockResolvedValueOnce({
@@ -663,8 +664,11 @@ describe('perp direct-to-HL flow (Chunk 3/4/5)', () => {
       });
       await telCmds.order([], api, {}, baseOrder); // baseOrder.type === 'market'
       expect(track).toHaveBeenCalledTimes(1);
-      // Minimal payload: no coin, price, size, status, or fill detail.
-      expect(track.mock.calls[0][0]).toEqual({ command: 'order', side: 'buy', oid: 55 });
+      expect(track.mock.calls[0][0]).toMatchObject({
+        command: 'order', side: 'buy', outcome: 'filled', leg_index: 0,
+        leg: 'parent', wallet_address: '0x1111111111111111111111111111111111111111', oid: 55,
+      });
+      expect(track.mock.calls[0][0].submission_id).toMatch(/^\d+$/);
     });
 
     it('reports a resting limit order id with no fill detail', async () => {
@@ -676,7 +680,10 @@ describe('perp direct-to-HL flow (Chunk 3/4/5)', () => {
       });
       await telCmds.order([], api, {}, { ...baseOrder, type: 'limit', tif: 'Gtc' });
       expect(track).toHaveBeenCalledTimes(1);
-      expect(track.mock.calls[0][0]).toEqual({ command: 'order', side: 'buy', oid: 987654 });
+      expect(track.mock.calls[0][0]).toMatchObject({
+        command: 'order', side: 'buy', outcome: 'resting', leg_index: 0,
+        leg: 'parent', oid: 987654,
+      });
     });
 
     it('omits the oid when it exceeds safe integer precision', async () => {
@@ -692,7 +699,7 @@ describe('perp direct-to-HL flow (Chunk 3/4/5)', () => {
       expect(track.mock.calls[0][0].side).toBe('buy');
     });
 
-    it('sends only the parent order id for a TP/SL bracket (no leg detail)', async () => {
+    it('preserves every order id and each leg side for a TP/SL bracket', async () => {
       const { track, telCmds } = trackingCmds();
       const api = mockApi({ screen: clean });
       submitExchange.mockResolvedValueOnce({
@@ -709,7 +716,19 @@ describe('perp direct-to-HL flow (Chunk 3/4/5)', () => {
         },
       });
       await telCmds.order([], api, {}, { ...baseOrder, 'take-profit': '2500', 'stop-loss': '1500' });
-      expect(track.mock.calls[0][0]).toEqual({ command: 'order', side: 'buy', oid: 1 });
+      expect(track).toHaveBeenCalledTimes(3);
+      expect(track.mock.calls.map(([event]) => ({
+        side: event.side,
+        position_side: event.position_side,
+        outcome: event.outcome,
+        leg: event.leg,
+        oid: event.oid,
+      }))).toEqual([
+        { side: 'buy', position_side: 'long', outcome: 'filled', leg: 'parent', oid: 1 },
+        { side: 'sell', position_side: 'long', outcome: 'resting', leg: 'take-profit', oid: 2 },
+        { side: 'sell', position_side: 'long', outcome: 'resting', leg: 'stop-loss', oid: 3 },
+      ]);
+      expect(new Set(track.mock.calls.map(([event]) => event.submission_id)).size).toBe(1);
     });
 
     it('fires with command "close" from the close handler', async () => {
@@ -721,7 +740,9 @@ describe('perp direct-to-HL flow (Chunk 3/4/5)', () => {
       });
       await telCmds.close([], api, {}, { coin: 'ETH', side: 'sell', size: '0.01', price: '2000', wallet: 'x' });
       expect(track).toHaveBeenCalledTimes(1);
-      expect(track.mock.calls[0][0]).toEqual({ command: 'close', side: 'sell', oid: 99 });
+      expect(track.mock.calls[0][0]).toMatchObject({
+        command: 'close', side: 'sell', outcome: 'filled', leg: 'parent', oid: 99,
+      });
     });
 
     it('does not fire for non-order actions (leverage / transfer)', async () => {
@@ -732,25 +753,116 @@ describe('perp direct-to-HL flow (Chunk 3/4/5)', () => {
       expect(track).not.toHaveBeenCalled();
     });
 
-    it('does not fire when the order is rejected', async () => {
+    it('emits a rejected outcome without exchange error text, then preserves the error', async () => {
       const { track, telCmds } = trackingCmds();
       const api = mockApi({ screen: clean });
-      submitExchange.mockRejectedValueOnce(new Error('order rejected by exchange'));
-      await expect(telCmds.order([], api, {}, baseOrder)).rejects.toThrow(/rejected/);
+      const error = new CommandError('order rejected by exchange', 'HL_ACTION_REJECTED');
+      error.exchangeResult = {
+        status: 'ok',
+        response: { type: 'order', data: { statuses: [{ error: 'private exchange detail' }] } },
+      };
+      submitExchange.mockRejectedValueOnce(error);
+      await expect(telCmds.order([], api, {}, baseOrder)).rejects.toBe(error);
+      expect(track).toHaveBeenCalledTimes(1);
+      expect(track.mock.calls[0][0]).toMatchObject({
+        command: 'order', side: 'buy', outcome: 'rejected', leg: 'parent',
+        error_code: 'HL_ACTION_REJECTED',
+      });
+      expect(track.mock.calls[0][0]).not.toHaveProperty('error');
+    });
+
+    it('leaves an unstructured HTTP error outcome indeterminate', async () => {
+      const { track, telCmds } = trackingCmds();
+      const api = mockApi({ screen: clean });
+      // A real HL_HTTP_ERROR (hl-client.js) throws without an exchangeResult —
+      // opaque HTTP bodies are not action results — so the perp error path sees
+      // no exchangeResult and leaves the outcome to cli_command_failed.
+      const error = new CommandError('Hyperliquid error (HTTP 503)', 'HL_HTTP_ERROR');
+      submitExchange.mockRejectedValueOnce(error);
+
+      await expect(telCmds.order([], api, {}, baseOrder)).rejects.toBe(error);
+
       expect(track).not.toHaveBeenCalled();
+    });
+
+    it('preserves successful and rejected legs from a partial bracket response', async () => {
+      const { track, telCmds } = trackingCmds();
+      const api = mockApi({ screen: clean });
+      const error = new CommandError('partial bracket', 'PARTIAL_FILL');
+      error.exchangeResult = {
+        status: 'ok',
+        response: {
+          type: 'order',
+          data: {
+            statuses: [
+              { filled: { oid: 41, totalSz: '0.01', avgPx: '2000' } },
+              { error: 'private take-profit detail' },
+            ],
+          },
+        },
+      };
+      submitExchange.mockRejectedValueOnce(error);
+
+      await expect(telCmds.order([], api, {}, { ...baseOrder, 'take-profit': '2500' })).rejects.toBe(error);
+
+      expect(track).toHaveBeenCalledTimes(2);
+      expect(track.mock.calls.map(([event]) => ({
+        side: event.side,
+        outcome: event.outcome,
+        leg: event.leg,
+        oid: event.oid,
+        error_code: event.error_code,
+      }))).toEqual([
+        { side: 'buy', outcome: 'filled', leg: 'parent', oid: 41, error_code: undefined },
+        { side: 'sell', outcome: 'rejected', leg: 'take-profit', oid: undefined, error_code: 'PARTIAL_FILL' },
+      ]);
+    });
+
+    it('expands one batch-wide rejection to every submitted bracket leg', async () => {
+      const { track, telCmds } = trackingCmds();
+      const api = mockApi({ screen: clean });
+      const error = new CommandError('batch rejected', 'HL_ACTION_REJECTED');
+      error.exchangeResult = {
+        status: 'ok',
+        response: {
+          type: 'order',
+          data: { statuses: [{ error: 'private batch validation detail' }] },
+        },
+      };
+      submitExchange.mockRejectedValueOnce(error);
+
+      await expect(telCmds.order([], api, {}, {
+        ...baseOrder,
+        'take-profit': '2500',
+        'stop-loss': '1500',
+      })).rejects.toBe(error);
+
+      expect(track).toHaveBeenCalledTimes(3);
+      expect(track.mock.calls.map(([event]) => ({
+        side: event.side,
+        position_side: event.position_side,
+        outcome: event.outcome,
+        leg: event.leg,
+        error_code: event.error_code,
+      }))).toEqual([
+        { side: 'buy', position_side: 'long', outcome: 'rejected', leg: 'parent', error_code: 'HL_ACTION_REJECTED' },
+        { side: 'sell', position_side: 'long', outcome: 'rejected', leg: 'take-profit', error_code: 'HL_ACTION_REJECTED' },
+        { side: 'sell', position_side: 'long', outcome: 'rejected', leg: 'stop-loss', error_code: 'HL_ACTION_REJECTED' },
+      ]);
+      expect(new Set(track.mock.calls.map(([event]) => event.submission_id)).size).toBe(1);
     });
   });
 });
 
 describe('summarizeOrderResult', () => {
-  const order = (extra = {}) => ({ type: 'order', orders: [{}], ...extra });
+  const order = (extra = {}) => ({ type: 'order', orders: [{ b: true }], ...extra });
 
   it('extracts a resting order id', () => {
     const r = summarizeOrderResult(
       { response: { type: 'order', data: { statuses: [{ resting: { oid: 123 } }] } } },
       order(),
     );
-    expect(r).toEqual([{ leg: 'parent', kind: 'resting', oid: 123, oidSafe: true }]);
+    expect(r).toEqual([{ index: 0, leg: 'parent', side: 'buy', positionSide: 'long', kind: 'resting', oid: 123, oidSafe: true }]);
   });
 
   it('extracts a fill with size and average price', () => {
@@ -758,7 +870,10 @@ describe('summarizeOrderResult', () => {
       { response: { type: 'order', data: { statuses: [{ filled: { oid: 456, totalSz: '0.01', avgPx: '2000.5' } }] } } },
       order(),
     );
-    expect(r).toEqual([{ leg: 'parent', kind: 'filled', oid: 456, oidSafe: true, totalSz: '0.01', avgPx: '2000.5' }]);
+    expect(r).toEqual([{
+      index: 0, leg: 'parent', side: 'buy', positionSide: 'long', kind: 'filled', oid: 456,
+      oidSafe: true, totalSz: '0.01', avgPx: '2000.5',
+    }]);
   });
 
   it('flags an oid beyond safe integer precision as oidSafe:false', () => {
