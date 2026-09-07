@@ -151,8 +151,33 @@ function credentialsFileWrite(password) {
       fs.mkdirSync(dir, { mode: 0o700, recursive: true });
     }
     const encoded = Buffer.from(password, 'utf8').toString('base64');
-    fs.writeFileSync(filePath, `NANSEN_WALLET_PASSWORD_B64=${encoded}\n`, { mode: 0o600 });
-    return true;
+    const content = `NANSEN_WALLET_PASSWORD_B64=${encoded}\n`;
+
+    // Windows does not implement POSIX modes or O_NOFOLLOW consistently.
+    if (process.platform === 'win32') {
+      fs.writeFileSync(filePath, content, { mode: 0o600 });
+      return true;
+    }
+
+    let fd;
+    try {
+      const flags = fs.constants.O_WRONLY
+        | fs.constants.O_CREAT
+        | fs.constants.O_NOFOLLOW
+        | fs.constants.O_NONBLOCK;
+      fd = fs.openSync(filePath, flags, 0o600);
+      if (!fs.fstatSync(fd).isFile()) throw new Error('Credentials path is not a regular file');
+
+      // Opening an existing file does not apply the requested mode. Tighten it
+      // before replacing the secret, then enforce the final mode after writing.
+      fs.fchmodSync(fd, 0o600);
+      fs.ftruncateSync(fd, 0);
+      fs.writeFileSync(fd, content, 'utf8');
+      fs.fchmodSync(fd, 0o600);
+      return true;
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
+    }
   } catch {
     return false;
   }
