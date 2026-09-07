@@ -1077,6 +1077,56 @@ export async function resolveEvmStepFees(chain, txData, overrides = {}) {
   return { gasPrice: await evmRpcCall(chain, 'eth_gasPrice') };
 }
 
+// eth_sendRawTransaction JSON-RPC error messages that PROVE the tx never
+// entered the mempool: the node rejected it during validation, so nothing is in
+// flight and the quote stays reusable. Matched case-insensitively as substrings
+// of the node's error text. Every entry here must be UNAMBIGUOUSLY pre-broadcast
+// across EVM node implementations. Everything NOT listed fails closed — crucially
+// the txpool states ("already known", "known transaction", "already imported",
+// "nonce too low", "replacement transaction underpriced") that mean a tx is
+// ALREADY in flight; treating those as safe rejections would let a re-execute
+// sign a fresh nonce and broadcast a second bridge tx.
+//
+// Deliberately EXCLUDED: the bare "transaction underpriced". On go-ethereum /
+// op-geth (which is what Base — today's only EVM bridge chain — runs) it means a
+// fresh too-low-fee tx that was never accepted, i.e. safe. But some other nodes
+// (certain Besu / Nethermind versions) reuse that same bare message for a failed
+// REPLACEMENT (a nonce collision with an in-flight tx). Since the allowlist is
+// not chain-scoped and processEvmStep runs for whatever CHAIN_RPCS resolves, we
+// fail closed on it rather than risk a future non-geth chain misclassifying an
+// in-flight tx as safe. Cost is at most a needless re-quote.
+const PRE_BROADCAST_SEND_ERRORS = [
+  'insufficient funds',
+  'intrinsic gas too low',
+  'gas too low',
+  'exceeds block gas limit',
+  'exceeds the block gas limit',
+  'max fee per gas less than block base fee',
+  'fee cap less than block base fee',
+  'max priority fee per gas higher than max fee per gas',
+  'invalid sender',
+  'invalid signature',
+  'could not decode',
+  'rlp: ', // geth's RLP decode errors ("rlp: input string too long", …); the
+           // trailing space avoids matching "rlp" embedded in an unrelated message
+  'negative value',
+];
+
+// True when we are CONFIDENT a failed send never put the tx into the mempool, so
+// the bridge quote may be retried. This is deliberately NARROW: a definitive
+// answer requires a JSON-RPC rejection (RPC_JSON_ERROR) whose message is on the
+// pre-broadcast allowlist, or a missing-RPC config error (the request never
+// left this process). A transport/HTTP failure, or ANY other JSON-RPC error
+// (including in-flight txpool states and the cross-node-ambiguous bare
+// "transaction underpriced"), is treated as unsafe and must fail closed — see
+// evmRpcCall (trading.js) for the error codes.
+function isPreBroadcastSendRejection(err) {
+  if (err?.code === 'RPC_UNCONFIGURED') return true;
+  if (err?.code !== 'RPC_JSON_ERROR') return false;
+  const msg = (err.message || '').toLowerCase();
+  return PRE_BROADCAST_SEND_ERRORS.some(pattern => msg.includes(pattern));
+}
+
 async function processEvmStep(step, { chain, privateKeyHex, signerAddress, log, onBroadcast, feeOverrides, nonceSequence, intent }) {
   for (const item of step.items || []) {
     if (item.status === 'complete') continue;
@@ -1114,7 +1164,20 @@ async function processEvmStep(step, { chain, privateKeyHex, signerAddress, log, 
     );
 
     log(`  Broadcasting ${step.id} on ${chain}...`);
-    const txHash = await evmRpcCall(chain, 'eth_sendRawTransaction', [signedTx]);
+    let txHash;
+    try {
+      txHash = await evmRpcCall(chain, 'eth_sendRawTransaction', [signedTx]);
+    } catch (sendErr) {
+      // Fail closed UNLESS we're confident the tx never entered the mempool (a
+      // pre-broadcast validation rejection, or no RPC configured). Everything
+      // else — a lost ack, a gateway error, OR an in-flight txpool state like
+      // "already known" / "nonce too low" that a node reports as a JSON-RPC
+      // error — may already be broadcasting, so mark the quote spent before
+      // rethrowing to abort, so a later re-execute can't re-sign this step at a
+      // fresh nonce and double-broadcast.
+      if (!isPreBroadcastSendRejection(sendErr)) onBroadcast?.(step.id, null);
+      throw sendErr;
+    }
     // In flight now: record it before waiting on the receipt, because a receipt
     // timeout must not leave the quote reusable.
     onBroadcast?.(step.id, txHash);
@@ -1158,7 +1221,16 @@ async function processSignatureStepLocal(step, { privateKeyHex, log, apiInstance
       }
 
       log(`  Signing ${step.id} (EIP-712)...`);
-      await postBridgeExecute(apiInstance, targetUrl, postBody);
+      // Fail closed on ANY submit failure: the proxy may have forwarded the
+      // authorization before the error surfaced, and we can't tell that from a
+      // clean pre-forward rejection. Consume the quote before rethrowing so a
+      // re-execute can't resubmit this leg.
+      try {
+        await postBridgeExecute(apiInstance, targetUrl, postBody);
+      } catch (sendErr) {
+        onBroadcast?.(step.id, null);
+        throw sendErr;
+      }
       onBroadcast?.(step.id, null);
       log(`  Submitted to ${new URL(targetUrl).hostname}`);
     } else if (signData.action) {
@@ -1196,7 +1268,17 @@ async function processSignatureStepLocal(step, { privateKeyHex, log, apiInstance
       };
 
       log(`  Signing ${step.id} (Hyperliquid deposit)...`);
-      const result = await postBridgeExecute(apiInstance, 'https://api.hyperliquid.xyz/exchange', hlBody);
+      // Fail closed if the SUBMIT itself throws (transport/proxy error — HL may
+      // still have received the action). A clean HL rejection instead returns
+      // 200 and is caught by assertHyperliquidStepAccepted below, OUTSIDE this
+      // try: that is a definitive no-op, so it must NOT consume the quote.
+      let result;
+      try {
+        result = await postBridgeExecute(apiInstance, 'https://api.hyperliquid.xyz/exchange', hlBody);
+      } catch (sendErr) {
+        onBroadcast?.(step.id, null);
+        throw sendErr;
+      }
       assertHyperliquidStepAccepted(result, step.id);
       onBroadcast?.(step.id, null);
       log(`  Submitted to api.hyperliquid.xyz`);
@@ -1270,7 +1352,14 @@ async function processSignatureStepPrivy(step, { privyClient, walletId, log, api
       } else {
         postBody.signature = signature;
       }
-      await postBridgeExecute(apiInstance, targetUrl, postBody);
+      // Fail closed on any submit failure — see the local path for the rationale
+      // (an ambiguous forward must not leave the quote reusable).
+      try {
+        await postBridgeExecute(apiInstance, targetUrl, postBody);
+      } catch (sendErr) {
+        onBroadcast?.(step.id, null);
+        throw sendErr;
+      }
       onBroadcast?.(step.id, null);
     } else {
       const [rHex, sHex, vHex] = [signature.slice(2, 66), signature.slice(66, 130), signature.slice(130, 132)];
@@ -1279,7 +1368,16 @@ async function processSignatureStepPrivy(step, { privyClient, walletId, log, api
         nonce: signData.nonce,
         signature: { r: '0x' + rHex, s: '0x' + sHex, v: parseInt(vHex, 16) },
       };
-      const result = await postBridgeExecute(apiInstance, 'https://api.hyperliquid.xyz/exchange', hlBody);
+      // Submit-throw = ambiguous → fail closed; a clean HL rejection returns 200
+      // and is caught by assertHyperliquidStepAccepted (outside the try) as a
+      // definitive no-op that must NOT consume the quote.
+      let result;
+      try {
+        result = await postBridgeExecute(apiInstance, 'https://api.hyperliquid.xyz/exchange', hlBody);
+      } catch (sendErr) {
+        onBroadcast?.(step.id, null);
+        throw sendErr;
+      }
       assertHyperliquidStepAccepted(result, step.id);
       onBroadcast?.(step.id, null);
     }
