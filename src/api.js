@@ -19,6 +19,16 @@ import { readResponseMeta } from './response-meta.js';
  */
 export const RESPONSE_META = Symbol('nansenResponseMeta');
 
+/**
+ * Sentinel returned by _x402Retry to mean "this payment option was cleanly
+ * rejected without settlement, safe to try the next option" — distinct from
+ * a genuine successful response whose JSON body happens to be `null`.
+ * Using `null` for both (the previous behavior) made a legitimate null-body
+ * success indistinguishable from a clean rejection, so the caller would sign
+ * and transmit ANOTHER payment for a request that had already succeeded.
+ */
+export const X402_PAYMENT_REJECTED = Symbol('x402PaymentRejected');
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export function telemetryHeaders() {
@@ -65,6 +75,7 @@ export const ErrorCode = {
   // Client Errors
   NETWORK_ERROR: 'NETWORK_ERROR',         // Connection failed
   TIMEOUT: 'TIMEOUT',                     // Request timed out
+  PAYMENT_AMBIGUOUS: 'PAYMENT_AMBIGUOUS', // x402 payment outcome unknown after transmission — do not retry with another payment
   
   // Generic
   UNKNOWN: 'UNKNOWN',                     // Unclassified error
@@ -530,7 +541,14 @@ export class NansenAPI {
 
   /**
    * Retry a POST request with a payment signature.
-   * Returns parsed JSON if the paid request succeeds, or null if still rejected.
+   * Returns parsed JSON if the paid request succeeds, or the X402_PAYMENT_REJECTED
+   * sentinel if the server cleanly, legibly rejected it without settling.
+   * Throws a NansenError(PAYMENT_AMBIGUOUS) — instead of returning the sentinel —
+   * for any outcome that doesn't prove the payment was rejected: a transport
+   * failure after transmission, an HTTP 5xx, or a response body that can't be
+   * parsed. In all of those cases the server may already have received and
+   * settled the payment, so the caller must not treat it as safe to retry with
+   * a different option — that would risk paying twice for the same request.
    * Logs the payment and warns about low balance when walletLabel and network are given.
    *
    * @param {string} signature - Payment-Signature header value
@@ -539,7 +557,7 @@ export class NansenAPI {
    * @param {string} url - Request URL
    * @param {object} body - Request body (will be cleaned)
    * @param {object} [options={}] - Request options (may include .method, .headers)
-   * @returns {Promise<object|null>} Parsed JSON on success, null if rejected
+   * @returns {Promise<object|typeof X402_PAYMENT_REJECTED>}
    *
    * TODO: full fix — extract the entire x402 provider dispatch from request() into
    * an attemptX402Payment() method so adding a new payment provider only requires
@@ -550,21 +568,52 @@ export class NansenAPI {
     // POST burned a payment signature then hit the wrong route for GET/DELETE/PATCH.
     const method = options.method || 'POST';
     const isGet = method === 'GET';
-    const paidResponse = await fetch(url, {
-      method,
-      redirect: 'error',
-      headers: {
-        ...(!isGet && { 'Content-Type': 'application/json' }),
-        'X-Client-Type': 'nansen-cli',
-        'X-Client-Version': packageVersion,
-        ...telemetryHeaders(),
-        'Payment-Signature': signature,
-        ...this.defaultHeaders,
-        ...options.headers,
-      },
-      ...(!isGet && method !== 'DELETE' && { body: JSON.stringify(NansenAPI.cleanBody(body)) }),
-    });
-    if (!paidResponse.ok) return null;
+    let paidResponse;
+    try {
+      paidResponse = await fetch(url, {
+        method,
+        redirect: 'error',
+        headers: {
+          ...(!isGet && { 'Content-Type': 'application/json' }),
+          'X-Client-Type': 'nansen-cli',
+          'X-Client-Version': packageVersion,
+          ...telemetryHeaders(),
+          'Payment-Signature': signature,
+          ...this.defaultHeaders,
+          ...options.headers,
+        },
+        ...(!isGet && method !== 'DELETE' && { body: JSON.stringify(NansenAPI.cleanBody(body)) }),
+      });
+    } catch (err) {
+      // The signature was already on the wire when the connection failed —
+      // the server may have received and settled it before we lost the
+      // response. Fail closed rather than let the caller sign and send a
+      // second payment for the same logical request.
+      throw new NansenError(
+        `x402 payment outcome unknown: request failed after the signed payment was transmitted (${err.message}). Not attempting another payment for the same request.`,
+        ErrorCode.PAYMENT_AMBIGUOUS,
+      );
+    }
+    if (!paidResponse.ok) {
+      // A 5xx doesn't prove the payment was rejected — the server could have
+      // processed it before failing to respond. Only a readable non-5xx
+      // rejection body is safe to treat as "try the next option".
+      if (paidResponse.status >= 500) {
+        throw new NansenError(
+          `x402 payment outcome unknown: server returned ${paidResponse.status} after the signed payment was transmitted. Not attempting another payment for the same request.`,
+          ErrorCode.PAYMENT_AMBIGUOUS,
+        );
+      }
+      try {
+        await paidResponse.json();
+      } catch (err) {
+        throw new NansenError(
+          `x402 payment outcome unknown: rejection response body was unreadable (${err.message}). Not attempting another payment for the same request.`,
+          ErrorCode.PAYMENT_AMBIGUOUS,
+        );
+      }
+      return X402_PAYMENT_REJECTED;
+    }
     if (walletLabel) {
       console.error(`[x402] Paid via ${walletLabel}${network ? ` (${network})` : ''}`);
     }
@@ -577,7 +626,18 @@ export class NansenAPI {
         }
       } catch { /* balance check is best-effort */ }
     }
-    const data = await paidResponse.json();
+    let data;
+    try {
+      data = await paidResponse.json();
+    } catch (err) {
+      // The payment was accepted (2xx) — it settled. We just can't read the
+      // response body, so surface that plainly rather than silently treating
+      // it as a rejection and paying again.
+      throw new NansenError(
+        `x402 payment succeeded but its response body was unreadable (${err.message}). The payment was not repeated.`,
+        ErrorCode.PAYMENT_AMBIGUOUS,
+      );
+    }
     const meta = readResponseMeta(paidResponse);
     this.lastResponseMeta = meta;
     if (meta && data !== null && typeof data === 'object') data[RESPONSE_META] = meta;
@@ -712,9 +772,14 @@ export class NansenAPI {
                 const { createPrivyPaymentSignatures } = await import('./privy.js');
                 for await (const { signature, network } of createPrivyPaymentSignatures(response, url)) {
                   const result = await this._x402Retry(signature, `Privy wallet ${defaultWalletName}`, network, url, body, options);
-                  if (result !== null) return result;
+                  if (result !== X402_PAYMENT_REJECTED) return result;
                 }
               } catch (privyErr) {
+                // An ambiguous outcome (transport failure, 5xx, unreadable body)
+                // after a signed payment was already transmitted must not be
+                // treated as an ordinary payment failure — there is no other
+                // provider to fall back to here, and retrying could double-pay.
+                if (privyErr instanceof NansenError && privyErr.code === ErrorCode.PAYMENT_AMBIGUOUS) throw privyErr;
                 message = `x402 Privy payment failed: ${privyErr.message}`;
               }
             } else {
@@ -724,10 +789,17 @@ export class NansenAPI {
                 const { createPaymentSignatures } = await import('./x402.js');
                 for await (const { signature, network, asset } of createPaymentSignatures(response, url)) {
                   const result = await this._x402Retry(signature, `local wallet ${defaultWalletName}`, network, url, body, options, asset);
-                  if (result !== null) return result;
-                  // This payment option was rejected, try next
+                  if (result !== X402_PAYMENT_REJECTED) return result;
+                  // This payment option was cleanly rejected without settling, try next
                 }
-              } catch { /* local wallet unavailable, try WalletConnect */ }
+              } catch (localErr) {
+                // An ambiguous outcome here means a signed payment may already
+                // be in flight or settled server-side. Do NOT fall through to
+                // WalletConnect below — that would sign and transmit a second,
+                // independent payment authorization for the same request.
+                if (localErr instanceof NansenError && localErr.code === ErrorCode.PAYMENT_AMBIGUOUS) throw localErr;
+                /* local wallet unavailable for any other reason, try WalletConnect */
+              }
 
               // 2. Fall back to WalletConnect (walletconnect-x402.js)
               {
@@ -749,8 +821,13 @@ export class NansenAPI {
                     const { handleX402Payment } = await import('./walletconnect-x402.js');
                     const paymentSignature = await handleX402Payment(paymentRequirements);
                     const result = await this._x402Retry(paymentSignature, 'WalletConnect', null, url, body, options);
-                    if (result !== null) return result;
+                    if (result !== X402_PAYMENT_REJECTED) return result;
                   } catch (x402Err) {
+                    // WalletConnect is the last resort in this chain — an
+                    // ambiguous outcome here still must not be reported as an
+                    // ordinary "payment failed" that invites the caller to
+                    // retry the whole request (and sign yet another payment).
+                    if (x402Err instanceof NansenError && x402Err.code === ErrorCode.PAYMENT_AMBIGUOUS) throw x402Err;
                     if (!this.apiKey) {
                       message = 'No API key configured. Three ways to authenticate:\n' +
                         '  1. API key: run `nansen login --human` or set NANSEN_API_KEY (get key at https://app.nansen.ai/auth/agent-setup)\n' +
