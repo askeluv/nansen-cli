@@ -684,6 +684,7 @@ describe('Privy wallet create does not emit PASSWORD_REQUIRED', () => {
 describe('Wallet list/show CLI output for provider', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   it('list output shows provider for Privy wallets', async () => {
@@ -700,12 +701,62 @@ describe('Wallet list/show CLI output for provider', () => {
       }));
 
     const { buildWalletCommands } = await import('../wallet.js');
-    const output = [];
-    const cmds = buildWalletCommands({ log: (m) => output.push(m), exit: () => {} });
+    let stderr = '';
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      stderr += chunk;
+      return true;
+    });
+    const cmds = buildWalletCommands({ log: () => {}, exit: () => {} });
     await cmds.wallet(['list'], null, {}, {});
 
-    const joined = output.join('\n');
-    expect(joined).toContain('privy');
+    // The provider tag lives in the human-readable summary, now on stderr.
+    expect(stderr).toContain('privy');
+  });
+});
+
+describe('wallet list stdout/stderr separation', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('emits only JSON.parse-able output to stdout and the human summary to stderr', async () => {
+    const walletsDir = path.join(tempDir, '.nansen', 'wallets');
+    fs.mkdirSync(walletsDir, { recursive: true });
+    fs.writeFileSync(path.join(walletsDir, 'config.json'),
+      JSON.stringify({ defaultWallet: 'main', passwordHash: null }));
+    fs.writeFileSync(path.join(walletsDir, 'main.json'),
+      JSON.stringify({
+        name: 'main', provider: 'local',
+        evm: { address: '0xEvmAddr' },
+        solana: { address: 'SolAddr' },
+        createdAt: '2026-01-01T00:00:00Z',
+      }));
+
+    const { runCLI } = await import('../cli.js');
+
+    const stdout = [];
+    let stderr = '';
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      stderr += chunk;
+      return true;
+    });
+
+    await runCLI(['wallet', 'list'], {
+      output: (msg) => stdout.push(msg),
+      errorOutput: () => {},
+      exit: () => {},
+    });
+
+    // stdout carries a single clean JSON document an agent can parse
+    const joined = stdout.join('\n');
+    const parsed = JSON.parse(joined);
+    expect(parsed.data.wallets).toHaveLength(1);
+    expect(parsed.data.wallets[0].name).toBe('main');
+
+    // the human-readable summary belongs on stderr, never stdout
+    expect(stderr).toContain('main');
+    expect(stderr).toContain('EVM:');
+    expect(joined).not.toContain('EVM:');
   });
 });
 

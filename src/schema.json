@@ -2254,7 +2254,15 @@
           "description": "Create a new wallet"
         },
         "list": {
-          "description": "List all wallets"
+          "description": "List all wallets",
+          "returns": [
+            "wallets[].name",
+            "wallets[].evm",
+            "wallets[].solana",
+            "wallets[].isDefault",
+            "wallets[].provider",
+            "wallets[].createdAt"
+          ]
         },
         "show": {
           "description": "Show wallet details",
