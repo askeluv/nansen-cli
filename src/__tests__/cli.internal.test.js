@@ -2662,6 +2662,120 @@ describe('--no-retry and --retries flags', () => {
     
     expect(capturedOptions.retry.maxRetries).toBe(0);
   });
+
+  it.each(['-1', '1.5', 'NaN', 'Infinity', '9007199254740992'])(
+    'should reject invalid --retries value %s before constructing the API client',
+    async (value) => {
+      const NansenAPIClass = vi.fn();
+
+      const result = await runCLI(
+        ['smart-money', 'netflow', '--retries', value],
+        { ...mockDeps(), NansenAPIClass },
+      );
+
+      expect(result).toMatchObject({
+        type: 'error',
+        data: {
+          error: `--retries must be a non-negative safe integer; received: ${value}`,
+          code: ErrorCode.INVALID_PARAMS,
+        },
+      });
+      expect(NansenAPIClass).not.toHaveBeenCalled();
+      expect(_exitCode).toBe(1);
+    },
+  );
+
+  it('should reject --retries without a value before constructing the API client', async () => {
+    const NansenAPIClass = vi.fn();
+
+    const result = await runCLI(
+      ['smart-money', 'netflow', '--retries'],
+      { ...mockDeps(), NansenAPIClass },
+    );
+
+    expect(result.data.error).toBe('--retries requires a non-negative safe integer value');
+    expect(result.data.code).toBe(ErrorCode.INVALID_PARAMS);
+    expect(NansenAPIClass).not.toHaveBeenCalled();
+    expect(_exitCode).toBe(1);
+  });
+
+  it.each([
+    ['--retries', '2', '--retries'],
+    ['--retries', '--retries', '2'],
+  ])('should reject a valueless repeated --retries occurrence: %s %s %s', async (...retryArgs) => {
+    const NansenAPIClass = vi.fn();
+
+    const result = await runCLI(
+      ['smart-money', 'netflow', ...retryArgs],
+      { ...mockDeps(), NansenAPIClass },
+    );
+
+    expect(result.data.error).toBe('--retries requires a non-negative safe integer value');
+    expect(result.data.code).toBe(ErrorCode.INVALID_PARAMS);
+    expect(NansenAPIClass).not.toHaveBeenCalled();
+  });
+
+  it('should reject repeated valued --retries options clearly', async () => {
+    const NansenAPIClass = vi.fn();
+
+    const result = await runCLI(
+      ['smart-money', 'netflow', '--retries', '2', '--retries', '3'],
+      { ...mockDeps(), NansenAPIClass },
+    );
+
+    expect(result.data.error).toBe('--retries may only be specified once');
+    expect(result.data.code).toBe(ErrorCode.INVALID_PARAMS);
+    expect(NansenAPIClass).not.toHaveBeenCalled();
+  });
+
+  it.each(['', '   '])('should reject empty --retries value %#', async (value) => {
+    const NansenAPIClass = vi.fn();
+
+    const result = await runCLI(
+      ['smart-money', 'netflow', '--retries', value],
+      { ...mockDeps(), NansenAPIClass },
+    );
+
+    expect(result.data.error).toBe('--retries requires a non-negative safe integer value');
+    expect(result.data.code).toBe(ErrorCode.INVALID_PARAMS);
+    expect(NansenAPIClass).not.toHaveBeenCalled();
+  });
+
+  it('should validate --retries even when --no-retry overrides it', async () => {
+    const NansenAPIClass = vi.fn();
+
+    const result = await runCLI(
+      ['smart-money', 'netflow', '--no-retry', '--retries', '-1'],
+      { ...mockDeps(), NansenAPIClass },
+    );
+
+    expect(result.data.error).toBe('--retries must be a non-negative safe integer; received: -1');
+    expect(result.data.code).toBe(ErrorCode.INVALID_PARAMS);
+    expect(NansenAPIClass).not.toHaveBeenCalled();
+  });
+
+  it('should allow the largest safe integer for --retries', async () => {
+    let capturedOptions;
+    const deps = {
+      ...mockDeps(),
+      NansenAPIClass: function MockAPI(key, url, opts) {
+        capturedOptions = opts;
+        this.smartMoneyNetflow = vi.fn().mockResolvedValue({ data: [] });
+      },
+    };
+
+    await runCLI(['smart-money', 'netflow', '--retries', '9007199254740991'], deps);
+
+    expect(capturedOptions.retry.maxRetries).toBe(Number.MAX_SAFE_INTEGER);
+  });
+
+  it('should describe retry numeric boundaries in the schema', () => {
+    expect(SCHEMA.globalOptions.retries).toMatchObject({
+      type: 'integer',
+      minimum: 0,
+      maximum: Number.MAX_SAFE_INTEGER,
+    });
+  });
 });
 
 // =================== P2: parseSort with Special Characters ===================
