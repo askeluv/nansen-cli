@@ -895,12 +895,16 @@ EXAMPLES:
         // environment doesn't gain a new API dependency for a check it isn't going to
         // run anyway. Done before requesting cancellation so a lookup failure fails
         // closed without first consuming a one-time withdrawal request server-side.
+        // Filtered to state: 'active' (the only state a cancellable order can be in) so
+        // a user with more than 100 total orders (including filled/cancelled/expired
+        // history) doesn't have their target order pushed off page 1 by unrelated past
+        // orders — the API only accepts 'active' or 'past' for this filter.
         let cancelInputMint;
         if (hasSolanaSimulationRpc('solana')) {
-          const orderList = await listOrders(token, pubkey, { limit: 100 });
+          const orderList = await listOrders(token, pubkey, { limit: 100, state: 'active' });
           const order = (orderList.orders || []).find((o) => o.id === orderId);
           if (!order) {
-            throw new Error(`Could not find order ${orderId} among your orders; refusing to verify the cancel's refund asset. Check the order ID with "nansen trade limit-order list".`);
+            throw new Error(`Could not find order ${orderId} among your active orders; refusing to verify the cancel's refund asset. It may already be filled/cancelled/expired, or you have more than 100 active orders — check with "nansen trade limit-order list --state active".`);
           }
           cancelInputMint = order.inputMint;
         }

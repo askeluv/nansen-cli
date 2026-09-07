@@ -1234,6 +1234,10 @@ describe('outcome verification (fail-closed)', () => {
     // 6 calls: challenge, verify, order lookup, cancelRequest, getMultipleAccounts,
     // simulateTransaction — confirmCancelOrder (the 7th) must never fire.
     expect(global.fetch).toHaveBeenCalledTimes(6);
+    // Order lookup must be scoped to active orders — a user with >100 total orders
+    // (including past history) must not have the cancellable one pushed off page 1.
+    const orderLookupUrl = global.fetch.mock.calls[2][0];
+    expect(orderLookupUrl).toContain('state=active');
   });
 
   it('cancel: refuses to sign when the order cannot be found in the lookup, rather than skipping the asset-binding check', async () => {
