@@ -1347,6 +1347,95 @@ describe('outcome verification (fail-closed)', () => {
     expect(logs.some(l => /could not run.*proceeding without/i.test(l))).toBe(true);
     expect(logs.some(l => l.includes('Order cancelled'))).toBe(true);
   });
+
+  it('cancel: refuses a withdrawal that refunds only a dust amount of the right asset (redirect-most-of-escrow)', async () => {
+    SIMULATION_RPCS.solana = 'http://sol-sim.test';
+    const wallet = createTestWallet('lo-outcome-cancel-dust');
+    const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+    const usdcAccount = generateSolanaWallet().address;
+    const cancelTx = buildLimitOrderTx({ walletPubkey: wallet.solana, extraWritableKey: usdcAccount });
+
+    mockFetchSequence([
+      { body: { challenge: 'sign' } },
+      { body: { token: 'jwt' } },
+      // order still owes 1,000,000 base units (nothing filled yet).
+      { body: { orders: [{ id: 'order-1', inputMint: USDC, inputAmount: '1000000', fills: [] }] } },
+      { body: { id: 'order-1', transaction: cancelTx, requestId: 'cancel-req-1' } },
+      // sim pre-state: wallet native + an empty USDC account the wallet owns.
+      {
+        body: {
+          result: {
+            value: [
+              solanaNativeAccountInfo(2_000_000_000),
+              solanaTokenAccountInfo({ mint: USDC, owner: wallet.solana, amount: 0 }),
+            ],
+          },
+        },
+      },
+      // sim post-state: only 1 base unit of USDC comes back — a real inflow of the
+      // right asset, but nowhere near the 1,000,000 the order still owes.
+      {
+        body: {
+          result: {
+            value: {
+              err: null,
+              accounts: [
+                solanaNativeAccountInfo(2_000_000_000 - 5000),
+                solanaTokenAccountInfo({ mint: USDC, owner: wallet.solana, amount: 1 }),
+              ],
+            },
+          },
+        },
+      },
+    ]);
+
+    const logs = [];
+    const exit = vi.fn();
+    const cmds = buildLimitOrderCommands({ log: (m) => logs.push(m), exit });
+
+    await cmds.cancel([], null, {}, { order: 'order-1', wallet: 'lo-outcome-cancel-dust' });
+
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(logs.some(l => /Refusing to sign withdrawal/i.test(l))).toBe(true);
+    expect(logs.some(l => /not the expected remaining refund/i.test(l))).toBe(true);
+    // confirmCancelOrder (the 7th call) must never fire.
+    expect(global.fetch).toHaveBeenCalledTimes(6);
+  });
+
+  it('cancel: paginates the active-order lookup so an order past page 1 is still found', async () => {
+    SIMULATION_RPCS.solana = 'http://sol-sim.test';
+    const wallet = createTestWallet('lo-outcome-cancel-paginate');
+    const cancelTx = buildLimitOrderTx({ walletPubkey: wallet.solana });
+    const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
+    // A full first page of 100 unrelated active orders, target on page 2.
+    const page1 = Array.from({ length: 100 }, (_, i) => ({ id: `other-${i}`, inputMint: USDC }));
+    mockFetchSequence([
+      { body: { challenge: 'sign' } },
+      { body: { token: 'jwt' } },
+      { body: { orders: page1, pagination: { total: 150, limit: 100, offset: 0 } } },
+      { body: { orders: [{ id: 'order-1', inputMint: USDC, inputAmount: '1000000', fills: [] }], pagination: { total: 150, limit: 100, offset: 100 } } },
+      { body: { id: 'order-1', transaction: cancelTx, requestId: 'cancel-req-1' } },
+      // sim RPC errors out — degrade + proceed. The point of this test is that the
+      // lookup FOUND the order (no "could not find" hard-fail), not the outcome check.
+      { body: { error: { message: 'rate limited' } }, status: 200 },
+      { body: { id: 'order-1', txSignature: 'cancel-sig' } },
+    ]);
+
+    const logs = [];
+    const exit = vi.fn();
+    const cmds = buildLimitOrderCommands({ log: (m) => logs.push(m), exit });
+
+    await cmds.cancel([], null, {}, { order: 'order-1', wallet: 'lo-outcome-cancel-paginate' });
+
+    expect(exit).not.toHaveBeenCalled();
+    expect(logs.some(l => /Could not find order/i.test(l))).toBe(false);
+    expect(logs.some(l => l.includes('Order cancelled'))).toBe(true);
+    // Two lookup calls: page 1 at offset 0, page 2 at offset 100.
+    expect(global.fetch.mock.calls[2][0]).toContain('offset=0');
+    expect(global.fetch.mock.calls[3][0]).toContain('offset=100');
+    expect(global.fetch.mock.calls[3][0]).toContain('state=active');
+  });
 });
 
 // ============= Helpers =============

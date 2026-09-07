@@ -2249,6 +2249,7 @@ describe('assertLimitOrderDepositOutcome', () => {
 
 describe('assertLimitOrderCancelOutcome', () => {
   const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+  const SLACK = 13_000_000n; // NATIVE_FEE_RENT_SLACK_LAMPORTS
 
   it('passes a pure inflow of the order\'s own input asset (withdrawal returning funds to the wallet)', () => {
     const sim = { deltas: { [USDC]: 1_000_000n } };
@@ -2322,6 +2323,52 @@ describe('assertLimitOrderCancelOutcome', () => {
       .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*input mint is missing/i);
     expect(() => assertLimitOrderCancelOutcome(sim))
       .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*input mint is missing/i);
+  });
+
+  // --- refund-amount binding: a bare >0 inflow is not enough when the expected
+  // remaining refund is known; the returned amount must match it. ---
+
+  it('passes when an SPL refund matches the expected remaining amount exactly', () => {
+    const sim = { deltas: { [USDC]: 1_000_000n } };
+    expect(assertLimitOrderCancelOutcome(sim, { inputMint: USDC, amount: 1_000_000n }))
+      .toEqual({ verified: true });
+  });
+
+  it('rejects a dust SPL refund far below the expected remaining amount (redirect-most-of-escrow)', () => {
+    // The gap this closes: a crafted cancel reroutes nearly all the escrow and refunds a
+    // single unit of the right mint — a real, correct-asset inflow that satisfies >0 but
+    // is nowhere near the amount the order still owes.
+    const sim = { deltas: { [USDC]: 1n } };
+    expect(() => assertLimitOrderCancelOutcome(sim, { inputMint: USDC, amount: 1_000_000n }))
+      .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*not the expected remaining refund/i);
+  });
+
+  it('rejects an SPL refund above the expected remaining amount', () => {
+    const sim = { deltas: { [USDC]: 1_000_001n } };
+    expect(() => assertLimitOrderCancelOutcome(sim, { inputMint: USDC, amount: 1_000_000n }))
+      .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*not the expected remaining refund/i);
+  });
+
+  it('passes a native-SOL refund within fee/rent slack of the expected amount', () => {
+    // Net inflow is the refund minus this tx's fee — a hair under the expected amount.
+    const sim = { deltas: { [SOL_SENTINEL]: 1_000_000_000n - 5000n } };
+    expect(assertLimitOrderCancelOutcome(sim, { inputMint: SOL_SENTINEL, amount: 1_000_000_000n }))
+      .toEqual({ verified: true });
+  });
+
+  it('rejects a native-SOL refund below the expected amount minus slack', () => {
+    const sim = { deltas: { [SOL_SENTINEL]: 1_000_000_000n - SLACK - 1n } };
+    expect(() => assertLimitOrderCancelOutcome(sim, { inputMint: SOL_SENTINEL, amount: 1_000_000_000n }))
+      .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*outside the expected remaining refund/i);
+  });
+
+  it('falls back to a bare positive-inflow check when the expected amount is absent or unparseable', () => {
+    const sim = { deltas: { [USDC]: 1n } };
+    expect(assertLimitOrderCancelOutcome(sim, { inputMint: USDC })).toEqual({ verified: true });
+    expect(assertLimitOrderCancelOutcome(sim, { inputMint: USDC, amount: 'not-a-number' }))
+      .toEqual({ verified: true });
+    expect(assertLimitOrderCancelOutcome(sim, { inputMint: USDC, amount: 0n }))
+      .toEqual({ verified: true });
   });
 });
 

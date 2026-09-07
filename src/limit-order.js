@@ -411,7 +411,7 @@ async function verifyLimitOrderOutcome({ kind, walletAddress, txBase64, inputMin
     if (kind === 'deposit') {
       assertLimitOrderDepositOutcome(sim, { inputMint, amount });
     } else {
-      assertLimitOrderCancelOutcome(sim, { inputMint });
+      assertLimitOrderCancelOutcome(sim, { inputMint, amount });
     }
     log(`  ✓ ${kind === 'deposit' ? 'Deposit' : 'Cancellation'} outcome verified (via ${sim.method}).`);
     return { proceed: true };
@@ -421,6 +421,50 @@ async function verifyLimitOrderOutcome({ kind, walletAddress, txBase64, inputMin
       return { proceed: true };
     }
     return { proceed: false, reason: e.message };
+  }
+}
+
+// Page size and scan ceiling for the pre-cancel order lookup. The ceiling is a
+// defensive bound: it stops an unbounded loop if the API never surfaces the order
+// and never reports a total or a short page, at the cost of not finding a target
+// buried beyond it (which then fails closed, same as any not-found order).
+const ACTIVE_ORDER_PAGE = 100;
+const MAX_ACTIVE_ORDERS_SCANNED = 5000;
+
+/**
+ * Find one active order by id, paginating state:'active' until the order is found or
+ * the active set is exhausted, so a user with more than one page of active orders can
+ * still cancel one that doesn't land on page 1. Returns the order object or undefined.
+ */
+async function findActiveOrder(token, userPubkey, orderId) {
+  let offset = 0;
+  while (offset < MAX_ACTIVE_ORDERS_SCANNED) {
+    const page = await listOrders(token, userPubkey, { limit: ACTIVE_ORDER_PAGE, offset, state: 'active' });
+    const orders = page.orders || [];
+    const found = orders.find((o) => o.id === orderId);
+    if (found) return found;
+    offset += orders.length;
+    if (orders.length < ACTIVE_ORDER_PAGE) break; // short/empty page — no more to fetch
+    const total = page.pagination?.total;
+    if (total != null && offset >= total) break; // consumed everything the API reports
+  }
+  return undefined;
+}
+
+/**
+ * The base-unit amount a cancel should refund: the order's input less whatever has
+ * already been filled (partial fills consume escrow). Returns undefined if the order's
+ * amounts can't be parsed as integers, so the cancel verifier falls back to a bare
+ * positive-inflow check rather than binding to a bogus figure.
+ */
+function remainingRefundAmount(order) {
+  try {
+    const total = BigInt(order.inputAmount);
+    const filled = (order.fills || []).reduce((sum, f) => sum + BigInt(f.inputAmount ?? 0), 0n);
+    const remaining = total - filled;
+    return remaining > 0n ? remaining : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -899,26 +943,28 @@ EXAMPLES:
         // 1. Authenticate
         const token = await authenticate(pubkey, walletType, walletInfo, log);
 
-        // 2. Look up the order's own input mint, but only when outcome verification will
-        // actually run — cancel only receives an orderId, not order details, from the
-        // caller, and the asset-binding check below (see assertLimitOrderCancelOutcome)
-        // needs to know which asset the refund must land in. Skip the extra lookup
-        // entirely when there's no simulation RPC to verify against, so a degraded
-        // environment doesn't gain a new API dependency for a check it isn't going to
-        // run anyway. Done before requesting cancellation so a lookup failure fails
-        // closed without first consuming a one-time withdrawal request server-side.
-        // Filtered to state: 'active' (the only state a cancellable order can be in) so
-        // a user with more than 100 total orders (including filled/cancelled/expired
-        // history) doesn't have their target order pushed off page 1 by unrelated past
-        // orders — the API only accepts 'active' or 'past' for this filter.
+        // 2. Look up the order, but only when outcome verification will actually run —
+        // cancel only receives an orderId, not order details, from the caller, and the
+        // refund check below (see assertLimitOrderCancelOutcome) needs to know both which
+        // asset the refund must land in AND how much of it is still owed (the unfilled
+        // remainder). Skip the extra lookup entirely when there's no simulation RPC to
+        // verify against, so a degraded environment doesn't gain a new API dependency for
+        // a check it isn't going to run anyway. Done before requesting cancellation so a
+        // lookup failure fails closed without first consuming a one-time withdrawal request
+        // server-side. Filtered to state: 'active' (the only state a cancellable order can
+        // be in) so filled/cancelled/expired history never crowds out the target — the API
+        // only accepts 'active' or 'past' for this filter. Paginated until the order is
+        // found or the active set is exhausted, so a user with more than one page of active
+        // orders can still cancel one that doesn't land on page 1.
         let cancelInputMint;
+        let cancelRefundAmount;
         if (hasSolanaSimulationRpc('solana')) {
-          const orderList = await listOrders(token, pubkey, { limit: 100, state: 'active' });
-          const order = (orderList.orders || []).find((o) => o.id === orderId);
+          const order = await findActiveOrder(token, pubkey, orderId);
           if (!order) {
-            throw new Error(`Could not find order ${orderId} among your active orders; refusing to verify the cancel's refund asset. It may already be filled/cancelled/expired, or you have more than 100 active orders — check with "nansen trade limit-order list --state active".`);
+            throw new Error(`Could not find order ${orderId} among your active orders; refusing to verify the cancel's refund asset. It may already be filled/cancelled/expired — check with "nansen trade limit-order list --state active".`);
           }
           cancelInputMint = order.inputMint;
+          cancelRefundAmount = remainingRefundAmount(order);
         }
 
         // 3. Request cancellation — get unsigned withdrawal tx
@@ -934,14 +980,15 @@ EXAMPLES:
         // authority, or closes to a stranger. Balance-delta outcome verification
         // then binds the withdrawal's effect: since a cancel should only return
         // funds to the wallet, no token may leave it at all (native-SOL fee/rent
-        // dust tolerated), and the order's own input asset (looked up in step 2)
-        // must show a genuine inflow — an unrelated wallet inflow (e.g. closing an
-        // empty, unrelated token account for its rent) no longer counts. Verified
-        // live alongside the deposit path via a real cancel round-trip.
+        // dust tolerated), and the order's own input asset must return by the full
+        // expected remaining amount (looked up in step 2) — not merely a positive
+        // delta, so a redirect of most of the escrow paired with a dust or unrelated
+        // inflow no longer counts. Verified live alongside the deposit path via a
+        // real cancel round-trip.
         assertSolanaInstructionsSafe(cancelResult.transaction, { walletAddress: pubkey });
         const cancelOutcome = await verifyLimitOrderOutcome({
           kind: 'cancel', walletAddress: pubkey, txBase64: cancelResult.transaction,
-          inputMint: cancelInputMint, log,
+          inputMint: cancelInputMint, amount: cancelRefundAmount, log,
         });
         if (!cancelOutcome.proceed) throw new Error(`Refusing to sign withdrawal — ${cancelOutcome.reason}`);
         log('  Signing withdrawal transaction...');

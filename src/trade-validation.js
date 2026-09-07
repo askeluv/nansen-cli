@@ -1580,23 +1580,26 @@ export function assertLimitOrderDepositOutcome(sim, { inputMint, amount }) {
 /**
  * Verify a limit-order CANCEL's simulated wallet effect. A withdrawal is authorised by the
  * vault PDA and only returns funds TO the wallet, so NO token may leave the wallet except
- * native-SOL fee/rent dust, AND the order's own input asset must show a genuine inflow —
- * otherwise a crafted "cancel" transaction that redirects the escrowed funds elsewhere,
- * then produces an unrelated wallet inflow (e.g. closing an empty, unrelated token account
- * back to the wallet for its rent), would show a real positive delta on SOME asset and pass
- * without ever actually returning the deposited funds. Fails closed otherwise.
+ * native-SOL fee/rent dust, AND the order's own input asset must be refunded — by the full
+ * expected remaining amount when it is known (`amount`), otherwise at least a genuine
+ * inflow (> 0). Binding to the amount matters: a crafted "cancel" that redirects nearly all
+ * the escrow elsewhere and refunds only a single dust unit of the right mint (or produces an
+ * unrelated inflow, e.g. closing an empty token account back to the wallet for its rent)
+ * would satisfy a bare > 0 check while draining the deposit. Fails closed otherwise.
  *
- * NOTE: like the deposit asserter, this bounds MAGNITUDE (some inflow of the right asset),
- * not destination — a redirect of the correct asset+amount to a non-wallet address first,
- * followed by a genuine top-up of that same asset back to the wallet from elsewhere, would
- * still pass. That is closed by the vault-destination binding fast-follow, not here.
+ * NOTE: this bounds MAGNITUDE (the right asset returns in the right amount), not destination
+ * — a redirect of the correct asset+amount to a non-wallet address first, followed by a
+ * genuine top-up of that same asset back to the wallet from elsewhere, would still pass.
+ * That is closed by the vault-destination binding fast-follow, not here.
  *
  * @param {{deltas: Record<string, bigint|string|number>}} sim
  *   (no walletAddress in ctx — the sim already keyed its deltas relative to the wallet)
- * @param {{inputMint: string}} ctx - the order's own deposited asset; the refund must land here.
+ * @param {{inputMint: string, amount?: bigint|string|number}} ctx - the order's own deposited
+ *   asset (the refund must land here) and its expected remaining refund in base units. When
+ *   `amount` is omitted/unparseable the check falls back to requiring a positive inflow only.
  * @throws {Error} with `code = 'LIMIT_ORDER_OUTCOME_MISMATCH'` on any failed assertion.
  */
-export function assertLimitOrderCancelOutcome(sim, { inputMint } = {}) {
+export function assertLimitOrderCancelOutcome(sim, { inputMint, amount } = {}) {
   const fail = (detail) => {
     const e = new Error(`Limit-order cancel outcome mismatch (LIMIT_ORDER_OUTCOME_MISMATCH): ${detail} Refusing to sign.`);
     e.code = 'LIMIT_ORDER_OUTCOME_MISMATCH';
@@ -1636,6 +1639,32 @@ export function assertLimitOrderCancelOutcome(sim, { inputMint } = {}) {
   const inflow = deltas[inputAsset] || 0n;
   if (inflow <= 0n) {
     throw fail(`the withdrawal produced no inflow of the deposited asset (${inputAsset}) to your wallet; a cancel must return your deposited funds.`);
+  }
+
+  // Bind the refund MAGNITUDE to the order's expected remaining input when it is known.
+  // Without this, the > 0 check above is satisfied by a single dust unit, so a crafted
+  // cancel could reroute nearly the whole escrow and still verify.
+  let expected;
+  if (amount != null) {
+    try {
+      expected = BigInt(amount);
+    } catch {
+      expected = undefined;
+    }
+  }
+  if (expected != null && expected > 0n) {
+    if (inputAsset === SOL_SENTINEL) {
+      // Net native inflow is the refund minus this tx's fee, plus any temp-WSOL rent
+      // returned, so it sits within ± fee/rent slack of the expected refund. Two-sided.
+      const lo = expected - NATIVE_FEE_RENT_SLACK_LAMPORTS;
+      const hi = expected + NATIVE_FEE_RENT_SLACK_LAMPORTS;
+      if (inflow < lo || inflow > hi) {
+        throw fail(`the withdrawal returned ${inflow} of native SOL, outside the expected remaining refund (${expected} ± fee/rent slack); a cancel must return the full remaining deposit.`);
+      }
+    } else if (inflow !== expected) {
+      // SPL escrow returns EXACTLY the remaining input — no fee is taken in the token.
+      throw fail(`the withdrawal returned ${inflow} of the deposited asset (${inputAsset}), not the expected remaining refund (${expected}); a cancel must return the full remaining deposit.`);
+    }
   }
 
   return { verified: true };
