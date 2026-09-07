@@ -1178,6 +1178,30 @@ describe('outcome verification (fail-closed)', () => {
     expect(global.fetch).toHaveBeenCalledTimes(6);
   });
 
+  it('create: fails fast on a native-SOL amount too small to verify, before any network call', async () => {
+    // Below NATIVE_FEE_RENT_SLACK_LAMPORTS (13,000,000 lamports = 0.013 SOL), outcome
+    // verification can't distinguish a genuine deposit from a fee-only outflow (see the
+    // assertLimitOrderDepositOutcome unit tests) and always fails closed. Catching this
+    // before crafting the deposit avoids a wasted API round-trip and a confusing
+    // LIMIT_ORDER_OUTCOME_MISMATCH error deep in the signing flow.
+    SIMULATION_RPCS.solana = 'http://sol-sim.test';
+    createTestWallet('lo-outcome-tiny-native');
+
+    const logs = [];
+    const exit = vi.fn();
+    const cmds = buildLimitOrderCommands({ log: (m) => logs.push(m), exit });
+
+    await cmds.create([], null, {}, {
+      from: 'SOL', to: 'USDC', amount: '0.01', // 10,000,000 lamports < slack
+      'trigger-mint': 'SOL', 'trigger-condition': 'below', 'trigger-price': '80',
+      wallet: 'lo-outcome-tiny-native',
+    });
+
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(logs.some(l => /too small to verify/i.test(l))).toBe(true);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
   it('cancel: refuses to sign a withdrawal that drains an SPL token from the wallet', async () => {
     SIMULATION_RPCS.solana = 'http://sol-sim.test';
     const wallet = createTestWallet('lo-outcome-cancel-drain');

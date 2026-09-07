@@ -15,6 +15,7 @@ import {
   assertSolanaInstructionsSafe,
   assertLimitOrderDepositOutcome,
   assertLimitOrderCancelOutcome,
+  NATIVE_FEE_RENT_SLACK_LAMPORTS,
 } from './trade-validation.js';
 import {
   simulateSolanaAssetChanges,
@@ -31,6 +32,7 @@ import { CHAIN_RPCS } from './rpc-urls.js';
 const TRADING_API_URL = process.env.NANSEN_TRADING_API_URL || 'https://trading-api.nansen.ai';
 const LO_PREFIX = '/limit-order/v2';
 const SOLSCAN_TX_URL = 'https://solscan.io/tx/';
+const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 
 // ============= JWT Auth & Caching (Local File) =============
 
@@ -656,6 +658,16 @@ EXAMPLES:
         amountBaseUnits = String(parseAmount(String(amount), decimals));
       } catch (err) {
         log(`Error: Could not resolve decimals for ${from}: ${err.message}`);
+        exit(1);
+        return;
+      }
+
+      // Fail fast on a native-SOL amount too small for outcome verification to bound by
+      // magnitude (see assertLimitOrderDepositOutcome's NATIVE_FEE_RENT_SLACK_LAMPORTS
+      // floor) — otherwise this would only surface as a LIMIT_ORDER_OUTCOME_MISMATCH
+      // after crafting and simulating the deposit transaction, well into the flow.
+      if (from === WSOL_MINT && hasSolanaSimulationRpc('solana') && BigInt(amountBaseUnits) <= NATIVE_FEE_RENT_SLACK_LAMPORTS) {
+        log(`Error: SOL deposit amount (${amountBaseUnits} lamports) is too small to verify against network fee/rent noise (${NATIVE_FEE_RENT_SLACK_LAMPORTS} lamports). Use a larger amount.`);
         exit(1);
         return;
       }

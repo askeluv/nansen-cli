@@ -1225,7 +1225,7 @@ const NATIVE_SIBLING_DUST_LAMPORTS = 3_000_000n; // ~0.003 SOL
 // leaves the wallet as native SOL regardless of whether SOL is the input,
 // output, or an uninvolved sibling of the swap, so all three assertions below
 // need the same combined slack or a legitimate high-priority-fee trade false-blocks.
-const NATIVE_FEE_RENT_SLACK_LAMPORTS = MAX_PRIORITY_FEE_LAMPORTS + NATIVE_SIBLING_DUST_LAMPORTS;
+export const NATIVE_FEE_RENT_SLACK_LAMPORTS = MAX_PRIORITY_FEE_LAMPORTS + NATIVE_SIBLING_DUST_LAMPORTS;
 
 /**
  * The Solana sibling of assertSwapOutcome. Solana signs the aggregator's
