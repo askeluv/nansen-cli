@@ -2210,6 +2210,22 @@ describe('assertLimitOrderDepositOutcome', () => {
       .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH/);
   });
 
+  it('rejects a zero-outflow native-SOL deposit even for a tiny amount (floor must not clamp to 0)', () => {
+    // Regression: for amount <= NATIVE_FEE_RENT_SLACK_LAMPORTS the (cap - slack)
+    // floor formula alone clamps to 0n, which would admit a completely no-op
+    // "deposit" — a real signed transaction always pays a network fee, so a
+    // genuine deposit's outflow is never exactly 0.
+    const sim = { deltas: {} };
+    expect(() => assertLimitOrderDepositOutcome(sim, { inputMint: SOL_SENTINEL, amount: 1n }))
+      .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*below the deposit amount/i);
+  });
+
+  it('passes a tiny native-SOL deposit whose outflow is fee-only but nonzero', () => {
+    const sim = { deltas: { [SOL_SENTINEL]: -5000n } };
+    expect(assertLimitOrderDepositOutcome(sim, { inputMint: SOL_SENTINEL, amount: 1n }))
+      .toEqual({ verified: true });
+  });
+
   it('fails closed on a non-integer simulated delta', () => {
     const sim = { deltas: { [USDC]: 'not-a-number' } };
     expect(() => assertLimitOrderDepositOutcome(sim, { inputMint: USDC, amount: 1_000_000n }))
@@ -2241,6 +2257,22 @@ describe('assertLimitOrderCancelOutcome', () => {
     const sim = { deltas: { [USDC]: 1_000_000n, [SOL_SENTINEL]: -14_000_000n } };
     expect(() => assertLimitOrderCancelOutcome(sim))
       .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*left your wallet during cancellation/i);
+  });
+
+  it('rejects an empty delta set (a crafted cancel tx that touches the wallet not at all)', () => {
+    // The gap this closes: a malicious withdrawal could redirect the vault's
+    // escrowed funds to a third party without ever moving anything through or
+    // from the wallet's own tracked accounts, showing an empty (or dust-only)
+    // delta set that used to verify successfully.
+    const sim = { deltas: {} };
+    expect(() => assertLimitOrderCancelOutcome(sim))
+      .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*produced no inflow/i);
+  });
+
+  it('rejects a fee-only outflow with no offsetting inflow (same gap, non-empty dust)', () => {
+    const sim = { deltas: { [SOL_SENTINEL]: -3000n } }; // network fee only, nothing returned
+    expect(() => assertLimitOrderCancelOutcome(sim))
+      .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*produced no inflow/i);
   });
 });
 
