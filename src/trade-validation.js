@@ -1596,11 +1596,12 @@ export function assertLimitOrderDepositOutcome(sim, { inputMint, amount }) {
  *   (no walletAddress in ctx — the sim already keyed its deltas relative to the wallet)
  * @param {{inputMint: string, amount?: bigint|string|number}} ctx - the order's own deposited
  *   asset (the refund must land here) and its expected remaining refund in base units. When
- *   `amount` is omitted/unparseable the check falls back to requiring a positive inflow only —
- *   this fallback is DELIBERATELY WEAKER than the magnitude bind and is not a safe default: a
- *   caller that can know the expected refund MUST pass it and fail closed when it is absent
- *   (as the cancel command does — see remainingRefundAmount in limit-order.js), rather than
- *   relying on this bare-inflow path, which admits a dust-refund/redirect it cannot catch.
+ *   `amount` is OMITTED the check falls back to requiring a positive inflow only — this fallback
+ *   is DELIBERATELY WEAKER than the magnitude bind and is not a safe default: a caller that can
+ *   know the expected refund MUST pass it and fail closed when it is absent (as the cancel
+ *   command does — see remainingRefundAmount in limit-order.js), rather than relying on this
+ *   bare-inflow path, which admits a dust-refund/redirect it cannot catch. A non-null `amount`
+ *   that won't parse to an integer is a call-site bug and throws (never silently degrades).
  * @throws {Error} with `code = 'LIMIT_ORDER_OUTCOME_MISMATCH'` on any failed assertion.
  */
 export function assertLimitOrderCancelOutcome(sim, { inputMint, amount } = {}) {
@@ -1648,12 +1649,16 @@ export function assertLimitOrderCancelOutcome(sim, { inputMint, amount } = {}) {
   // Bind the refund MAGNITUDE to the order's expected remaining input when it is known.
   // Without this, the > 0 check above is satisfied by a single dust unit, so a crafted
   // cancel could reroute nearly the whole escrow and still verify.
+  // A caller either KNOWS the expected refund (pass it) or genuinely doesn't (omit it, taking
+  // the deliberately weaker bare-inflow path — see the @param note). A non-null value that
+  // won't parse is neither: it's a bug at the call site, so fail closed rather than silently
+  // drop to the weak path and hand back the stronger-sounding guarantee the name implies.
   let expected;
   if (amount != null) {
     try {
       expected = BigInt(amount);
     } catch {
-      expected = undefined;
+      throw fail(`the expected refund amount (${amount}) is not an integer; cannot verify refund magnitude.`);
     }
   }
   if (expected != null && expected > 0n) {

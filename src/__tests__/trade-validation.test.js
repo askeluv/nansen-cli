@@ -2383,13 +2383,17 @@ describe('assertLimitOrderCancelOutcome', () => {
       .toEqual({ verified: true });
   });
 
-  it('falls back to a bare positive-inflow check when the expected amount is absent or unparseable', () => {
+  it('falls back to a bare positive-inflow check when the expected amount is absent (omitted or zero)', () => {
     const sim = { deltas: { [USDC]: 1n } };
     expect(assertLimitOrderCancelOutcome(sim, { inputMint: USDC })).toEqual({ verified: true });
-    expect(assertLimitOrderCancelOutcome(sim, { inputMint: USDC, amount: 'not-a-number' }))
-      .toEqual({ verified: true });
     expect(assertLimitOrderCancelOutcome(sim, { inputMint: USDC, amount: 0n }))
       .toEqual({ verified: true });
+  });
+
+  it('throws on a non-null but unparseable expected amount (call-site bug, never silently degrades)', () => {
+    const sim = { deltas: { [USDC]: 1n } };
+    expect(() => assertLimitOrderCancelOutcome(sim, { inputMint: USDC, amount: 'not-a-number' }))
+      .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*is not an integer/i);
   });
 });
 
