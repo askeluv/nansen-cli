@@ -219,9 +219,12 @@ export function buildMcpCommands(deps = {}) {
     // `false` as a positional arg while the flag still reads as present, which
     // would authorize the very disclosure the caller meant to decline. Reject
     // any positional args so that footgun fails loudly instead of leaking.
+    // Never echo the argument: a plausible misuse is `--send-api-key "$KEY"`,
+    // which lands the real key in extraArgs[0]; interpolating it would leak the
+    // credential to stdout (and to logs under --json).
     if (extraArgs.length > 0) {
       throw new CommandError(
-        `Unexpected argument: ${extraArgs[0]}. \`nansen mcp verify\` takes no positional arguments — --send-api-key is a valueless flag, do not pass it a value. Usage: nansen mcp verify [--api-key <key>] [--url <url>] [--send-api-key] [--json]`,
+        '`nansen mcp verify` takes no positional arguments — --send-api-key is a valueless flag, do not pass it a value. Usage: nansen mcp verify [--api-key <key>] [--url <url>] [--send-api-key] [--json]',
         'INVALID_PARAMS',
       );
     }

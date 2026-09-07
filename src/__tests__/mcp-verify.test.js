@@ -424,6 +424,33 @@ describe('mcp verify', () => {
       expect(fetchFn).not.toHaveBeenCalled();
     });
 
+    it('never echoes a positional argument (e.g. `--send-api-key "$KEY"`) into the error', async () => {
+      env.NANSEN_API_KEY = SAVED_KEY;
+      const output = [];
+      const fetchFn = vi.fn();
+
+      // A plausible misuse expands the key into extraArgs[0]; the error must not
+      // interpolate it, or the credential lands on stdout (and in logs --json).
+      const result = await runCLI(
+        ['mcp', 'verify', '--json', '--send-api-key', SAVED_KEY],
+        {
+          output: value => output.push(value),
+          errorOutput: () => {},
+          exit: vi.fn(),
+          NansenAPIClass: class {},
+          fetchFn,
+          env,
+          devConfigPath,
+          isTTY: false,
+        },
+      );
+
+      expect(result.type).toBe('error');
+      expect(fetchFn).not.toHaveBeenCalled();
+      expect(JSON.stringify(result)).not.toContain(SAVED_KEY);
+      expect(output.join('\n')).not.toContain(SAVED_KEY);
+    });
+
     it('threads --send-api-key through the CLI to authorize a saved key', async () => {
       env.NANSEN_API_KEY = SAVED_KEY;
       const output = [];
