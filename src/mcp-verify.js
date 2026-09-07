@@ -15,10 +15,16 @@ class McpRequestError extends Error {
 const IPV4_OCTET = '(?:25[0-5]|2[0-4]\\d|1?\\d{1,2})';
 const LOOPBACK_IPV4 = new RegExp(`^127\\.${IPV4_OCTET}\\.${IPV4_OCTET}\\.${IPV4_OCTET}$`);
 
+// IPv4-mapped IPv6 loopback (127.0.0.0/8). Node's URL canonicalizes
+// ::ffff:127.x.x.x to ::ffff:7fNN:NNNN (the 127 becomes the 7f high byte), so
+// match that form; non-loopback mapped addresses fall outside the 7f prefix.
+const LOOPBACK_IPV4_MAPPED = /^::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}$/i;
+
 function isLoopbackHostname(hostname) {
   if (!hostname) return false;
   const host = hostname.toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
   if (host === 'localhost' || host === '::1') return true;
+  if (LOOPBACK_IPV4_MAPPED.test(host)) return true;
   return LOOPBACK_IPV4.test(host);
 }
 

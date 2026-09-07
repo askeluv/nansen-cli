@@ -372,6 +372,22 @@ describe('mcp verify', () => {
       expect(fetchFn.mock.calls[1][1].headers['NANSEN-API-KEY']).toBe(API_KEY);
     });
 
+    it('treats an IPv4-mapped IPv6 loopback host as loopback', async () => {
+      env.NANSEN_API_KEY = SAVED_KEY;
+      const fetchFn = vi.fn()
+        .mockResolvedValueOnce(listResponse())
+        .mockResolvedValueOnce(authSuccessResponse());
+
+      const checks = await runChecks(fetchFn, {
+        apiKey: undefined,
+        url: 'http://[::ffff:127.0.0.1]:8787/ra/mcp',
+        sendApiKey: true,
+      });
+
+      expect(findCheck(checks, 'mcp-auth').status).toBe('ok');
+      expect(fetchFn.mock.calls[1][1].headers['NANSEN-API-KEY']).toBe(SAVED_KEY);
+    });
+
     it('withholds the key from an unparseable or non-https custom URL (fail-safe)', async () => {
       const fetchFn = vi.fn().mockResolvedValueOnce(listResponse());
 
