@@ -1834,6 +1834,7 @@
       "description": "Smart alert management — create, update, toggle, delete alerts",
       "subcommands": {
         "list": {
+          "endpoint": "/api/v1/smart-alert/list",
           "description": "List all alerts",
           "returns": [
             "id",
@@ -1847,6 +1848,7 @@
           ]
         },
         "create": {
+          "endpoint": "/api/v1/smart-alert",
           "description": "Create a new alert",
           "options": {
             "name": {
@@ -1898,6 +1900,7 @@
           }
         },
         "update": {
+          "endpoint": "/api/v1/smart-alert",
           "description": "Update an existing alert. Usage: nansen alerts update <id> [options]",
           "options": {
             "name": {
@@ -1951,6 +1954,7 @@
           }
         },
         "toggle": {
+          "endpoint": "/api/v1/smart-alert/toggle",
           "description": "Enable or disable an alert. Usage: nansen alerts toggle <id> --enabled|--disabled",
           "options": {
             "enabled": {
@@ -2297,6 +2301,7 @@
       }
     },
     "account": {
+      "endpoint": "/api/v1/account",
       "description": "Show API key status, plan, and remaining credits. Does not consume credits."
     },
     "auth": {
@@ -2353,6 +2358,7 @@
       "description": "Web search and fetch commands",
       "subcommands": {
         "search": {
+          "endpoint": "/api/v1/search/web-search",
           "description": "Search the web for one or more queries in parallel",
           "options": {
             "query": {
@@ -2371,6 +2377,7 @@
           ]
         },
         "fetch": {
+          "endpoint": "/api/v1/search/web-fetch",
           "description": "Fetch and analyze content from one or more URLs using AI",
           "options": {
             "url": {
@@ -2390,6 +2397,10 @@
       }
     },
     "agent": {
+      "apiEndpoints": [
+        "/api/v1/agent/fast",
+        "/api/v1/agent/expert"
+      ],
       "description": "Nansen AI research agent — ask questions about wallets, tokens, and on-chain activity",
       "options": {
         "expert": {
