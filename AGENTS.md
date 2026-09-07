@@ -24,7 +24,7 @@ Entry point is `src/index.js`.
 - **ESM only** — `import`/`export`, no TypeScript, no transpilation
 - **BigInt for token amounts** — never floating point
 - **Research commands** — return data objects, CLI layer formats via `formatOutput()` to stdout
-- **Operational commands** (trade, wallet, login) — print human-readable text via `log()` to stdout, return `undefined`
+- **Operational commands** (trade, wallet, login) — generally print human-readable text via `log()` to stdout and return `undefined`. Exception: `wallet list` returns `{wallets, defaultWallet}` so the standard dispatcher wraps it in the JSON envelope and agents can parse it via `nansen wallet list | jq .`; its human-readable summary goes to stderr instead (see #154).
 - **No interactive prompts in core** — use env vars (`NANSEN_WALLET_PASSWORD`, `NANSEN_API_KEY`)
 - **Actionable errors** — `"Not logged in. Run: nansen login"` not `"Authentication failed"`
 
