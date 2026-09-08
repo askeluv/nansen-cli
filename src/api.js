@@ -688,9 +688,10 @@ export class NansenAPI {
     const useCache = options.cache !== false && this.cacheOptions.enabled;
     const cacheTtl = options.cacheTtl ?? this.cacheOptions.ttl;
     const method = options.method || 'POST';
-    // Only derive the cache context (which includes a SHA-256 identity digest)
-    // when caching is enabled — caching is opt-in and off by default, so the
-    // common path skips this hashing work entirely.
+    // Defer identity hashing to keep the uncached (default) path free of crypto work.
+    // cacheContext is therefore null unless caching is on; the `&& cacheContext`
+    // guards below ensure that null never reaches getCacheKey, where a missing
+    // identity would silently produce a credential-agnostic (shared) cache key.
     const cacheContext = useCache
       ? {
           baseUrl: this.baseUrl,
@@ -699,7 +700,7 @@ export class NansenAPI {
         }
       : null;
 
-    if (useCache) {
+    if (useCache && cacheContext) {
       const cached = getCachedResponse(endpoint, body, cacheTtl, cacheContext);
       if (cached) {
         return cached;
@@ -929,7 +930,7 @@ export class NansenAPI {
       }
 
       // Cache successful response
-      if (useCache) {
+      if (useCache && cacheContext) {
         setCachedResponse(endpoint, body, data, cacheContext);
       }
 
