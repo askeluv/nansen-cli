@@ -699,7 +699,7 @@ EXAMPLES:
       // Amount is always in human-readable token units (e.g. 1.5 = 1.5 SOL)
       // Converted to base units (lamports) internally
       let amountBaseUnits;
-      let fromTokenProgram = TOKEN_PROGRAM;
+      let fromTokenProgram;
       try {
         const num = Number(amount);
         if (isNaN(num) || num <= 0) {
@@ -711,6 +711,11 @@ EXAMPLES:
         let decimals;
         if (fromInfo) {
           decimals = fromInfo.decimals;
+          // Every current entry is a classic Token Program mint, so the default
+          // holds. Carry an explicit tokenProgram if a future Token-2022 entry is
+          // added — otherwise deriveVaultTokenAccount would compute the wrong ATA
+          // and fail-close every deposit for that mint.
+          fromTokenProgram = fromInfo.tokenProgram || TOKEN_PROGRAM;
         } else {
           const tokenInfo = await getTokenInfo(CHAIN_RPCS.solana, from);
           decimals = tokenInfo.decimals;
@@ -807,6 +812,18 @@ EXAMPLES:
           } catch (regErr) {
             // Vault may already exist — ignore "already registered" errors
             if (!/already registered/i.test(regErr.message)) throw regErr;
+          }
+          // Registration either reported "already registered" or returned no
+          // address. The vault exists in both cases, so fetch it to recover the
+          // address rather than failing the deposit below with a misleading
+          // "cannot determine vault address".
+          if (!vaultPubkey) {
+            try {
+              const vaultInfo = await getVault(token, pubkey);
+              vaultPubkey = vaultInfo?.vaultPubkey || vaultInfo?.vaultAddress;
+            } catch {
+              // Still unknown — fall through to the guard below.
+            }
           }
         }
         if (!vaultPubkey) {

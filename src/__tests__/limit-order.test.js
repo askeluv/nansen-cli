@@ -889,6 +889,35 @@ describe('buildLimitOrderCommands', () => {
       // Should have made 6 API calls (challenge, verify, getVault, registerVault, craftDeposit, createOrder)
       expect(global.fetch).toHaveBeenCalledTimes(6);
     });
+
+    it('recovers vault address by re-fetching when register reports "already registered"', async () => {
+      createTestWallet('lo-vault-race');
+
+      const logs = [];
+      const cmds = buildLimitOrderCommands({ log: (m) => logs.push(m), exit: vi.fn() });
+
+      // getVault initially misses, registerVault loses the race, second getVault recovers the address.
+      mockFetchSequence([
+        { body: { challenge: 'sign this' } },
+        { body: { token: 'jwt-123' } },
+        { body: { message: 'Vault not found' }, status: 404 }, // [1] getVault: miss
+        { body: { message: 'vault already registered' }, status: 409 }, // [2] registerVault: race lost
+        { body: { vaultPubkey: '11111111111111111111111111111111', userPubkey: 'pub1' } }, // [3] getVault retry: recovered
+        { body: { transaction: buildFakeBase64Tx(), requestId: 'dep-1' } },
+        { body: { id: 'order-1', txSignature: 'sig-1' }, status: 201 },
+      ]);
+
+      await cmds.create([], null, {}, {
+        from: 'SOL', to: 'USDC', amount: '1', 'trigger-mint': 'SOL', 'trigger-condition': 'below', 'trigger-price': '80',
+        wallet: 'lo-vault-race',
+      });
+
+      // Did not fail with the "cannot determine vault address" guard.
+      expect(logs.some(l => l.includes('Could not determine'))).toBe(false);
+      expect(logs.some(l => l.includes('Limit order created'))).toBe(true);
+      // challenge, verify, getVault, registerVault, getVault-retry, craftDeposit, createOrder
+      expect(global.fetch).toHaveBeenCalledTimes(7);
+    });
   });
 
   // ---- list ----
