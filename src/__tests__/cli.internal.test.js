@@ -38,7 +38,7 @@ import {
   buildAlertsCommands,
   validateAlertData,
 } from '../commands/alerts.js';
-import { getCachedResponse, setCachedResponse, clearCache, getCacheDir, NansenError, ErrorCode } from '../api.js';
+import { getCachedResponse, setCachedResponse, clearCache, getCacheDir, NansenError, ErrorCode, computeIdentityDigest } from '../api.js';
 import { EVM_CHAINS } from '../chain-ids.js';
 import * as fs from 'fs';
 import * as _path from 'path';
@@ -3330,6 +3330,84 @@ describe('Response Caching', () => {
       const count = clearCache();
       expect(count).toBe(0);
     });
+  });
+});
+
+describe('cache isolation by request context', () => {
+  afterEach(() => {
+    clearCache();
+  });
+
+  const endpoint = '/api/v1/some/endpoint';
+  const body = { foo: 'bar' };
+
+  const contextA = {
+    baseUrl: 'https://a.example',
+    method: 'POST',
+    identity: 'identity-a',
+  };
+  const contextB = {
+    baseUrl: 'https://b.example',
+    method: 'POST',
+    identity: 'identity-b',
+  };
+
+  it('does not serve one identity\'s cached response to another', () => {
+    setCachedResponse(endpoint, body, { secret: 'A' }, contextA);
+
+    expect(getCachedResponse(endpoint, body, 300, contextB)).toBeNull();
+
+    const hit = getCachedResponse(endpoint, body, 300, contextA);
+    expect(hit.secret).toBe('A');
+  });
+
+  it('treats a different base URL as a different cache entry', () => {
+    setCachedResponse(endpoint, body, { origin: 'A' }, contextA);
+    const differentOrigin = { ...contextA, baseUrl: 'https://other.example' };
+    expect(getCachedResponse(endpoint, body, 300, differentOrigin)).toBeNull();
+  });
+
+  it('treats a different HTTP method as a different cache entry', () => {
+    setCachedResponse(endpoint, body, { m: 'POST' }, contextA);
+    const differentMethod = { ...contextA, method: 'GET' };
+    expect(getCachedResponse(endpoint, body, 300, differentMethod)).toBeNull();
+  });
+});
+
+describe('computeIdentityDigest', () => {
+  it('returns distinct digests for distinct API keys', () => {
+    const a = computeIdentityDigest('key-a');
+    const b = computeIdentityDigest('key-b');
+    expect(a).not.toBe(b);
+  });
+
+  it('returns the same digest for the same API key (deterministic)', () => {
+    expect(computeIdentityDigest('key-x')).toBe(computeIdentityDigest('key-x'));
+  });
+
+  it('ignores auth header insertion order', () => {
+    const first = computeIdentityDigest(null, {
+      apikey: 'key-x',
+      authorization: 'Bearer token',
+      'payment-signature': 'signature',
+    });
+    const second = computeIdentityDigest(null, {
+      'payment-signature': 'signature',
+      authorization: 'Bearer token',
+      apikey: 'key-x',
+    });
+    expect(first).toBe(second);
+  });
+
+  it('returns distinct digests for distinct auth headers', () => {
+    const a = computeIdentityDigest(null, { apikey: 'hdr-a' });
+    const b = computeIdentityDigest(null, { apikey: 'hdr-b' });
+    expect(a).not.toBe(b);
+  });
+
+  it('does not include the raw API key in the digest string', () => {
+    const digest = computeIdentityDigest('super-secret-key');
+    expect(digest).not.toContain('super-secret-key');
   });
 });
 
