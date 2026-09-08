@@ -1288,7 +1288,7 @@ describe('outcome verification (fail-closed)', () => {
     expect(global.fetch).toHaveBeenCalledTimes(3);
   });
 
-  it('cancel: refuses to sign when the order is found but its remaining refund amount cannot be computed', async () => {
+  it('cancel: refuses to sign (with an unparseable-specific message) when the order amounts cannot be parsed', async () => {
     SIMULATION_RPCS.solana = 'http://sol-sim.test';
     createTestWallet('lo-outcome-cancel-badmeta');
     const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
@@ -1296,7 +1296,7 @@ describe('outcome verification (fail-closed)', () => {
     mockFetchSequence([
       { body: { challenge: 'sign' } },
       { body: { token: 'jwt' } },
-      // order found, but inputAmount is unparseable — remainingRefundAmount can't bind a
+      // order found, but inputAmount is unparseable — classifyCancelRefund can't bind a
       // magnitude, so the verifier would silently downgrade to a bare positive-inflow check.
       // Fail closed instead of signing a withdrawal whose refund size we can't verify.
       { body: { orders: [{ id: 'order-1', inputMint: USDC, inputAmount: 'not-a-number', fills: [] }] } },
@@ -1309,7 +1309,37 @@ describe('outcome verification (fail-closed)', () => {
     await cmds.cancel([], null, {}, { order: 'order-1', wallet: 'lo-outcome-cancel-badmeta' });
 
     expect(exit).toHaveBeenCalledWith(1);
-    expect(logs.some(l => /could not determine its remaining refund amount/i.test(l))).toBe(true);
+    // Distinct from the fully-filled case: this must name the parse failure, not the
+    // generic "could not determine" wording it replaced.
+    expect(logs.some(l => /amounts couldn't be parsed/i.test(l))).toBe(true);
+    // 3 calls: challenge, verify, order lookup — cancelOrderRequest (the 4th) must never fire.
+    expect(global.fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('cancel: refuses to sign (with a fully-filled-specific message) when nothing is left to refund', async () => {
+    SIMULATION_RPCS.solana = 'http://sol-sim.test';
+    createTestWallet('lo-outcome-cancel-filled');
+    const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
+    mockFetchSequence([
+      { body: { challenge: 'sign' } },
+      { body: { token: 'jwt' } },
+      // order found and parseable, but fully filled: fills consume the entire input, so the
+      // remaining refund is 0. That's a normal terminal state, not corrupt metadata — the
+      // user should be told plainly the order can't be cancelled, not shown a parse error.
+      { body: { orders: [{ id: 'order-1', inputMint: USDC, inputAmount: '1000000', fills: [{ inputAmount: '1000000' }] }] } },
+    ]);
+
+    const logs = [];
+    const exit = vi.fn();
+    const cmds = buildLimitOrderCommands({ log: (m) => logs.push(m), exit });
+
+    await cmds.cancel([], null, {}, { order: 'order-1', wallet: 'lo-outcome-cancel-filled' });
+
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(logs.some(l => /fully filled/i.test(l) && /nothing left to refund/i.test(l))).toBe(true);
+    // Must NOT misreport this as a parse failure.
+    expect(logs.some(l => /couldn't be parsed/i.test(l))).toBe(false);
     // 3 calls: challenge, verify, order lookup — cancelOrderRequest (the 4th) must never fire.
     expect(global.fetch).toHaveBeenCalledTimes(3);
   });

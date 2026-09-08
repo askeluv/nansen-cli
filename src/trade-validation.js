@@ -1599,7 +1599,7 @@ export function assertLimitOrderDepositOutcome(sim, { inputMint, amount }) {
  *   `amount` is OMITTED the check falls back to requiring a positive inflow only — this fallback
  *   is DELIBERATELY WEAKER than the magnitude bind and is not a safe default: a caller that can
  *   know the expected refund MUST pass it and fail closed when it is absent (as the cancel
- *   command does — see remainingRefundAmount in limit-order.js), rather than relying on this
+ *   command does — see classifyCancelRefund in limit-order.js), rather than relying on this
  *   bare-inflow path, which admits a dust-refund/redirect it cannot catch. A non-null `amount`
  *   that won't parse to an integer is a call-site bug and throws (never silently degrades).
  * @throws {Error} with `code = 'LIMIT_ORDER_OUTCOME_MISMATCH'` on any failed assertion.

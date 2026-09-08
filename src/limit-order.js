@@ -452,21 +452,28 @@ async function findActiveOrder(token, userPubkey, orderId) {
 }
 
 /**
- * The base-unit amount a cancel should refund: the order's input less whatever has
- * already been filled (partial fills consume escrow). Returns undefined if the order's
- * amounts can't be parsed as integers or nothing is left to refund. The cancel command
- * treats an undefined result as fatal (fail closed) rather than signing a withdrawal
- * whose refund magnitude it can't bind.
+ * Classify how much a cancel should refund: the order's input less whatever has
+ * already been filled (partial fills consume escrow). Returns one of:
+ *   { amount: <bigint> }        the unfilled remainder still owed (always > 0)
+ *   { error: 'unparseable' }    the order's amounts couldn't be parsed as integers
+ *   { error: 'fully-filled' }   parsing succeeded but nothing is left to refund
+ *
+ * The two error cases are kept distinct (not collapsed to a single undefined) so the
+ * cancel command can surface an actionable message: 'unparseable' is an unexpected
+ * API-shape problem, 'fully-filled' is a normal user-facing state (the order already
+ * executed). Both are fatal for the caller — a cancel whose refund magnitude can't be
+ * bound must not be signed — but the user needs to know which one they hit.
  */
-function remainingRefundAmount(order) {
+function classifyCancelRefund(order) {
+  let remaining;
   try {
     const total = BigInt(order.inputAmount);
     const filled = (order.fills || []).reduce((sum, f) => sum + BigInt(f.inputAmount ?? 0), 0n);
-    const remaining = total - filled;
-    return remaining > 0n ? remaining : undefined;
+    remaining = total - filled;
   } catch {
-    return undefined;
+    return { error: 'unparseable' };
   }
+  return remaining > 0n ? { amount: remaining } : { error: 'fully-filled' };
 }
 
 // ============= Expiry Parsing =============
@@ -971,18 +978,35 @@ EXAMPLES:
             throw new Error(`Could not find order ${orderId} among your active orders; refusing to verify the cancel's refund asset. It may already be filled/cancelled/expired — check with "nansen trade limit-order list --state active".`);
           }
           cancelInputMint = order.inputMint;
-          cancelRefundAmount = remainingRefundAmount(order);
           // The whole point of the outcome check is to bind the refund's MAGNITUDE. If the
-          // order was found but its remaining refund can't be computed (unparseable amounts,
-          // or nothing left to refund), passing amount: undefined would silently downgrade
-          // the verifier to a bare positive-inflow check — reopening the dust-refund gap for
-          // exactly the malformed metadata we can least trust. Fail closed instead.
-          if (cancelRefundAmount == null) {
-            throw new Error(`Found order ${orderId} but could not determine its remaining refund amount from the order metadata; refusing to sign a cancel whose refund magnitude can't be verified. Check the order with "nansen trade limit-order list --state active".`);
+          // remaining refund can't be pinned to an exact amount, passing amount: undefined
+          // would silently downgrade the verifier to a bare positive-inflow check —
+          // reopening the dust-refund gap for exactly the metadata we can least trust. Fail
+          // closed instead, with a message that distinguishes the two reasons: unparseable
+          // amounts are an unexpected API-shape problem, a fully-filled order is a normal
+          // state the user should just be told about plainly.
+          const refund = classifyCancelRefund(order);
+          if (refund.error === 'unparseable') {
+            throw new Error(`Found order ${orderId} but its input/fill amounts couldn't be parsed from the order metadata; refusing to sign a cancel whose refund magnitude can't be verified. Check the order with "nansen trade limit-order list --state active".`);
           }
+          if (refund.error === 'fully-filled') {
+            throw new Error(`Order ${orderId} appears fully filled — there is nothing left to refund, so it can't be cancelled. Check its status with "nansen trade limit-order list --state active".`);
+          }
+          cancelRefundAmount = refund.amount;
         }
 
         // 3. Request cancellation — get unsigned withdrawal tx
+        //
+        // NOTE (deliberate, do not "fix" by loosening the check): there is a narrow TOCTOU
+        // window between the lookup in step 2 (which pins cancelRefundAmount to the unfilled
+        // remainder seen then) and this cancellation request. If a partial fill lands in
+        // between, the real withdrawal returns LESS than cancelRefundAmount and the outcome
+        // check in step 4 fails closed on a legitimate cancel. That's acceptable: the user
+        // simply retries and the next lookup sees the new remainder. The safe response to a
+        // spurious failure here is a retry, NOT relaxing the exact-magnitude bind — that bind
+        // is what closes the dust-refund redirect (a crafted withdrawal that reroutes most of
+        // the escrow and returns only a token of the right mint), so widening it reopens the
+        // exact gap this verification exists to close.
         log('  Requesting cancellation...');
         const cancelResult = await cancelOrderRequest(token, orderId);
 
