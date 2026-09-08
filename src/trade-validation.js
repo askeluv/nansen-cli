@@ -1894,6 +1894,14 @@ export function assertLimitOrderDepositDestination(txBase64, { walletAddress, in
 
     const discriminator = ix.data[0];
     if (discriminator === SPL_TRANSFER) {
+      // Classic Transfer does not encode the mint in its account list, so we can
+      // only bind the destination — not the mint — without an extra RPC lookup.
+      // This is not a weakness: vaultTokenAccount is the deposit mint's own ATA
+      // (derived per-mint upstream), so a legitimate deposit lands here, and the
+      // balance-delta simulation still bounds the amount and token that leave the
+      // wallet. Do not add a mint check here — the classic Transfer cannot supply
+      // one; use TransferChecked (below) if mint binding at the instruction level
+      // is required.
       if (!walletAuthorizes(ix, 2)) continue;
       const destination = accountAt(ix, 1);
       if (destination !== vaultTokenAccount) {
