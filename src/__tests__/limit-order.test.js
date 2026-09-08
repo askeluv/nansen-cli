@@ -239,9 +239,9 @@ describe('API client', () => {
   });
 
   it('getVault sends correct query params', async () => {
-    mockFetchResponse({ vaultPubkey: 'vault123', userPubkey: 'pub1' });
+    mockFetchResponse({ vaultPubkey: '11111111111111111111111111111111', userPubkey: 'pub1' });
     const result = await getVault('jwt-token', 'pub1');
-    expect(result.vaultPubkey).toBe('vault123');
+    expect(result.vaultPubkey).toBe('11111111111111111111111111111111');
 
     const [url, opts] = global.fetch.mock.calls[0];
     expect(url).toContain('userPubkey=pub1');
@@ -610,7 +610,7 @@ describe('buildLimitOrderCommands', () => {
       mockFetchSequence([
         { body: { challenge: 'sign this' } },
         { body: { token: 'jwt-123' } },
-        { body: { vaultPubkey: 'vault123', userPubkey: 'pub1' } },
+        { body: { vaultPubkey: '11111111111111111111111111111111', userPubkey: 'pub1' } },
         { body: { transaction: buildFakeBase64Tx(), requestId: 'dep-req-1' } },
         { body: { id: 'order-slip', txSignature: 'sig-slip' }, status: 201 },
       ]);
@@ -663,7 +663,7 @@ describe('buildLimitOrderCommands', () => {
       mockFetchSequence([
         { body: { challenge: 'sign this' } },
         { body: { token: 'jwt-123' } },
-        { body: { vaultPubkey: 'vault1', userPubkey: 'pub1' } },
+        { body: { vaultPubkey: '11111111111111111111111111111111', userPubkey: 'pub1' } },
         { body: { transaction: buildFakeBase64Tx(), requestId: 'dep-1' } },
         { body: { id: 'order-1', txSignature: 'sig-1' }, status: 201 },
       ]);
@@ -724,7 +724,7 @@ describe('buildLimitOrderCommands', () => {
       mockFetchSequence([
         { body: { challenge: 'sign this' } },          // [0] auth/challenge
         { body: { token: 'jwt-123' } },                 // [1] auth/verify
-        { body: { vaultPubkey: 'vault1', userPubkey: 'pub1' } }, // [2] vault check
+        { body: { vaultPubkey: '11111111111111111111111111111111', userPubkey: 'pub1' } }, // [2] vault check
         { body: { transaction: buildFakeBase64Tx(), requestId: 'dep-1' } }, // [3] deposit/craft
         { body: { id: 'order-1', txSignature: 'sig-1' }, status: 201 },    // [4] createOrder
       ]);
@@ -835,7 +835,7 @@ describe('buildLimitOrderCommands', () => {
       mockFetchSequence([
         { body: { challenge: 'sign this' } },
         { body: { token: 'jwt-123' } },
-        { body: { vaultPubkey: 'vault123', userPubkey: 'pub1' } },
+        { body: { vaultPubkey: '11111111111111111111111111111111', userPubkey: 'pub1' } },
         { body: { transaction: buildFakeBase64Tx(), requestId: 'dep-req-1' } },
         { body: { id: 'order-abc', txSignature: 'sig-xyz' }, status: 201 },
       ]);
@@ -874,7 +874,7 @@ describe('buildLimitOrderCommands', () => {
         { body: { challenge: 'sign this' } },
         { body: { token: 'jwt-123' } },
         { body: { message: 'Vault not found' }, status: 404 }, // getVault returns no vault
-        { body: { vaultPubkey: 'newVault', userPubkey: 'pub1' }, status: 201 }, // registerVault
+        { body: { vaultPubkey: '11111111111111111111111111111111', userPubkey: 'pub1' }, status: 201 }, // registerVault
         { body: { transaction: buildFakeBase64Tx(), requestId: 'dep-1' } },
         { body: { id: 'order-1', txSignature: 'sig-1' }, status: 201 },
       ]);
@@ -887,6 +887,35 @@ describe('buildLimitOrderCommands', () => {
       expect(logs.some(l => l.includes('Registering vault'))).toBe(true);
       // Should have made 6 API calls (challenge, verify, getVault, registerVault, craftDeposit, createOrder)
       expect(global.fetch).toHaveBeenCalledTimes(6);
+    });
+
+    it('recovers vault address by re-fetching when register reports "already registered"', async () => {
+      createTestWallet('lo-vault-race');
+
+      const logs = [];
+      const cmds = buildLimitOrderCommands({ log: (m) => logs.push(m), exit: vi.fn() });
+
+      // getVault initially misses, registerVault loses the race, second getVault recovers the address.
+      mockFetchSequence([
+        { body: { challenge: 'sign this' } },
+        { body: { token: 'jwt-123' } },
+        { body: { message: 'Vault not found' }, status: 404 }, // [1] getVault: miss
+        { body: { message: 'vault already registered' }, status: 409 }, // [2] registerVault: race lost
+        { body: { vaultPubkey: '11111111111111111111111111111111', userPubkey: 'pub1' } }, // [3] getVault retry: recovered
+        { body: { transaction: buildFakeBase64Tx(), requestId: 'dep-1' } },
+        { body: { id: 'order-1', txSignature: 'sig-1' }, status: 201 },
+      ]);
+
+      await cmds.create([], null, {}, {
+        from: 'SOL', to: 'USDC', amount: '1', 'trigger-mint': 'SOL', 'trigger-condition': 'below', 'trigger-price': '80',
+        wallet: 'lo-vault-race',
+      });
+
+      // Did not fail with the "cannot determine vault address" guard.
+      expect(logs.some(l => l.includes('Could not determine'))).toBe(false);
+      expect(logs.some(l => l.includes('Limit order created'))).toBe(true);
+      // challenge, verify, getVault, registerVault, getVault-retry, craftDeposit, createOrder
+      expect(global.fetch).toHaveBeenCalledTimes(7);
     });
   });
 
@@ -1143,6 +1172,45 @@ describe('buildLimitOrderCommands', () => {
 // count, since a module-local signTransaction spy can't intercept the
 // handler's internal call.
 describe('outcome verification (fail-closed)', () => {
+
+  it('create: refuses to sign a deposit whose input transfer is not bound to a vault-seeded account', async () => {
+    const wallet = createTestWallet('lo-destination-deposit-drain');
+    const vaultPubkey = generateSolanaWallet().address;
+    const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+    // A crafted deposit that moves the input token to an attacker account with no
+    // System::CreateAccountWithSeed(base = vault) — so nothing binds the funds to
+    // the trusted vault. Must fail closed before signing.
+    const nonVaultAcct = generateSolanaWallet().address;
+    const depositTx = buildTokenTransferCheckedTx({
+      walletPubkey: wallet.solana,
+      mint: USDC,
+      destination: nonVaultAcct,
+    });
+
+    mockFetchSequence([
+      { body: { challenge: 'sign this' } },
+      { body: { token: 'jwt-123' } },
+      { body: { vaultPubkey, userPubkey: wallet.solana } },
+      { body: { transaction: depositTx, requestId: 'dep-req-1' } },
+      { body: { id: 'order-should-not-submit', txSignature: 'sig-unused' }, status: 201 },
+    ]);
+
+    const logs = [];
+    const exit = vi.fn();
+    const cmds = buildLimitOrderCommands({ log: (m) => logs.push(m), exit });
+
+    await cmds.create([], null, {}, {
+      from: 'USDC', to: 'SOL', amount: '1',
+      'trigger-mint': 'SOL', 'trigger-condition': 'below', 'trigger-price': '80',
+      wallet: 'lo-destination-deposit-drain',
+    });
+
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(logs.some(l => /LIMIT_ORDER_DESTINATION_MISMATCH/i.test(l))).toBe(true);
+    // Fail-closed before the createOrder call (4 fetches: challenge, verify, vault, craft).
+    expect(global.fetch).toHaveBeenCalledTimes(4);
+  });
+
   it('create: refuses to sign a deposit whose simulated outflow exceeds the requested amount (repro)', async () => {
     SIMULATION_RPCS.solana = 'http://sol-sim.test';
     const wallet = createTestWallet('lo-outcome-deposit-drain');
@@ -1151,7 +1219,7 @@ describe('outcome verification (fail-closed)', () => {
     mockFetchSequence([
       { body: { challenge: 'sign this' } },
       { body: { token: 'jwt-123' } },
-      { body: { vaultPubkey: 'vault123', userPubkey: 'pub1' } },
+      { body: { vaultPubkey: '11111111111111111111111111111111', userPubkey: 'pub1' } },
       { body: { transaction: depositTx, requestId: 'dep-req-1' } },
       // sim: getMultipleAccounts — pre-state for the wallet's native account.
       { body: { result: { value: [solanaNativeAccountInfo(2_000_000_000)] } } },
@@ -1352,7 +1420,7 @@ describe('outcome verification (fail-closed)', () => {
     mockFetchSequence([
       { body: { challenge: 'sign this' } },
       { body: { token: 'jwt-123' } },
-      { body: { vaultPubkey: 'vault123', userPubkey: 'pub1' } },
+      { body: { vaultPubkey: '11111111111111111111111111111111', userPubkey: 'pub1' } },
       { body: { transaction: depositTx, requestId: 'dep-req-1' } },
       // sim: getMultipleAccounts fails outright (transport/RPC error) — must
       // degrade (warn + proceed), not block a legitimate deposit.
@@ -1512,6 +1580,25 @@ function buildLimitOrderTx({ walletPubkey, extraWritableKey } = {}) {
   const blockhash = Buffer.alloc(32, 0x03);
   const numInstructions = Buffer.from([0x00]);
   const message = Buffer.concat([header, numKeys, keyBytes, blockhash, numInstructions]);
+  return Buffer.concat([Buffer.from([1]), Buffer.alloc(64), message]).toString('base64');
+}
+
+function buildTokenTransferCheckedTx({ walletPubkey, mint, destination }) {
+  const sourceAta = generateSolanaWallet().address;
+  const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+  const keys = [walletPubkey, sourceAta, mint, destination, TOKEN_PROGRAM];
+  const header = Buffer.from([1, 0, 1]);
+  const numKeys = Buffer.from([keys.length]);
+  const keyBytes = Buffer.concat(keys.map((k) => base58Decode(k)));
+  const blockhash = Buffer.alloc(32, 0x03);
+  const numInstructions = Buffer.from([0x01]);
+  // TransferChecked: [source, mint, destination, authority]
+  const data = Buffer.from([12, 64, 66, 15, 0, 0, 0, 0, 0, 6]);
+  const instruction = Buffer.concat([
+    Buffer.from([4, 4, 1, 2, 3, 0, data.length]),
+    data,
+  ]);
+  const message = Buffer.concat([header, numKeys, keyBytes, blockhash, numInstructions, instruction]);
   return Buffer.concat([Buffer.from([1]), Buffer.alloc(64), message]).toString('base64');
 }
 
