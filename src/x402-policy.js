@@ -5,12 +5,12 @@
  */
 
 import { EVM_X402_TOKENS, SVM_X402_TOKENS } from './x402-tokens.js';
+import { getWalletConfig } from './wallet.js';
 
 // The only x402 scheme this client can honour. "exact" = a fixed-amount transfer
 // authorization (EIP-3009 / Permit2 on EVM, SPL TransferChecked on SVM). Any other
 // scheme must be refused before signing, not silently accepted.
 export const SUPPORTED_X402_SCHEMES = new Set(['exact']);
-import { getWalletConfig } from './wallet.js';
 
 /**
  * True for the exact Solana CAIP-2 network prefix ("solana:..."), matching

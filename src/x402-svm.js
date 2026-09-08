@@ -7,6 +7,7 @@ import crypto from 'crypto';
 import { base58Encode, base58DecodePubkey } from './wallet.js';
 import { encodeCompactU16, deriveATA as _deriveATA } from './transfer.js';
 import { resolvePaymentAmount, resolvePayTo } from './x402-policy.js';
+import { SOLANA_MAINNET_NETWORK } from './x402-tokens.js';
 
 // ============= Constants =============
 
@@ -329,7 +330,11 @@ export async function fetchRecentBlockhash(rpcUrl = 'https://api.mainnet-beta.so
  * Get RPC URL for a Solana network identifier.
  */
 export function getSolanaRpcUrl(network) {
-  if (network === 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp') return 'https://api.mainnet-beta.solana.com';
+  if (network === SOLANA_MAINNET_NETWORK) return 'https://api.mainnet-beta.solana.com';
+  // Devnet/testnet resolve for tooling (e.g. balance checks), but the x402 pay
+  // path never reaches them: SVM_X402_TOKENS is mainnet-only, so the policy layer
+  // refuses a devnet/testnet requirement before signing. Adding a non-mainnet
+  // token entry would silently enable signing here — revisit this gate if you do.
   if (network === 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1') return 'https://api.devnet.solana.com';
   if (network === 'solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z') return 'https://api.testnet.solana.com';
   throw new Error(`Unsupported Solana network for x402: ${network}`);

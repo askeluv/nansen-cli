@@ -135,12 +135,29 @@ describe('createEvmPaymentPayload', () => {
       asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
       amount: '50000',
       pay_to: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd',
-      extra: {},
+      extra: { version: '2' },
     };
 
     expect(() => createEvmPaymentPayload(
       requirements, wallet.privateKey, wallet.address, 'https://test.com',
-    )).toThrow('name missing');
+    )).toThrow(/name\/version missing/);
+  });
+
+  it('should throw if extra.version is missing (no silent default) — matches walletconnect path', () => {
+    // The EIP-712 domain version varies by token (USDC=2, USDT0/BSC=1); guessing a
+    // default would silently produce an invalid signature, so refuse instead.
+    const wallet = generateEvmWallet();
+    const requirements = {
+      network: 'eip155:8453',
+      asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+      amount: '50000',
+      pay_to: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd',
+      extra: { name: 'USD Coin' },
+    };
+
+    expect(() => createEvmPaymentPayload(
+      requirements, wallet.privateKey, wallet.address, 'https://test.com',
+    )).toThrow(/name\/version missing/);
   });
 });
 

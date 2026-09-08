@@ -72,8 +72,9 @@ export function buildEIP712TypedData({ fromAddress, requirement }) {
     );
   }
   // A remote extra.chainId that disagrees with the network is a domain-binding
-  // mismatch — refuse rather than sign under either interpretation.
-  if (extra.chainId !== undefined && Number(extra.chainId) !== chainId) {
+  // mismatch — refuse rather than sign under either interpretation. A null or
+  // empty extra.chainId means "unspecified", not a conflict, so treat it as absent.
+  if (extra.chainId != null && extra.chainId !== '' && Number(extra.chainId) !== chainId) {
     throw new Error(
       `Refusing to sign x402 payment: extra.chainId ${extra.chainId} conflicts with ` +
       `network ${requirement.network} (chain id ${chainId}).`,

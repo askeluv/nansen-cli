@@ -215,12 +215,16 @@ export function createEvmPaymentPayload(requirements, privateKeyHex, walletAddre
     throw new Error(`Unsupported assetTransferMethod: ${method}`);
   }
 
-  // Token name and version from requirements.extra (set by server/facilitator)
+  // Token name and version from requirements.extra (set by server/facilitator).
+  // Both are required: the EIP-712 domain version varies by token (USDC on Base
+  // is "2", USDT0/BSC tokens are "1"), so guessing a default would silently
+  // produce an invalid signature. Refuse instead — matches the walletconnect/Privy
+  // path in buildEIP712TypedData.
   const tokenName = extra.name;
-  const tokenVersion = extra.version || '1';
+  const tokenVersion = extra.version;
 
-  if (!tokenName) {
-    throw new Error('EIP-712 domain name missing from requirements.extra');
+  if (!tokenName || !tokenVersion) {
+    throw new Error('EIP-712 domain name/version missing from requirements.extra');
   }
 
   // Generate random nonce (32 bytes)

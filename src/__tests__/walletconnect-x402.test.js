@@ -113,6 +113,16 @@ describe('buildEIP712TypedData — chain id binding', () => {
     expect(td.domain.chainId).toBe(8453);
   });
 
+  it('treats a null or empty-string extra.chainId as absent, not a conflict', () => {
+    // null/'' mean "unspecified" (Number(null)===0, Number('')===0) and must not
+    // be read as a chain id of 0 conflicting with the network.
+    for (const chainId of [null, '']) {
+      const req = { ...REQUIREMENT, network: 'eip155:8453', extra: { ...REQUIREMENT.extra, chainId } };
+      const td = buildEIP712TypedData({ fromAddress: '0xSender', requirement: req });
+      expect(td.domain.chainId).toBe(8453);
+    }
+  });
+
   it('throws when extra.chainId conflicts with the validated network', () => {
     // remote extra.chainId: 1 on a Base requirement must be rejected — not signed
     const req = { ...REQUIREMENT, network: 'eip155:8453', extra: { ...REQUIREMENT.extra, chainId: 1 } };
