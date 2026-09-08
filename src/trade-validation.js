@@ -20,9 +20,11 @@ const SPL_TOKEN_PROGRAMS = new Set([
   'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
   'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb',
 ]);
+const SPL_TRANSFER = 3;
 const SPL_APPROVE = 4;
 const SPL_SET_AUTHORITY = 6;
 const SPL_CLOSE_ACCOUNT = 9;
+const SPL_TRANSFER_CHECKED = 12;
 const SPL_APPROVE_CHECKED = 13;
 
 const COMPUTE_BUDGET_PROGRAM = 'ComputeBudget111111111111111111111111111111';
@@ -1484,8 +1486,9 @@ export function assertSolanaSwapOutcome(request, quote, sim, { slippage, sibling
  *      within `amount` ± NATIVE_FEE_RENT_SLACK_LAMPORTS for a native-SOL input
  *      (two-sided: upper bound caps the drain, lower bound rejects a partial reroute), and
  *   2. no token OTHER than the input leaves the wallet (native-SOL dust tolerated).
- * NOTE: this bounds MAGNITUDE, not destination — a full-`amount` transfer to a non-vault
- * address still passes; that is closed by the vault-destination binding (fast-follow).
+ * NOTE: this bounds MAGNITUDE, not destination. The create command pairs it with
+ * assertLimitOrderDepositDestination so a wallet-authorized SPL transfer of the
+ * deposited asset must land in the vault's token account.
  * There is no output leg — the deposit funds the vault, nothing returns to the wallet.
  *
  * @param {{deltas: Record<string, bigint|string|number>}} sim - simulateSolanaAssetChanges result
@@ -1847,4 +1850,67 @@ export function assertSolanaInstructionsSafe(txBase64, { walletAddress } = {}) {
   }
 
   return parsed;
+}
+
+/**
+ * Statically bind a limit-order deposit's wallet-authorized SPL transfer to
+ * the vault token account for the deposited mint. This closes the destination
+ * gap that balance-delta simulation cannot see: a tx can spend exactly the
+ * requested amount from the wallet while sending it to a non-vault token
+ * account. This check is intentionally limit-order-specific; generic swaps
+ * cannot require a single destination.
+ */
+export function assertLimitOrderDepositDestination(txBase64, { walletAddress, inputMint, vaultTokenAccount } = {}) {
+  const fail = (detail) => {
+    const e = new Error(`Limit-order deposit destination mismatch (LIMIT_ORDER_DESTINATION_MISMATCH): ${detail} Refusing to sign.`);
+    e.code = 'LIMIT_ORDER_DESTINATION_MISMATCH';
+    return e;
+  };
+
+  if (!walletAddress) throw fail('missing signing wallet address.');
+  if (!inputMint) throw fail('missing deposit input mint.');
+  if (!vaultTokenAccount) throw fail('missing vault token account.');
+
+  const parsed = parseTransactionMessage(txBase64);
+  const accountAt = (ix, position) => resolveStaticAccount(parsed, ix.accountIndexes[position]);
+  const walletAuthorizes = (ix, authorityPos) => {
+    if (accountAt(ix, authorityPos) === null) return true;
+    for (let i = authorityPos; i < ix.accountIndexes.length; i++) {
+      if (accountAt(ix, i) === walletAddress) return true;
+    }
+    return false;
+  };
+
+  const expectedMint = SOLANA_NATIVE_SOL_ALIASES.has(inputMint)
+    ? 'So11111111111111111111111111111111111111112'
+    : inputMint;
+
+  for (const ix of parsed.instructions) {
+    const programId = resolveStaticAccount(parsed, ix.programIdIndex);
+    if (!programId) {
+      throw fail('transaction invokes a program only resolvable via an address lookup table, so transfer destinations cannot be verified.');
+    }
+    if (!SPL_TOKEN_PROGRAMS.has(programId) || ix.data.length === 0) continue;
+
+    const discriminator = ix.data[0];
+    if (discriminator === SPL_TRANSFER) {
+      if (!walletAuthorizes(ix, 2)) continue;
+      const destination = accountAt(ix, 1);
+      if (destination !== vaultTokenAccount) {
+        throw fail(`wallet-authorized token transfer sends funds to ${destination || 'an address only resolvable via an address lookup table'} instead of vault token account ${vaultTokenAccount}.`);
+      }
+    } else if (discriminator === SPL_TRANSFER_CHECKED) {
+      if (!walletAuthorizes(ix, 3)) continue;
+      const mint = accountAt(ix, 1);
+      const destination = accountAt(ix, 2);
+      if (!tokensEqual(mint, expectedMint, 'solana')) {
+        throw fail(`wallet-authorized TransferChecked uses mint ${mint || 'an address only resolvable via an address lookup table'} instead of deposit mint ${expectedMint}.`);
+      }
+      if (destination !== vaultTokenAccount) {
+        throw fail(`wallet-authorized TransferChecked sends funds to ${destination || 'an address only resolvable via an address lookup table'} instead of vault token account ${vaultTokenAccount}.`);
+      }
+    }
+  }
+
+  return { verified: true };
 }

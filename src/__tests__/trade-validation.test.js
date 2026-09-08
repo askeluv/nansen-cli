@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { validateQuoteInput, fetchNativeBalance, fetchTokenBalance, validateBalance, resolvePercentAmount, validateGasBalance, GASLESS_MIN_TRADE_USD, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertInputWithinMax, assertSwapCalldataNotBareTransfer, assertSwapOutcome, assertSolanaInstructionsSafe, assertSolanaSwapOutcome, assertLimitOrderDepositOutcome, assertLimitOrderCancelOutcome, MAX_UINT256, needsAllowanceRevoke } from '../trade-validation.js';
+import { validateQuoteInput, fetchNativeBalance, fetchTokenBalance, validateBalance, resolvePercentAmount, validateGasBalance, GASLESS_MIN_TRADE_USD, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertInputWithinMax, assertSwapCalldataNotBareTransfer, assertSwapOutcome, assertSolanaInstructionsSafe, assertSolanaSwapOutcome, assertLimitOrderDepositOutcome, assertLimitOrderCancelOutcome, assertLimitOrderDepositDestination, MAX_UINT256, needsAllowanceRevoke } from '../trade-validation.js';
 import { SOL_SENTINEL } from '../solana-simulation.js';
 import { base58Decode, generateSolanaWallet } from '../wallet.js';
 
@@ -2394,6 +2394,93 @@ describe('assertLimitOrderCancelOutcome', () => {
     const sim = { deltas: { [USDC]: 1n } };
     expect(() => assertLimitOrderCancelOutcome(sim, { inputMint: USDC, amount: 'not-a-number' }))
       .toThrow(/LIMIT_ORDER_OUTCOME_MISMATCH[\s\S]*is not an integer/i);
+  });
+});
+
+describe('assertLimitOrderDepositDestination', () => {
+  const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+  const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
+  function encodeCompactU16(value) {
+    if (value < 0x80) return Buffer.from([value]);
+    if (value < 0x4000) return Buffer.from([(value & 0x7f) | 0x80, (value >> 7) & 0x7f]);
+    return Buffer.from([(value & 0x7f) | 0x80, ((value >> 7) & 0x7f) | 0x80, (value >> 14) & 0x03]);
+  }
+
+  function buildTransaction({ accountKeys, instructions }) {
+    const parts = [Buffer.from([1, 0, accountKeys.length - 1])];
+    parts.push(encodeCompactU16(accountKeys.length));
+    for (const k of accountKeys) parts.push(base58Decode(k));
+    parts.push(base58Decode(accountKeys[0]));
+    parts.push(encodeCompactU16(instructions.length));
+    for (const ix of instructions) {
+      parts.push(Buffer.from([ix.programIdIndex]));
+      parts.push(encodeCompactU16(ix.accountIndexes.length));
+      for (const idx of ix.accountIndexes) parts.push(Buffer.from([idx]));
+      parts.push(encodeCompactU16(ix.data.length));
+      parts.push(ix.data);
+    }
+    const messageBytes = Buffer.concat(parts);
+    return Buffer.concat([Buffer.from([1]), Buffer.alloc(64), messageBytes]).toString('base64');
+  }
+
+  it('allows a wallet-authorized TransferChecked into the vault token account', () => {
+    const wallet = generateSolanaWallet().address;
+    const sourceAta = generateSolanaWallet().address;
+    const vaultAta = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, sourceAta, USDC, vaultAta, TOKEN_PROGRAM],
+      instructions: [
+        { programIdIndex: 4, accountIndexes: [1, 2, 3, 0], data: Buffer.from([12, 0, 0, 0, 0, 0, 0, 0, 0, 6]) },
+      ],
+    });
+    expect(assertLimitOrderDepositDestination(tx, { walletAddress: wallet, inputMint: USDC, vaultTokenAccount: vaultAta }))
+      .toEqual({ verified: true });
+  });
+
+  it('rejects a wallet-authorized TransferChecked to a non-vault destination', () => {
+    const wallet = generateSolanaWallet().address;
+    const sourceAta = generateSolanaWallet().address;
+    const vaultAta = generateSolanaWallet().address;
+    const nonVaultAta = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, sourceAta, USDC, nonVaultAta, vaultAta, TOKEN_PROGRAM],
+      instructions: [
+        { programIdIndex: 5, accountIndexes: [1, 2, 3, 0], data: Buffer.from([12, 0, 0, 0, 0, 0, 0, 0, 0, 6]) },
+      ],
+    });
+    expect(() => assertLimitOrderDepositDestination(tx, { walletAddress: wallet, inputMint: USDC, vaultTokenAccount: vaultAta }))
+      .toThrow(/LIMIT_ORDER_DESTINATION_MISMATCH[\s\S]*instead of vault token account/i);
+  });
+
+  it('rejects a wallet-authorized TransferChecked for the wrong mint', () => {
+    const wallet = generateSolanaWallet().address;
+    const sourceAta = generateSolanaWallet().address;
+    const wrongMint = generateSolanaWallet().address;
+    const vaultAta = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, sourceAta, wrongMint, vaultAta, TOKEN_PROGRAM],
+      instructions: [
+        { programIdIndex: 4, accountIndexes: [1, 2, 3, 0], data: Buffer.from([12, 0, 0, 0, 0, 0, 0, 0, 0, 6]) },
+      ],
+    });
+    expect(() => assertLimitOrderDepositDestination(tx, { walletAddress: wallet, inputMint: USDC, vaultTokenAccount: vaultAta }))
+      .toThrow(/LIMIT_ORDER_DESTINATION_MISMATCH[\s\S]*instead of deposit mint/i);
+  });
+
+  it('rejects a wallet-authorized Transfer to a non-vault destination', () => {
+    const wallet = generateSolanaWallet().address;
+    const sourceAta = generateSolanaWallet().address;
+    const nonVaultAta = generateSolanaWallet().address;
+    const vaultAta = generateSolanaWallet().address;
+    const tx = buildTransaction({
+      accountKeys: [wallet, sourceAta, nonVaultAta, vaultAta, TOKEN_PROGRAM],
+      instructions: [
+        { programIdIndex: 4, accountIndexes: [1, 2, 0], data: Buffer.from([3, 64, 66, 15, 0, 0, 0, 0, 0]) },
+      ],
+    });
+    expect(() => assertLimitOrderDepositDestination(tx, { walletAddress: wallet, inputMint: USDC, vaultTokenAccount: vaultAta }))
+      .toThrow(/LIMIT_ORDER_DESTINATION_MISMATCH[\s\S]*instead of vault token account/i);
   });
 });
 

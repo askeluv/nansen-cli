@@ -9,10 +9,11 @@
 import fs from 'fs';
 import path from 'path';
 import { base58Encode, exportWallet, getWalletConfig, showWallet } from './wallet.js';
-import { signEd25519, base58Decode, parseAmount, getTokenInfo } from './transfer.js';
+import { signEd25519, base58Decode, parseAmount, getTokenInfo, deriveATA } from './transfer.js';
 import { signSolanaTransaction, resolveTokenAddress } from './trading.js';
 import {
   assertSolanaInstructionsSafe,
+  assertLimitOrderDepositDestination,
   assertLimitOrderDepositOutcome,
   assertLimitOrderCancelOutcome,
   NATIVE_FEE_RENT_SLACK_LAMPORTS,
@@ -33,6 +34,7 @@ const TRADING_API_URL = process.env.NANSEN_TRADING_API_URL || 'https://trading-a
 const LO_PREFIX = '/limit-order/v2';
 const SOLSCAN_TX_URL = 'https://solscan.io/tx/';
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
+const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 
 // ============= JWT Auth & Caching (Local File) =============
 
@@ -357,6 +359,11 @@ function getLocalWalletPrivateKey(walletName) {
   const effectiveName = walletName || config.defaultWallet;
   const exported = exportWallet(effectiveName, password);
   return exported.solana.privateKey;
+}
+
+function deriveVaultTokenAccount(vaultPubkey, inputMint, tokenProgram = TOKEN_PROGRAM) {
+  const mint = inputMint === '11111111111111111111111111111111' ? WSOL_MINT : inputMint;
+  return base58Encode(deriveATA(vaultPubkey, mint, tokenProgram));
 }
 
 // ============= Transaction Signing =============
@@ -692,6 +699,7 @@ EXAMPLES:
       // Amount is always in human-readable token units (e.g. 1.5 = 1.5 SOL)
       // Converted to base units (lamports) internally
       let amountBaseUnits;
+      let fromTokenProgram = TOKEN_PROGRAM;
       try {
         const num = Number(amount);
         if (isNaN(num) || num <= 0) {
@@ -706,6 +714,7 @@ EXAMPLES:
         } else {
           const tokenInfo = await getTokenInfo(CHAIN_RPCS.solana, from);
           decimals = tokenInfo.decimals;
+          fromTokenProgram = tokenInfo.tokenProgram || TOKEN_PROGRAM;
         }
         amountBaseUnits = String(parseAmount(String(amount), decimals));
       } catch (err) {
@@ -782,21 +791,28 @@ EXAMPLES:
         // 3. Check vault, auto-register if needed
         // Backend returns { vaultPubkey: "..." } when vault exists, or throws/returns empty when not
         let hasVault = false;
+        let vaultPubkey;
         try {
           const vaultInfo = await getVault(token, pubkey);
-          hasVault = !!(vaultInfo?.vaultPubkey || vaultInfo?.vaultAddress);
+          vaultPubkey = vaultInfo?.vaultPubkey || vaultInfo?.vaultAddress;
+          hasVault = !!vaultPubkey;
         } catch {
           // No vault found
         }
         if (!hasVault) {
           log('  Registering vault for first-time use...');
           try {
-            await registerVault(token);
+            const vaultInfo = await registerVault(token);
+            vaultPubkey = vaultInfo?.vaultPubkey || vaultInfo?.vaultAddress;
           } catch (regErr) {
             // Vault may already exist — ignore "already registered" errors
             if (!/already registered/i.test(regErr.message)) throw regErr;
           }
         }
+        if (!vaultPubkey) {
+          throw new Error('Could not determine your limit-order vault address; refusing to sign a deposit whose destination cannot be verified.');
+        }
+        const vaultTokenAccount = deriveVaultTokenAccount(vaultPubkey, from, fromTokenProgram);
 
         // 4. Craft deposit transaction
         log('  Crafting deposit transaction...');
@@ -808,21 +824,22 @@ EXAMPLES:
         });
 
         // 5. Sign deposit transaction
-        // Two layers of pre-signing defense, same as the swap path. First, the
-        // static gate: the legitimate deposit moves the input token into the
-        // already-registered vault (step 3) with an SPL Transfer/TransferChecked —
-        // which this gate does not classify — plus, when selling native SOL, a
-        // temp-WSOL CloseAccount whose rent returns to the wallet (permitted).
-        // Neither trips the delegate/authority/close-to-stranger checks, so this
-        // does not reject a well-formed deposit; it only fires if the crafted tx
-        // additionally grants a delegate, reassigns authority, or closes to a
-        // stranger. Second, balance-delta outcome verification below binds the
-        // deposit's magnitude: the input token must leave the wallet by exactly
-        // `amount` (± fee/rent slack for native SOL) and no other token may leave.
+        // Three pre-signing defenses run here. The generic static gate rejects
+        // delegate grants, authority changes, close-to-stranger, and excessive
+        // priority fees. The limit-order destination gate then binds visible
+        // wallet-authorized SPL transfers to the vault token account. Finally,
+        // balance-delta outcome verification binds magnitude: the input token
+        // must leave the wallet by exactly `amount` (± fee/rent slack for native
+        // SOL) and no other token may leave.
         // Verified live: a real SOL→USDC create round-trip clears both gates (the
         // API-crafted deposit is a SOL-wrap transfer into the vault plus a
         // temp-WSOL close-to-self).
         assertSolanaInstructionsSafe(deposit.transaction, { walletAddress: pubkey });
+        assertLimitOrderDepositDestination(deposit.transaction, {
+          walletAddress: pubkey,
+          inputMint: from,
+          vaultTokenAccount,
+        });
         const depositOutcome = await verifyLimitOrderOutcome({
           kind: 'deposit', walletAddress: pubkey, txBase64: deposit.transaction,
           inputMint: from, amount: amountBaseUnits, log,
