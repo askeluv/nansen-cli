@@ -110,12 +110,34 @@ function parseChains(chainsOpt) {
 /**
  * Build a { min, max } range object from two option values.
  * Returns undefined if neither is provided.
+ *
+ * `label` is the CLI flag prefix (e.g. "market-cap" for --market-cap-min/max),
+ * used only to name the offending flag in the error message.
+ *
+ * A non-numeric value must throw here, not silently produce NaN: NaN passes
+ * the `!= null` check `isRangeSet()` uses (NaN is neither null nor
+ * undefined), so a bad value looked "set" -- but `JSON.stringify({min: NaN})`
+ * serializes to `{"min":null}`, so the alert would silently be created with
+ * that threshold disabled rather than the value the user typed, and no error
+ * would ever surface.
  */
-function buildRange(minVal, maxVal) {
+function buildRange(minVal, maxVal, label) {
   if (minVal === undefined && maxVal === undefined) return undefined;
   const r = {};
-  if (minVal !== undefined) r.min = Number(minVal);
-  if (maxVal !== undefined) r.max = Number(maxVal);
+  if (minVal !== undefined) {
+    const min = Number(minVal);
+    if (!Number.isFinite(min)) {
+      throw new NansenError(`--${label}-min must be a number`, ErrorCode.INVALID_PARAMS);
+    }
+    r.min = min;
+  }
+  if (maxVal !== undefined) {
+    const max = Number(maxVal);
+    if (!Number.isFinite(max)) {
+      throw new NansenError(`--${label}-max must be a number`, ErrorCode.INVALID_PARAMS);
+    }
+    r.max = max;
+  }
   return r;
 }
 
@@ -138,7 +160,7 @@ export function buildSmTokenFlowsData(options) {
 
   const flowFields = ['inflow-1h', 'inflow-1d', 'inflow-7d', 'outflow-1h', 'outflow-1d', 'outflow-7d', 'netflow-1h', 'netflow-1d', 'netflow-7d'];
   for (const field of flowFields) {
-    const range = buildRange(options[`${field}-min`], options[`${field}-max`]);
+    const range = buildRange(options[`${field}-min`], options[`${field}-max`], field);
     if (range) {
       // Convert CLI key "inflow-1h" → data key "inflow_1h"
       data[field.replace(/-/g, '_')] = range;
@@ -156,13 +178,17 @@ export function buildSmTokenFlowsData(options) {
   if (excludeSectors) data.exclusion = { ...data.exclusion, tokenSectors: excludeSectors };
 
   if (options['token-age-max'] !== undefined) {
-    data.inclusion = { ...data.inclusion, tokenAge: { max: Number(options['token-age-max']) } };
+    const tokenAgeMax = Number(options['token-age-max']);
+    if (!Number.isFinite(tokenAgeMax)) {
+      throw new NansenError('--token-age-max must be a number', ErrorCode.INVALID_PARAMS);
+    }
+    data.inclusion = { ...data.inclusion, tokenAge: { max: tokenAgeMax } };
   }
 
-  const marketCapRange = buildRange(options['market-cap-min'], options['market-cap-max']);
+  const marketCapRange = buildRange(options['market-cap-min'], options['market-cap-max'], 'market-cap');
   if (marketCapRange) data.inclusion = { ...data.inclusion, marketCap: marketCapRange };
 
-  const fdvRange = buildRange(options['fdv-min'], options['fdv-max']);
+  const fdvRange = buildRange(options['fdv-min'], options['fdv-max'], 'fdv');
   if (fdvRange) data.inclusion = { ...data.inclusion, fdvUsd: fdvRange };
 
   return data;
@@ -181,10 +207,10 @@ export function buildCommonTokenTransferData(options) {
     data.events = typeof options.events === 'string' ? options.events.split(',') : options.events;
   }
 
-  const usdRange = buildRange(options['usd-min'], options['usd-max']);
+  const usdRange = buildRange(options['usd-min'], options['usd-max'], 'usd');
   if (usdRange) data.usdValue = usdRange;
 
-  const amountRange = buildRange(options['token-amount-min'], options['token-amount-max']);
+  const amountRange = buildRange(options['token-amount-min'], options['token-amount-max'], 'token-amount');
   if (amountRange) data.tokenAmount = amountRange;
 
   const subjects = parseSubjects(options.subject);
@@ -207,12 +233,24 @@ export function buildCommonTokenTransferData(options) {
   const tokenAgeMax = options['token-age-max'];
   if (tokenAgeMin !== undefined || tokenAgeMax !== undefined) {
     const tokenAge = {};
-    if (tokenAgeMin !== undefined) tokenAge.min = Number(tokenAgeMin);
-    if (tokenAgeMax !== undefined) tokenAge.max = Number(tokenAgeMax);
+    if (tokenAgeMin !== undefined) {
+      const min = Number(tokenAgeMin);
+      if (!Number.isFinite(min)) {
+        throw new NansenError('--token-age-min must be a number', ErrorCode.INVALID_PARAMS);
+      }
+      tokenAge.min = min;
+    }
+    if (tokenAgeMax !== undefined) {
+      const max = Number(tokenAgeMax);
+      if (!Number.isFinite(max)) {
+        throw new NansenError('--token-age-max must be a number', ErrorCode.INVALID_PARAMS);
+      }
+      tokenAge.max = max;
+    }
     data.inclusion = { ...data.inclusion, tokenAge };
   }
 
-  const marketCapRange = buildRange(options['market-cap-min'], options['market-cap-max']);
+  const marketCapRange = buildRange(options['market-cap-min'], options['market-cap-max'], 'market-cap');
   if (marketCapRange) data.inclusion = { ...data.inclusion, marketCap: marketCapRange };
 
   const excludeFrom = parseSubjects(options['exclude-from']);
@@ -232,7 +270,7 @@ export function buildSmartContractCallData(options) {
   const chains = parseChains(options.chains);
   if (chains) data.chains = chains;
 
-  const usdRange = buildRange(options['usd-min'], options['usd-max']);
+  const usdRange = buildRange(options['usd-min'], options['usd-max'], 'usd');
   if (usdRange) data.usdValue = usdRange;
 
   if (options['signature-hash']) {
@@ -606,9 +644,23 @@ USAGE:
             });
           }
 
-          // Pagination (applied after filtering)
-          if (options.offset) alerts = alerts.slice(Number(options.offset));
-          if (options.limit) alerts = alerts.slice(0, Number(options.limit));
+          // Pagination (applied after filtering). Validate first -- an
+          // unvalidated Number() on bad input silently degrades (NaN -> empty
+          // list via slice(0, NaN); negative index -> tail via slice()).
+          if (options.offset !== undefined) {
+            const offset = Number(options.offset);
+            if (!Number.isInteger(offset) || offset < 0) {
+              throw new NansenError('--offset must be a non-negative integer', ErrorCode.INVALID_PARAMS);
+            }
+            alerts = alerts.slice(offset);
+          }
+          if (options.limit !== undefined) {
+            const limit = Number(options.limit);
+            if (!Number.isInteger(limit) || limit < 1) {
+              throw new NansenError('--limit must be a positive integer', ErrorCode.INVALID_PARAMS);
+            }
+            alerts = alerts.slice(0, limit);
+          }
 
           return alerts;
         },

@@ -305,6 +305,26 @@ describe('buildSmTokenFlowsData', () => {
     const result = buildSmTokenFlowsData({});
     expect(result).toEqual({});
   });
+
+  it('rejects a non-numeric range flag instead of silently producing NaN (regression)', () => {
+    // Before the fix: buildRange did `Number(minVal)` with no check. NaN
+    // passes isRangeSet()'s `!= null` test (NaN is neither null nor
+    // undefined), so a typo'd threshold looked "set" all the way through
+    // validation -- but JSON.stringify({min: NaN}) serializes to
+    // {"min":null}, silently disabling the threshold the user asked for
+    // instead of erroring on the bad input.
+    expect(() => buildSmTokenFlowsData({ 'market-cap-min': 'notanumber' }))
+      .toThrow('--market-cap-min must be a number');
+    expect(() => buildSmTokenFlowsData({ 'inflow-1h-max': 'abc' }))
+      .toThrow('--inflow-1h-max must be a number');
+    expect(() => buildSmTokenFlowsData({ 'fdv-min': 'nope' }))
+      .toThrow('--fdv-min must be a number');
+  });
+
+  it('rejects a non-numeric --token-age-max', () => {
+    expect(() => buildSmTokenFlowsData({ 'token-age-max': 'abc' }))
+      .toThrow('--token-age-max must be a number');
+  });
 });
 
 describe('buildCommonTokenTransferData', () => {
@@ -349,6 +369,20 @@ describe('buildCommonTokenTransferData', () => {
       token: '0xusdc:ethereum',
     });
     expect(result.inclusion).toEqual({ tokens: [{ address: '0xusdc', chain: 'ethereum' }] });
+  });
+
+  it('rejects non-numeric --usd-min/--token-amount-max instead of silently producing NaN (regression)', () => {
+    expect(() => buildCommonTokenTransferData({ 'usd-min': 'notanumber' }))
+      .toThrow('--usd-min must be a number');
+    expect(() => buildCommonTokenTransferData({ 'token-amount-max': 'abc' }))
+      .toThrow('--token-amount-max must be a number');
+  });
+
+  it('rejects a non-numeric --token-age-min/--token-age-max', () => {
+    expect(() => buildCommonTokenTransferData({ 'token-age-min': 'abc' }))
+      .toThrow('--token-age-min must be a number');
+    expect(() => buildCommonTokenTransferData({ 'token-age-max': 'abc' }))
+      .toThrow('--token-age-max must be a number');
   });
 });
 
@@ -766,6 +800,39 @@ describe('alerts list — client-side filtering', () => {
     const result = await cmd(['list'], mockApi, {}, { offset: 2 });
     expect(result).toHaveLength(3);
     expect(result[0].id).toBe('3');
+  });
+
+  it('rejects a non-numeric --limit instead of silently returning an empty list (regression)', async () => {
+    const { mockApi, cmd } = setup();
+    await expect(cmd(['list'], mockApi, {}, { limit: 'abc' }))
+      .rejects.toThrow('--limit must be a positive integer');
+  });
+
+  it('rejects --limit 0 and non-integer --limit values', async () => {
+    const { mockApi, cmd } = setup();
+    await expect(cmd(['list'], mockApi, {}, { limit: 0 }))
+      .rejects.toThrow('--limit must be a positive integer');
+    await expect(cmd(['list'], mockApi, {}, { limit: 1.5 }))
+      .rejects.toThrow('--limit must be a positive integer');
+  });
+
+  it('rejects a negative --offset instead of silently counting from the end (regression)', async () => {
+    const { mockApi, cmd } = setup();
+    await expect(cmd(['list'], mockApi, {}, { offset: '-2' }))
+      .rejects.toThrow('--offset must be a non-negative integer');
+  });
+
+  it('rejects a non-numeric --offset', async () => {
+    const { mockApi, cmd } = setup();
+    await expect(cmd(['list'], mockApi, {}, { offset: 'abc' }))
+      .rejects.toThrow('--offset must be a non-negative integer');
+  });
+
+  it('still accepts --limit/--offset as numeric strings (how the real CLI parser passes them)', async () => {
+    const { mockApi, cmd } = setup();
+    const result = await cmd(['list'], mockApi, {}, { limit: '2', offset: '1' });
+    expect(result).toHaveLength(2);
+    expect(result.map(a => a.id)).toEqual(['2', '3']);
   });
 
   it('should apply --offset and --limit together', async () => {
