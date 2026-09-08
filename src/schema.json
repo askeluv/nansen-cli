@@ -486,6 +486,41 @@
                   "description": "Lookback window in days"
                 }
               }
+            },
+            "pnl-leaderboard": {
+              "endpoint": "/api/v1/smart-money/pnl-leaderboard",
+              "description": "Smart money wallets ranked by PnL over a timeframe",
+              "options": {
+                "chain": {
+                  "default": "solana"
+                },
+                "timeframe": {
+                  "default": 7,
+                  "enum": [
+                    1,
+                    7,
+                    30,
+                    90,
+                    180
+                  ]
+                }
+              },
+              "returns": [
+                "address",
+                "address_label",
+                "realized_pnl_usd",
+                "unrealized_pnl_usd",
+                "total_pnl_usd",
+                "avg_trade_roi",
+                "roi_percent_unrealised",
+                "win_rate",
+                "n_trades",
+                "n_tokens",
+                "open_trades",
+                "held_tokens_count",
+                "top_traded_tokens_info",
+                "top_5_balance_tokens_info"
+              ]
             }
           },
           "description": "Smart Money analytics - track sophisticated market participants"

@@ -123,6 +123,11 @@ const MOCK_RESPONSES = {
       { token_symbol: 'SOL', date: '2024-01-01', balance_usd: 100000 }
     ]
   },
+  smartMoneyPnlLeaderboard: {
+    data: [
+      { address: 'abc', address_label: 'Fund', total_pnl_usd: 250000, n_trades: 42 }
+    ]
+  },
   // New Profiler endpoints
   addressHistoricalBalances: {
     balances: [
@@ -740,6 +745,59 @@ describe('NansenAPI', () => {
 
         const body = expectFetchCalledWith('/api/v1/smart-money/historical-holdings');
         expect(body.order_by).toEqual([{ field: 'balance_usd', direction: 'DESC' }]);
+      });
+    });
+
+    describe('smartMoneyPnlLeaderboard', () => {
+      it('should fetch PnL leaderboard with correct endpoint and default timeframe', async () => {
+        setupMock(MOCK_RESPONSES.smartMoneyPnlLeaderboard);
+
+        const result = await api.smartMoneyPnlLeaderboard({ chains: ['solana'] });
+
+        const body = expectFetchCalledWith('/api/v1/smart-money/pnl-leaderboard', {
+          chains: ['solana'],
+          timeframe: 7
+        });
+        expect(body.filters).toBeUndefined(); // empty filters stripped by cleanBody
+
+        expect(result.data).toBeInstanceOf(Array);
+        expect(result.data[0]).toHaveProperty('total_pnl_usd', 250000);
+      });
+
+      it('should pass custom chains and timeframe', async () => {
+        setupMock(MOCK_RESPONSES.smartMoneyPnlLeaderboard);
+
+        await api.smartMoneyPnlLeaderboard({ chains: ['ethereum', 'base'], timeframe: 30 });
+
+        const body = expectFetchCalledWith('/api/v1/smart-money/pnl-leaderboard');
+        expect(body.chains).toEqual(['ethereum', 'base']);
+        expect(body.timeframe).toBe(30);
+      });
+
+      it('should pass filters parameter', async () => {
+        setupMock(MOCK_RESPONSES.smartMoneyPnlLeaderboard);
+
+        await api.smartMoneyPnlLeaderboard({
+          chains: ['solana'],
+          filters: { include_smart_money_labels: ['Fund'] }
+        });
+
+        const body = expectFetchCalledWith('/api/v1/smart-money/pnl-leaderboard');
+        expect(body.filters.include_smart_money_labels).toEqual(['Fund']);
+      });
+
+      it('should pass orderBy and pagination parameters', async () => {
+        setupMock(MOCK_RESPONSES.smartMoneyPnlLeaderboard);
+
+        await api.smartMoneyPnlLeaderboard({
+          chains: ['solana'],
+          orderBy: [{ field: 'total_pnl_usd', direction: 'DESC' }],
+          pagination: { page: 2, per_page: 25 }
+        });
+
+        const body = expectFetchCalledWith('/api/v1/smart-money/pnl-leaderboard');
+        expect(body.order_by).toEqual([{ field: 'total_pnl_usd', direction: 'DESC' }]);
+        expect(body.pagination).toEqual({ page: 2, per_page: 25 });
       });
     });
   });

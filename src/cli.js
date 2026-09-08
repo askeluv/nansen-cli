@@ -1209,6 +1209,7 @@ export function buildCommands(deps = {}) {
       }
 
       const days = options.days ? parseInt(options.days) : 30;
+      const timeframe = options.timeframe ? parseInt(options.timeframe) : 7;
 
       const handlers = {
         'netflow': () => apiInstance.smartMoneyNetflow({ chains, filters, orderBy, pagination }),
@@ -1217,8 +1218,9 @@ export function buildCommands(deps = {}) {
         'holdings': () => apiInstance.smartMoneyHoldings({ chains, filters, orderBy, pagination }),
         'dcas': () => apiInstance.smartMoneyDcas({ filters, orderBy, pagination }),
         'historical-holdings': () => apiInstance.smartMoneyHistoricalHoldings({ chains, filters, orderBy, pagination, days }),
+        'pnl-leaderboard': () => apiInstance.smartMoneyPnlLeaderboard({ chains, filters, orderBy, pagination, timeframe }),
         'help': () => ({
-          commands: ['netflow', 'dex-trades', 'perp-trades', 'holdings', 'dcas', 'historical-holdings'],
+          commands: ['netflow', 'dex-trades', 'perp-trades', 'holdings', 'dcas', 'historical-holdings', 'pnl-leaderboard'],
           description: 'Smart Money analytics endpoints',
           example: 'nansen smart-money netflow --chain solana --labels Fund'
         })
