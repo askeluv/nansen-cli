@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.44.1
+
+### Patch Changes
+
+- [#602](https://github.com/nansen-ai/nansen-cli/pull/602) [`9c72189`](https://github.com/nansen-ai/nansen-cli/commit/9c72189c6760c119784b3534a6777bd1a2e3ce11) Thanks [@kome12](https://github.com/kome12)! - trade limit-order cancel: give distinct, actionable errors when the refund can't be verified — a fully-filled order now says so plainly ("nothing left to refund") instead of sharing the same generic message as unparseable order metadata.
+
+- [#598](https://github.com/nansen-ai/nansen-cli/pull/598) [`1450b66`](https://github.com/nansen-ai/nansen-cli/commit/1450b66ffab26d0d9fbe570c90de79916f405ffb) Thanks [@kome12](https://github.com/kome12)! - Close two dust-refund gaps in limit-order cancel verification: a native-SOL refund at or below the fee/rent slack could be "cancelled" by returning a single lamport while the rest of the escrow was rerouted, and a cancel now fails closed when the order is found but its remaining refund amount can't be computed instead of silently downgrading to a bare positive-inflow check.
+
+- [#598](https://github.com/nansen-ai/nansen-cli/pull/598) [`b6d5baf`](https://github.com/nansen-ai/nansen-cli/commit/b6d5baf1b14ebd53287744eb23a1f9c4b7ac20a3) Thanks [@kome12](https://github.com/kome12)! - Limit-order create and cancel now verify the API-provided Solana transaction's simulated balance effect against the requested operation before signing, refusing to sign a deposit that would move unexpected funds out of the wallet or a cancel that fails to return the order's own deposited asset to it. The cancel check binds to the full expected remaining refund, not just a positive inflow, so a withdrawal that reroutes most of the escrow and returns only a dust amount of the right asset is refused. Also closes a gap where a cancel could pass on an inflow of any asset (not just the deposited one), and a tiny native-SOL deposit could pass on a fee-only outflow. The pre-cancel order lookup now paginates the active-order list, so an order beyond the first page can still be cancelled.
+
+- [#599](https://github.com/nansen-ai/nansen-cli/pull/599) [`bdbdcb2`](https://github.com/nansen-ai/nansen-cli/commit/bdbdcb222ae2f3a4f3b88c8832e7375c46559d79) Thanks [@kome12](https://github.com/kome12)! - x402 auto-pay now signs only for supported schemes and recognized payment networks (exact Solana mainnet CAIP-2 binding), and derives the EIP-712 chain id from the validated network. The EIP-712 domain version is now required across all signing backends (local, WalletConnect, Privy) so a missing version can no longer be silently defaulted to a wrong value, while a null/empty remote chain id is treated as unspecified rather than a conflict.
+
 ## 1.44.0
 
 ### Minor Changes
