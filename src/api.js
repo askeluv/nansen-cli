@@ -248,7 +248,18 @@ import crypto from 'crypto';
 
 const AUTH_HEADER_NAMES = ['apikey', 'authorization', 'payment-signature'];
 
-function computeIdentityDigest(apiKey, ...headerSets) {
+// payment-signature is intentionally included: it is an auth credential and
+// including it isolates caches between users with different static signatures.
+// This is safe because:
+// (a) User-supplied signatures (--x402-payment-signature) live in defaultHeaders
+//     and are stable across calls, keeping the identity hash stable.
+// (b) Auto-generated signatures from the x402 retry path are added inside
+//     _x402Retry(), which calls fetch() directly and never goes through the
+//     cache check — so they never appear in options.headers here.
+// INVARIANT: do not place a freshly-generated per-request Payment-Signature in
+// options.headers before calling request() — it would produce a unique identity
+// hash on every call and silently disable caching for those requests.
+export function computeIdentityDigest(apiKey, ...headerSets) {
   const authHeaders = {};
   for (const headers of headerSets) {
     if (!headers) continue;

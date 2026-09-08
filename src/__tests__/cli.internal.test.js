@@ -38,7 +38,7 @@ import {
   buildAlertsCommands,
   validateAlertData,
 } from '../commands/alerts.js';
-import { getCachedResponse, setCachedResponse, clearCache, getCacheDir, NansenError, ErrorCode } from '../api.js';
+import { getCachedResponse, setCachedResponse, clearCache, getCacheDir, NansenError, ErrorCode, computeIdentityDigest } from '../api.js';
 import { EVM_CHAINS } from '../chain-ids.js';
 import * as fs from 'fs';
 import * as _path from 'path';
@@ -3371,6 +3371,29 @@ describe('cache isolation by request context', () => {
     setCachedResponse(endpoint, body, { m: 'POST' }, contextA);
     const differentMethod = { ...contextA, method: 'GET' };
     expect(getCachedResponse(endpoint, body, 300, differentMethod)).toBeNull();
+  });
+});
+
+describe('computeIdentityDigest', () => {
+  it('returns distinct digests for distinct API keys', () => {
+    const a = computeIdentityDigest('key-a');
+    const b = computeIdentityDigest('key-b');
+    expect(a).not.toBe(b);
+  });
+
+  it('returns the same digest for the same API key (deterministic)', () => {
+    expect(computeIdentityDigest('key-x')).toBe(computeIdentityDigest('key-x'));
+  });
+
+  it('returns distinct digests for distinct auth headers', () => {
+    const a = computeIdentityDigest(null, { apikey: 'hdr-a' });
+    const b = computeIdentityDigest(null, { apikey: 'hdr-b' });
+    expect(a).not.toBe(b);
+  });
+
+  it('does not include the raw API key in the digest string', () => {
+    const digest = computeIdentityDigest('super-secret-key');
+    expect(digest).not.toContain('super-secret-key');
   });
 });
 
