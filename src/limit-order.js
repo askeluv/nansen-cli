@@ -11,7 +11,17 @@ import path from 'path';
 import { base58Encode, exportWallet, getWalletConfig, showWallet } from './wallet.js';
 import { signEd25519, base58Decode, parseAmount, getTokenInfo } from './transfer.js';
 import { signSolanaTransaction, resolveTokenAddress } from './trading.js';
-import { assertSolanaInstructionsSafe } from './trade-validation.js';
+import {
+  assertSolanaInstructionsSafe,
+  assertLimitOrderDepositOutcome,
+  assertLimitOrderCancelOutcome,
+  NATIVE_FEE_RENT_SLACK_LAMPORTS,
+} from './trade-validation.js';
+import {
+  simulateSolanaAssetChanges,
+  SolanaSimulationError,
+  hasSolanaSimulationRpc,
+} from './solana-simulation.js';
 import { validateTokenAddress, telemetryHeaders, packageVersion } from './api.js';
 import { getWalletConnectAddress, sendSolanaTransactionViaWalletConnect, signSolanaMessageViaWalletConnect } from './walletconnect-trading.js';
 import { retrievePassword } from './keychain.js';
@@ -22,6 +32,7 @@ import { CHAIN_RPCS } from './rpc-urls.js';
 const TRADING_API_URL = process.env.NANSEN_TRADING_API_URL || 'https://trading-api.nansen.ai';
 const LO_PREFIX = '/limit-order/v2';
 const SOLSCAN_TX_URL = 'https://solscan.io/tx/';
+const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 
 // ============= JWT Auth & Caching (Local File) =============
 
@@ -383,6 +394,81 @@ export async function signTransaction(txBase64, walletType, walletInfo) {
   throw new Error(`Unsupported wallet type: ${walletType}`);
 }
 
+/**
+ * The limit-order sibling of verifySolanaSwapOutcome: simulates the deposit/
+ * cancel transaction and checks the resulting balance deltas against the
+ * requested operation, degrading (warn + proceed) on any RPC/sim outage so an
+ * outage never blocks an order — only a real outcome mismatch or an
+ * in-simulation revert refuses to sign.
+ */
+async function verifyLimitOrderOutcome({ kind, walletAddress, txBase64, inputMint, amount, log = () => {} }) {
+  if (!hasSolanaSimulationRpc('solana')) {
+    log('  ⚠ Outcome verification unavailable (no Solana simulation endpoint); proceeding without it.');
+    return { proceed: true };
+  }
+  try {
+    const sim = await simulateSolanaAssetChanges('solana', txBase64, { walletAddress });
+    if (kind === 'deposit') {
+      assertLimitOrderDepositOutcome(sim, { inputMint, amount });
+    } else {
+      assertLimitOrderCancelOutcome(sim, { inputMint, amount });
+    }
+    log(`  ✓ ${kind === 'deposit' ? 'Deposit' : 'Cancellation'} outcome verified (via ${sim.method}).`);
+    return { proceed: true };
+  } catch (e) {
+    if (e instanceof SolanaSimulationError && ['NO_SIM_RPC', 'SIM_RPC_ERROR'].includes(e.code)) {
+      log(`  ⚠ Outcome verification could not run (${e.message}); proceeding without it.`);
+      return { proceed: true };
+    }
+    return { proceed: false, reason: e.message };
+  }
+}
+
+// Page size and scan ceiling for the pre-cancel order lookup. The ceiling is a
+// defensive bound: it stops an unbounded loop if the API never surfaces the order
+// and never reports a total or a short page, at the cost of not finding a target
+// buried beyond it (which then fails closed, same as any not-found order).
+const ACTIVE_ORDER_PAGE = 100;
+const MAX_ACTIVE_ORDERS_SCANNED = 5000;
+
+/**
+ * Find one active order by id, paginating state:'active' until the order is found or
+ * the active set is exhausted, so a user with more than one page of active orders can
+ * still cancel one that doesn't land on page 1. Returns the order object or undefined.
+ */
+async function findActiveOrder(token, userPubkey, orderId) {
+  let offset = 0;
+  while (offset < MAX_ACTIVE_ORDERS_SCANNED) {
+    const page = await listOrders(token, userPubkey, { limit: ACTIVE_ORDER_PAGE, offset, state: 'active' });
+    const orders = page.orders || [];
+    const found = orders.find((o) => o.id === orderId);
+    if (found) return found;
+    offset += orders.length;
+    if (orders.length < ACTIVE_ORDER_PAGE) break; // short/empty page — no more to fetch
+    const total = page.pagination?.total;
+    if (total != null && offset >= total) break; // consumed everything the API reports
+  }
+  return undefined;
+}
+
+/**
+ * The base-unit amount a cancel should refund: the order's input less whatever has
+ * already been filled (partial fills consume escrow). Returns undefined if the order's
+ * amounts can't be parsed as integers or nothing is left to refund. The cancel command
+ * treats an undefined result as fatal (fail closed) rather than signing a withdrawal
+ * whose refund magnitude it can't bind.
+ */
+function remainingRefundAmount(order) {
+  try {
+    const total = BigInt(order.inputAmount);
+    const filled = (order.fills || []).reduce((sum, f) => sum + BigInt(f.inputAmount ?? 0), 0n);
+    const remaining = total - filled;
+    return remaining > 0n ? remaining : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // ============= Expiry Parsing =============
 
 /**
@@ -621,6 +707,22 @@ EXAMPLES:
         return;
       }
 
+      // Fail fast on a native-SOL amount too small for outcome verification to bound by
+      // magnitude (see assertLimitOrderDepositOutcome's NATIVE_FEE_RENT_SLACK_LAMPORTS
+      // floor) — otherwise this would only surface as a LIMIT_ORDER_OUTCOME_MISMATCH
+      // after crafting and simulating the deposit transaction, well into the flow.
+      // Gated on hasSolanaSimulationRpc deliberately: the floor is a pre-empt of the
+      // magnitude check, so it only applies when that check would actually run. In a
+      // degraded (no-sim-RPC) environment there is no magnitude bound to pre-empt — the
+      // deposit falls back to the static gate alone (verifyLimitOrderOutcome already warns
+      // that outcome verification is unavailable), so blocking a small amount here would
+      // add a floor that the rest of that path doesn't enforce.
+      if (from === WSOL_MINT && hasSolanaSimulationRpc('solana') && BigInt(amountBaseUnits) <= NATIVE_FEE_RENT_SLACK_LAMPORTS) {
+        log(`Error: SOL deposit amount (${amountBaseUnits} lamports) is too small to verify against network fee/rent noise (${NATIVE_FEE_RENT_SLACK_LAMPORTS} lamports). Use a larger amount.`);
+        exit(1);
+        return;
+      }
+
       if (triggerCondition !== 'above' && triggerCondition !== 'below') {
         log('Error: --trigger-condition must be "above" or "below".');
         exit(1);
@@ -699,17 +801,26 @@ EXAMPLES:
         });
 
         // 5. Sign deposit transaction
-        // Same pre-signing drain gate the swap path uses. The legitimate deposit
-        // moves the input token into the already-registered vault (step 3) with an
-        // SPL Transfer/TransferChecked — which this gate does not classify — plus,
-        // when selling native SOL, a temp-WSOL CloseAccount whose rent returns to
-        // the wallet (permitted). Neither trips the delegate/authority/
-        // close-to-stranger checks, so this does not reject a well-formed deposit;
-        // it only fires if the crafted tx additionally grants a delegate, reassigns
-        // authority, or closes to a stranger. Verified live: a real SOL→USDC create
-        // round-trip clears this gate (the API-crafted deposit is a SOL-wrap
-        // transfer into the vault plus a temp-WSOL close-to-self).
+        // Two layers of pre-signing defense, same as the swap path. First, the
+        // static gate: the legitimate deposit moves the input token into the
+        // already-registered vault (step 3) with an SPL Transfer/TransferChecked —
+        // which this gate does not classify — plus, when selling native SOL, a
+        // temp-WSOL CloseAccount whose rent returns to the wallet (permitted).
+        // Neither trips the delegate/authority/close-to-stranger checks, so this
+        // does not reject a well-formed deposit; it only fires if the crafted tx
+        // additionally grants a delegate, reassigns authority, or closes to a
+        // stranger. Second, balance-delta outcome verification below binds the
+        // deposit's magnitude: the input token must leave the wallet by exactly
+        // `amount` (± fee/rent slack for native SOL) and no other token may leave.
+        // Verified live: a real SOL→USDC create round-trip clears both gates (the
+        // API-crafted deposit is a SOL-wrap transfer into the vault plus a
+        // temp-WSOL close-to-self).
         assertSolanaInstructionsSafe(deposit.transaction, { walletAddress: pubkey });
+        const depositOutcome = await verifyLimitOrderOutcome({
+          kind: 'deposit', walletAddress: pubkey, txBase64: deposit.transaction,
+          inputMint: from, amount: amountBaseUnits, log,
+        });
+        if (!depositOutcome.proceed) throw new Error(`Refusing to sign deposit — ${depositOutcome.reason}`);
         log('  Signing deposit transaction...');
         const signedDepositTx = await signTransaction(deposit.transaction, walletType, walletInfo);
 
@@ -839,23 +950,66 @@ EXAMPLES:
         // 1. Authenticate
         const token = await authenticate(pubkey, walletType, walletInfo, log);
 
-        // 2. Request cancellation — get unsigned withdrawal tx
+        // 2. Look up the order, but only when outcome verification will actually run —
+        // cancel only receives an orderId, not order details, from the caller, and the
+        // refund check below (see assertLimitOrderCancelOutcome) needs to know both which
+        // asset the refund must land in AND how much of it is still owed (the unfilled
+        // remainder). Skip the extra lookup entirely when there's no simulation RPC to
+        // verify against, so a degraded environment doesn't gain a new API dependency for
+        // a check it isn't going to run anyway. Done before requesting cancellation so a
+        // lookup failure fails closed without first consuming a one-time withdrawal request
+        // server-side. Filtered to state: 'active' (the only state a cancellable order can
+        // be in) so filled/cancelled/expired history never crowds out the target — the API
+        // only accepts 'active' or 'past' for this filter. Paginated until the order is
+        // found or the active set is exhausted, so a user with more than one page of active
+        // orders can still cancel one that doesn't land on page 1.
+        let cancelInputMint;
+        let cancelRefundAmount;
+        if (hasSolanaSimulationRpc('solana')) {
+          const order = await findActiveOrder(token, pubkey, orderId);
+          if (!order) {
+            throw new Error(`Could not find order ${orderId} among your active orders; refusing to verify the cancel's refund asset. It may already be filled/cancelled/expired — check with "nansen trade limit-order list --state active".`);
+          }
+          cancelInputMint = order.inputMint;
+          cancelRefundAmount = remainingRefundAmount(order);
+          // The whole point of the outcome check is to bind the refund's MAGNITUDE. If the
+          // order was found but its remaining refund can't be computed (unparseable amounts,
+          // or nothing left to refund), passing amount: undefined would silently downgrade
+          // the verifier to a bare positive-inflow check — reopening the dust-refund gap for
+          // exactly the malformed metadata we can least trust. Fail closed instead.
+          if (cancelRefundAmount == null) {
+            throw new Error(`Found order ${orderId} but could not determine its remaining refund amount from the order metadata; refusing to sign a cancel whose refund magnitude can't be verified. Check the order with "nansen trade limit-order list --state active".`);
+          }
+        }
+
+        // 3. Request cancellation — get unsigned withdrawal tx
         log('  Requesting cancellation...');
         const cancelResult = await cancelOrderRequest(token, orderId);
 
-        // 3. Sign the withdrawal transaction
+        // 4. Sign the withdrawal transaction
         // Withdrawal moves the deposited token back out of the vault; that transfer
         // is authorized by the vault program's PDA, not our wallet, so it isn't a
         // wallet-authorized drain even if it were classified. Any temp-WSOL close
-        // returns rent to the wallet. This gate is defense-in-depth against a
-        // crafted withdrawal that instead grants a delegate, reassigns authority, or
-        // closes to a stranger. Verified live alongside the deposit path via a real
-        // cancel round-trip.
+        // returns rent to the wallet. The static gate below is defense-in-depth
+        // against a crafted withdrawal that instead grants a delegate, reassigns
+        // authority, or closes to a stranger. Balance-delta outcome verification
+        // then binds the withdrawal's effect: since a cancel should only return
+        // funds to the wallet, no token may leave it at all (native-SOL fee/rent
+        // dust tolerated), and the order's own input asset must return by the full
+        // expected remaining amount (looked up in step 2) — not merely a positive
+        // delta, so a redirect of most of the escrow paired with a dust or unrelated
+        // inflow no longer counts. Verified live alongside the deposit path via a
+        // real cancel round-trip.
         assertSolanaInstructionsSafe(cancelResult.transaction, { walletAddress: pubkey });
+        const cancelOutcome = await verifyLimitOrderOutcome({
+          kind: 'cancel', walletAddress: pubkey, txBase64: cancelResult.transaction,
+          inputMint: cancelInputMint, amount: cancelRefundAmount, log,
+        });
+        if (!cancelOutcome.proceed) throw new Error(`Refusing to sign withdrawal — ${cancelOutcome.reason}`);
         log('  Signing withdrawal transaction...');
         const signedTx = await signTransaction(cancelResult.transaction, walletType, walletInfo);
 
-        // 4. Confirm cancellation
+        // 5. Confirm cancellation
         log('  Confirming cancellation...');
         const confirmed = await confirmCancelOrder(token, orderId, {
           signedTransaction: signedTx,

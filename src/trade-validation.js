@@ -1225,7 +1225,7 @@ const NATIVE_SIBLING_DUST_LAMPORTS = 3_000_000n; // ~0.003 SOL
 // leaves the wallet as native SOL regardless of whether SOL is the input,
 // output, or an uninvolved sibling of the swap, so all three assertions below
 // need the same combined slack or a legitimate high-priority-fee trade false-blocks.
-const NATIVE_FEE_RENT_SLACK_LAMPORTS = MAX_PRIORITY_FEE_LAMPORTS + NATIVE_SIBLING_DUST_LAMPORTS;
+export const NATIVE_FEE_RENT_SLACK_LAMPORTS = MAX_PRIORITY_FEE_LAMPORTS + NATIVE_SIBLING_DUST_LAMPORTS;
 
 /**
  * The Solana sibling of assertSwapOutcome. Solana signs the aggregator's
@@ -1478,6 +1478,217 @@ export function assertSolanaSwapOutcome(request, quote, sim, { slippage, sibling
 }
 
 /**
+ * Verify a limit-order DEPOSIT's simulated wallet effect against intent.
+ * Fails closed (code LIMIT_ORDER_OUTCOME_MISMATCH) unless:
+ *   1. the input token leaves the wallet by EXACTLY `amount` for an SPL input, or
+ *      within `amount` ± NATIVE_FEE_RENT_SLACK_LAMPORTS for a native-SOL input
+ *      (two-sided: upper bound caps the drain, lower bound rejects a partial reroute), and
+ *   2. no token OTHER than the input leaves the wallet (native-SOL dust tolerated).
+ * NOTE: this bounds MAGNITUDE, not destination — a full-`amount` transfer to a non-vault
+ * address still passes; that is closed by the vault-destination binding (fast-follow).
+ * There is no output leg — the deposit funds the vault, nothing returns to the wallet.
+ *
+ * @param {{deltas: Record<string, bigint|string|number>}} sim - simulateSolanaAssetChanges result
+ * @param {{inputMint: string, amount: bigint|string|number}} ctx
+ *   (walletAddress is NOT needed here — the sim already keyed its deltas relative to the wallet)
+ * @throws {Error} with `code = 'LIMIT_ORDER_OUTCOME_MISMATCH'` on any failed assertion.
+ */
+export function assertLimitOrderDepositOutcome(sim, { inputMint, amount }) {
+  const fail = (detail) => {
+    const e = new Error(`Limit-order deposit outcome mismatch (LIMIT_ORDER_OUTCOME_MISMATCH): ${detail} Refusing to sign.`);
+    e.code = 'LIMIT_ORDER_OUTCOME_MISMATCH';
+    return e;
+  };
+
+  if (!sim || typeof sim !== 'object' || sim.deltas == null) {
+    throw fail('simulation returned no asset changes to verify.');
+  }
+
+  const deltas = {};
+  for (const [k, v] of Object.entries(sim.deltas)) {
+    let amt;
+    try {
+      amt = typeof v === 'bigint' ? v : BigInt(v);
+    } catch {
+      throw fail(`simulated delta for ${k} (${v}) is not an integer.`);
+    }
+    deltas[k] = amt;
+  }
+
+  const foldNative = (mint) => (mint && SOLANA_NATIVE_SOL_ALIASES.has(mint) ? SOL_SENTINEL : mint);
+  const inputAsset = foldNative(inputMint);
+  if (!inputAsset) {
+    throw fail('deposit is missing the input token address.');
+  }
+  const inputIsNative = inputAsset === SOL_SENTINEL;
+
+  let cap;
+  try {
+    cap = BigInt(amount);
+  } catch {
+    throw fail(`deposit amount (${amount}) is not an integer.`);
+  }
+
+  const effectiveCap = inputIsNative ? cap + NATIVE_FEE_RENT_SLACK_LAMPORTS : cap;
+  const inputDelta = deltas[inputAsset] || 0n;
+  const outflow = inputDelta < 0n ? -inputDelta : 0n;
+
+  // --- magnitude bound: UPPER ---
+  if (outflow > effectiveCap) {
+    throw fail(`the input token (${inputAsset}) left the wallet by ${outflow}, exceeding the deposit amount (${cap}${inputIsNative ? ` plus fee/rent slack` : ''}).`);
+  }
+
+  // --- magnitude bound: LOWER (floor) ---
+  // The deposit must actually escrow the full `amount`; a partial outflow means the tx
+  // rerouted or under-funded the deposit. Two cases, because native SOL carries fee/rent noise:
+  if (inputIsNative) {
+    // A native deposit's outflow is amount + base/priority fee + net ATA rent, so it is
+    // normally ABOVE cap; the floor mainly catches a grossly under-funded deposit. But for
+    // a tiny `amount` (<= the slack itself) the (cap - slack) window swallows the entire
+    // requested amount, so outflow magnitude alone can no longer distinguish a genuine
+    // (if undersized) deposit from an unrelated fee-only outflow that never escrowed
+    // anything — admitting any nonzero outflow there would reopen exactly that gap.
+    // Fail closed instead of trying to verify an amount the slack makes unverifiable.
+    if (cap <= NATIVE_FEE_RENT_SLACK_LAMPORTS) {
+      throw fail(`the deposit amount (${cap}) is too small relative to the fee/rent slack (${NATIVE_FEE_RENT_SLACK_LAMPORTS}) to verify by outflow magnitude.`);
+    }
+    const floor = cap - NATIVE_FEE_RENT_SLACK_LAMPORTS;
+    if (outflow < floor) {
+      throw fail(`the input token (${inputAsset}) left the wallet by only ${outflow}, below the deposit amount (${cap} minus fee/rent slack).`);
+    }
+  } else {
+    // SPL deposit escrows EXACTLY `amount`; no fee is taken in the token, so the delta is
+    // exact. Require equality — any shortfall is a partial drain / reroute (fail closed).
+    if (outflow !== cap) {
+      throw fail(`the input token (${inputAsset}) left the wallet by ${outflow}, not the exact deposit amount (${cap}).`);
+    }
+  }
+
+  // --- sibling loop: no OTHER token leaves the wallet (native-SOL dust tolerated) ---
+  for (const [token, delta] of Object.entries(deltas)) {
+    if (token === inputAsset) continue;
+    if (delta >= 0n) continue;
+    const dust = token === SOL_SENTINEL ? NATIVE_FEE_RENT_SLACK_LAMPORTS : 0n;
+    if (-delta > dust) {
+      throw fail(`a token other than the one you are depositing (${token}) left the wallet (delta ${delta}).`);
+    }
+  }
+
+  return { verified: true };
+}
+
+/**
+ * Verify a limit-order CANCEL's simulated wallet effect. A withdrawal is authorised by the
+ * vault PDA and only returns funds TO the wallet, so NO token may leave the wallet except
+ * native-SOL fee/rent dust, AND the order's own input asset must be refunded — by the full
+ * expected remaining amount when it is known (`amount`), otherwise at least a genuine
+ * inflow (> 0). Binding to the amount matters: a crafted "cancel" that redirects nearly all
+ * the escrow elsewhere and refunds only a single dust unit of the right mint (or produces an
+ * unrelated inflow, e.g. closing an empty token account back to the wallet for its rent)
+ * would satisfy a bare > 0 check while draining the deposit. Fails closed otherwise.
+ *
+ * NOTE: this bounds MAGNITUDE (the right asset returns in the right amount), not destination
+ * — a redirect of the correct asset+amount to a non-wallet address first, followed by a
+ * genuine top-up of that same asset back to the wallet from elsewhere, would still pass.
+ * That is closed by the vault-destination binding fast-follow, not here.
+ *
+ * @param {{deltas: Record<string, bigint|string|number>}} sim
+ *   (no walletAddress in ctx — the sim already keyed its deltas relative to the wallet)
+ * @param {{inputMint: string, amount?: bigint|string|number}} ctx - the order's own deposited
+ *   asset (the refund must land here) and its expected remaining refund in base units. When
+ *   `amount` is OMITTED the check falls back to requiring a positive inflow only — this fallback
+ *   is DELIBERATELY WEAKER than the magnitude bind and is not a safe default: a caller that can
+ *   know the expected refund MUST pass it and fail closed when it is absent (as the cancel
+ *   command does — see remainingRefundAmount in limit-order.js), rather than relying on this
+ *   bare-inflow path, which admits a dust-refund/redirect it cannot catch. A non-null `amount`
+ *   that won't parse to an integer is a call-site bug and throws (never silently degrades).
+ * @throws {Error} with `code = 'LIMIT_ORDER_OUTCOME_MISMATCH'` on any failed assertion.
+ */
+export function assertLimitOrderCancelOutcome(sim, { inputMint, amount } = {}) {
+  const fail = (detail) => {
+    const e = new Error(`Limit-order cancel outcome mismatch (LIMIT_ORDER_OUTCOME_MISMATCH): ${detail} Refusing to sign.`);
+    e.code = 'LIMIT_ORDER_OUTCOME_MISMATCH';
+    return e;
+  };
+
+  if (!inputMint) {
+    throw fail('the order\'s input mint is missing; cannot verify which asset the withdrawal must refund.');
+  }
+
+  if (!sim || typeof sim !== 'object' || sim.deltas == null) {
+    throw fail('simulation returned no asset changes to verify.');
+  }
+
+  const deltas = {};
+  for (const [k, v] of Object.entries(sim.deltas)) {
+    let amt;
+    try {
+      amt = typeof v === 'bigint' ? v : BigInt(v);
+    } catch {
+      throw fail(`simulated delta for ${k} (${v}) is not an integer.`);
+    }
+    deltas[k] = amt;
+  }
+
+  const foldNative = (mint) => (mint && SOLANA_NATIVE_SOL_ALIASES.has(mint) ? SOL_SENTINEL : mint);
+  const inputAsset = foldNative(inputMint);
+
+  for (const [token, delta] of Object.entries(deltas)) {
+    if (delta >= 0n) continue;
+    const dust = token === SOL_SENTINEL ? NATIVE_FEE_RENT_SLACK_LAMPORTS : 0n;
+    if (-delta > dust) {
+      throw fail(`a token (${token}) left your wallet during cancellation (delta ${delta}); a withdrawal should only return funds to you.`);
+    }
+  }
+
+  const inflow = deltas[inputAsset] || 0n;
+  if (inflow <= 0n) {
+    throw fail(`the withdrawal produced no inflow of the deposited asset (${inputAsset}) to your wallet; a cancel must return your deposited funds.`);
+  }
+
+  // Bind the refund MAGNITUDE to the order's expected remaining input when it is known.
+  // Without this, the > 0 check above is satisfied by a single dust unit, so a crafted
+  // cancel could reroute nearly the whole escrow and still verify.
+  // A caller either KNOWS the expected refund (pass it) or genuinely doesn't (omit it, taking
+  // the deliberately weaker bare-inflow path — see the @param note). A non-null value that
+  // won't parse is neither: it's a bug at the call site, so fail closed rather than silently
+  // drop to the weak path and hand back the stronger-sounding guarantee the name implies.
+  let expected;
+  if (amount != null) {
+    try {
+      expected = BigInt(amount);
+    } catch {
+      throw fail(`the expected refund amount (${amount}) is not an integer; cannot verify refund magnitude.`);
+    }
+  }
+  if (expected != null && expected > 0n) {
+    if (inputAsset === SOL_SENTINEL) {
+      // Net native inflow is the refund minus this tx's fee, plus any temp-WSOL rent
+      // returned, so it sits within ± fee/rent slack of the expected refund. Two-sided —
+      // BUT when the expected refund is itself <= that slack, the lower bound
+      // (expected - slack) collapses to <= 0 and the band degenerates to the bare
+      // inflow > 0 floor above: a single dust lamport would verify while the rest of the
+      // escrow is rerouted elsewhere. Fail closed instead, exactly as the deposit asserter
+      // does for an amount the slack makes unverifiable, rather than admit a floor below a
+      // meaningful bound.
+      if (expected <= NATIVE_FEE_RENT_SLACK_LAMPORTS) {
+        throw fail(`the expected remaining refund (${expected}) is too small relative to the fee/rent slack (${NATIVE_FEE_RENT_SLACK_LAMPORTS}) to verify by native-SOL inflow magnitude.`);
+      }
+      const lo = expected - NATIVE_FEE_RENT_SLACK_LAMPORTS;
+      const hi = expected + NATIVE_FEE_RENT_SLACK_LAMPORTS;
+      if (inflow < lo || inflow > hi) {
+        throw fail(`the withdrawal returned ${inflow} of native SOL, outside the expected remaining refund (${expected} ± fee/rent slack); a cancel must return the full remaining deposit.`);
+      }
+    } else if (inflow !== expected) {
+      // SPL escrow returns EXACTLY the remaining input — no fee is taken in the token.
+      throw fail(`the withdrawal returned ${inflow} of the deposited asset (${inputAsset}), not the expected remaining refund (${expected}); a cancel must return the full remaining deposit.`);
+    }
+  }
+
+  return { verified: true };
+}
+
+/**
  * Statically inspect a Solana transaction's instructions for drain vectors a
  * balance-delta simulation can't see — granting a token delegate, changing a
  * token account's authority, or closing an account to a stranger — and for an
@@ -1505,10 +1716,16 @@ export function assertSolanaSwapOutcome(request, quote, sim, { slippage, sibling
  * proceeds) when no simulation RPC endpoint is configured, so this static
  * check plus the metadata binding remain the ONLY transaction-level guards
  * whenever a sim RPC is unavailable. Limit-order vault deposit/cancel
- * (limit-order.js) call only this static check, not verifySolanaSwapOutcome —
- * they have no swap quote (no declared input/output pair) to bind an outcome
- * check against, so the sibling-transfer gap described above is still open
- * there; tracked as a follow-up, not covered here.
+ * (limit-order.js) have no swap quote (no declared input/output pair), so they
+ * use their own outcome asserters instead — assertLimitOrderDepositOutcome and
+ * assertLimitOrderCancelOutcome, run via verifyLimitOrderOutcome immediately
+ * after this check — which close the sibling-transfer gap and bound the
+ * deposit/withdrawal magnitude the same way assertSolanaSwapOutcome does for
+ * swaps. What those asserters cannot see is *destination*: a deposit that
+ * moves exactly `amount` of the input token to a non-vault address still
+ * passes, since balance-delta simulation of the wallet's own accounts can't
+ * tell where funds landed. That is tracked as a separate fast-follow (binding
+ * the vault's token-account destination), not covered here.
  *
  * Within that scope, the SPL Token program requires the *authority* of
  * Approve/ApproveChecked/SetAuthority/CloseAccount to sign the transaction,
