@@ -268,7 +268,12 @@ export function computeIdentityDigest(apiKey, ...headerSets) {
       if (AUTH_HEADER_NAMES.includes(lower)) authHeaders[lower] = value;
     }
   }
-  const material = JSON.stringify({ apiKey: apiKey ?? null, authHeaders });
+  const material = JSON.stringify({
+    apiKey: apiKey ?? null,
+    authHeaders: Object.fromEntries(
+      Object.entries(authHeaders).sort(([a], [b]) => a.localeCompare(b))
+    ),
+  });
   return crypto.createHash('sha256').update(material).digest('hex');
 }
 

@@ -3385,6 +3385,20 @@ describe('computeIdentityDigest', () => {
     expect(computeIdentityDigest('key-x')).toBe(computeIdentityDigest('key-x'));
   });
 
+  it('ignores auth header insertion order', () => {
+    const first = computeIdentityDigest(null, {
+      apikey: 'key-x',
+      authorization: 'Bearer token',
+      'payment-signature': 'signature',
+    });
+    const second = computeIdentityDigest(null, {
+      'payment-signature': 'signature',
+      authorization: 'Bearer token',
+      apikey: 'key-x',
+    });
+    expect(first).toBe(second);
+  });
+
   it('returns distinct digests for distinct auth headers', () => {
     const a = computeIdentityDigest(null, { apikey: 'hdr-a' });
     const b = computeIdentityDigest(null, { apikey: 'hdr-b' });
