@@ -19,10 +19,13 @@ const {
   resolvePayTo,
   isPayToAllowed,
   DEFAULT_X402_MAX_AMOUNT_USD,
+  SUPPORTED_X402_SCHEMES,
 } = await import('../x402-policy.js');
+const { SOLANA_MAINNET_NETWORK } = await import('../x402-tokens.js');
 
 // Canonical Base USDC requirement for reuse across tests.
 const BASE_USDC_REQUIREMENT = {
+  scheme: 'exact',
   network: 'eip155:8453',
   asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
   amount: '10000', // 0.01 USDC (6 decimals)
@@ -76,6 +79,18 @@ describe('resolveKnownToken', () => {
     const entry = resolveKnownToken('solana-devnet', 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
     expect(entry).toBeNull();
   });
+
+  it('returns null for a well-formed but unknown solana:* CAIP-2 network id', () => {
+    // A solana:* string that is not the known mainnet id must not resolve to any
+    // token — previously the prefix match mapped any solana:* to mainnet.
+    const entry = resolveKnownToken('solana:not-a-real-network-id', 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
+    expect(entry).toBeNull();
+  });
+
+  it('returns USDC for exact Solana mainnet CAIP-2 id (regression guard)', () => {
+    const entry = resolveKnownToken(SOLANA_MAINNET_NETWORK, 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
+    expect(entry).toMatchObject({ symbol: 'USDC', decimals: 6 });
+  });
 });
 
 describe('resolvePayTo', () => {
@@ -91,6 +106,36 @@ describe('resolvePayTo', () => {
     // Regression: an empty payTo must not be treated as a real recipient —
     // this is the same class of bug resolvePaymentAmount closes for amount.
     expect(resolvePayTo({ payTo: '', pay_to: '0xSnake' })).toBe('0xSnake');
+  });
+});
+
+describe('SUPPORTED_X402_SCHEMES', () => {
+  it('contains only "exact"', () => {
+    expect([...SUPPORTED_X402_SCHEMES]).toEqual(['exact']);
+  });
+});
+
+describe('evaluatePaymentRequirement — scheme gate', () => {
+  it('refuses an unsupported scheme before checking asset/network', () => {
+    const req = { ...BASE_USDC_REQUIREMENT, scheme: 'streaming' };
+    const result = evaluatePaymentRequirement(req);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/unsupported payment scheme/i);
+    expect(result.reason).toContain('"streaming"');
+  });
+
+  it('refuses when scheme is absent', () => {
+    const req = { ...BASE_USDC_REQUIREMENT };
+    delete req.scheme;
+    const result = evaluatePaymentRequirement(req);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/unsupported payment scheme/i);
+    expect(result.reason).toContain('(missing)');
+  });
+
+  it('allows scheme "exact" (regression guard on the happy path)', () => {
+    const result = evaluatePaymentRequirement(BASE_USDC_REQUIREMENT);
+    expect(result.ok).toBe(true);
   });
 });
 
@@ -111,6 +156,20 @@ describe('evaluatePaymentRequirement — allowlist and basic pass', () => {
 
   it('5. unknown network → refused', () => {
     const req = { ...BASE_USDC_REQUIREMENT, network: 'eip155:1' };
+    const result = evaluatePaymentRequirement(req);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/not a recognized/i);
+  });
+
+  it('well-formed solana:* CAIP-2 id that is not mainnet → refused', () => {
+    // Previously any solana:* string was accepted; now only the exact mainnet id is.
+    const req = {
+      scheme: 'exact',
+      network: 'solana:not-a-real-network-id',
+      asset: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+      amount: '10000',
+      pay_to: '0xPaymentRecipient',
+    };
     const result = evaluatePaymentRequirement(req);
     expect(result.ok).toBe(false);
     expect(result.reason).toMatch(/not a recognized/i);
@@ -344,6 +403,7 @@ describe('evaluatePaymentRequirement — 18-decimal BSC token conversion', () =>
     // 0.01 USDT on BSC = 10_000_000_000_000_000 base units (18 decimals)
     process.env.NANSEN_X402_MAX_AMOUNT = '1.00';
     const req = {
+      scheme: 'exact',
       network: 'eip155:56',
       asset: '0x55d398326f99059fF775485246999027B3197955', // USDT on BSC
       amount: '10000000000000000', // 0.01 USDT

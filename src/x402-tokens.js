@@ -21,9 +21,14 @@ export const EVM_X402_TOKENS = {
   ],
 };
 
-// Known payment tokens on Solana.
+// Canonical Solana mainnet CAIP-2 id.
+// x402 payment tokens are mainnet mints, so mainnet is the only valid payment network.
+export const SOLANA_MAINNET_NETWORK = 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
+
+// Known payment tokens on Solana, keyed by exact CAIP-2 network (symmetric with EVM_X402_TOKENS).
+// Unknown or devnet/testnet solana:* ids resolve to no token and are refused by the policy.
 export const SVM_X402_TOKENS = {
-  solana: [
+  [SOLANA_MAINNET_NETWORK]: [
     { token: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', symbol: 'USDC', decimals: 6 },
   ],
 };

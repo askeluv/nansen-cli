@@ -98,3 +98,65 @@ describe('buildEIP712TypedData — payTo field normalisation', () => {
     expect(td.message.to).toBe('0xSnakeOnly');
   });
 });
+
+describe('buildEIP712TypedData — chain id binding', () => {
+  it('derives chain id from the CAIP-2 network field, ignoring extra.chainId when consistent', () => {
+    // extra.chainId agrees with network → allowed, domain.chainId = 8453
+    const req = { ...REQUIREMENT, network: 'eip155:8453', extra: { ...REQUIREMENT.extra, chainId: 8453 } };
+    const td = buildEIP712TypedData({ fromAddress: '0xSender', requirement: req });
+    expect(td.domain.chainId).toBe(8453);
+  });
+
+  it('derives chain id from network when extra.chainId is absent', () => {
+    const req = { ...REQUIREMENT, extra: { name: 'USD Coin', version: '2' } };
+    const td = buildEIP712TypedData({ fromAddress: '0xSender', requirement: req });
+    expect(td.domain.chainId).toBe(8453);
+  });
+
+  it('treats a null or empty-string extra.chainId as absent, not a conflict', () => {
+    // null/'' mean "unspecified" (Number(null)===0, Number('')===0) and must not
+    // be read as a chain id of 0 conflicting with the network.
+    for (const chainId of [null, '']) {
+      const req = { ...REQUIREMENT, network: 'eip155:8453', extra: { ...REQUIREMENT.extra, chainId } };
+      const td = buildEIP712TypedData({ fromAddress: '0xSender', requirement: req });
+      expect(td.domain.chainId).toBe(8453);
+    }
+  });
+
+  it('throws when extra.chainId conflicts with the validated network', () => {
+    // remote extra.chainId: 1 on a Base requirement must be rejected — not signed
+    const req = { ...REQUIREMENT, network: 'eip155:8453', extra: { ...REQUIREMENT.extra, chainId: 1 } };
+    expect(() => buildEIP712TypedData({ fromAddress: '0xSender', requirement: req })).toThrow(
+      /extra\.chainId.*conflicts with.*network/i,
+    );
+  });
+
+  it('throws when network is missing or not an EVM CAIP-2 id', () => {
+    const req = { ...REQUIREMENT, network: 'bogus' };
+    expect(() => buildEIP712TypedData({ fromAddress: '0xSender', requirement: req })).toThrow(
+      /unsupported or missing EVM network/i,
+    );
+  });
+
+  it('throws when extra is missing entirely', () => {
+    const req = { ...REQUIREMENT };
+    delete req.extra;
+    expect(() => buildEIP712TypedData({ fromAddress: '0xSender', requirement: req })).toThrow(
+      /EIP-712 domain name\/version missing/i,
+    );
+  });
+
+  it('throws when extra.name is absent', () => {
+    const req = { ...REQUIREMENT, extra: { version: '2' } };
+    expect(() => buildEIP712TypedData({ fromAddress: '0xSender', requirement: req })).toThrow(
+      /EIP-712 domain name\/version missing/i,
+    );
+  });
+
+  it('throws when extra.version is absent', () => {
+    const req = { ...REQUIREMENT, extra: { name: 'USD Coin' } };
+    expect(() => buildEIP712TypedData({ fromAddress: '0xSender', requirement: req })).toThrow(
+      /EIP-712 domain name\/version missing/i,
+    );
+  });
+});
