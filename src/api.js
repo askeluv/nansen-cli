@@ -246,19 +246,37 @@ const DEFAULT_CACHE_TTL = 300; // 5 minutes
 
 import crypto from 'crypto';
 
-/**
- * Generate cache key from endpoint and request body
- */
-function getCacheKey(endpoint, body) {
-  const data = JSON.stringify({ endpoint, body });
-  return crypto.createHash('md5').update(data).digest('hex');
+const AUTH_HEADER_NAMES = ['apikey', 'authorization', 'payment-signature'];
+
+function computeIdentityDigest(apiKey, ...headerSets) {
+  const authHeaders = {};
+  for (const headers of headerSets) {
+    if (!headers) continue;
+    for (const [name, value] of Object.entries(headers)) {
+      const lower = name.toLowerCase();
+      if (AUTH_HEADER_NAMES.includes(lower)) authHeaders[lower] = value;
+    }
+  }
+  const material = JSON.stringify({ apiKey: apiKey ?? null, authHeaders });
+  return crypto.createHash('sha256').update(material).digest('hex');
+}
+
+function getCacheKey(endpoint, body, context = {}) {
+  const data = JSON.stringify({
+    endpoint,
+    body,
+    baseUrl: context.baseUrl ?? null,
+    method: context.method ?? null,
+    identity: context.identity ?? null,
+  });
+  return crypto.createHash('sha256').update(data).digest('hex');
 }
 
 /**
  * Get cached response if valid
  */
-export function getCachedResponse(endpoint, body, ttlSeconds = DEFAULT_CACHE_TTL) {
-  const cacheKey = getCacheKey(endpoint, body);
+export function getCachedResponse(endpoint, body, ttlSeconds = DEFAULT_CACHE_TTL, context = {}) {
+  const cacheKey = getCacheKey(endpoint, body, context);
   const cacheFile = path.join(CACHE_DIR, `${cacheKey}.json`);
   
   if (!fs.existsSync(cacheFile)) {
@@ -286,12 +304,12 @@ export function getCachedResponse(endpoint, body, ttlSeconds = DEFAULT_CACHE_TTL
 /**
  * Save response to cache
  */
-export function setCachedResponse(endpoint, body, data) {
+export function setCachedResponse(endpoint, body, data, context = {}) {
   if (!fs.existsSync(CACHE_DIR)) {
     fs.mkdirSync(CACHE_DIR, { mode: 0o700, recursive: true });
   }
-  
-  const cacheKey = getCacheKey(endpoint, body);
+
+  const cacheKey = getCacheKey(endpoint, body, context);
   const cacheFile = path.join(CACHE_DIR, `${cacheKey}.json`);
   
   const cached = {
@@ -653,20 +671,25 @@ export class NansenAPI {
     // Check cache first (if enabled and not bypassed)
     const useCache = options.cache !== false && this.cacheOptions.enabled;
     const cacheTtl = options.cacheTtl ?? this.cacheOptions.ttl;
-    
+    const method = options.method || 'POST';
+    const cacheContext = {
+      baseUrl: this.baseUrl,
+      method,
+      identity: computeIdentityDigest(this.apiKey, this.defaultHeaders, options.headers),
+    };
+
     if (useCache) {
-      const cached = getCachedResponse(endpoint, body, cacheTtl);
+      const cached = getCachedResponse(endpoint, body, cacheTtl, cacheContext);
       if (cached) {
         return cached;
       }
     }
 
     let lastError;
-    
+
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       let response;
       try {
-        const method = options.method || 'POST';
         const isGet = method === 'GET';
         response = await fetch(url, {
           method,
@@ -886,7 +909,7 @@ export class NansenAPI {
 
       // Cache successful response
       if (useCache) {
-        setCachedResponse(endpoint, body, data);
+        setCachedResponse(endpoint, body, data, cacheContext);
       }
 
       // Attach after caching so the cache stores the payload alone — quota

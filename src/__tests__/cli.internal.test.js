@@ -3333,6 +3333,47 @@ describe('Response Caching', () => {
   });
 });
 
+describe('cache isolation by request context', () => {
+  afterEach(() => {
+    clearCache();
+  });
+
+  const endpoint = '/api/v1/some/endpoint';
+  const body = { foo: 'bar' };
+
+  const contextA = {
+    baseUrl: 'https://a.example',
+    method: 'POST',
+    identity: 'identity-a',
+  };
+  const contextB = {
+    baseUrl: 'https://b.example',
+    method: 'POST',
+    identity: 'identity-b',
+  };
+
+  it('does not serve one identity\'s cached response to another', () => {
+    setCachedResponse(endpoint, body, { secret: 'A' }, contextA);
+
+    expect(getCachedResponse(endpoint, body, 300, contextB)).toBeNull();
+
+    const hit = getCachedResponse(endpoint, body, 300, contextA);
+    expect(hit.secret).toBe('A');
+  });
+
+  it('treats a different base URL as a different cache entry', () => {
+    setCachedResponse(endpoint, body, { origin: 'A' }, contextA);
+    const differentOrigin = { ...contextA, baseUrl: 'https://other.example' };
+    expect(getCachedResponse(endpoint, body, 300, differentOrigin)).toBeNull();
+  });
+
+  it('treats a different HTTP method as a different cache entry', () => {
+    setCachedResponse(endpoint, body, { m: 'POST' }, contextA);
+    const differentMethod = { ...contextA, method: 'GET' };
+    expect(getCachedResponse(endpoint, body, 300, differentMethod)).toBeNull();
+  });
+});
+
 // compareSemver's own unit tests live in src/__tests__/semver.test.js
 // (its canonical home, src/semver.js). What belongs here is the CLI
 // command's behavior — that --since is validated and filters correctly —
