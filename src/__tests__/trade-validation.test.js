@@ -4,7 +4,8 @@ import path from 'path';
 import os from 'os';
 import { validateQuoteInput, fetchNativeBalance, fetchTokenBalance, validateBalance, resolvePercentAmount, validateGasBalance, GASLESS_MIN_TRADE_USD, encodeApproveCalldata, assertValidApprovalSpender, assertQuoteMatchesRequest, assertInputWithinMax, assertSwapCalldataNotBareTransfer, assertSwapOutcome, assertSolanaInstructionsSafe, assertSolanaSwapOutcome, assertLimitOrderDepositOutcome, assertLimitOrderCancelOutcome, assertLimitOrderDepositDestination, MAX_UINT256, needsAllowanceRevoke } from '../trade-validation.js';
 import { SOL_SENTINEL } from '../solana-simulation.js';
-import { base58Decode, generateSolanaWallet } from '../wallet.js';
+import crypto from 'crypto';
+import { base58Decode, base58Encode, generateSolanaWallet } from '../wallet.js';
 
 describe('validateQuoteInput', () => {
   const validSolana = {
@@ -2398,8 +2399,15 @@ describe('assertLimitOrderCancelOutcome', () => {
 });
 
 describe('assertLimitOrderDepositDestination', () => {
+  // Jupiter Trigger V2 funds each order through a per-order token account created
+  // in-tx via System::CreateAccountWithSeed(base = vault, seed, owner = TokenProg)
+  // — NOT the canonical ATA. These tests reproduce that real shape (confirmed by a
+  // live create round-trip) so the check is exercised against what actually lands
+  // on-chain, not a fabricated ATA transfer.
   const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+  const SYSTEM_PROGRAM = '11111111111111111111111111111111';
   const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+  const WSOL = 'So11111111111111111111111111111111111111112';
 
   function encodeCompactU16(value) {
     if (value < 0x80) return Buffer.from([value]);
@@ -2424,63 +2432,160 @@ describe('assertLimitOrderDepositDestination', () => {
     return Buffer.concat([Buffer.from([1]), Buffer.alloc(64), messageBytes]).toString('base64');
   }
 
-  it('allows a wallet-authorized TransferChecked into the vault token account', () => {
-    const wallet = generateSolanaWallet().address;
+  // Pubkey::create_with_seed(base, seed, owner) = base58(sha256(base || seed || owner)).
+  function seededAccount(base, seed, owner = TOKEN_PROGRAM) {
+    return base58Encode(crypto.createHash('sha256')
+      .update(Buffer.concat([base58Decode(base), Buffer.from(seed, 'utf8'), base58Decode(owner)]))
+      .digest());
+  }
+
+  // System::CreateAccountWithSeed instruction data (bincode layout).
+  function createWithSeedData(base, seed, owner = TOKEN_PROGRAM, { lamports = 2039280, space = 165 } = {}) {
+    const seedBytes = Buffer.from(seed, 'utf8');
+    const idx = Buffer.alloc(4); idx.writeUInt32LE(3);
+    const seedLen = Buffer.alloc(8); seedLen.writeBigUInt64LE(BigInt(seedBytes.length));
+    const lam = Buffer.alloc(8); lam.writeBigUInt64LE(BigInt(lamports));
+    const sp = Buffer.alloc(8); sp.writeBigUInt64LE(BigInt(space));
+    return Buffer.concat([idx, base58Decode(base), seedLen, seedBytes, lam, sp, base58Decode(owner)]);
+  }
+
+  // System::Transfer(lamports) instruction data.
+  function systemTransferData(lamports = 100000000) {
+    const idx = Buffer.alloc(4); idx.writeUInt32LE(2);
+    const lam = Buffer.alloc(8); lam.writeBigUInt64LE(BigInt(lamports));
+    return Buffer.concat([idx, lam]);
+  }
+
+  // Build a realistic SPL-input deposit: CreateAccountWithSeed(base=vault) then a
+  // wallet-authorized transfer of `mint` into the seeded account.
+  function splDeposit({ wallet, vault, mint, seed = 'order-seed-abc', dest, transferKind = 'checked', createBase }) {
+    const seededBase = createBase || vault;
+    const seededAcct = seededAccount(seededBase, seed);
+    const destination = dest || seededAcct;
     const sourceAta = generateSolanaWallet().address;
-    const vaultAta = generateSolanaWallet().address;
-    const tx = buildTransaction({
-      accountKeys: [wallet, sourceAta, USDC, vaultAta, TOKEN_PROGRAM],
-      instructions: [
-        { programIdIndex: 4, accountIndexes: [1, 2, 3, 0], data: Buffer.from([12, 0, 0, 0, 0, 0, 0, 0, 0, 6]) },
-      ],
-    });
-    expect(assertLimitOrderDepositDestination(tx, { walletAddress: wallet, inputMint: USDC, vaultTokenAccount: vaultAta }))
+    const keys = [wallet, sourceAta, mint, seededAcct, TOKEN_PROGRAM, SYSTEM_PROGRAM, seededBase];
+    const idxOf = (k) => { const i = keys.indexOf(k); return i >= 0 ? i : (keys.push(k) - 1); };
+    const destIdx = idxOf(destination);
+    const instructions = [
+      // CreateAccountWithSeed: [payer, created(=seededAcct), base]
+      { programIdIndex: keys.indexOf(SYSTEM_PROGRAM), accountIndexes: [0, keys.indexOf(seededAcct), keys.indexOf(seededBase)], data: createWithSeedData(seededBase, seed) },
+    ];
+    if (transferKind === 'checked') {
+      // TransferChecked: [source, mint, dest, authority]
+      instructions.push({ programIdIndex: keys.indexOf(TOKEN_PROGRAM), accountIndexes: [1, 2, destIdx, 0], data: Buffer.from([12, 0, 0, 0, 0, 0, 0, 0, 0, 6]) });
+    } else {
+      // Transfer: [source, dest, authority]
+      instructions.push({ programIdIndex: keys.indexOf(TOKEN_PROGRAM), accountIndexes: [1, destIdx, 0], data: Buffer.from([3, 64, 66, 15, 0, 0, 0, 0, 0]) });
+    }
+    return buildTransaction({ accountKeys: keys, instructions });
+  }
+
+  // Build a realistic native-SOL deposit: CreateAccountWithSeed(base=vault) then a
+  // wallet System::Transfer of lamports into the seeded (wrapped-SOL) account.
+  function nativeDeposit({ wallet, vault, seed = 'order-seed-sol', dest, createBase }) {
+    const seededBase = createBase || vault;
+    const seededAcct = seededAccount(seededBase, seed);
+    const destination = dest || seededAcct;
+    const keys = [wallet, seededAcct, TOKEN_PROGRAM, SYSTEM_PROGRAM, seededBase];
+    const idxOf = (k) => { const i = keys.indexOf(k); return i >= 0 ? i : (keys.push(k) - 1); };
+    const destIdx = idxOf(destination);
+    const instructions = [
+      { programIdIndex: keys.indexOf(SYSTEM_PROGRAM), accountIndexes: [0, keys.indexOf(seededAcct), keys.indexOf(seededBase)], data: createWithSeedData(seededBase, seed) },
+      // System::Transfer: [from, to]
+      { programIdIndex: keys.indexOf(SYSTEM_PROGRAM), accountIndexes: [0, destIdx], data: systemTransferData() },
+    ];
+    return buildTransaction({ accountKeys: keys, instructions });
+  }
+
+  it('allows a TransferChecked into the vault-seeded deposit account', () => {
+    const wallet = generateSolanaWallet().address;
+    const vault = generateSolanaWallet().address;
+    const tx = splDeposit({ wallet, vault, mint: USDC });
+    expect(assertLimitOrderDepositDestination(tx, { walletAddress: wallet, inputMint: USDC, vaultOwner: vault }))
       .toEqual({ verified: true });
   });
 
-  it('rejects a wallet-authorized TransferChecked to a non-vault destination', () => {
+  it('allows a native System::Transfer into the vault-seeded deposit account', () => {
     const wallet = generateSolanaWallet().address;
-    const sourceAta = generateSolanaWallet().address;
-    const vaultAta = generateSolanaWallet().address;
-    const nonVaultAta = generateSolanaWallet().address;
-    const tx = buildTransaction({
-      accountKeys: [wallet, sourceAta, USDC, nonVaultAta, vaultAta, TOKEN_PROGRAM],
-      instructions: [
-        { programIdIndex: 5, accountIndexes: [1, 2, 3, 0], data: Buffer.from([12, 0, 0, 0, 0, 0, 0, 0, 0, 6]) },
-      ],
-    });
-    expect(() => assertLimitOrderDepositDestination(tx, { walletAddress: wallet, inputMint: USDC, vaultTokenAccount: vaultAta }))
-      .toThrow(/LIMIT_ORDER_DESTINATION_MISMATCH[\s\S]*instead of vault token account/i);
+    const vault = generateSolanaWallet().address;
+    const tx = nativeDeposit({ wallet, vault });
+    expect(assertLimitOrderDepositDestination(tx, { walletAddress: wallet, inputMint: WSOL, vaultOwner: vault }))
+      .toEqual({ verified: true });
   });
 
-  it('rejects a wallet-authorized TransferChecked for the wrong mint', () => {
+  it('rejects a TransferChecked to an account not seeded off the vault (the drain the ticket describes)', () => {
     const wallet = generateSolanaWallet().address;
-    const sourceAta = generateSolanaWallet().address;
+    const vault = generateSolanaWallet().address;
+    const attacker = generateSolanaWallet().address;
+    // Deposit account is seeded off the ATTACKER, not the trusted vault.
+    const tx = splDeposit({ wallet, vault, mint: USDC, createBase: attacker });
+    expect(() => assertLimitOrderDepositDestination(tx, { walletAddress: wallet, inputMint: USDC, vaultOwner: vault }))
+      .toThrow(/LIMIT_ORDER_DESTINATION_MISMATCH[\s\S]*vault-seeded deposit account/i);
+  });
+
+  it('rejects a TransferChecked whose destination is not the seeded account', () => {
+    const wallet = generateSolanaWallet().address;
+    const vault = generateSolanaWallet().address;
+    const elsewhere = generateSolanaWallet().address;
+    const tx = splDeposit({ wallet, vault, mint: USDC, dest: elsewhere });
+    expect(() => assertLimitOrderDepositDestination(tx, { walletAddress: wallet, inputMint: USDC, vaultOwner: vault }))
+      .toThrow(/LIMIT_ORDER_DESTINATION_MISMATCH[\s\S]*vault-seeded deposit account/i);
+  });
+
+  it('rejects a native System::Transfer whose destination is not the seeded account', () => {
+    const wallet = generateSolanaWallet().address;
+    const vault = generateSolanaWallet().address;
+    const elsewhere = generateSolanaWallet().address;
+    const tx = nativeDeposit({ wallet, vault, dest: elsewhere });
+    expect(() => assertLimitOrderDepositDestination(tx, { walletAddress: wallet, inputMint: WSOL, vaultOwner: vault }))
+      .toThrow(/LIMIT_ORDER_DESTINATION_MISMATCH[\s\S]*native transfer[\s\S]*vault-seeded deposit account/i);
+  });
+
+  it('rejects a TransferChecked for the wrong mint', () => {
+    const wallet = generateSolanaWallet().address;
+    const vault = generateSolanaWallet().address;
     const wrongMint = generateSolanaWallet().address;
-    const vaultAta = generateSolanaWallet().address;
-    const tx = buildTransaction({
-      accountKeys: [wallet, sourceAta, wrongMint, vaultAta, TOKEN_PROGRAM],
-      instructions: [
-        { programIdIndex: 4, accountIndexes: [1, 2, 3, 0], data: Buffer.from([12, 0, 0, 0, 0, 0, 0, 0, 0, 6]) },
-      ],
-    });
-    expect(() => assertLimitOrderDepositDestination(tx, { walletAddress: wallet, inputMint: USDC, vaultTokenAccount: vaultAta }))
+    const tx = splDeposit({ wallet, vault, mint: wrongMint });
+    expect(() => assertLimitOrderDepositDestination(tx, { walletAddress: wallet, inputMint: USDC, vaultOwner: vault }))
       .toThrow(/LIMIT_ORDER_DESTINATION_MISMATCH[\s\S]*instead of deposit mint/i);
   });
 
-  it('rejects a wallet-authorized Transfer to a non-vault destination', () => {
+  it('rejects a classic Transfer to an account not seeded off the vault', () => {
     const wallet = generateSolanaWallet().address;
+    const vault = generateSolanaWallet().address;
+    const elsewhere = generateSolanaWallet().address;
+    const tx = splDeposit({ wallet, vault, mint: USDC, dest: elsewhere, transferKind: 'plain' });
+    expect(() => assertLimitOrderDepositDestination(tx, { walletAddress: wallet, inputMint: USDC, vaultOwner: vault }))
+      .toThrow(/LIMIT_ORDER_DESTINATION_MISMATCH[\s\S]*vault-seeded deposit account/i);
+  });
+
+  it('rejects when CreateAccountWithSeed target does not match its base/seed/owner derivation', () => {
+    const wallet = generateSolanaWallet().address;
+    const vault = generateSolanaWallet().address;
+    const seed = 'order-seed-xyz';
+    const realSeeded = seededAccount(vault, seed);
+    const spoofed = generateSolanaWallet().address; // != realSeeded
     const sourceAta = generateSolanaWallet().address;
-    const nonVaultAta = generateSolanaWallet().address;
-    const vaultAta = generateSolanaWallet().address;
+    // The instruction claims to create `spoofed` but its data derives `realSeeded`.
+    const keys = [wallet, sourceAta, USDC, spoofed, TOKEN_PROGRAM, SYSTEM_PROGRAM, vault];
     const tx = buildTransaction({
-      accountKeys: [wallet, sourceAta, nonVaultAta, vaultAta, TOKEN_PROGRAM],
+      accountKeys: keys,
       instructions: [
-        { programIdIndex: 4, accountIndexes: [1, 2, 0], data: Buffer.from([3, 64, 66, 15, 0, 0, 0, 0, 0]) },
+        { programIdIndex: 5, accountIndexes: [0, 3, 6], data: createWithSeedData(vault, seed) },
+        { programIdIndex: 4, accountIndexes: [1, 2, 3, 0], data: Buffer.from([12, 0, 0, 0, 0, 0, 0, 0, 0, 6]) },
       ],
     });
-    expect(() => assertLimitOrderDepositDestination(tx, { walletAddress: wallet, inputMint: USDC, vaultTokenAccount: vaultAta }))
-      .toThrow(/LIMIT_ORDER_DESTINATION_MISMATCH[\s\S]*instead of vault token account/i);
+    expect(realSeeded).not.toBe(spoofed);
+    expect(() => assertLimitOrderDepositDestination(tx, { walletAddress: wallet, inputMint: USDC, vaultOwner: vault }))
+      .toThrow(/LIMIT_ORDER_DESTINATION_MISMATCH[\s\S]*does not match its base\/seed\/owner/i);
+  });
+
+  it('throws when the vault owner is not provided', () => {
+    const wallet = generateSolanaWallet().address;
+    const vault = generateSolanaWallet().address;
+    const tx = splDeposit({ wallet, vault, mint: USDC });
+    expect(() => assertLimitOrderDepositDestination(tx, { walletAddress: wallet, inputMint: USDC }))
+      .toThrow(/LIMIT_ORDER_DESTINATION_MISMATCH[\s\S]*missing vault owner/i);
   });
 });
 

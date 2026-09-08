@@ -31,8 +31,7 @@ import {
   cancelOrderRequest,
   confirmCancelOrder,
 } from '../limit-order.js';
-import { createWallet, base58Decode, base58Encode, generateSolanaWallet } from '../wallet.js';
-import { deriveATA } from '../transfer.js';
+import { createWallet, base58Decode, generateSolanaWallet } from '../wallet.js';
 import { SIMULATION_RPCS } from '../rpc-urls.js';
 
 let originalHome;
@@ -1174,15 +1173,18 @@ describe('buildLimitOrderCommands', () => {
 // handler's internal call.
 describe('outcome verification (fail-closed)', () => {
 
-  it('create: refuses to sign a deposit transfer that does not target the vault token account', async () => {
+  it('create: refuses to sign a deposit whose input transfer is not bound to a vault-seeded account', async () => {
     const wallet = createTestWallet('lo-destination-deposit-drain');
     const vaultPubkey = generateSolanaWallet().address;
     const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
-    const nonVaultAta = generateSolanaWallet().address;
+    // A crafted deposit that moves the input token to an attacker account with no
+    // System::CreateAccountWithSeed(base = vault) — so nothing binds the funds to
+    // the trusted vault. Must fail closed before signing.
+    const nonVaultAcct = generateSolanaWallet().address;
     const depositTx = buildTokenTransferCheckedTx({
       walletPubkey: wallet.solana,
       mint: USDC,
-      destination: nonVaultAta,
+      destination: nonVaultAcct,
     });
 
     mockFetchSequence([
@@ -1203,10 +1205,9 @@ describe('outcome verification (fail-closed)', () => {
       wallet: 'lo-destination-deposit-drain',
     });
 
-    const expectedVaultAta = base58Encode(deriveATA(vaultPubkey, USDC, 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'));
-    expect(nonVaultAta).not.toBe(expectedVaultAta);
     expect(exit).toHaveBeenCalledWith(1);
     expect(logs.some(l => /LIMIT_ORDER_DESTINATION_MISMATCH/i.test(l))).toBe(true);
+    // Fail-closed before the createOrder call (4 fetches: challenge, verify, vault, craft).
     expect(global.fetch).toHaveBeenCalledTimes(4);
   });
 

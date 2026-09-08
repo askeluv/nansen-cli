@@ -9,7 +9,7 @@
 import fs from 'fs';
 import path from 'path';
 import { base58Encode, exportWallet, getWalletConfig, showWallet } from './wallet.js';
-import { signEd25519, base58Decode, parseAmount, getTokenInfo, deriveATA } from './transfer.js';
+import { signEd25519, base58Decode, parseAmount, getTokenInfo } from './transfer.js';
 import { signSolanaTransaction, resolveTokenAddress } from './trading.js';
 import {
   assertSolanaInstructionsSafe,
@@ -34,7 +34,6 @@ const TRADING_API_URL = process.env.NANSEN_TRADING_API_URL || 'https://trading-a
 const LO_PREFIX = '/limit-order/v2';
 const SOLSCAN_TX_URL = 'https://solscan.io/tx/';
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
-const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 
 // ============= JWT Auth & Caching (Local File) =============
 
@@ -359,11 +358,6 @@ function getLocalWalletPrivateKey(walletName) {
   const effectiveName = walletName || config.defaultWallet;
   const exported = exportWallet(effectiveName, password);
   return exported.solana.privateKey;
-}
-
-function deriveVaultTokenAccount(vaultPubkey, inputMint, tokenProgram = TOKEN_PROGRAM) {
-  const mint = inputMint === '11111111111111111111111111111111' ? WSOL_MINT : inputMint;
-  return base58Encode(deriveATA(vaultPubkey, mint, tokenProgram));
 }
 
 // ============= Transaction Signing =============
@@ -699,7 +693,6 @@ EXAMPLES:
       // Amount is always in human-readable token units (e.g. 1.5 = 1.5 SOL)
       // Converted to base units (lamports) internally
       let amountBaseUnits;
-      let fromTokenProgram;
       try {
         const num = Number(amount);
         if (isNaN(num) || num <= 0) {
@@ -711,15 +704,9 @@ EXAMPLES:
         let decimals;
         if (fromInfo) {
           decimals = fromInfo.decimals;
-          // Every current entry is a classic Token Program mint, so the default
-          // holds. Carry an explicit tokenProgram if a future Token-2022 entry is
-          // added — otherwise deriveVaultTokenAccount would compute the wrong ATA
-          // and fail-close every deposit for that mint.
-          fromTokenProgram = fromInfo.tokenProgram || TOKEN_PROGRAM;
         } else {
           const tokenInfo = await getTokenInfo(CHAIN_RPCS.solana, from);
           decimals = tokenInfo.decimals;
-          fromTokenProgram = tokenInfo.tokenProgram || TOKEN_PROGRAM;
         }
         amountBaseUnits = String(parseAmount(String(amount), decimals));
       } catch (err) {
@@ -829,7 +816,6 @@ EXAMPLES:
         if (!vaultPubkey) {
           throw new Error('Could not determine your limit-order vault address; refusing to sign a deposit whose destination cannot be verified.');
         }
-        const vaultTokenAccount = deriveVaultTokenAccount(vaultPubkey, from, fromTokenProgram);
 
         // 4. Craft deposit transaction
         log('  Crafting deposit transaction...');
@@ -843,19 +829,19 @@ EXAMPLES:
         // 5. Sign deposit transaction
         // Three pre-signing defenses run here. The generic static gate rejects
         // delegate grants, authority changes, close-to-stranger, and excessive
-        // priority fees. The limit-order destination gate then binds visible
-        // wallet-authorized SPL transfers to the vault token account. Finally,
-        // balance-delta outcome verification binds magnitude: the input token
-        // must leave the wallet by exactly `amount` (± fee/rent slack for native
-        // SOL) and no other token may leave.
-        // Verified live: a real SOL→USDC create round-trip clears both gates (the
-        // API-crafted deposit is a SOL-wrap transfer into the vault plus a
-        // temp-WSOL close-to-self).
+        // priority fees. The limit-order destination gate then binds every
+        // wallet-sourced transfer (SPL for token deposits, native System::Transfer
+        // for SOL) to a token account this same tx creates via
+        // CreateAccountWithSeed seeded off the trusted vault owner — the real
+        // Jupiter Trigger V2 deposit shape, confirmed by a live create round-trip.
+        // Finally, balance-delta outcome verification binds magnitude: the input
+        // token must leave the wallet by exactly `amount` (± fee/rent slack for
+        // native SOL) and no other token may leave.
         assertSolanaInstructionsSafe(deposit.transaction, { walletAddress: pubkey });
         assertLimitOrderDepositDestination(deposit.transaction, {
           walletAddress: pubkey,
           inputMint: from,
-          vaultTokenAccount,
+          vaultOwner: vaultPubkey,
         });
         const depositOutcome = await verifyLimitOrderOutcome({
           kind: 'deposit', walletAddress: pubkey, txBase64: deposit.transaction,

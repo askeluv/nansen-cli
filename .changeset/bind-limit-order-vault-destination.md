@@ -2,4 +2,4 @@
 "nansen-cli": patch
 ---
 
-Reject limit-order deposits whose wallet-authorized SPL transfer does not target the user's vault token account.
+Bind limit-order deposits to the trusted vault destination: reject any deposit whose wallet-sourced transfer (SPL token or native SOL) does not land in a token account this same transaction creates via CreateAccountWithSeed seeded off the user's vault. Covers both the SPL-token and native-SOL deposit paths.

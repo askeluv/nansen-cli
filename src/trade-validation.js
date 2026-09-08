@@ -4,8 +4,10 @@
  * bad amounts) before any network call.
  */
 
+import crypto from 'crypto';
 import { validateAddress } from './api.js';
 import { CHAIN_RPCS } from './rpc-urls.js';
+import { base58Encode } from './wallet.js';
 import { parseTransactionMessage, resolveStaticAccount } from './solana-tx.js';
 import { SOL_SENTINEL } from './solana-simulation.js';
 import { EVM_NATIVE_SENTINEL } from './swap-simulation.js';
@@ -26,6 +28,11 @@ const SPL_SET_AUTHORITY = 6;
 const SPL_CLOSE_ACCOUNT = 9;
 const SPL_TRANSFER_CHECKED = 12;
 const SPL_APPROVE_CHECKED = 13;
+
+const SYSTEM_PROGRAM = '11111111111111111111111111111111';
+const SYSTEM_INSTR_TRANSFER = 2;
+const SYSTEM_INSTR_CREATE_ACCOUNT_WITH_SEED = 3;
+const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 
 const COMPUTE_BUDGET_PROGRAM = 'ComputeBudget111111111111111111111111111111';
 const COMPUTE_BUDGET_SET_UNIT_LIMIT = 2;
@@ -1853,14 +1860,30 @@ export function assertSolanaInstructionsSafe(txBase64, { walletAddress } = {}) {
 }
 
 /**
- * Statically bind a limit-order deposit's wallet-authorized SPL transfer to
- * the vault token account for the deposited mint. This closes the destination
- * gap that balance-delta simulation cannot see: a tx can spend exactly the
- * requested amount from the wallet while sending it to a non-vault token
- * account. This check is intentionally limit-order-specific; generic swaps
- * cannot require a single destination.
+ * Statically bind a limit-order deposit's wallet-sourced outflow to a token
+ * account provably derived from the trusted vault owner. This closes the
+ * destination gap balance-delta simulation cannot see: a tx can spend exactly
+ * the requested amount from the wallet while sending it to an attacker's
+ * account.
+ *
+ * The real on-chain shape (confirmed by a live create round-trip) is NOT the
+ * vault's canonical ATA. Jupiter Trigger V2 funds each order through a fresh
+ * per-order token account created in the same transaction via
+ * System::CreateAccountWithSeed(base = vaultOwner, seed = <per-order>,
+ * owner = Token program), then:
+ *   - SPL input  → TransferChecked / Transfer of the input token into it, or
+ *   - native SOL → System::Transfer of lamports into it, then SyncNative.
+ * So the destination is per-order and changes every craft; we can't pin a fixed
+ * address. Instead we recompute create_with_seed(base, seed, owner) from the
+ * transaction's own CreateAccountWithSeed instruction, require base == the
+ * trusted vaultOwner, and bind every wallet-sourced transfer to that recomputed
+ * account. This is stronger than an ATA equality check: the destination is
+ * provably seeded off the vault the backend told us to deposit into.
+ *
+ * This check is intentionally limit-order-specific; generic swaps cannot
+ * require a single destination.
  */
-export function assertLimitOrderDepositDestination(txBase64, { walletAddress, inputMint, vaultTokenAccount } = {}) {
+export function assertLimitOrderDepositDestination(txBase64, { walletAddress, inputMint, vaultOwner } = {}) {
   const fail = (detail) => {
     const e = new Error(`Limit-order deposit destination mismatch (LIMIT_ORDER_DESTINATION_MISMATCH): ${detail} Refusing to sign.`);
     e.code = 'LIMIT_ORDER_DESTINATION_MISMATCH';
@@ -1869,7 +1892,7 @@ export function assertLimitOrderDepositDestination(txBase64, { walletAddress, in
 
   if (!walletAddress) throw fail('missing signing wallet address.');
   if (!inputMint) throw fail('missing deposit input mint.');
-  if (!vaultTokenAccount) throw fail('missing vault token account.');
+  if (!vaultOwner) throw fail('missing vault owner address.');
 
   const parsed = parseTransactionMessage(txBase64);
   const accountAt = (ix, position) => resolveStaticAccount(parsed, ix.accountIndexes[position]);
@@ -1881,42 +1904,77 @@ export function assertLimitOrderDepositDestination(txBase64, { walletAddress, in
     return false;
   };
 
-  const expectedMint = SOLANA_NATIVE_SOL_ALIASES.has(inputMint)
-    ? 'So11111111111111111111111111111111111111112'
-    : inputMint;
+  // Pass 1: collect the token accounts this transaction creates via
+  // System::CreateAccountWithSeed seeded off the trusted vault owner. These are
+  // the only destinations a legitimate deposit may target.
+  const vaultSeededAccounts = new Set();
+  for (const ix of parsed.instructions) {
+    if (resolveStaticAccount(parsed, ix.programIdIndex) !== SYSTEM_PROGRAM) continue;
+    if (ix.data.length < 4 || ix.data.readUInt32LE(0) !== SYSTEM_INSTR_CREATE_ACCOUNT_WITH_SEED) continue;
+    // Layout: u32 index | 32 base | u64 seedLen | seed | u64 lamports | u64 space | 32 owner
+    let off = 4;
+    const need = (n) => { if (off + n > ix.data.length) throw fail('malformed CreateAccountWithSeed instruction.'); };
+    need(32); const base = ix.data.subarray(off, off + 32); off += 32;
+    need(8); const seedLen = Number(ix.data.readBigUInt64LE(off)); off += 8;
+    need(seedLen); const seed = ix.data.subarray(off, off + seedLen); off += seedLen;
+    need(16); off += 16; // skip lamports (u64) + space (u64)
+    need(32); const owner = ix.data.subarray(off, off + 32);
+    if (base58Encode(base) !== vaultOwner) continue; // not seeded off our vault
+    if (!SPL_TOKEN_PROGRAMS.has(base58Encode(owner))) continue; // not a token account
+    // create_with_seed(base, seed, owner) = base58(sha256(base || seed || owner)).
+    const derived = base58Encode(crypto.createHash('sha256').update(Buffer.concat([base, seed, owner])).digest());
+    // The account the instruction creates (index 1) must equal the recomputed
+    // address; a mismatch means a malformed/crafted instruction — fail closed.
+    const created = accountAt(ix, 1);
+    if (created !== null && created !== derived) {
+      throw fail('CreateAccountWithSeed target does not match its base/seed/owner derivation.');
+    }
+    vaultSeededAccounts.add(derived);
+  }
 
+  const expectedMint = SOLANA_NATIVE_SOL_ALIASES.has(inputMint) ? WSOL_MINT : inputMint;
+  const requireSeeded = (destination, label) => {
+    if (!vaultSeededAccounts.has(destination)) {
+      throw fail(`wallet-authorized ${label} sends funds to ${destination || 'an address only resolvable via an address lookup table'} instead of a vault-seeded deposit account.`);
+    }
+  };
+
+  // Pass 2: every wallet-sourced transfer of value must land in a vault-seeded
+  // account. Covers both deposit shapes — SPL token transfers and the native-SOL
+  // System::Transfer that funds a wrapped-SOL order account.
   for (const ix of parsed.instructions) {
     const programId = resolveStaticAccount(parsed, ix.programIdIndex);
     if (!programId) {
       throw fail('transaction invokes a program only resolvable via an address lookup table, so transfer destinations cannot be verified.');
     }
-    if (!SPL_TOKEN_PROGRAMS.has(programId) || ix.data.length === 0) continue;
 
+    if (programId === SYSTEM_PROGRAM) {
+      if (ix.data.length < 4 || ix.data.readUInt32LE(0) !== SYSTEM_INSTR_TRANSFER) continue;
+      // System::Transfer accounts: [from (signer), to]. `from` must be a signer,
+      // so it can never be ALT-resolved; null means a malformed tx — fail closed.
+      const from = accountAt(ix, 0);
+      if (from === null) throw fail('native transfer source is unresolvable (malformed transaction).');
+      if (from !== walletAddress) continue; // not our funds
+      requireSeeded(accountAt(ix, 1), 'native transfer');
+      continue;
+    }
+
+    if (!SPL_TOKEN_PROGRAMS.has(programId) || ix.data.length === 0) continue;
     const discriminator = ix.data[0];
     if (discriminator === SPL_TRANSFER) {
-      // Classic Transfer does not encode the mint in its account list, so we can
-      // only bind the destination — not the mint — without an extra RPC lookup.
-      // This is not a weakness: vaultTokenAccount is the deposit mint's own ATA
-      // (derived per-mint upstream), so a legitimate deposit lands here, and the
-      // balance-delta simulation still bounds the amount and token that leave the
-      // wallet. Do not add a mint check here — the classic Transfer cannot supply
-      // one; use TransferChecked (below) if mint binding at the instruction level
-      // is required.
+      // Classic Transfer carries no mint in its account list, so we bind only the
+      // destination. Not a weakness: the destination is a vault-seeded account and
+      // the balance-delta gate still bounds which token and how much leave the
+      // wallet. Use TransferChecked (below) for instruction-level mint binding.
       if (!walletAuthorizes(ix, 2)) continue;
-      const destination = accountAt(ix, 1);
-      if (destination !== vaultTokenAccount) {
-        throw fail(`wallet-authorized token transfer sends funds to ${destination || 'an address only resolvable via an address lookup table'} instead of vault token account ${vaultTokenAccount}.`);
-      }
+      requireSeeded(accountAt(ix, 1), 'token transfer');
     } else if (discriminator === SPL_TRANSFER_CHECKED) {
       if (!walletAuthorizes(ix, 3)) continue;
       const mint = accountAt(ix, 1);
-      const destination = accountAt(ix, 2);
       if (!tokensEqual(mint, expectedMint, 'solana')) {
         throw fail(`wallet-authorized TransferChecked uses mint ${mint || 'an address only resolvable via an address lookup table'} instead of deposit mint ${expectedMint}.`);
       }
-      if (destination !== vaultTokenAccount) {
-        throw fail(`wallet-authorized TransferChecked sends funds to ${destination || 'an address only resolvable via an address lookup table'} instead of vault token account ${vaultTokenAccount}.`);
-      }
+      requireSeeded(accountAt(ix, 2), 'TransferChecked');
     }
   }
 
