@@ -13,6 +13,9 @@ node_modules/
 .idea/
 coverage/
 
+# Local git worktrees — scratch checkouts for parallel work, never committed.
+/.worktrees/
+
 # Internal planning / handoff / notes — contain internal ticket IDs and names.
 # nansen-cli is a public repo; these must never be committed. Kept in the working
 # tree so local agents (Claude, Codex, …) can read them.
